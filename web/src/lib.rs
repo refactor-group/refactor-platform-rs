@@ -22,6 +22,7 @@ use tower_http::cors::CorsLayer;
 mod controller;
 mod error;
 pub(crate) mod extractors;
+pub(crate) mod protect;
 mod router;
 
 pub async fn init_server(app_state: AppState) -> Result<()> {
