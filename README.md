@@ -1,7 +1,8 @@
 [![Build & Tests (backend)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml)
 
 # Refactor Coaching & Mentoring Platform
-### Backend
+
+## Backend
 
 ## Intro
 
@@ -90,6 +91,7 @@ DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-o
 ```
 
 ### Generate a new Entity from Database
+
 Note that to generate a new Entity using the CLI you must ignore all other tables using the `--ignore-tables` option. You must add the option for _each_ table you are ignoring.
 
 ```bash

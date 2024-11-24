@@ -33,7 +33,7 @@ features = [
     "runtime-tokio-native-tls",
     "sea-orm-internal",
     "sqlx-postgres",
-    "with-uuid"
+    "with-uuid",
 ]
 
 [features]

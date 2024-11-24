@@ -1,2 +1,12 @@
 /target
 dbml-error.log
+
+# Mac OS files
+.DS_Store
+
+# workspace files
+*.code-workspace
+.vscode/
+
+# environment files
+.env*

@@ -10,13 +10,13 @@ members = [".", "entity_api", "entity", "migration", "service", "web"]
 
 [dependencies]
 service = { path = "service" }
-entity_api = {path = "entity_api" }
+entity_api = { path = "entity_api" }
 web = { path = "web" }
 
 clap = { version = "4.5.20", features = ["cargo", "derive", "env"] }
 log = "0.4.22"
 simplelog = { version = "0.12.2", features = ["paris"] }
-tokio = "1.40"
+tokio = "1.41.0"
 
 [[bin]]
 name = "seed_db"

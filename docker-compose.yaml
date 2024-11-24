@@ -1,0 +1,51 @@
+services:
+  # Local PostgreSQL container (used for local development when needed)
+  postgres:
+    image: postgres:17  # Use PostgreSQL version 17
+    container_name: postgres  # Name the container "postgres"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}  # Set PostgreSQL user from environment variable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # Set PostgreSQL password from environment variable
+      POSTGRES_DB: ${POSTGRES_DB}  # Set PostgreSQL database name from environment variable
+    ports:
+      - "${POSTGRES_PORT}:5432"  # Map host port to container's PostgreSQL port
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # Persist PostgreSQL data
+      - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
+      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_plaform_rs.sql  # Initialize with refactor_platform_rs.sql
+    networks:
+      - backend_network  # Connect to backend_network
+
+  # Rust application that connects to either local or remote PostgreSQL
+  rust-app:
+    image: rust-backend  # Use the built image
+    build:
+      context: .  # Build context is current directory
+      dockerfile: Dockerfile  # Use specified Dockerfile
+      target: runtime  # Use runtime target
+    platform: ${PLATFORM}  # Specify the platform
+    container_name: ${CONTAINER_NAME}  # Name the container, default is "rust-app"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}  # Set PostgreSQL user from environment variable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # Set PostgreSQL password from environment variable
+      POSTGRES_DB: ${POSTGRES_DB}  # Set PostgreSQL database name from environment variable
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}  # Set PostgreSQL schema from environment variable
+      POSTGRES_HOST: postgres  # Set PostgreSQL host to "postgres" service
+      POSTGRES_PORT: ${POSTGRES_PORT}  # Set PostgreSQL port from environment variable
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}  # Configure database URL
+      SERVICE_PORT: ${SERVICE_PORT}  # Set service port from environment variable
+      SERVICE_INTERFACE: ${SERVICE_INTERFACE}  # Set service interface from environment variable
+    ports:
+      - "${SERVICE_PORT}:${SERVICE_PORT}"  # Map host port to container's service port
+    depends_on:
+      - postgres  # Ensure postgres service starts before rust-app
+    networks:
+      - backend_network  # Connect to backend_network
+    command: ["sh", "-c", "sleep 5 && /usr/local/bin/refactor_platform_rs"]  # Wait for Postgres and run the app
+
+networks:
+  backend_network:
+    driver: bridge  # Use bridge network driver
+
+volumes:
+  postgres_data:  # Define postgres_data volume
