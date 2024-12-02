@@ -20,8 +20,10 @@ pub struct Model {
     #[serde(skip_deserializing)]
     pub status_changed_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
+    #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
+    #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
 }
 

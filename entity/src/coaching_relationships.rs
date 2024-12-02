@@ -12,14 +12,17 @@ use utoipa::ToSchema;
     table_name = "coaching_relationships"
 )]
 pub struct Model {
+    #[serde(skip_deserializing)]
     #[sea_orm(primary_key)]
     pub id: Id,
     #[sea_orm(unique)]
     pub organization_id: Id,
     pub coach_id: Id,
     pub coachee_id: Id,
+    #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub created_at: DateTimeWithTimeZone,
+    #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
 }

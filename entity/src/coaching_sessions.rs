@@ -9,12 +9,17 @@ use utoipa::ToSchema;
 #[schema(as = entity::coaching_sessions::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "coaching_sessions")]
 pub struct Model {
+    #[serde(skip_deserializing)]
     #[sea_orm(primary_key)]
     pub id: Id,
     pub coaching_relationship_id: Id,
     pub date: DateTime,
     pub timezone: String,
+    #[serde(skip_deserializing)]
+    #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub created_at: DateTimeWithTimeZone,
+    #[serde(skip_deserializing)]
+    #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
 }
 
