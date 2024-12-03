@@ -1,5 +1,6 @@
-use crate::AppState;
+use crate::{protect, AppState};
 use axum::{
+    middleware::from_fn_with_state,
     routing::{delete, get, post, put},
     Router,
 };
@@ -175,6 +176,10 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships",
             get(organization::coaching_relationship_controller::index),
         )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::coaching_relationships::index,
+        ))
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id",
             get(organization::coaching_relationship_controller::read),
