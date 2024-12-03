@@ -1,14 +1,34 @@
-use axum::extract::Request;
-use entity_api::user::AuthSession;
+use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
+use axum::{
+    extract::{Path, Request, State},
+    http::StatusCode,
+    middleware::Next,
+    response::IntoResponse,
+};
 
-struct AuthorizationError {}
+use entity::Id;
+use entity_api::organization;
+use std::collections::HashSet;
 
-pub(crate) async fn protect(
-    auth_session: AuthSession,
+/// Checks that the organization record referenced by `organization_id`
+/// exists and that the authenticated user is associated with i.t
+///  Intended to be given to axum::middleware::from_fn_with_state in the router
+pub(crate) async fn index(
+    State(app_state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(organization_id): Path<Id>,
     request: Request,
-) -> Result<Request, AuthorizationError> {
-    // here we have access to the current user (actor) making the request
-    // as well as the request itself (from which we can determine which resource is being acted upon).
-    // We can use both pieces of information to determine if the actor is allowed to operate on the resource.
-    Ok(request)
+    next: Next,
+) -> impl IntoResponse {
+    let user_organization_ids = organization::find_by_user(app_state.db_conn_ref(), user.id)
+        .await
+        .unwrap_or(vec![])
+        .into_iter()
+        .map(|org| org.id)
+        .collect::<HashSet<Id>>();
+    if user_organization_ids.contains(&organization_id) {
+        next.run(request).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+    }
 }

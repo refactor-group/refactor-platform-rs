@@ -1,6 +1,6 @@
-use crate::{protected_resource, AppState};
+use crate::{protect, AppState};
 use axum::{
-    http::StatusCode,
+    middleware::from_fn_with_state,
     routing::{delete, get, post, put},
     Router,
 };
@@ -13,8 +13,6 @@ use crate::controller::{
     organization, organization_controller, overarching_goal_controller, user_controller,
     user_session_controller,
 };
-
-use crate::protect::coaching_relationships;
 
 use utoipa::{
     openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
@@ -178,15 +176,15 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships",
             get(organization::coaching_relationship_controller::index),
         )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::coaching_relationships::index,
+        ))
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id",
             get(organization::coaching_relationship_controller::read),
         )
         .route_layer(login_required!(Backend, login_url = "/login"))
-        .route_layer(protected_resource!(
-            coaching_relationships::protect,
-            StatusCode::UNAUTHORIZED
-        ))
         .with_state(app_state)
 }
 

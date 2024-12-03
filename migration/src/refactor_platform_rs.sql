@@ -1,4 +1,4 @@
--- SQL dump generated using DBML (dbml-lang.org)
+-- SQL dump generated using DBML (dbml.dbdiagram.io)
 -- Database: PostgreSQL
 -- Generated at: 2024-12-16T05:18:20.372Z
 
