@@ -42,6 +42,16 @@ services:
     networks:
       - backend_network  # Connect to backend_network
     command: ["sh", "-c", "sleep 5 && /usr/local/bin/refactor_platform_rs"]  # Wait for Postgres and run the app
+  
+  nextjs-app:
+    build:
+      context: https://github.com/refactor-group/refactor-platform-fe.git # change to fs directory to run locally
+      dockerfile: Dockerfile
+      target: runner  # Use runner target
+    ports:
+      - "${NEXTJS_FRONTEND_PORT}:${NEXTJS_FRONTEND_PORT}"  # Map host port to frontend container's service port
+    depends_on:
+      - rust-app  # Ensure postgres service starts before rust-app
 
 networks:
   backend_network:
