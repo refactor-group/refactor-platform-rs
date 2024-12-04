@@ -1,6 +1,9 @@
 use super::error::{EntityApiErrorCode, Error};
 use crate::{naive_date_parse_str, uuid_parse_str};
-use entity::coaching_sessions::{self, ActiveModel, Entity, Model};
+use entity::{
+    coaching_sessions::{self, ActiveModel, Entity, Model},
+    Id,
+};
 use log::debug;
 use sea_orm::{entity::prelude::*, DatabaseConnection, Set, TryIntoModel};
 use std::collections::HashMap;
@@ -29,6 +32,10 @@ pub async fn create(
         .save(db)
         .await?
         .try_into_model()?)
+}
+
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
+    Ok(Entity::find_by_id(id).one(db).await?)
 }
 
 pub async fn find_by(
@@ -96,6 +103,28 @@ mod tests {
         let coaching_session = create(&db, coaching_session_model.clone().into()).await?;
 
         assert_eq!(coaching_session.id, coaching_session_model.id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_id_returns_a_single_record() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let coaching_session_id = Id::new_v4();
+        let _ = find_by_id(&db, coaching_session_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."date", "coaching_sessions"."timezone", "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                [
+                    coaching_session_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
 
         Ok(())
     }
