@@ -10,27 +10,26 @@ use entity::Id;
 use entity_api::coaching_relationship;
 use std::collections::HashMap;
 
-// struct Params {
-//     coaching_relationship_id: Option<Id>,
-// }
-
 /// Checks that coaching relationship record referenced by `coaching_relationship_id`
 /// exists and that the authenticated user is associated with it.
 ///  Intended to be given to axum::middleware::from_fn_with_state in the router
 pub(crate) async fn index(
     State(app_state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    // Note that we're being explicit that the query hashmap here has values of typ Id
-    // This allows us to deserialize the UUID string to a Uuid automatically
-    // This might come back to bite us if we start allowing other params for endpoints that use this.
-    // We'll have to come back and change things in that case.
-    Query(params): Query<HashMap<String, Id>>,
+    Query(params): Query<HashMap<String, String>>,
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
     if let Some(coaching_relationship_id) = params.get("coaching_relationship_id") {
+        let coaching_relationship_id = match Id::try_parse(coaching_relationship_id) {
+            Ok(id) => id,
+            Err(_) => {
+                // coaching relationship ID is not a parseable UUID
+                return (StatusCode::BAD_REQUEST, "BAD REQUEST").into_response();
+            }
+        };
         let coaching_relationship =
-            coaching_relationship::find_by_id(app_state.db_conn_ref(), *coaching_relationship_id)
+            coaching_relationship::find_by_id(app_state.db_conn_ref(), coaching_relationship_id)
                 .await
                 .unwrap_or(None);
         match coaching_relationship {
