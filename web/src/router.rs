@@ -152,6 +152,10 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             "/coaching_sessions",
             get(coaching_session_controller::index),
         )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::coaching_sessions::index,
+        ))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
