@@ -37,6 +37,10 @@ pub async fn create(
     Ok(coaching_relationship_active_model.insert(db).await?)
 }
 
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
+    Ok(Entity::find_by_id(id).one(db).await?)
+}
+
 pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Model>, Error> {
     let coaching_relationships: Vec<coaching_relationships::Model> =
         coaching_relationships::Entity::find()
@@ -232,6 +236,28 @@ impl Serialize for CoachingRelationshipWithUserNames {
 mod tests {
     use super::*;
     use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+
+    #[tokio::test]
+    async fn find_by_id_returns_record_when_present() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let coaching_relationship_id = Id::new_v4();
+        let _ = find_by_id(&db, coaching_relationship_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."id" = $1 LIMIT $2"#,
+                [
+                    coaching_relationship_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn find_by_user_returns_all_records_associated_with_user() -> Result<(), Error> {
