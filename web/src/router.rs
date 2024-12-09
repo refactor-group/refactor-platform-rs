@@ -224,6 +224,10 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
             "/overarching_goals",
             get(overarching_goal_controller::index),
         )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::overarching_goals::index,
+        ))
         .route(
             "/overarching_goals/:id",
             get(overarching_goal_controller::read),

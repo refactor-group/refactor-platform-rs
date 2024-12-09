@@ -47,6 +47,5 @@ pub(crate) async fn index(
 
             (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
         }
-        
     }
 }
