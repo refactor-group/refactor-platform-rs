@@ -14,7 +14,8 @@ serde = { version = "1.0.210", features = ["derive"] }
 sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
 sqlx-sqlite = { version = "0.8.2" }
 utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
-uuid = { version = "1.11.0", features = ["v4"] }
+
+uuid = { version = "1.11.0", features = ["v4", "serde"] }
 
 [dependencies.sea-orm]
 version = "1.1.0"

@@ -5,19 +5,18 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use serde::Deserialize;
-
 use entity::Id;
-use entity_api::coaching_relationship;
-// use std::collections::HashMap;
+use entity_api::coaching_session;
+use log::*;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueryParams {
-    coaching_relationship_id: Id,
+    coaching_session_id: Id,
 }
 
-/// Checks that coaching relationship record referenced by `coaching_relationship_id`
-/// exists and that the authenticated user is associated with it.
+/// Checks that coaching relationship record associated with the coaching session
+/// referenced by `coaching_session_id exists and that the authenticated user is associated with it.
 ///  Intended to be given to axum::middleware::from_fn_with_state in the router
 pub(crate) async fn index(
     State(app_state): State<AppState>,
@@ -26,12 +25,13 @@ pub(crate) async fn index(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let coaching_relationship =
-        coaching_relationship::find_by_id(app_state.db_conn_ref(), params.coaching_relationship_id)
-            .await
-            .unwrap_or_default();
-    match coaching_relationship {
-        Some(coaching_relationship) => {
+    match coaching_session::find_by_id_with_coaching_relationship(
+        app_state.db_conn_ref(),
+        params.coaching_session_id,
+    )
+    .await
+    {
+        Ok((_coaching_session, coaching_relationship)) => {
             if coaching_relationship.coach_id == user.id
                 || coaching_relationship.coachee_id == user.id
             {
@@ -42,7 +42,11 @@ pub(crate) async fn index(
                 (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
             }
         }
-        // coaching relationship with given ID not found
-        None => (StatusCode::NOT_FOUND, "NOT FOUND").into_response(),
+        Err(e) => {
+            error!("Error authorizing overarching goals index{:?}", e);
+
+            (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+        }
+        
     }
 }
