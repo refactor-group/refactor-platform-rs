@@ -124,6 +124,10 @@ fn action_routes(app_state: AppState) -> Router {
         .route("/actions", post(action_controller::create))
         .route("/actions/:id", put(action_controller::update))
         .route("/actions", get(action_controller::index))
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::actions::index,
+        ))
         .route("/actions/:id", get(action_controller::read))
         .route("/actions/:id/status", put(action_controller::update_status))
         .route("/actions/:id", delete(action_controller::delete))
@@ -136,6 +140,10 @@ fn agreement_routes(app_state: AppState) -> Router {
         .route("/agreements", post(agreement_controller::create))
         .route("/agreements/:id", put(agreement_controller::update))
         .route("/agreements", get(agreement_controller::index))
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::agreements::index,
+        ))
         .route("/agreements/:id", get(agreement_controller::read))
         .route("/agreements/:id", delete(agreement_controller::delete))
         .route_layer(login_required!(Backend, login_url = "/login"))
@@ -165,6 +173,7 @@ fn note_routes(app_state: AppState) -> Router {
         .route("/notes", post(note_controller::create))
         .route("/notes/:id", put(note_controller::update))
         .route("/notes", get(note_controller::index))
+        .route_layer(from_fn_with_state(app_state.clone(), protect::notes::index))
         .route("/notes/:id", get(note_controller::read))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
