@@ -2,8 +2,8 @@ name: Build and Deploy Containers
 
 on:
   push:
-    branches:
-      - '**feature/**'  # Run on feature branches
+    branches-ignore:
+      - main  # Run on branches that are not main
   pull_request:
     branches:
       - main  # Run on pull requests to merge into main
@@ -23,6 +23,28 @@ jobs:
       # Checkout the repository
       - name: Checkout
         uses: actions/checkout@v3
+
+      # Set environment variables from secrets
+      - name: Set environment variables
+        run: |
+          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> $GITHUB_ENV
+          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> $GITHUB_ENV
+          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> $GITHUB_ENV
+          echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> $GITHUB_ENV
+          echo "POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}" >> $GITHUB_ENV
+          echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> $GITHUB_ENV
+          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> $GITHUB_ENV
+          echo "BACKEND_PORT=${{ secrets.BACKEND_PORT }}" >> $GITHUB_ENV
+          echo "BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}" >> $GITHUB_ENV
+          echo "PLATFORM=${{ secrets.PLATFORM }}" >> $GITHUB_ENV
+          echo "CONTAINER_NAME=${{ secrets.CONTAINER_NAME }}" >> $GITHUB_ENV
+          echo "FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}" >> $GITHUB_ENV
+          echo "FRONTEND_PORT=${{ secrets.FRONTEND_PORT }}" >> $GITHUB_ENV
+          echo "DB_DNS_ALIAS=${{ secrets.DB_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "BACKEND_DNS_ALIAS=${{ secrets.BACKEND_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "FRONTEND_DNS_ALIAS=${{ secrets.FRONTEND_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}" >> $GITHUB_ENV
+          echo "BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" >> $GITHUB_ENV
 
       # Install Rust toolchain
       - name: Install Rust toolchain
@@ -57,6 +79,28 @@ jobs:
       # Checkout the repository
       - name: Checkout
         uses: actions/checkout@v3
+
+      # Set environment variables from secrets
+      - name: Set environment variables
+        run: |
+          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> $GITHUB_ENV
+          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> $GITHUB_ENV
+          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> $GITHUB_ENV
+          echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> $GITHUB_ENV
+          echo "POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}" >> $GITHUB_ENV
+          echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> $GITHUB_ENV
+          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> $GITHUB_ENV
+          echo "BACKEND_PORT=${{ secrets.BACKEND_PORT }}" >> $GITHUB_ENV
+          echo "BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}" >> $GITHUB_ENV
+          echo "PLATFORM=${{ secrets.PLATFORM }}" >> $GITHUB_ENV
+          echo "CONTAINER_NAME=${{ secrets.CONTAINER_NAME }}" >> $GITHUB_ENV
+          echo "FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}" >> $GITHUB_ENV
+          echo "FRONTEND_PORT=${{ secrets.FRONTEND_PORT }}" >> $GITHUB_ENV
+          echo "DB_DNS_ALIAS=${{ secrets.DB_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "BACKEND_DNS_ALIAS=${{ secrets.BACKEND_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "FRONTEND_DNS_ALIAS=${{ secrets.FRONTEND_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}" >> $GITHUB_ENV
+          echo "BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" >> $GITHUB_ENV
 
       # Log in to GitHub Container Registry
       - name: Log in to GitHub Container Registry
