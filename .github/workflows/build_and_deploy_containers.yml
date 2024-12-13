@@ -1,0 +1,110 @@
+name: Build and Deploy Containers
+
+on:
+  push:
+    branches:
+      - '**feature/**'  # Run on feature branches
+  pull_request:
+    branches:
+      # - main  # Run on pull requests to merge into main
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build_test_run:
+    name: Build and Test
+    runs-on: ubuntu-22.04
+
+    steps:
+      # Checkout the repository
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # Install Rust toolchain
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      # Use cached dependencies
+      - name: Use cached dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: "ubuntu-22.04-x86_64-unknown-linux-gnu"
+
+      # Install seaORM CLI
+      - name: Install seaORM CLI
+        run: cargo install sea-orm-cli
+
+      # Build the project
+      - name: Build
+        run: cargo build --all-targets
+
+      # Run tests
+      - name: Test
+        run: cargo test
+
+  build_and_push_docker:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-22.04
+    needs: build_test_run  # Ensure tests pass before building Docker images
+
+    steps:
+      # Checkout the repository
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # Log in to GitHub Container Registry
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # Cache Docker layers
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      # Build and push Rust backend image
+      - name: Build and Push Rust Backend Image
+        run: |
+          BRANCH_NAME=$(echo ${{ github.ref_name }} | cut -c1-10)
+          IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-10)
+          echo "Building and pushing Rust backend image with tag: ${BRANCH_NAME}-rust-backend-${IMAGE_TAG}"
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH_NAME}-rust-backend-${IMAGE_TAG} \
+            -f Dockerfile \
+            --push .
+
+      # Build and push Next.js frontend image
+      - name: Build and Push Next.js Frontend Image
+        run: |
+          BRANCH_NAME=$(echo ${{ github.ref_name }} | cut -c1-10)
+          IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-10)
+          echo "Building and pushing Next.js frontend image with tag: ${BRANCH_NAME}-nextjs-frontend-${IMAGE_TAG}"
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH_NAME}-nextjs-frontend-${IMAGE_TAG} \
+            -f web/Dockerfile \
+            --push .
+
+      # Move new cache to the original location
+      - name: Move new cache
+        run: mv /tmp/.buildx-cache-new /tmp/.buildx-cache
