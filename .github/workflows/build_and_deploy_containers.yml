@@ -125,7 +125,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{  github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
@@ -141,7 +141,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{  github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
@@ -155,7 +155,7 @@ jobs:
       - name: Generate artifact attestation for Rust Backend Image
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}-rust-backend
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}
           subject-digest: ${{ steps.push_backend.outputs.digest }}
           push-to-registry: true
 
@@ -163,6 +163,6 @@ jobs:
       - name: Generate artifact attestation for Next.js Frontend Image
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}-nextjs-frontend
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}
           subject-digest: ${{ steps.push_frontend.outputs.digest }}
           push-to-registry: true
