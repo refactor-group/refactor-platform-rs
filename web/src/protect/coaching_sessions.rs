@@ -9,7 +9,6 @@ use serde::Deserialize;
 
 use entity::Id;
 use entity_api::coaching_relationship;
-// use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueryParams {
