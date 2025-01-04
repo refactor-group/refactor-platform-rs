@@ -1,5 +1,6 @@
-use crate::AppState;
+use crate::{protect, AppState};
 use axum::{
+    middleware::from_fn_with_state,
     routing::{delete, get, post, put},
     Router,
 };
@@ -122,10 +123,18 @@ fn action_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/actions", post(action_controller::create))
         .route("/actions/:id", put(action_controller::update))
-        .route("/actions", get(action_controller::index))
         .route("/actions/:id", get(action_controller::read))
         .route("/actions/:id/status", put(action_controller::update_status))
         .route("/actions/:id", delete(action_controller::delete))
+        .merge(
+            // GET /actions
+            Router::new()
+                .route("/actions", get(action_controller::index))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::actions::index,
+                )),
+        )
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
@@ -134,7 +143,15 @@ fn agreement_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/agreements", post(agreement_controller::create))
         .route("/agreements/:id", put(agreement_controller::update))
-        .route("/agreements", get(agreement_controller::index))
+        .merge(
+            // GET /agreements
+            Router::new()
+                .route("/agreements", get(agreement_controller::index))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::agreements::index,
+                )),
+        )
         .route("/agreements/:id", get(agreement_controller::read))
         .route("/agreements/:id", delete(agreement_controller::delete))
         .route_layer(login_required!(Backend, login_url = "/login"))
@@ -147,9 +164,17 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             "/coaching_sessions",
             post(coaching_session_controller::create),
         )
-        .route(
-            "/coaching_sessions",
-            get(coaching_session_controller::index),
+        .merge(
+            // Get /coaching_sessions
+            Router::new()
+                .route(
+                    "/coaching_sessions",
+                    get(coaching_session_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_sessions::index,
+                )),
         )
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
@@ -159,7 +184,12 @@ fn note_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/notes", post(note_controller::create))
         .route("/notes/:id", put(note_controller::update))
-        .route("/notes", get(note_controller::index))
+        .merge(
+            // GET /notes
+            Router::new()
+                .route("/notes", get(note_controller::index))
+                .route_layer(from_fn_with_state(app_state.clone(), protect::notes::index)),
+        )
         .route("/notes/:id", get(note_controller::read))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
@@ -171,9 +201,17 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships",
             post(coaching_relationship_controller::create),
         )
-        .route(
-            "/organizations/:organization_id/coaching_relationships",
-            get(organization::coaching_relationship_controller::index),
+        .merge(
+            // GET /organizations/:organization_id/coaching_relationships
+            Router::new()
+                .route(
+                    "/organizations/:organization_id/coaching_relationships",
+                    get(organization::coaching_relationship_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_relationships::index,
+                )),
         )
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id",
@@ -211,9 +249,17 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
             "/overarching_goals/:id",
             put(overarching_goal_controller::update),
         )
-        .route(
-            "/overarching_goals",
-            get(overarching_goal_controller::index),
+        .merge(
+            // GET /overarching_goals
+            Router::new()
+                .route(
+                    "/overarching_goals",
+                    get(overarching_goal_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::overarching_goals::index,
+                )),
         )
         .route(
             "/overarching_goals/:id",

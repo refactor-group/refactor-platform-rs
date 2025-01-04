@@ -35,13 +35,15 @@ use log::debug;
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(mut params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Organizations");
+
+    params.insert("user_id".to_string(), user.id.to_string());
 
     let organizations = OrganizationApi::find_by(app_state.db_conn_ref(), params).await?;
 
