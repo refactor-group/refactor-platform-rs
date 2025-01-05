@@ -43,6 +43,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
                 id: Unchanged(organization.id),
                 logo: Set(model.logo),
                 name: Set(model.name),
+                slug: Unchanged(organization.slug),
                 updated_at: Unchanged(organization.updated_at),
                 created_at: Unchanged(organization.created_at),
             };
@@ -144,6 +145,7 @@ mod tests {
             organizations::Model {
                 id: Id::new_v4(),
                 name: "Organization One".to_owned(),
+                slug: "organization-one".to_owned(),
                 created_at: now.into(),
                 updated_at: now.into(),
                 logo: None,
@@ -151,6 +153,7 @@ mod tests {
             organizations::Model {
                 id: Id::new_v4(),
                 name: "Organization One".to_owned(),
+                slug: "organization-one".to_owned(),
                 created_at: now.into(),
                 updated_at: now.into(),
                 logo: None,
@@ -176,7 +179,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."coaching_relationships" ON "organizations"."id" = "coaching_relationships"."organization_id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."coaching_relationships" ON "organizations"."id" = "coaching_relationships"."organization_id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.clone().into(), user_id.into()]
             )]
         );

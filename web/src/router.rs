@@ -447,6 +447,7 @@ mod organization_endpoints_tests {
         let organization = organizations::Model {
             id: id,
             name: "Organization One".to_owned(),
+            slug: "organization-one".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -507,6 +508,7 @@ mod organization_endpoints_tests {
         let organization1 = organizations::Model {
             id: Id::new_v4(),
             name: "Organization One".to_owned(),
+            slug: "organization-one".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -514,6 +516,7 @@ mod organization_endpoints_tests {
         let organization2 = organizations::Model {
             id: Id::new_v4(),
             name: "Organization Two".to_owned(),
+            slug: "organization-two".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -521,6 +524,7 @@ mod organization_endpoints_tests {
         let organization3 = organizations::Model {
             id: Id::new_v4(),
             name: "Organization Three".to_owned(),
+            slug: "organization-three".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -586,6 +590,7 @@ mod organization_endpoints_tests {
         let organization_results1 = [vec![organizations::Model {
             id: user_id1,
             name: "Organization Two".to_owned(),
+            slug: "organization-two".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -595,6 +600,7 @@ mod organization_endpoints_tests {
         let organization_results2 = [vec![organizations::Model {
             id: user_id2,
             name: "Organization Three".to_owned(),
+            slug: "organization-three".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -696,6 +702,7 @@ mod organization_endpoints_tests {
         let organization_results1 = [vec![organizations::Model {
             id: Id::new_v4(),
             name: "New Organization Five".to_owned(),
+            slug: "new-organization-five".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -704,6 +711,7 @@ mod organization_endpoints_tests {
         let organization_results2 = [vec![organizations::Model {
             id: Id::new_v4(),
             name: "Second Organization Six".to_owned(),
+            slug: "second-organization-six".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
@@ -806,6 +814,7 @@ mod organization_endpoints_tests {
             vec![organizations::Model {
                 id: user_id1,
                 name: "Organization Two".to_owned(),
+                slug: "organization-two".to_owned(),
                 created_at: now.into(),
                 updated_at: now.into(),
                 logo: None,
@@ -813,6 +822,7 @@ mod organization_endpoints_tests {
             vec![organizations::Model {
                 id: user_id2,
                 name: "Updated Organization Two".to_owned(),
+                slug: "updated-organization-two".to_owned(),
                 created_at: now.into(),
                 updated_at: now.into(),
                 logo: None,
@@ -845,6 +855,7 @@ mod organization_endpoints_tests {
         let updated_organization2 = organizations::Model {
             id: user_id2,
             name: "Updated Organization Two".to_owned(),
+            slug: "updated-organization-two".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),
             logo: None,
