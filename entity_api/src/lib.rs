@@ -97,6 +97,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     let refactor_coaching = organizations::ActiveModel {
         name: Set("Refactor Coaching".to_owned()),
+        slug: Set("refactor-coaching".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -107,6 +108,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     let acme_corp = organizations::ActiveModel {
         name: Set("Acme Corp".to_owned()),
+        slug: Set("acme-corp".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -119,6 +121,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(caleb_bourg.id.clone().unwrap()),
         organization_id: Set(refactor_coaching.id.unwrap()),
+        slug: Set("jim-caleb".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -131,6 +134,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(other_user.id.clone().unwrap()),
         organization_id: Set(acme_corp.id.unwrap()),
+        slug: Set("jim-other".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()

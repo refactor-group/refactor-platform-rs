@@ -20,6 +20,8 @@ pub struct Model {
     pub coach_id: Id,
     pub coachee_id: Id,
     #[serde(skip_deserializing)]
+    pub slug: String,
+    #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
