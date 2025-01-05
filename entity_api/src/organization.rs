@@ -43,6 +43,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
                 id: Unchanged(organization.id),
                 logo: Set(model.logo),
                 name: Set(model.name),
+                slug: Unchanged(organization.slug),
                 updated_at: Unchanged(organization.updated_at),
                 created_at: Unchanged(organization.created_at),
             };

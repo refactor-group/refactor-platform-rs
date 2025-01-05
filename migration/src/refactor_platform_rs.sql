@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml.dbdiagram.io)
 -- Database: PostgreSQL
--- Generated at: 2025-01-04T15:25:10.725Z
+-- Generated at: 2025-01-05T12:30:08.165Z
 
 
 CREATE TYPE "refactor_platform"."status" AS ENUM (
@@ -14,6 +14,7 @@ CREATE TABLE "refactor_platform"."organizations" (
   "id" uuid UNIQUE PRIMARY KEY NOT NULL DEFAULT (gen_random_uuid()),
   "name" varchar NOT NULL,
   "logo" varchar,
+  "slug" varchar,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
@@ -23,6 +24,7 @@ CREATE TABLE "refactor_platform"."coaching_relationships" (
   "organization_id" uuid NOT NULL,
   "coach_id" uuid NOT NULL,
   "coachee_id" uuid NOT NULL,
+  "slug" varchar,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
@@ -96,6 +98,8 @@ COMMENT ON COLUMN "refactor_platform"."organizations"."name" IS 'The name of the
 
 COMMENT ON COLUMN "refactor_platform"."organizations"."logo" IS 'A URI pointing to the organization''s logo icon file';
 
+COMMENT ON COLUMN "refactor_platform"."organizations"."slug" IS 'Canonical name for the record. Considered immutable by convention';
+
 COMMENT ON COLUMN "refactor_platform"."organizations"."updated_at" IS 'The last date and time fields were changed';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."organization_id" IS 'The organization associated with this coaching relationship';
@@ -103,6 +107,8 @@ COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."organization_id"
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."coach_id" IS 'The coach associated with this coaching relationship';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."coachee_id" IS 'The coachee associated with this coaching relationship';
+
+COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."slug" IS 'Canonical name for the record. Considered immutable by convention';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."updated_at" IS 'The last date and time fields were changed';
 
