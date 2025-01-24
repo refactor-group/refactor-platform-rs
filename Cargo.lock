@@ -829,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.1.0"
+version = "1.0.0-beta1"
 dependencies = [
  "entity",
  "entity_api",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "entity"
-version = "0.1.0"
+version = "1.0.0-beta1"
 dependencies = [
  "axum-login",
  "chrono",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "entity_api"
-version = "0.1.0"
+version = "1.0.0-beta1"
 dependencies = [
  "async-trait",
  "axum-login",
@@ -1601,7 +1601,7 @@ checksum = "523dc4f511e55ab87b694dc30d0f820d60906ef06413f93d4d7a1385599cc149"
 
 [[package]]
 name = "migration"
-version = "0.1.0"
+version = "1.0.0-beta1"
 dependencies = [
  "async-std",
  "sea-orm-migration",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "refactor_platform_rs"
-version = "0.1.0"
+version = "1.0.0-beta1"
 dependencies = [
  "clap",
  "entity_api",
@@ -2718,7 +2718,7 @@ dependencies = [
 
 [[package]]
 name = "service"
-version = "0.1.0"
+version = "1.0.0-beta1"
 dependencies = [
  "clap",
  "dotenvy",
@@ -3817,7 +3817,7 @@ checksum = "4d91413b1c31d7539ba5ef2451af3f0b833a005eb27a631cec32bc0635a8602b"
 
 [[package]]
 name = "web"
-version = "0.1.0"
+version = "1.0.0-beta1"
 dependencies = [
  "anyhow",
  "axum",
