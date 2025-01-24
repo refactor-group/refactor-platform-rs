@@ -98,7 +98,7 @@ COMMENT ON COLUMN "refactor_platform"."organizations"."name" IS 'The name of the
 
 COMMENT ON COLUMN "refactor_platform"."organizations"."logo" IS 'A URI pointing to the organization''s logo icon file';
 
-COMMENT ON COLUMN "refactor_platform"."organizations"."slug" IS 'Canonical name for the record. Considered immutable by convention';
+COMMENT ON COLUMN "refactor_platform"."organizations"."slug" IS 'A human-friendly canonical name for a record. Considered immutable by convention. Must be unique.';
 
 COMMENT ON COLUMN "refactor_platform"."organizations"."updated_at" IS 'The last date and time fields were changed';
 
@@ -108,7 +108,7 @@ COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."coach_id" IS 'Th
 
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."coachee_id" IS 'The coachee associated with this coaching relationship';
 
-COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."slug" IS 'Canonical name for the record. Considered immutable by convention';
+COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."slug" IS 'A human-friendly canonical name for a record. Considered immutable by convention. Must be unique.';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."updated_at" IS 'The last date and time fields were changed';
 
