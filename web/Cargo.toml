@@ -1,11 +1,12 @@
 [package]
 name = "web"
-version = "0.1.0"
+version = "1.0.0-beta1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+domain = { path = "../domain" }
 entity = { path = "../entity" }
 entity_api = { path = "../entity_api" }
 service = { path = "../service" }

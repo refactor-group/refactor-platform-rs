@@ -179,6 +179,8 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 
 `docs` - project documentation including architectural records, DB schema, API docs, etc
 
+`domain` - Layer of abstraction above `entity_api` and intended to encapsulate most business logic. Ex. interactions between `entity_api` and network calls to the outside world.
+
 `entity_api` - data operations on the various `Entity` models
 
 `entity` - shape of the data models and the relationships to each other
