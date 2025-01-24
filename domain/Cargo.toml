@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 entity = { path = "../entity" }
 entity_api = { path = "../entity_api" }
+reqwest = { version = "0.12.12", features = ["json"] }
 
 [dependencies.sea-orm]
 version = "1.1.0"                                                       # sea-orm version

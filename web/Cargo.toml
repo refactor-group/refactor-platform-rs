@@ -44,4 +44,4 @@ mock = ["sea-orm/mock"]
 anyhow = "1.0.89"
 chrono = { version = "0.4.38", features = ["serde"] }
 password-auth = "1.0.0"
-reqwest = { version = "0.12.8", features = ["json", "cookies"] }
+reqwest = { version = "0.12.12", features = ["json", "cookies"] }
