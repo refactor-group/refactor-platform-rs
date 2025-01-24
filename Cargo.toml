@@ -6,7 +6,7 @@ edition = "2021"
 default-run = "refactor_platform_rs"
 
 [workspace]
-members = [".", "entity_api", "entity", "migration", "service", "web"]
+members = [".", "entity_api", "entity", "migration", "service", "web", "domain"]
 
 [dependencies]
 service = { path = "service" }
