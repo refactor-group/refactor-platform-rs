@@ -7,8 +7,8 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::coaching_session as CoachingSessionApi;
 use entity::coaching_sessions::Model;
-use entity_api::coaching_session as CoachingSessionApi;
 use service::config::ApiVersion;
 use std::collections::HashMap;
 

@@ -830,6 +830,11 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.1.0"
+dependencies = [
+ "entity",
+ "entity_api",
+ "sea-orm",
+]
 
 [[package]]
 name = "dotenvy"
@@ -3818,6 +3823,7 @@ dependencies = [
  "axum",
  "axum-login",
  "chrono",
+ "domain",
  "entity",
  "entity_api",
  "log",

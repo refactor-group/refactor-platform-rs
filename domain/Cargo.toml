@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+entity = { path = "../entity" }
+entity_api = { path = "../entity_api" }
+
+[dependencies.sea-orm]
+version = "1.1.0"                                                       # sea-orm version
+features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
+
