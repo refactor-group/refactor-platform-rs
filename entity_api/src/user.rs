@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
@@ -52,7 +52,7 @@ async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Mod
         Ok(_) => Ok(Some(user)),
         Err(_) => Err(Error {
             inner: None,
-            error_code: EntityApiErrorCode::RecordUnauthenticated,
+            error_kind: EntityApiErrorKind::RecordUnauthenticated,
         }),
     }
 }
@@ -97,7 +97,7 @@ impl AuthnBackend for Backend {
             Some(user) => authenticate_user(creds, user).await,
             None => Err(Error {
                 inner: None,
-                error_code: EntityApiErrorCode::RecordUnauthenticated,
+                error_kind: EntityApiErrorKind::RecordUnauthenticated,
             }),
         }
     }

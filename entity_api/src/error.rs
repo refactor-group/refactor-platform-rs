@@ -14,11 +14,11 @@ pub struct Error {
     // Underlying error emitted from seaORM internals
     pub inner: Option<DbErr>,
     // Enum representing which category of error
-    pub error_code: EntityApiErrorCode,
+    pub error_kind: EntityApiErrorKind,
 }
 
 #[derive(Debug, Serialize)]
-pub enum EntityApiErrorCode {
+pub enum EntityApiErrorKind {
     // Invalid search term
     InvalidQueryTerm,
     // Record not found
@@ -44,27 +44,27 @@ impl From<DbErr> for Error {
         match err {
             DbErr::RecordNotFound(_) => Error {
                 inner: Some(err),
-                error_code: EntityApiErrorCode::RecordNotFound,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             },
             DbErr::RecordNotUpdated => Error {
                 inner: Some(err),
-                error_code: EntityApiErrorCode::RecordNotUpdated,
+                error_kind: EntityApiErrorKind::RecordNotUpdated,
             },
             DbErr::ConnectionAcquire(_) => Error {
                 inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                error_kind: EntityApiErrorKind::SystemError,
             },
             DbErr::Conn(_) => Error {
                 inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                error_kind: EntityApiErrorKind::SystemError,
             },
             DbErr::Exec(_) => Error {
                 inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                error_kind: EntityApiErrorKind::SystemError,
             },
             _ => Error {
                 inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                error_kind: EntityApiErrorKind::SystemError,
             },
         }
     }

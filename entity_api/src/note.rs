@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use crate::uuid_parse_str;
 use entity::notes::{self, ActiveModel, Entity, Model};
 use entity::Id;
@@ -55,7 +55,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 
             Err(Error {
                 inner: None,
-                error_code: EntityApiErrorCode::RecordNotFound,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
     }
@@ -73,14 +73,14 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
 
             Err(Error {
                 inner: None,
-                error_code: EntityApiErrorCode::RecordNotFound,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
         Err(err) => {
             error!("Note with id {} not found and returned error {}", id, err);
             Err(Error {
                 inner: None,
-                error_code: EntityApiErrorCode::RecordNotFound,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
     }
@@ -102,7 +102,7 @@ pub async fn find_by(
             _ => {
                 return Err(Error {
                     inner: None,
-                    error_code: EntityApiErrorCode::InvalidQueryTerm,
+                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }
         }

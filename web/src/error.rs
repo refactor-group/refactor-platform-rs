@@ -3,7 +3,7 @@ use std::error::Error as StdError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use entity_api::error::EntityApiErrorCode;
+use entity_api::error::EntityApiErrorKind;
 use entity_api::error::Error as EntityApiError;
 
 extern crate log;
@@ -25,8 +25,8 @@ impl std::fmt::Display for Error {
 // List of possible StatusCode variants https://docs.rs/http/latest/http/status/struct.StatusCode.html#associatedconstant.UNPROCESSABLE_ENTITY
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        match self.0.error_code {
-            EntityApiErrorCode::InvalidQueryTerm => {
+        match self.0.error_kind {
+            EntityApiErrorKind::InvalidQueryTerm => {
                 error!(
                     "Error: {:#?}, mapping to UNPROCESSABLE_ENTITY (reason: {})",
                     self,
@@ -38,7 +38,7 @@ impl IntoResponse for Error {
 
                 (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
             }
-            EntityApiErrorCode::SystemError => {
+            EntityApiErrorKind::SystemError => {
                 error!(
                     "Error: {:#?}, mapping to INTERNAL_SERVER_ERROR (reason: {})",
                     self,
@@ -50,12 +50,12 @@ impl IntoResponse for Error {
 
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
             }
-            EntityApiErrorCode::RecordNotFound => {
+            EntityApiErrorKind::RecordNotFound => {
                 error!("Error: {:#?}, mapping to NO_CONTENT", self);
 
                 (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
             }
-            EntityApiErrorCode::RecordNotUpdated => {
+            EntityApiErrorKind::RecordNotUpdated => {
                 error!(
                     "Error: {:#?}, mapping to UNPROCESSABLE_ENTITY (reason: {})",
                     self,
@@ -67,7 +67,7 @@ impl IntoResponse for Error {
 
                 (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
             }
-            EntityApiErrorCode::RecordUnauthenticated => {
+            EntityApiErrorKind::RecordUnauthenticated => {
                 error!("Error: {:#?}, mapping to UNAUTHORIZED", self);
 
                 (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()

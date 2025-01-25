@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
 use entity::{coaching_relationships, organizations::*, prelude::Organizations, Id};
@@ -51,7 +51,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
         }
         None => Err(Error {
             inner: None,
-            error_code: EntityApiErrorCode::RecordNotFound,
+            error_kind: EntityApiErrorKind::RecordNotFound,
         }),
     }
 }
@@ -71,7 +71,7 @@ pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> 
         }
         None => Err(Error {
             inner: None,
-            error_code: EntityApiErrorCode::RecordNotFound,
+            error_kind: EntityApiErrorKind::RecordNotFound,
         }),
     }
 }
@@ -102,7 +102,7 @@ pub async fn find_by(
             _ => {
                 return Err(Error {
                     inner: None,
-                    error_code: EntityApiErrorCode::InvalidQueryTerm,
+                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }
         }

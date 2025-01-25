@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use crate::uuid_parse_str;
 use chrono::Utc;
 use entity::{
@@ -154,7 +154,7 @@ pub async fn find_by(
             _ => {
                 return Err(Error {
                     inner: None,
-                    error_code: EntityApiErrorCode::InvalidQueryTerm,
+                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }
         }
