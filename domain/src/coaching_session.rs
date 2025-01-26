@@ -24,9 +24,12 @@ pub async fn create(
         "Attempting to create Tiptap document with name: {}",
         document_name
     );
-    let tip_tap_url = env::var("TIP_TAP_URL").map_err(|err| Error {
-        source: Some(Box::new(err)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+    let tip_tap_url = env::var("TIP_TAP_URL").map_err(|err| {
+        warn!("Failed to get Tiptap URL from environment: {:?}", err);
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        }
     })?;
     let full_url = format!(
         "{}/api/documents/{}?format=json",
@@ -43,7 +46,7 @@ pub async fn create(
             response
         }
         Err(e) => {
-            error!("Failed to send request: {:?}", e);
+            warn!("Failed to send request: {:?}", e);
             return Err(e.into());
         }
     };
@@ -93,16 +96,21 @@ async fn tip_tap_client() -> Result<reqwest::Client, Error> {
 }
 
 async fn build_auth_headers() -> Result<reqwest::header::HeaderMap, Error> {
-    let auth_key = env::var("TIP_TAP_AUTH_KEY").map_err(|err| Error {
-        source: Some(Box::new(err)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
-    })?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    let mut auth_value =
-        reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| Error {
+    let auth_key = env::var("TIP_TAP_AUTH_KEY").map_err(|err| {
+        warn!("Failed to get auth key from environment: {:?}", err);
+        Error {
             source: Some(Box::new(err)),
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
-        })?;
+        }
+    })?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    let mut auth_value = reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| {
+        warn!("Failed to create auth header value: {:?}", err);
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        }
+    })?;
     auth_value.set_sensitive(true);
     headers.insert(reqwest::header::AUTHORIZATION, auth_value);
     Ok(headers)

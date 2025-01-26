@@ -28,37 +28,42 @@ impl std::fmt::Display for Error {
 // List of possible StatusCode variants https://docs.rs/http/latest/http/status/struct.StatusCode.html#associatedconstant.UNPROCESSABLE_ENTITY
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        match self.0.error_kind {
+        match &self.0.error_kind {
             DomainErrorKind::Internal(internal_error_kind) => match internal_error_kind {
                 InternalErrorKind::Entity(entity_error_kind) => match entity_error_kind {
                     EntityErrorKind::NotFound => {
-                        warn!("EntityErrorKind::NotFound: Responding with 404 Not Found");
+                        warn!(
+                            "EntityErrorKind::NotFound: Responding with 404 Not Found. Error: {:?}",
+                            self
+                        );
                         (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
                     }
                     EntityErrorKind::Invalid => {
-                        warn!("EntityErrorKind::Invalid: Responding with 422 Unprocessable Entity");
+                        warn!("EntityErrorKind::Invalid: Responding with 422 Unprocessable Entity. Error: {:?}", self);
                         (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
                     }
                     EntityErrorKind::Other => {
-                        warn!("EntityErrorKind::Other: Responding with 500 Internal Server Error");
+                        warn!("EntityErrorKind::Other: Responding with 500 Internal Server Error. Error: {:?}", self);
                         (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
                     }
                 },
                 InternalErrorKind::Other => {
-                    warn!("InternalErrorKind::Other: Responding with 500 Internal Server Error");
+                    warn!("InternalErrorKind::Other: Responding with 500 Internal Server Error. Error: {:?}", self);
                     (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
                 }
             },
-            DomainErrorKind::External(external_error_kind) => match external_error_kind {
-                ExternalErrorKind::Network => {
-                    warn!("ExternalErrorKind::Network: Responding with 502 Bad Gateway");
-                    (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
+            DomainErrorKind::External(external_error_kind) => {
+                match external_error_kind {
+                    ExternalErrorKind::Network => {
+                        warn!("ExternalErrorKind::Network: Responding with 502 Bad Gateway. Error: {:?}", self);
+                        (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
+                    }
+                    ExternalErrorKind::Other => {
+                        warn!("ExternalErrorKind::Other: Responding with 500 Internal Server Error. Error: {:?}", self);
+                        (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+                    }
                 }
-                ExternalErrorKind::Other => {
-                    warn!("ExternalErrorKind::Other: Responding with 500 Internal Server Error");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
-                }
-            },
+            }
         }
     }
 }
