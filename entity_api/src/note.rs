@@ -54,7 +54,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             error!("Note with id {} not found", id);
 
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -72,14 +72,14 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
             error!("Note with id {} not found", id);
 
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
         Err(err) => {
             error!("Note with id {} not found and returned error {}", id, err);
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -101,7 +101,7 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
+                    source: None,
                     error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }

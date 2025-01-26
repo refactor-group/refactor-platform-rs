@@ -60,7 +60,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             error!("Action with id {} not found", id);
 
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -96,7 +96,7 @@ pub async fn update_status(
             error!("Action with id {} not found", id);
 
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -114,7 +114,7 @@ pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> 
             Ok(())
         }
         None => Err(Error {
-            inner: None,
+            source: None,
             error_kind: EntityApiErrorKind::RecordNotFound,
         }),
     }
@@ -131,14 +131,14 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
             error!("Action with id {} not found", id);
 
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
         Err(err) => {
             error!("Action with id {} not found and returned error {}", id, err);
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -160,7 +160,7 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
+                    source: None,
                     error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }

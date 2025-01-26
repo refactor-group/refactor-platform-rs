@@ -153,7 +153,7 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
+                    source: None,
                     error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }

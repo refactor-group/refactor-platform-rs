@@ -54,7 +54,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             debug!("Agreement with id {} not found", id);
 
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -75,7 +75,7 @@ pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> 
             Ok(())
         }
         None => Err(Error {
-            inner: None,
+            source: None,
             error_kind: EntityApiErrorKind::RecordNotFound,
         }),
     }
@@ -92,7 +92,7 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
             error!("Agreement with id {} not found", id);
 
             Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -100,7 +100,7 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
             error!("Error finding Agreement with id {}: {:?}", id, err);
 
             Err(Error {
-                inner: Some(err),
+                source: Some(err),
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
@@ -122,7 +122,7 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
+                    source: None,
                     error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }

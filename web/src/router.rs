@@ -532,7 +532,7 @@ mod organization_endpoints_tests {
 
         // Note: for entity_api::organization::find_all() to be able to return
         // the correct query_results for the assert_eq!() below, they must all
-        // be grouped together in the same inner vector.
+        // be grouped together in the same source vector.
         let organizations = [vec![organization1, organization2, organization3]];
 
         let db = Arc::new(

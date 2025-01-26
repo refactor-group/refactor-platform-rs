@@ -51,7 +51,7 @@ async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Mod
     match verify_password(creds.password, &user.password) {
         Ok(_) => Ok(Some(user)),
         Err(_) => Err(Error {
-            inner: None,
+            source: None,
             error_kind: EntityApiErrorKind::RecordUnauthenticated,
         }),
     }
@@ -74,7 +74,7 @@ impl Backend {
     pub fn new(db: &Arc<DatabaseConnection>) -> Self {
         info!("** Backend::new()");
         Self {
-            // Arc is cloned, but the inner DatabaseConnection refers to the same instance
+            // Arc is cloned, but the source DatabaseConnection refers to the same instance
             // as the one passed in to new() (see the Arc documentation for more info)
             db: Arc::clone(db),
         }
@@ -96,7 +96,7 @@ impl AuthnBackend for Backend {
         match find_by_email(&self.db, &creds.email).await? {
             Some(user) => authenticate_user(creds, user).await,
             None => Err(Error {
-                inner: None,
+                source: None,
                 error_kind: EntityApiErrorKind::RecordUnauthenticated,
             }),
         }

@@ -53,7 +53,7 @@ pub async fn find_by_id_with_coaching_relationship(
         }
     }
     Err(Error {
-        inner: None,
+        source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
 }
@@ -82,7 +82,7 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
+                    source: None,
                     error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }

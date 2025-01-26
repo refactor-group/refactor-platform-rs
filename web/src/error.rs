@@ -3,8 +3,9 @@ use std::error::Error as StdError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use entity_api::error::EntityApiErrorKind;
-use entity_api::error::Error as EntityApiError;
+use domain::error::{
+    DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
+};
 
 extern crate log;
 use log::*;
@@ -12,7 +13,7 @@ use log::*;
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug)]
-pub struct Error(EntityApiError);
+pub struct Error(DomainError);
 
 impl StdError for Error {}
 
@@ -26,59 +27,37 @@ impl std::fmt::Display for Error {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         match self.0.error_kind {
-            EntityApiErrorKind::InvalidQueryTerm => {
-                error!(
-                    "Error: {:#?}, mapping to UNPROCESSABLE_ENTITY (reason: {})",
-                    self,
-                    self.0
-                        .inner
-                        .as_ref()
-                        .map_or_else(|| "unspecified".to_string(), |err| err.to_string())
-                );
-
-                (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
-            }
-            EntityApiErrorKind::SystemError => {
-                error!(
-                    "Error: {:#?}, mapping to INTERNAL_SERVER_ERROR (reason: {})",
-                    self,
-                    self.0
-                        .inner
-                        .as_ref()
-                        .map_or_else(|| "unspecified".to_string(), |err| err.to_string())
-                );
-
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
-            }
-            EntityApiErrorKind::RecordNotFound => {
-                error!("Error: {:#?}, mapping to NO_CONTENT", self);
-
-                (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
-            }
-            EntityApiErrorKind::RecordNotUpdated => {
-                error!(
-                    "Error: {:#?}, mapping to UNPROCESSABLE_ENTITY (reason: {})",
-                    self,
-                    self.0
-                        .inner
-                        .as_ref()
-                        .map_or_else(|| "unspecified".to_string(), |err| err.to_string())
-                );
-
-                (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
-            }
-            EntityApiErrorKind::RecordUnauthenticated => {
-                error!("Error: {:#?}, mapping to UNAUTHORIZED", self);
-
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
-            }
+            DomainErrorKind::Internal(internal_error_kind) => match internal_error_kind {
+                InternalErrorKind::Entity(entity_error_kind) => match entity_error_kind {
+                    EntityErrorKind::NotFound => {
+                        (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
+                    }
+                    EntityErrorKind::Invalid => {
+                        (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
+                    }
+                    EntityErrorKind::Other => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+                    }
+                },
+                InternalErrorKind::Other => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+                }
+            },
+            DomainErrorKind::External(external_error_kind) => match external_error_kind {
+                ExternalErrorKind::Network => {
+                    (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
+                }
+                ExternalErrorKind::Other => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+                }
+            },
         }
     }
 }
 
 impl<E> From<E> for Error
 where
-    E: Into<EntityApiError>,
+    E: Into<DomainError>,
 {
     fn from(err: E) -> Self {
         Self(err.into())
