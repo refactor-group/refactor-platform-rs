@@ -1,3 +1,4 @@
+//! Error types for entity API
 use std::error::Error as StdError;
 use std::fmt;
 
