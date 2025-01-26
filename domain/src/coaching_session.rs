@@ -1,7 +1,9 @@
 use super::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use entity::coaching_sessions::Model;
 use entity_api::{coaching_relationship, coaching_session, organization};
+use log::*;
 use sea_orm::DatabaseConnection;
+use serde_json::json;
 use std::env;
 
 pub async fn create(
@@ -12,26 +14,50 @@ pub async fn create(
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
-
     let document_name = format!(
         "{}.{}.{}",
-        organization.slug, coaching_relationship.slug, coaching_session_model.date
+        organization.slug,
+        coaching_relationship.slug,
+        coaching_session_model.date.and_utc().timestamp()
+    );
+    info!(
+        "Attempting to create Tiptap document with name: {}",
+        document_name
     );
     let tip_tap_url = env::var("TIP_TAP_URL").map_err(|err| Error {
         source: Some(Box::new(err)),
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
     })?;
-
-    let full_url = format!("{}//api/documents/{}", tip_tap_url, document_name);
-
+    let full_url = format!(
+        "{}/api/documents/{}?format=json",
+        tip_tap_url, document_name
+    );
     let client = tip_tap_client().await?;
 
-    let res = client.post(full_url).send().await?;
+    let request = client
+        .post(full_url)
+        .json(&json!({"type": "doc", "content": []}));
+    let response = match request.send().await {
+        Ok(response) => {
+            info!("Tiptap response: {:?}", response);
+            response
+        }
+        Err(e) => {
+            error!("Failed to send request: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
-    if res.status().is_success() || res.status().as_u16() == 409 {
+    // Tiptap's API will return a 200 for successful creation of a new document
+    // and will return a 409 if the document already exists. We consider both "successful".
+    if response.status().is_success() || response.status().as_u16() == 409 {
         // TODO: Save document_name to record
         Ok(coaching_session::create(db, coaching_session_model).await?)
     } else {
+        warn!(
+            "Failed to create Tiptap document: {}",
+            response.text().await?
+        );
         Err(Error {
             source: None,
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
@@ -61,6 +87,7 @@ async fn tip_tap_client() -> Result<reqwest::Client, Error> {
     let headers = build_auth_headers().await?;
 
     Ok(reqwest::Client::builder()
+        .use_rustls_tls()
         .default_headers(headers)
         .build()?)
 }
