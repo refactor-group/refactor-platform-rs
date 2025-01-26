@@ -8,7 +8,6 @@ use domain::error::{
 };
 
 extern crate log;
-use log::*;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
