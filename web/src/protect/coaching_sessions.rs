@@ -27,10 +27,9 @@ pub(crate) async fn index(
 ) -> impl IntoResponse {
     let coaching_relationship =
         coaching_relationship::find_by_id(app_state.db_conn_ref(), params.coaching_relationship_id)
-            .await
-            .unwrap_or_default();
+            .await;
     match coaching_relationship {
-        Some(coaching_relationship) => {
+        Ok(coaching_relationship) => {
             if coaching_relationship.coach_id == user.id
                 || coaching_relationship.coachee_id == user.id
             {
@@ -42,6 +41,6 @@ pub(crate) async fn index(
             }
         }
         // coaching relationship with given ID not found
-        None => (StatusCode::NOT_FOUND, "NOT FOUND").into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "NOT FOUND").into_response(),
     }
 }
