@@ -58,6 +58,7 @@ pub struct Config {
     #[arg(short, long, env)]
     tip_tap_url: Option<String>,
 
+    /// The authorization key to use when calling the TipTap Cloud API.
     #[arg(short, long, env)]
     tip_tap_auth_key: Option<String>,
 
