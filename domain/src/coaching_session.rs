@@ -1,4 +1,5 @@
-use super::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::gateway::tiptap::client as tip_tap_client;
 use entity::coaching_sessions::Model;
 use entity_api::{coaching_relationship, coaching_session, organization};
 use log::*;
@@ -85,34 +86,4 @@ pub async fn find_by(
     params: std::collections::HashMap<String, String>,
 ) -> Result<Vec<Model>, Error> {
     Ok(coaching_session::find_by(db, params).await?)
-}
-
-async fn tip_tap_client(config: &Config) -> Result<reqwest::Client, Error> {
-    let headers = build_auth_headers(config).await?;
-
-    Ok(reqwest::Client::builder()
-        .use_rustls_tls()
-        .default_headers(headers)
-        .build()?)
-}
-
-async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
-    let auth_key = config.tip_tap_auth_key().ok_or_else(|| {
-        warn!("Failed to get auth key from config");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
-        }
-    })?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    let mut auth_value = reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| {
-        warn!("Failed to create auth header value: {:?}", err);
-        Error {
-            source: Some(Box::new(err)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
-        }
-    })?;
-    auth_value.set_sensitive(true);
-    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
-    Ok(headers)
 }
