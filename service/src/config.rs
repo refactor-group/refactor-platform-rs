@@ -54,6 +54,14 @@ pub struct Config {
     )]
     database_uri: Option<String>,
 
+    /// The URL for the TipTap Cloud API provider
+    #[arg(long, env)]
+    tip_tap_url: Option<String>,
+
+    /// The authorization key to use when calling the TipTap Cloud API.
+    #[arg(long, env)]
+    tip_tap_auth_key: Option<String>,
+
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
     pub interface: Option<String>,
@@ -103,6 +111,14 @@ impl Config {
         self.database_uri
             .as_ref()
             .expect("No Database URI Provided")
+    }
+
+    pub fn tip_tap_url(&self) -> Option<String> {
+        self.tip_tap_url.clone()
+    }
+
+    pub fn tip_tap_auth_key(&self) -> Option<String> {
+        self.tip_tap_auth_key.clone()
     }
 }
 

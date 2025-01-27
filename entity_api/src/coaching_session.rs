@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use crate::{naive_date_parse_str, uuid_parse_str};
 use entity::{
     coaching_relationships,
@@ -53,8 +53,8 @@ pub async fn find_by_id_with_coaching_relationship(
         }
     }
     Err(Error {
-        inner: None,
-        error_code: EntityApiErrorCode::RecordNotFound,
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
     })
 }
 
@@ -82,8 +82,8 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
-                    error_code: EntityApiErrorCode::InvalidQueryTerm,
+                    source: None,
+                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }
         }

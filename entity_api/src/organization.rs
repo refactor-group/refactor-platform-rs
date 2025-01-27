@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
 use entity::{coaching_relationships, organizations::*, prelude::Organizations, Id};
@@ -30,61 +30,34 @@ pub async fn create(db: &DatabaseConnection, organization_model: Model) -> Resul
 }
 
 pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
-    let result = find_by_id(db, id).await?;
+    let organization = find_by_id(db, id).await?;
 
-    match result {
-        Some(organization) => {
-            debug!(
-                "Existing Organization model to be Updated: {:?}",
-                organization
-            );
-
-            let active_model: ActiveModel = ActiveModel {
-                id: Unchanged(organization.id),
-                logo: Set(model.logo),
-                name: Set(model.name),
-                slug: Unchanged(organization.slug),
-                updated_at: Unchanged(organization.updated_at),
-                created_at: Unchanged(organization.created_at),
-            };
-            Ok(active_model.update(db).await?.try_into_model()?)
-        }
-        None => Err(Error {
-            inner: None,
-            error_code: EntityApiErrorCode::RecordNotFound,
-        }),
-    }
+    let active_model: ActiveModel = ActiveModel {
+        id: Unchanged(organization.id),
+        logo: Set(model.logo),
+        name: Set(model.name),
+        slug: Unchanged(organization.slug),
+        updated_at: Unchanged(organization.updated_at),
+        created_at: Unchanged(organization.created_at),
+    };
+    Ok(active_model.update(db).await?.try_into_model()?)
 }
 
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
-    let result = find_by_id(db, id).await?;
-
-    match result {
-        Some(organization_model) => {
-            debug!(
-                "Existing Organization model to be deleted: {:?}",
-                organization_model
-            );
-
-            organization_model.delete(db).await?;
-            Ok(())
-        }
-        None => Err(Error {
-            inner: None,
-            error_code: EntityApiErrorCode::RecordNotFound,
-        }),
-    }
+    let organization_model = find_by_id(db, id).await?;
+    organization_model.delete(db).await?;
+    Ok(())
 }
 
 pub async fn find_all(db: &DatabaseConnection) -> Result<Vec<Model>, Error> {
     Ok(Entity::find().all(db).await?)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    let organization = Entity::find_by_id(id).one(db).await?;
-    debug!("Organization found: {:?}", organization);
-
-    Ok(organization)
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 pub async fn find_by(
@@ -101,8 +74,8 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
-                    error_code: EntityApiErrorCode::InvalidQueryTerm,
+                    source: None,
+                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }
         }

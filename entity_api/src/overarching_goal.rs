@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use crate::uuid_parse_str;
 use entity::overarching_goals::{self, ActiveModel, Entity, Model};
 use entity::{status::Status, Id};
@@ -82,8 +82,8 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             error!("Overarching Goal with id {} not found", id);
 
             Err(Error {
-                inner: None,
-                error_code: EntityApiErrorCode::RecordNotFound,
+                source: None,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
     }
@@ -122,8 +122,8 @@ pub async fn update_status(
             error!("Overarching Goal with id {} not found", id);
 
             Err(Error {
-                inner: None,
-                error_code: EntityApiErrorCode::RecordNotFound,
+                source: None,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
     }
@@ -140,8 +140,8 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
             error!("Overarching Goal with id {} not found", id);
 
             Err(Error {
-                inner: None,
-                error_code: EntityApiErrorCode::RecordNotFound,
+                source: None,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
         Err(err) => {
@@ -150,8 +150,8 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
                 id, err
             );
             Err(Error {
-                inner: None,
-                error_code: EntityApiErrorCode::RecordNotFound,
+                source: None,
+                error_kind: EntityApiErrorKind::RecordNotFound,
             })
         }
     }
@@ -173,8 +173,8 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
-                    error_code: EntityApiErrorCode::InvalidQueryTerm,
+                    source: None,
+                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }
         }

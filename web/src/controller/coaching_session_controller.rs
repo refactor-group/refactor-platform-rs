@@ -82,8 +82,12 @@ pub async fn create(
         coaching_sessions_model
     );
 
-    let coaching_session =
-        CoachingSessionApi::create(app_state.db_conn_ref(), coaching_sessions_model).await?;
+    let coaching_session = CoachingSessionApi::create(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        coaching_sessions_model,
+    )
+    .await?;
 
     debug!("New Coaching Session: {:?}", coaching_session);
 

@@ -1,4 +1,4 @@
-use super::error::{EntityApiErrorCode, Error};
+use super::error::{EntityApiErrorKind, Error};
 use crate::uuid_parse_str;
 use chrono::Utc;
 use entity::{
@@ -37,8 +37,11 @@ pub async fn create(
     Ok(coaching_relationship_active_model.insert(db).await?)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    Ok(Entity::find_by_id(id).one(db).await?)
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Model>, Error> {
@@ -153,8 +156,8 @@ pub async fn find_by(
             }
             _ => {
                 return Err(Error {
-                    inner: None,
-                    error_code: EntityApiErrorCode::InvalidQueryTerm,
+                    source: None,
+                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
                 });
             }
         }

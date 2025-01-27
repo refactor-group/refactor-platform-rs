@@ -1,3 +1,4 @@
+//! Error types for entity API
 use std::error::Error as StdError;
 use std::fmt;
 
@@ -9,16 +10,16 @@ use sea_orm::error::DbErr;
 /// The intent is to categorize errors into two major types:
 ///  * Errors related to data. Ex DbError::RecordNotFound
 ///  * Errors related to interactions with the database itself. Ex DbError::Conn
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Error {
     // Underlying error emitted from seaORM internals
-    pub inner: Option<DbErr>,
+    pub source: Option<DbErr>,
     // Enum representing which category of error
-    pub error_code: EntityApiErrorCode,
+    pub error_kind: EntityApiErrorKind,
 }
 
-#[derive(Debug, Serialize)]
-pub enum EntityApiErrorCode {
+#[derive(Debug, PartialEq, Serialize)]
+pub enum EntityApiErrorKind {
     // Invalid search term
     InvalidQueryTerm,
     // Record not found
@@ -43,28 +44,28 @@ impl From<DbErr> for Error {
     fn from(err: DbErr) -> Self {
         match err {
             DbErr::RecordNotFound(_) => Error {
-                inner: Some(err),
-                error_code: EntityApiErrorCode::RecordNotFound,
+                source: Some(err),
+                error_kind: EntityApiErrorKind::RecordNotFound,
             },
             DbErr::RecordNotUpdated => Error {
-                inner: Some(err),
-                error_code: EntityApiErrorCode::RecordNotUpdated,
+                source: Some(err),
+                error_kind: EntityApiErrorKind::RecordNotUpdated,
             },
             DbErr::ConnectionAcquire(_) => Error {
-                inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                source: Some(err),
+                error_kind: EntityApiErrorKind::SystemError,
             },
             DbErr::Conn(_) => Error {
-                inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                source: Some(err),
+                error_kind: EntityApiErrorKind::SystemError,
             },
             DbErr::Exec(_) => Error {
-                inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                source: Some(err),
+                error_kind: EntityApiErrorKind::SystemError,
             },
             _ => Error {
-                inner: Some(err),
-                error_code: EntityApiErrorCode::SystemError,
+                source: Some(err),
+                error_kind: EntityApiErrorKind::SystemError,
             },
         }
     }

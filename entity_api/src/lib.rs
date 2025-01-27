@@ -16,15 +16,15 @@ pub mod user;
 
 pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
     Id::parse_str(uuid_str).map_err(|_| error::Error {
-        inner: None,
-        error_code: error::EntityApiErrorCode::InvalidQueryTerm,
+        source: None,
+        error_kind: error::EntityApiErrorKind::InvalidQueryTerm,
     })
 }
 
 pub(crate) fn naive_date_parse_str(date_str: &str) -> Result<chrono::NaiveDate, error::Error> {
     chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").map_err(|_| error::Error {
-        inner: None,
-        error_code: error::EntityApiErrorCode::InvalidQueryTerm,
+        source: None,
+        error_kind: error::EntityApiErrorKind::InvalidQueryTerm,
     })
 }
 
