@@ -54,6 +54,7 @@ pub struct Config {
     )]
     database_uri: Option<String>,
 
+    /// The URL for the TipTap Cloud API provider
     #[arg(short, long, env)]
     tip_tap_url: Option<String>,
 
