@@ -16,7 +16,7 @@ pub async fn create(
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
     let document_name = format!(
-        "{}.{}.{}",
+        "{}.{}.{}-v0",
         organization.slug,
         coaching_relationship.slug,
         coaching_session_model.date.and_utc().timestamp()
