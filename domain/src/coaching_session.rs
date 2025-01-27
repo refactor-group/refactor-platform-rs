@@ -4,10 +4,11 @@ use entity_api::{coaching_relationship, coaching_session, organization};
 use log::*;
 use sea_orm::DatabaseConnection;
 use serde_json::json;
-use std::env;
+use service::config::Config;
 
 pub async fn create(
     db: &DatabaseConnection,
+    config: &Config,
     coaching_session_model: Model,
 ) -> Result<Model, Error> {
     let coaching_relationship =
@@ -24,10 +25,10 @@ pub async fn create(
         "Attempting to create Tiptap document with name: {}",
         document_name
     );
-    let tip_tap_url = env::var("TIP_TAP_URL").map_err(|err| {
-        warn!("Failed to get Tiptap URL from environment: {:?}", err);
+    let tip_tap_url = config.tip_tap_url().ok_or_else(|| {
+        warn!("Failed to get Tiptap URL from config");
         Error {
-            source: Some(Box::new(err)),
+            source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
         }
     })?;
@@ -35,7 +36,7 @@ pub async fn create(
         "{}/api/documents/{}?format=json",
         tip_tap_url, document_name
     );
-    let client = tip_tap_client().await?;
+    let client = tip_tap_client(config).await?;
 
     let request = client
         .post(full_url)
@@ -86,8 +87,8 @@ pub async fn find_by(
     Ok(coaching_session::find_by(db, params).await?)
 }
 
-async fn tip_tap_client() -> Result<reqwest::Client, Error> {
-    let headers = build_auth_headers().await?;
+async fn tip_tap_client(config: &Config) -> Result<reqwest::Client, Error> {
+    let headers = build_auth_headers(config).await?;
 
     Ok(reqwest::Client::builder()
         .use_rustls_tls()
@@ -95,11 +96,11 @@ async fn tip_tap_client() -> Result<reqwest::Client, Error> {
         .build()?)
 }
 
-async fn build_auth_headers() -> Result<reqwest::header::HeaderMap, Error> {
-    let auth_key = env::var("TIP_TAP_AUTH_KEY").map_err(|err| {
-        warn!("Failed to get auth key from environment: {:?}", err);
+async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
+    let auth_key = config.tip_tap_auth_key().ok_or_else(|| {
+        warn!("Failed to get auth key from config");
         Error {
-            source: Some(Box::new(err)),
+            source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
         }
     })?;

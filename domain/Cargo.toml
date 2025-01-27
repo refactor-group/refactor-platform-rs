@@ -7,6 +7,7 @@ edition = "2021"
 chrono = { version = "0.4.38", features = ["serde"] }
 entity = { path = "../entity" }
 entity_api = { path = "../entity_api" }
+service = { path = "../service" }
 log = "0.4.22"
 reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
 serde_json = "1.0.128"

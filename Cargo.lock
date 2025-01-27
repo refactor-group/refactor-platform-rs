@@ -844,6 +844,7 @@ dependencies = [
  "reqwest",
  "sea-orm",
  "serde_json",
+ "service",
 ]
 
 [[package]]
