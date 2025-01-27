@@ -55,11 +55,11 @@ pub struct Config {
     database_uri: Option<String>,
 
     /// The URL for the TipTap Cloud API provider
-    #[arg(short, long, env)]
+    #[arg(long, env)]
     tip_tap_url: Option<String>,
 
     /// The authorization key to use when calling the TipTap Cloud API.
-    #[arg(short, long, env)]
+    #[arg(long, env)]
     tip_tap_auth_key: Option<String>,
 
     /// The host interface to listen for incoming connections
