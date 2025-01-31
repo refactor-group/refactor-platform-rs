@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml.dbdiagram.io)
 -- Database: PostgreSQL
--- Generated at: 2025-01-05T12:30:08.165Z
+-- Generated at: 2025-01-31T17:48:04.073Z
 
 
 CREATE TYPE "refactor_platform"."status" AS ENUM (
@@ -46,6 +46,7 @@ CREATE TABLE "refactor_platform"."coaching_sessions" (
   "id" uuid UNIQUE PRIMARY KEY NOT NULL DEFAULT (gen_random_uuid()),
   "coaching_relationship_id" uuid NOT NULL,
   "date" timestamp NOT NULL,
+  "collab_document_name" varchar,
   "timezone" varchar NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())

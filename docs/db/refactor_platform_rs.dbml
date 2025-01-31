@@ -5,7 +5,7 @@ Table refactor_platform.organizations {
   id uuid [primary key, unique, not null, default: `gen_random_uuid()`]
   name varchar [not null, note: 'The name of the organization that the coach <--> coachee belong to']
   logo varchar [note: 'A URI pointing to the organization\'s logo icon file']
-  slug varchar [note: 'Canonical name for the record. Considered immutable by convention']
+  slug varchar [note: 'A human-friendly canonical name for a record. Considered immutable by convention. Must be unique.']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
 }
@@ -17,7 +17,7 @@ Table refactor_platform.coaching_relationships {
   organization_id uuid [not null, note: 'The organization associated with this coaching relationship']
   coach_id uuid [not null, note: 'The coach associated with this coaching relationship']
   coachee_id uuid [not null, note: 'The coachee associated with this coaching relationship']
-  slug varchar [note: 'Canonical name for the record. Considered immutable by convention']
+  slug varchar [note: 'A human-friendly canonical name for a record. Considered immutable by convention. Must be unique.']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
 }
@@ -39,6 +39,7 @@ Table refactor_platform.coaching_sessions {
   id uuid [primary key, unique, not null, default: `gen_random_uuid()`]
   coaching_relationship_id uuid [not null, note: 'The coaching relationship (i.e. what coach & coachee under what organization) associated with this coaching session']
   date timestamp [not null, note: 'The date and time of a session']
+  collab_document_name varchar
   timezone varchar [not null, note: 'The baseline timezone used for the `date` field']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
