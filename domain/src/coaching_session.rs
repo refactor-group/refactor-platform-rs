@@ -1,5 +1,6 @@
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::tiptap::client as tip_tap_client;
+use chrono::{DurationRound, TimeDelta};
 use entity::coaching_sessions::Model;
 use entity_api::{coaching_relationship, coaching_session, organization};
 use log::*;
@@ -10,12 +11,25 @@ use service::config::Config;
 pub async fn create(
     db: &DatabaseConnection,
     config: &Config,
-    coaching_session_model: Model,
+    mut coaching_session_model: Model,
 ) -> Result<Model, Error> {
     let coaching_relationship =
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+    // Remove seconds because all coaching_sessions will be scheduled by the minute
+    // TODO: we might consider codifying this in the type system at some point.
+    let date_time = coaching_session_model
+        .date
+        .duration_trunc(TimeDelta::minutes(1))
+        .map_err(|err| {
+            warn!("Failed to truncate date_time: {:?}", err);
+            Error {
+                source: Some(Box::new(err)),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            }
+        })?;
+    coaching_session_model.date = date_time;
     let document_name = format!(
         "{}.{}.{}-v0",
         organization.slug,
