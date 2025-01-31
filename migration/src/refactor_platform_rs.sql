@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml.dbdiagram.io)
 -- Database: PostgreSQL
--- Generated at: 2025-01-05T12:30:08.165Z
+-- Generated at: 2025-01-31T14:35:39.821Z
 
 
 CREATE TYPE "refactor_platform"."status" AS ENUM (
@@ -46,6 +46,7 @@ CREATE TABLE "refactor_platform"."coaching_sessions" (
   "id" uuid UNIQUE PRIMARY KEY NOT NULL DEFAULT (gen_random_uuid()),
   "coaching_relationship_id" uuid NOT NULL,
   "date" timestamp NOT NULL,
+  "collab_document_name" varchar,
   "timezone" varchar NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
@@ -98,7 +99,7 @@ COMMENT ON COLUMN "refactor_platform"."organizations"."name" IS 'The name of the
 
 COMMENT ON COLUMN "refactor_platform"."organizations"."logo" IS 'A URI pointing to the organization''s logo icon file';
 
-COMMENT ON COLUMN "refactor_platform"."organizations"."slug" IS 'A human-friendly canonical name for a record. Considered immutable by convention. Must be unique.';
+COMMENT ON COLUMN "refactor_platform"."organizations"."slug" IS 'Canonical name for the record. Considered immutable by convention';
 
 COMMENT ON COLUMN "refactor_platform"."organizations"."updated_at" IS 'The last date and time fields were changed';
 
@@ -108,7 +109,7 @@ COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."coach_id" IS 'Th
 
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."coachee_id" IS 'The coachee associated with this coaching relationship';
 
-COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."slug" IS 'A human-friendly canonical name for a record. Considered immutable by convention. Must be unique.';
+COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."slug" IS 'Canonical name for the record. Considered immutable by convention';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."updated_at" IS 'The last date and time fields were changed';
 

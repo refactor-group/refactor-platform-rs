@@ -13,6 +13,8 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: Id,
     pub coaching_relationship_id: Id,
+    #[serde(skip_deserializing)]
+    pub collab_document_name: Option<String>,
     pub date: DateTime,
     pub timezone: String,
     #[serde(skip_deserializing)]

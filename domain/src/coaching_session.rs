@@ -40,6 +40,7 @@ pub async fn create(
         "Attempting to create Tiptap document with name: {}",
         document_name
     );
+    coaching_session_model.collab_document_name = Some(document_name.clone());
     let tip_tap_url = config.tip_tap_url().ok_or_else(|| {
         warn!("Failed to get Tiptap URL from config");
         Error {
