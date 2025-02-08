@@ -46,7 +46,7 @@ services:
       - db  # Ensure db service starts before backend
     networks:
       - backend_network  # Connect to backend_network
-    command: ["sh", "-c", "sleep 5 && /usr/local/bin/refactor_platform_rs"]  # Wait for Postgres and run the app
+    command: ["/bin/bash", "-c", "/usr/local/bin/refactor_platform_rs -l \\\"$BACKEND_LOG_FILTER_LEVEL\\\" -i \\\"$BACKEND_INTERFACE\\\" -p \\\"$BACKEND_PORT\\\" -d \\\"$DATABASE_URL\\\" --allowed-origins=\\\"$BACKEND_ALLOWED_ORIGINS\\\""]  # Wait for Postgres and run the app
   
   frontend:
     build:
@@ -59,7 +59,7 @@ services:
     depends_on:
       - backend
     # Override command to run the frontend binary instead of the backend binary
-    command: ["sh", "-c", "sleep 5 && /usr/local/bin/refactor_platform_rs"]
+    command: ["/bin/bash", "-c", "/usr/local/bin/refactor_platform_rs -l \\\"$BACKEND_LOG_FILTER_LEVEL\\\" -i \\\"$BACKEND_INTERFACE\\\" -p \\\"$BACKEND_PORT\\\" -d \\\"$DATABASE_URL\\\" --allowed-origins=\\\"$BACKEND_ALLOWED_ORIGINS\\\""]
 
 networks:
   backend_network:
