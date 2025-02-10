@@ -371,3 +371,83 @@ volumes:
   ```bash
   docker run -it --entrypoint /bin/bash rust-backend:latest
   ```
+
+---
+
+# GitHub Actions Workflow for Container Deployment
+
+### 🚀 Workflow Overview: Build, Test, and Deploy with Containers
+
+This workflow automates the process of building, testing, and deploying the Refactor Coaching & Mentoring Platform using Docker containers. It's triggered on pushes to branches other than `main`, pull requests to `main`, and can also be manually triggered.
+
+### ⚙️ Key Components
+
+1.  **Environment Setup**:
+    *   Defines environment variables like `REGISTRY` (ghcr.io), `IMAGE_NAME`, `BACKEND_IMAGE_NAME`, and `FRONTEND_IMAGE_NAME`.
+    *   Sets up secrets for PostgreSQL credentials, ports, and other configurations. These secrets are stored securely in GitHub.
+
+2.  **Build and Test Job (`build_test_run`)**:
+    *   Runs on Ubuntu.
+    *   Checks out the code using `actions/checkout@v4`.
+    *   Sets environment variables from GitHub secrets.
+    *   Installs the Rust toolchain using `dtolnay/rust-toolchain@stable`.
+    *   Caches dependencies using `Swatinem/rust-cache@v2` to speed up subsequent builds.
+    *   Installs `sea-orm-cli`.
+    *   Builds the Rust project using `cargo build --all-targets`.
+    *   Runs tests using `cargo test`.
+
+3.  **Build and Push Docker Images Job (`build_and_push_docker`)**:
+    *   Depends on the `build_test_run` job to ensure tests pass before building images.
+    *   Logs into the GitHub Container Registry (ghcr.io) using `docker/login-action@v2`.
+    *   Sets up Docker Buildx using `docker/setup-buildx-action@v3` for multi-platform builds (amd64 and arm64).
+    *   Caches Docker layers using `actions/cache@v3` to speed up image builds.
+    *   Extracts metadata for Docker images using `docker/metadata-action@v4`.
+    *   Builds and pushes the Rust backend image using `docker/build-push-action@v6`.
+        *   Context: The root directory (`.`).
+        *   Dockerfile: Uses the Dockerfile in the root.
+        *   Tags: Creates tags for the image, including `latest` and a tag based on the Git SHA.
+    *   Builds and pushes the Next.js frontend image using `docker/build-push-action@v6`.
+        *   Context: The web directory.
+        *   Dockerfile: Uses the Dockerfile.
+        *   Tags: Creates tags for the image, similar to the backend.
+    *   Generates artifact attestation for both images using `actions/attest-build-provenance@v2`.
+
+### 🛠️ Rust Workspace and Build Process
+
+*   **Rust Workspace**: The project is structured as a Rust workspace, defined by the main Cargo.toml file. This allows managing multiple related crates (e.g., entity, entity_api, migration, service, web) in a single repository.
+*   **Build Targets**: The `cargo build --all-targets` command builds all binaries, examples, and tests defined in the workspace.
+*   **Release Build**: The Dockerfile uses `cargo build --release` to create optimized release builds.
+
+### 🐳 Docker and Docker Compose
+
+*   **Docker**: Docker is used to containerize the Rust backend and Next.js frontend applications. Each application has its own Dockerfile that specifies the build environment, dependencies, and entry point.
+*   **Docker Compose**: While the workflow doesn't directly use `docker-compose`, the `docker-compose.yaml` file defines how the different services (e.g., backend, frontend, database) are orchestrated and linked together for local development.
+
+### 📦 GitHub Container Registry (GHCR)
+
+*   The workflow pushes the built Docker images to the GitHub Container Registry (GHCR). GHCR is a container registry provided by GitHub that allows storing and managing Docker images alongside the code.
+*   Images are tagged with `latest` and the Git SHA for versioning.
+
+### ✅ Improvements and Optimizations
+
+1.  **Multi-Arch Builds**: The workflow already supports multi-architecture builds (amd64 and arm64), which is great for deploying to different platforms.
+2.  **Cache**: Docker layer caching is implemented to speed up builds.
+3.  **Secrets**: Secrets are used to securely manage sensitive information.
+
+### 📝 Summary for Newcomers
+
+This GitHub Actions workflow automates building, testing, and deploying our Rust-based platform using Docker containers. Here's the gist:
+
+1  **Code Changes**: When code is pushed (excluding `main` branch) or a pull request is made to `main`, the workflow kicks off.
+2.  **Build & Test**: It builds the Rust code and runs tests to ensure everything works.
+3.  **Containerize**: It creates Docker images for the backend and frontend.
+4.  **Push to GHCR**: It pushes these images to GitHub's container registry (GHCR).
+
+This setup ensures that our application is automatically built, tested, and containerized whenever we make changes, making deployment a breeze! 🌬️
+
+### ⚠️ Potential Corrections
+
+1.  **Workflow Triggers**: Consider adding a trigger for the `main` branch to rebuild and deploy on merges to main.
+2.  **Image Tagging**: Implement a more robust tagging strategy (e.g., semantic versioning) for production releases.
+3.  **Deployment**: The workflow currently builds and pushes images but doesn't deploy them. Add a deployment step to deploy the images to a staging or production environment.
+4.  **Error Handling**: Implement error handling and logging to provide better insights into workflow failures.
