@@ -140,7 +140,7 @@ _This Rust-based backend/web API connects to a PostgreSQL database. It uses Dock
   docker-compose logs <service>
   ```
 
-_For additional commands, database utilities, and debugging tips, check the [Container README](docs/runbooks/Container-README.md)._
+_For additional information, commands, database utilities, gh actions workflow description and debugging tips, check the [Container README](docs/runbooks/Container-README.md)._
 
 ---
 
