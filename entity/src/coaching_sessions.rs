@@ -16,7 +16,6 @@ pub struct Model {
     #[serde(skip_deserializing)]
     pub collab_document_name: Option<String>,
     pub date: DateTime,
-    pub timezone: String,
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub created_at: DateTimeWithTimeZone,

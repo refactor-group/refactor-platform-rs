@@ -147,7 +147,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -160,7 +159,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -173,7 +171,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(14)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -186,7 +183,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(21)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -199,7 +195,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(28)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -212,7 +207,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -225,7 +219,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(14)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -238,7 +231,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(21)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -251,7 +243,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(28)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()

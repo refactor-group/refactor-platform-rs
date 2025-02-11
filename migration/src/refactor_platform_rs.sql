@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml.dbdiagram.io)
 -- Database: PostgreSQL
--- Generated at: 2025-01-31T17:48:04.073Z
+-- Generated at: 2025-02-11T12:14:51.996Z
 
 
 CREATE TYPE "refactor_platform"."status" AS ENUM (
@@ -47,7 +47,6 @@ CREATE TABLE "refactor_platform"."coaching_sessions" (
   "coaching_relationship_id" uuid NOT NULL,
   "date" timestamp NOT NULL,
   "collab_document_name" varchar,
-  "timezone" varchar NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
@@ -120,8 +119,6 @@ COMMENT ON COLUMN "refactor_platform"."users"."updated_at" IS 'The last date and
 COMMENT ON COLUMN "refactor_platform"."coaching_sessions"."coaching_relationship_id" IS 'The coaching relationship (i.e. what coach & coachee under what organization) associated with this coaching session';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_sessions"."date" IS 'The date and time of a session';
-
-COMMENT ON COLUMN "refactor_platform"."coaching_sessions"."timezone" IS 'The baseline timezone used for the `date` field';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_sessions"."updated_at" IS 'The last date and time fields were changed';
 
