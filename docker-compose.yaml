@@ -9,9 +9,9 @@ services:
       - "${DB_PORT:-5432}:5432"  # Map host port from .env variable to container's PostgreSQL port
     volumes:
       - db_data:/var/lib/postgresql/data  # Persist PostgreSQL data
-      - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
-      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql  # Initialize with refactor_platform_rs.sql
-      - ./migration/src/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql  # Initialize with setup_default_user.sql
+      - ./docs/db/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
+      - ./docs/db/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql  # Initialize with refactor_platform_rs.sql
+      - ./docs/db/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql  # Initialize with setup_default_user.sql
     networks:
       - backend_network  # Connect to backend_network
 
@@ -20,6 +20,7 @@ services:
     build:
       context: .  # Build context is current directory
       dockerfile: Dockerfile  # Use specified Dockerfile
+      target: runtime # Specify the build target
     env_file:
       - ${ENV_FILE:-.env.local}  # Same override capability
     ports:
@@ -32,8 +33,8 @@ services:
   
   frontend:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: web # Build context is the web directory
+      dockerfile: Dockerfile # Use the Dockerfile in the web directory
     env_file:
       - ${ENV_FILE:-.env.local}
     ports:
