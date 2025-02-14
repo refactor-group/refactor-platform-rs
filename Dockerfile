@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the necessary Rust target for ARM64 (Raspberry Pi 5)
-RUN rustup target add aarch64-unknown-linux-gnu
+RUN rustup target add aarch64-unknown-linux-gnu  # Replace with either both or generic target could be dynamic
 
 # Copy the main workspace Cargo.toml and Cargo.lock to define workspace structure
 COPY Cargo.toml Cargo.lock ./
