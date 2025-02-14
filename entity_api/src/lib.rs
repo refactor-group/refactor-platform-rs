@@ -117,6 +117,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
+    // In refactor_coaching, Jim is coaching Caleb.
     let jim_caleb_coaching_relationship = coaching_relationships::ActiveModel {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(caleb_bourg.id.clone().unwrap()),
@@ -130,10 +131,24 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
+    // In the Acme Corp organization, Caleb is coaching Jim.
+    let caleb_jim_coaching_relationship = coaching_relationships::ActiveModel {
+        coach_id: Set(caleb_bourg.id.clone().unwrap()),
+        coachee_id: Set(jim_hodapp.id.clone().unwrap()),
+        organization_id: Set(acme_corp.id.clone().unwrap()),
+        slug: Set("jim-caleb".to_owned()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
     coaching_relationships::ActiveModel {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(other_user.id.clone().unwrap()),
-        organization_id: Set(acme_corp.id.unwrap()),
+        organization_id: Set(acme_corp.id.clone().unwrap()),
         slug: Set("jim-other".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -143,11 +158,36 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
+    // caleb is Coach
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(caleb_jim_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local()),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(caleb_jim_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local()),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // Jim is coach
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -160,7 +200,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -173,7 +212,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(14)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -186,7 +224,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(21)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -199,7 +236,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(28)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -212,7 +248,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -225,7 +260,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(14)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -238,7 +272,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(21)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -251,7 +284,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(28)).unwrap()),
         collab_document_name: Set(None),
-        timezone: Set("America/Chicago".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
