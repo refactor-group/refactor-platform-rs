@@ -10,7 +10,13 @@ use axum::Json;
 use domain::jwt as JwtApi;
 use entity::Id;
 use log::*;
+use serde::Deserialize;
 use service::config::ApiVersion;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GenerateCollabTokenParams {
+    pub(crate) coaching_session_id: Id,
+}
 
 /// GET generate a collaboration token
 #[utoipa::path(
@@ -32,17 +38,17 @@ pub async fn generate_collab_token(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Query(coaching_session_id): Query<Id>,
+    Query(params): Query<GenerateCollabTokenParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
         "GET generate collaboration token for coaching session id: {}",
-        coaching_session_id
+        params.coaching_session_id
     );
 
     let jwt = JwtApi::generate_collab_token(
         app_state.db_conn_ref(),
         &app_state.config,
-        coaching_session_id,
+        params.coaching_session_id,
     )
     .await?;
 
