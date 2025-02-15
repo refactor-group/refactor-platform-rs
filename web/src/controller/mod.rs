@@ -3,6 +3,7 @@ use serde::Serialize;
 pub(crate) mod action_controller;
 pub(crate) mod agreement_controller;
 pub(crate) mod coaching_session_controller;
+pub(crate) mod jwt_controller;
 pub(crate) mod note_controller;
 pub(crate) mod organization;
 pub(crate) mod organization_controller;

@@ -8,6 +8,7 @@ pub mod coachees;
 pub mod coaches;
 pub mod coaching_relationships;
 pub mod coaching_sessions;
+pub mod jwt;
 pub mod notes;
 pub mod organizations;
 pub mod overarching_goals;

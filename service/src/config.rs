@@ -54,13 +54,17 @@ pub struct Config {
     )]
     database_uri: Option<String>,
 
-    /// The URL for the TipTap Cloud API provider
+    /// The URL for the Tiptap Cloud API provider
     #[arg(long, env)]
-    tip_tap_url: Option<String>,
+    tiptap_url: Option<String>,
 
-    /// The authorization key to use when calling the TipTap Cloud API.
+    /// The authorization key to use when calling the Tiptap Cloud API.
     #[arg(long, env)]
-    tip_tap_auth_key: Option<String>,
+    tiptap_auth_key: Option<String>,
+
+    /// The signing key to use when calling the Tiptap Cloud API.
+    #[arg(long, env)]
+    tiptap_signing_key: Option<String>,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -113,12 +117,16 @@ impl Config {
             .expect("No Database URI Provided")
     }
 
-    pub fn tip_tap_url(&self) -> Option<String> {
-        self.tip_tap_url.clone()
+    pub fn tiptap_url(&self) -> Option<String> {
+        self.tiptap_url.clone()
     }
 
-    pub fn tip_tap_auth_key(&self) -> Option<String> {
-        self.tip_tap_auth_key.clone()
+    pub fn tiptap_auth_key(&self) -> Option<String> {
+        self.tiptap_auth_key.clone()
+    }
+
+    pub fn tiptap_signing_key(&self) -> Option<String> {
+        self.tiptap_signing_key.clone()
     }
 }
 

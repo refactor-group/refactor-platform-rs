@@ -97,3 +97,12 @@ impl From<reqwest::Error> for Error {
         }
     }
 }
+
+impl From<jsonwebtoken::errors::Error> for Error {
+    fn from(err: jsonwebtoken::errors::Error) -> Self {
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        }
+    }
+}

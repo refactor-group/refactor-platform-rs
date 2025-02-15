@@ -1,5 +1,5 @@
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
-use crate::gateway::tiptap::client as tip_tap_client;
+use crate::gateway::tiptap::client as tiptap_client;
 use chrono::{DurationRound, TimeDelta};
 use entity::coaching_sessions::Model;
 use entity_api::{coaching_relationship, coaching_session, organization};
@@ -41,18 +41,15 @@ pub async fn create(
         document_name
     );
     coaching_session_model.collab_document_name = Some(document_name.clone());
-    let tip_tap_url = config.tip_tap_url().ok_or_else(|| {
+    let tiptap_url = config.tiptap_url().ok_or_else(|| {
         warn!("Failed to get Tiptap URL from config");
         Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
         }
     })?;
-    let full_url = format!(
-        "{}/api/documents/{}?format=json",
-        tip_tap_url, document_name
-    );
-    let client = tip_tap_client(config).await?;
+    let full_url = format!("{}/api/documents/{}?format=json", tiptap_url, document_name);
+    let client = tiptap_client(config).await?;
 
     let request = client
         .post(full_url)
@@ -85,7 +82,7 @@ pub async fn create(
     }
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: entity::Id) -> Result<Option<Model>, Error> {
+pub async fn find_by_id(db: &DatabaseConnection, id: entity::Id) -> Result<Model, Error> {
     Ok(coaching_session::find_by_id(db, id).await?)
 }
 
