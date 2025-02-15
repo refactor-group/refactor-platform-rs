@@ -58,6 +58,10 @@ USER_UID=1000
 USER_GID=1000
 CONTAINER_NAME=refactor-platform
 PLATFORM=linux/arm64
+
+TIPTAP_URL=https://{Tiptap API Key}.collab.tiptap.cloud/
+TIPTAP_AUTH_KEY=tiptap-auth-key
+TIPTAP_SIGNING_KEY=tiptap-signing-key
 ```
 
 #### **For Remote PostgreSQL**
@@ -98,6 +102,10 @@ CONTAINER_NAME="refactor-platform"
 USERNAME=appuser  # Username for the non-root user in the container
 USER_UID=1000  # User ID for the appuser
 USER_GID=1000  # Group ID for the appuser
+
+TIPTAP_URL=https://{Tiptap API Key}.collab.tiptap.cloud/
+TIPTAP_AUTH_KEY=tiptap-auth-key
+TIPTAP_SIGNING_KEY=tiptap-signing-key
 ```
 
 ### 3. **Review `docker-compose.yaml`**
@@ -144,6 +152,9 @@ services:
       BACKEND_INTERFACE: ${BACKEND_INTERFACE}
       BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}
       BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}
+      TIPTAP_URL: ${TIPTAP_URL}
+      TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      TIPTAP_SIGNING_KEY: ${TIPTAP_SIGNING_KEY}
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"
     depends_on:
