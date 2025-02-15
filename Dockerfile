@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: Build Stage
-FROM rust:1.70-slim AS builder
+FROM rust:latest AS builder
 
 # Set the working directory inside the container
 WORKDIR /usr/src/app
