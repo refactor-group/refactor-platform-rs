@@ -17,6 +17,7 @@ clap = { version = "4.5.20", features = ["cargo", "derive", "env"] }
 log = "0.4.22"
 simplelog = { version = "0.12.2", features = ["paris"] }
 tokio = "1.41.0"
+libsqlite3-sys = "0.30.0"                                            # or "0.31.0"
 
 [[bin]]
 name = "seed_db"
