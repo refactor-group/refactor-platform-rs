@@ -878,6 +878,7 @@ version = "1.0.0-beta1"
 dependencies = [
  "axum-login",
  "chrono",
+ "libsqlite3-sys",
  "sea-orm",
  "serde",
  "sqlx",
