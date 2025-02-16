@@ -11,7 +11,7 @@ features = [
     "debug-print",
     "runtime-tokio-native-tls",
     "sqlx-postgres",
-    "with-uuid"
+    "with-uuid",
 ]
 
 [dependencies]
@@ -21,9 +21,11 @@ log = "0.4.22"
 simplelog = { version = "0.12.2", features = ["paris"] }
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
-sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
-sqlx-sqlite = { version = "0.8.2" }
+sqlx = { version = "0.8.3", features = ["time", "runtime-tokio"] }
+sqlx-sqlite = { version = "0.8.3" } # Updated version
 tokio = { version = "1.40", features = ["full"] }
-tower = "0.5.1"
-utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
+tower = { version = "0.5.1", features = [
+    "tower-http",
+] } # Added feature for tower
+utoipa = { version = "5.3.1", features = ["axum_extras", "uuid"] }
 semver = { version = "1.0.23", features = ["serde"] }

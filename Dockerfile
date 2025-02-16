@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Stage 1: Build Stage
 FROM rust:latest AS builder
 
@@ -31,11 +33,6 @@ COPY . .
 # Build the project
 RUN cargo build --release --workspace
 
-# logs the contents of the /usr/src/app directory to the docker build log and outputs them to the console
-RUN ls -la /usr/src/app/target/release/
-
-RUN file /usr/src/app/target/release/*
-
 # Stage 2: Runtime Stage
 FROM debian:stable-slim AS runtime
 
@@ -63,9 +60,8 @@ RUN useradd -m appuser && \
 USER appuser
 
 # Expose the necessary ports
-EXPOSE 4000
+EXPOSE ${BACKEND_PORT}
 
-# Default command starts an interactive bash shell
 # Set ENTRYPOINT to default to run the Rust binary with arguments
 ENTRYPOINT ["/bin/bash", "-c", "/usr/local/bin/refactor_platform_rs -l \"$BACKEND_LOG_FILTER_LEVEL\" -i \"$BACKEND_INTERFACE\" -p \"$BACKEND_PORT\" -d \"$DATABASE_URL\" --allowed-origins=$BACKEND_ALLOWED_ORIGINS"]
 

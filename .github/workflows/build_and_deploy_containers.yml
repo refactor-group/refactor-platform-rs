@@ -1,0 +1,168 @@
+name: Build and Deploy Containers
+
+on:
+  push:
+    branches-ignore:
+      - main  # Run on branches that are not main
+  pull_request:
+    branches:
+      - main  # Run on pull requests to merge into main
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  BACKEND_IMAGE_NAME: rust-backend
+  FRONTEND_IMAGE_NAME: nextjs-frontend
+
+jobs:
+  build_test_run:
+    name: Build and Test
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      # Checkout the repository
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Set environment variables from secrets
+      - name: Set environment variables
+        run: |
+          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> $GITHUB_ENV
+          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> $GITHUB_ENV
+          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> $GITHUB_ENV
+          echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> $GITHUB_ENV
+          echo "POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}" >> $GITHUB_ENV
+          echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> $GITHUB_ENV
+          echo "DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" >> $GITHUB_ENV
+          echo "BACKEND_PORT=${{ secrets.BACKEND_PORT }}" >> $GITHUB_ENV
+          echo "BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}" >> $GITHUB_ENV
+          echo "PLATFORM=${{ secrets.PLATFORM }}" >> $GITHUB_ENV
+          echo "CONTAINER_NAME=${{ secrets.CONTAINER_NAME }}" >> $GITHUB_ENV
+          echo "FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}" >> $GITHUB_ENV
+          echo "FRONTEND_PORT=${{ secrets.FRONTEND_PORT }}" >> $GITHUB_ENV
+          echo "DB_DNS_ALIAS=${{ secrets.DB_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "BACKEND_DNS_ALIAS=${{ secrets.BACKEND_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "FRONTEND_DNS_ALIAS=${{ secrets.FRONTEND_DNS_ALIAS }}" >> $GITHUB_ENV
+          echo "BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}" >> $GITHUB_ENV
+          echo "BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" >> $GITHUB_ENV
+
+      # Install Rust toolchain
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      # Use cached dependencies
+      - name: Use cached dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: "ubuntu-22.04-x86_64-unknown-linux-gnu"
+
+      # Install seaORM CLI
+      - name: Install seaORM CLI
+        run: cargo install sea-orm-cli
+
+      # Build the project
+      - name: Build
+        run: cargo build --all-targets
+
+      # Run tests
+      - name: Test
+        run: cargo test
+
+  build_and_push_docker:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-22.04
+    needs: build_test_run  # Ensure tests pass before building Docker images
+
+    steps:
+      # Checkout the repository
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Log in to GitHub Container Registry
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Cache Docker layers
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      # Extract metadata (tags, labels) for Docker
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}, ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
+
+      # Build and push Rust backend image
+      - name: Build and Push Rust Backend Image
+        id: push_backend
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64,linux/arm64
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+          file: Dockerfile
+
+      # Build and push Next.js frontend image
+      - name: Build and Push Next.js Frontend Image
+        id: push_frontend
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64,linux/arm64
+          context: web
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+          file: web/Dockerfile
+
+      # Move new cache to the original location
+      - name: Move new cache
+        run: mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      # Generate artifact attestation for Rust backend image
+      - name: Generate artifact attestation for Rust Backend Image
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}
+          subject-digest: ${{ steps.push_backend.outputs.digest }}
+          push-to-registry: true
+
+      # Generate artifact attestation for Next.js frontend image
+      - name: Generate artifact attestation for Next.js Frontend Image
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}
+          subject-digest: ${{ steps.push_frontend.outputs.digest }}
+          push-to-registry: true
