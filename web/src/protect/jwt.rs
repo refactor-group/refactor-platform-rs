@@ -1,3 +1,4 @@
+//! This module contains middleware functions for protecting routes that expose JWT operations.
 use crate::params::jwt::GenerateCollabTokenParams;
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{

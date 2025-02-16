@@ -1,3 +1,28 @@
+//! This module provides functionality for handling JSON Web Tokens (JWTs) within the domain layer.
+//! It includes the definition of claims used in JWTs, as well as functions for generating and validating tokens.
+//!
+//! The primary use case for this module is to generate collaboration tokens for coaching sessions,
+//! which are used to authorize access to collaborative documents. The tokens include claims that specify
+//! the allowed document names and other relevant information.
+//!
+//! The module also re-exports the `Jwt` struct from the `entity` module for convenience.
+//!
+//! # Example
+//!
+//! ```rust
+//! use domain::jwt::generate_collab_token;
+//! use sea_orm::DatabaseConnection;
+//! use service::config::Config;
+//! use entity::Id;
+//!
+//! async fn example(db: &DatabaseConnection, config: &Config, coaching_session_id: Id) {
+//!     match generate_collab_token(db, config, coaching_session_id).await {
+//!         Ok(jwt) => println!("Generated JWT: {:?}", jwt),
+//!         Err(e) => eprintln!("Error generating JWT: {:?}", e),
+//!     }
+//! }
+//! ```
+
 use crate::coaching_session;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use claims::TiptapCollabClaims;
@@ -11,6 +36,13 @@ use service::config::Config;
 pub use entity::jwt::Jwt;
 
 pub(crate) mod claims;
+
+/// Generates a collaboration token for a coaching session.
+///
+/// This function generates a JWT token that authorizes access to a specific collaborative document
+/// associated with a coaching session. The token includes claims that specify the allowed document
+/// names and other relevant information.
+///
 
 pub async fn generate_collab_token(
     db: &DatabaseConnection,
@@ -51,6 +83,7 @@ pub async fn generate_collab_token(
         allowed_document_names: vec![allowed_document_name_str],
     };
 
+    // Encode the claims into a JWT
     let token = encode(
         &Header::default(),
         &claims,
