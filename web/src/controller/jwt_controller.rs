@@ -2,21 +2,15 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::jwt::GenerateCollabTokenParams;
 use crate::{AppState, Error};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::jwt as JwtApi;
-use entity::Id;
 use log::*;
-use serde::Deserialize;
 use service::config::ApiVersion;
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct GenerateCollabTokenParams {
-    pub(crate) coaching_session_id: Id,
-}
 
 /// GET generate a collaboration token
 #[utoipa::path(

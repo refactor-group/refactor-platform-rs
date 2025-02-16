@@ -299,6 +299,10 @@ fn jwt_routes(app_state: AppState) -> Router {
             "/jwt/generate_collab_token",
             get(jwt_controller::generate_collab_token),
         )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::jwt::generate_collab_token,
+        ))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
