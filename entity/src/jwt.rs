@@ -8,9 +8,9 @@ use utoipa::ToSchema;
 ///
 /// - `token`: A string representing the JWT.
 /// - `sub`: A string representing the subject of the JWT for conveniently accessing
-/// the subject without having to decode the JWT.
+///    the subject without having to decode the JWT.
 #[derive(Serialize, Debug, ToSchema)]
-#[schema(as = entity::jwt::Jwt)] // OpenAPI schema
+#[schema(as = jwt::Jwt)] // OpenAPI schema
 pub struct Jwt {
     pub token: String,
     pub sub: String,

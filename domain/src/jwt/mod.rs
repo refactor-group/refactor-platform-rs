@@ -43,7 +43,6 @@ pub(crate) mod claims;
 /// associated with a coaching session. The token includes claims that specify the allowed document
 /// names and other relevant information.
 ///
-
 pub async fn generate_collab_token(
     db: &DatabaseConnection,
     config: &Config,
