@@ -51,7 +51,10 @@ pub async fn generate_collab_token(
     let coaching_session = coaching_session::find_by_id(db, coaching_session_id).await?;
 
     let collab_document_name = coaching_session.collab_document_name.ok_or_else(|| {
-        warn!("Failed to get collab document name from coaching session");
+        warn!(
+            "Failed to get collab document name from coaching session with ID: {}",
+            coaching_session_id
+        );
         Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
@@ -66,7 +69,7 @@ pub async fn generate_collab_token(
         format!("{}/*", parts[1])
     };
     let tiptap_jwt_signing_key = config.tiptap_jwt_signing_key().ok_or_else(|| {
-        warn!("Failed to get tiptap signing key from config");
+        warn!("Failed to get a useable Tiptap JWT signing key from config");
         Error {
             source: None,
             // TODO make this InternalErrorKind::ConfigError
