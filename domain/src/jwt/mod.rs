@@ -65,7 +65,7 @@ pub async fn generate_collab_token(
         let parts: Vec<&str> = collab_document_name.rsplitn(2, '.').collect();
         format!("{}/*", parts[1])
     };
-    let tiptap_signing_key = config.tiptap_signing_key().ok_or_else(|| {
+    let tiptap_jwt_signing_key = config.tiptap_jwt_signing_key().ok_or_else(|| {
         warn!("Failed to get tiptap signing key from config");
         Error {
             source: None,
@@ -86,7 +86,7 @@ pub async fn generate_collab_token(
     let token = encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(tiptap_signing_key.as_bytes()),
+        &EncodingKey::from_secret(tiptap_jwt_signing_key.as_bytes()),
     )?;
 
     Ok(Jwt {

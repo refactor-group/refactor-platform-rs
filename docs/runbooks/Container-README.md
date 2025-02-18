@@ -61,7 +61,7 @@ PLATFORM=linux/arm64
 
 TIPTAP_URL=https://{Tiptap API Key}.collab.tiptap.cloud/
 TIPTAP_AUTH_KEY=tiptap-auth-key
-TIPTAP_SIGNING_KEY=tiptap-signing-key
+TIPTAP_JWT_SIGNING_KEY=tiptap-jwt-signing-key
 ```
 
 #### **For Remote PostgreSQL**
@@ -105,7 +105,7 @@ USER_GID=1000  # Group ID for the appuser
 
 TIPTAP_URL=https://{Tiptap API Key}.collab.tiptap.cloud/
 TIPTAP_AUTH_KEY=tiptap-auth-key
-TIPTAP_SIGNING_KEY=tiptap-signing-key
+TIPTAP_JWT_SIGNING_KEY=tiptap-jwt-signing-key
 ```
 
 ### 3. **Review `docker-compose.yaml`**
@@ -154,7 +154,7 @@ services:
       BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}
       TIPTAP_URL: ${TIPTAP_URL}
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
-      TIPTAP_SIGNING_KEY: ${TIPTAP_SIGNING_KEY}
+      TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"
     depends_on:

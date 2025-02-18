@@ -64,7 +64,7 @@ pub struct Config {
 
     /// The signing key to use when calling the Tiptap Cloud API.
     #[arg(long, env)]
-    tiptap_signing_key: Option<String>,
+    tiptap_jwt_signing_key: Option<String>,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -125,8 +125,8 @@ impl Config {
         self.tiptap_auth_key.clone()
     }
 
-    pub fn tiptap_signing_key(&self) -> Option<String> {
-        self.tiptap_signing_key.clone()
+    pub fn tiptap_jwt_signing_key(&self) -> Option<String> {
+        self.tiptap_jwt_signing_key.clone()
     }
 }
 
