@@ -9,9 +9,9 @@ use entity_api::user::Backend;
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller, note_controller,
-    organization, organization_controller, overarching_goal_controller, user_controller,
-    user_session_controller,
+    action_controller, agreement_controller, coaching_session_controller, jwt_controller,
+    note_controller, organization, organization_controller, overarching_goal_controller,
+    user_controller, user_session_controller,
 };
 
 use utoipa::{
@@ -63,6 +63,7 @@ use self::organization::coaching_relationship_controller;
             user_controller::create,
             user_session_controller::login,
             user_session_controller::logout,
+            jwt_controller::generate_collab_token,
         ),
         components(
             schemas(
@@ -114,6 +115,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_routes())
         .merge(user_session_protected_routes())
         .merge(coaching_sessions_routes(app_state.clone()))
+        .merge(jwt_routes(app_state.clone()))
         // FIXME: protect the OpenAPI web UI
         .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
         .fallback_service(static_routes())
@@ -289,6 +291,20 @@ pub fn user_session_protected_routes() -> Router {
 
 pub fn user_session_routes() -> Router {
     Router::new().route("/login", post(user_session_controller::login))
+}
+
+fn jwt_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/jwt/generate_collab_token",
+            get(jwt_controller::generate_collab_token),
+        )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::jwt::generate_collab_token,
+        ))
+        .route_layer(login_required!(Backend, login_url = "/login"))
+        .with_state(app_state)
 }
 
 // This will serve static files that we can use as a "fallback" for when the server panics

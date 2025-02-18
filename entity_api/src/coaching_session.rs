@@ -35,8 +35,11 @@ pub async fn create(
         .try_into_model()?)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    Ok(Entity::find_by_id(id).one(db).await?)
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 pub async fn find_by_id_with_coaching_relationship(
