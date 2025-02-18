@@ -80,7 +80,7 @@ pub async fn generate_collab_token(
     let claims = TiptapCollabClaims {
         exp: 0,
         // We'll need to add something here eventually. Potentially a company email address
-        iss: "".to_string(),
+        iss: "https://refactorcoach.com".to_string(),
         sub: collab_document_name.clone(),
         allowed_document_names: vec![allowed_document_name_str],
     };
