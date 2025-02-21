@@ -77,12 +77,25 @@ pub async fn generate_collab_token(
         }
     })?;
 
+    let tiptap_app_id = config.tiptap_app_id().ok_or_else(|| {
+        warn!("Failed to get a useable Tiptap app ID from config");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        }
+    })?;
+
     let claims = TiptapCollabClaims {
-        exp: 0,
-        // We'll need to add something here eventually. Potentially a company email address
+        exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+        // Issued at
+        iat: chrono::Utc::now().timestamp() as usize,
+        // Not Valid before
+        ndf: chrono::Utc::now().timestamp() as usize,
         iss: "https://refactorcoach.com".to_string(),
         sub: collab_document_name.clone(),
         allowed_document_names: vec![allowed_document_name_str],
+        // Audience
+        aud: tiptap_app_id,
     };
 
     // Encode the claims into a JWT

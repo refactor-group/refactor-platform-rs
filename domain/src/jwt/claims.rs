@@ -15,7 +15,9 @@
 //! use serde_json;
 //!
 //! let claims = TiptapCollabClaims {
-//!     exp: 1625247600,
+//!     exp: 1825247600,
+//!     iat: 1625247600,
+//!     ndf: 1625247600,
 //!     iss: "issuer".to_string(),
 //!     sub: "subject".to_string(),
 //!     allowed_document_names: vec!["document1".to_string(), "document2".to_string()],
@@ -39,8 +41,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct TiptapCollabClaims {
     pub(crate) exp: usize,
+    pub(crate) iat: usize,
+    pub(crate) ndf: usize,
     pub(crate) iss: String,
     pub(crate) sub: String,
+    pub(crate) aud: String,
     // Titap requires this claim to be JS style case.
     #[serde(rename = "allowedDocumentNames")]
     pub(crate) allowed_document_names: Vec<String>,
