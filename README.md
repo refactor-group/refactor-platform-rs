@@ -55,58 +55,27 @@ The platform itself is useful for professional independent coaches, informal men
 
 Please note that the script assumes that the password for the new PostgreSQL user is `password`. If you want to use a different password, you'll need to modify the script accordingly.
 
-### Set Up Database Manually
-
-Note: these are commands meant to run against a real Postgresql server with an admin level user.
-
-```sql
---create new database `refactor_platform`
-CREATE DATABASE refactor_platform;
-```
-
-Change to the refactor_platform DB visually if using app like Postico, otherwise change using the
-Postgresql CLI:
-
-```sh
-\c refactor_platform
-```
-
-```sql
---create new database user `refactor`
-CREATE USER refactor WITH PASSWORD 'password';
---create a new schema owned by user `refactor`
-CREATE SCHEMA IF NOT EXISTS refactor_platform AUTHORIZATION refactor;
---Check to see that the schema `refactor_platform` exists in the results
-SELECT schema_name FROM information_schema.schemata;
---Grant all privileges on schema `refactor_platform` to user `refactor`
-GRANT ALL PRIVILEGES ON SCHEMA refactor_platform TO refactor;
-```
-
-### Run Migrations
-
-Note: this assumes a database name of `refactor_platform`
-
-```bash
-DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-orm-cli migrate up -s refactor_platform
-```
-
-### Generate a new Entity from Database
-
-Note that to generate a new Entity using the CLI you must ignore all other tables using the `--ignore-tables` option. You must add the option for _each_ table you are ignoring.
-
-```bash
- DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
-```
-
 ## Starting the Backend
 
 To run the backend directly outside of a container:
 
+The first example will start the backend with log level DEBUG and attempt to connect to a Postgres DB server on the same machine with user `refactor` and password `password` on port `5432` and selecting the database named `refactor_platform`.
+
 ```bash
-cargo run  -- -l DEBUG -d postgres://refactor:password@localhost:5432/refactor_platform
+cargo run --  --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID>
 ```
 
-This will start the backend with log level DEBUG and attempt to connect to a Postgres DB server on the same machine with user `refactor` and password `password` on port `5432` and selecting the database named `refactor_platform`.
+To run with a custom Postgresql connection string:
+
+```bash
+cargo run -- -d postgres://refactor:my_password@localhost:5432/refactor_platform --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID>
+```
+
+To run with an additional list of allowed cross-site network origins:
+
+```bash
+cargo run -- --allowed-origins="http://192.168.1.2:3000,https://192.168.1.2:3000" --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID>
+```
 
 ---
 
@@ -116,7 +85,7 @@ _This Rust-based backend/web API connects to a PostgreSQL database. It uses Dock
 
 ---
 
-### Quickstart
+### Building and Running Locally or Remotely in Containers
 
 1. **Install Prerequisites**:
    - [Docker](https://www.docker.com/products/docker-desktop) (20+)
@@ -194,3 +163,50 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 `src` - contains a main function that initializes logging and calls all sub-services
 
 `web` - API endpoint definition, routing, handling of request/responses, controllers
+
+---
+
+## Advanced / Manual DB operations
+
+### Set Up Database Manually
+
+Note: these are commands meant to run against a real Postgresql server with an admin level user.
+
+```sql
+--create new database `refactor_platform`
+CREATE DATABASE refactor_platform;
+```
+
+Change to the refactor_platform DB visually if using app like Postico, otherwise change using the
+Postgresql CLI:
+
+```sh
+\c refactor_platform
+```
+
+```sql
+--create new database user `refactor`
+CREATE USER refactor WITH PASSWORD 'password';
+--create a new schema owned by user `refactor`
+CREATE SCHEMA IF NOT EXISTS refactor_platform AUTHORIZATION refactor;
+--Check to see that the schema `refactor_platform` exists in the results
+SELECT schema_name FROM information_schema.schemata;
+--Grant all privileges on schema `refactor_platform` to user `refactor`
+GRANT ALL PRIVILEGES ON SCHEMA refactor_platform TO refactor;
+```
+
+### Run Migrations
+
+Note: this assumes a database name of `refactor_platform`
+
+```bash
+DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-orm-cli migrate up -s refactor_platform
+```
+
+### Generate a new Entity from Database
+
+Note that to generate a new Entity using the CLI you must ignore all other tables using the `--ignore-tables` option. You must add the option for _each_ table you are ignoring.
+
+```bash
+ DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
+```
