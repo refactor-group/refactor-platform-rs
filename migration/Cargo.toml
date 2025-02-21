@@ -11,7 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 async-std = { version = "1.13", features = ["attributes", "tokio1"] }
 sqlx = { version = "0.8.3", features = ["time", "runtime-tokio"] }
-sqlx-sqlite = { version = "0.8.3" }                                   # Updated version
+# sqlx-sqlite = { version = "0.8.3" }                                   # Updated version
 
 [dependencies.sea-orm-migration]
 version = "1.1.0"
