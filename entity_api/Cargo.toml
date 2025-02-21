@@ -15,7 +15,6 @@ axum-login = "0.17.0"
 async-trait = "0.1.83"
 password-auth = "1.0.0"
 sqlx = { version = "0.8.3", features = ["time", "runtime-tokio"] }
-# sqlx-sqlite = { version = "0.8.3" }
 utoipa = { version = "5.3.1", features = ["axum_extras", "uuid"] }
 
 [dependencies.sea-orm]

@@ -30,8 +30,11 @@ COPY ./web/Cargo.toml ./web/Cargo.toml
 # Copy the complete source code into the container's working directory
 COPY . .
 
-# Build the project
-RUN cargo build --release --workspace
+# clean the Cargo.lock file to avoid rebuilding the dependencies
+RUN cargo clean
+
+# Build workspace and dependencies to leverage Docker cache
+RUN cargo build --release --workspace --target aarch64-unknown-linux-gnu
 
 # Stage 2: Runtime Stage
 FROM debian:stable-slim AS runtime
