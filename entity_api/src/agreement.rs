@@ -1,13 +1,12 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::uuid_parse_str;
+use crate::QueryFilterMap;
 use entity::agreements::{self, ActiveModel, Entity, Model};
 use entity::Id;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, TryIntoModel,
+    DatabaseConnection, Iterable, TryIntoModel,
 };
-use std::collections::HashMap;
 
 use log::*;
 
@@ -109,23 +108,13 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
 
 pub async fn find_by(
     db: &DatabaseConnection,
-    query_params: HashMap<String, String>,
+    query_filter_map: QueryFilterMap,
 ) -> Result<Vec<Model>, Error> {
     let mut query = Entity::find();
 
-    for (key, value) in query_params {
-        match key.as_str() {
-            "coaching_session_id" => {
-                let coaching_session_id = uuid_parse_str(&value)?;
-
-                query = query.filter(agreements::Column::CoachingSessionId.eq(coaching_session_id));
-            }
-            _ => {
-                return Err(Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
-                });
-            }
+    for column in agreements::Column::iter() {
+        if let Some(value) = query_filter_map.get(&column.to_string()) {
+            query = query.filter(column.eq(value));
         }
     }
 
@@ -140,7 +129,7 @@ pub async fn find_by(
 mod tests {
     use super::*;
     use entity::{agreements::Model, Id};
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase, Transaction, Value};
 
     #[tokio::test]
     async fn create_returns_a_new_agreement_model() -> Result<(), Error> {
@@ -216,15 +205,15 @@ mod tests {
     async fn find_by_returns_all_agreements_associated_with_coaching_session() -> Result<(), Error>
     {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let mut query_params = HashMap::new();
+        let mut query_filter_map = QueryFilterMap::new();
         let coaching_session_id = Id::new_v4();
 
-        query_params.insert(
+        query_filter_map.insert(
             "coaching_session_id".to_owned(),
-            coaching_session_id.to_string(),
+            Some(Value::Uuid(Some(Box::new(coaching_session_id)))),
         );
 
-        let _ = find_by(&db, query_params).await;
+        let _ = find_by(&db, query_filter_map).await;
 
         assert_eq!(
             db.into_transaction_log(),

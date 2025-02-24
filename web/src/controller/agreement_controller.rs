@@ -2,16 +2,16 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::agreement::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::agreement as AgreementApi;
 use entity::{agreements::Model, Id};
-use entity_api::agreement as AgreementApi;
 use serde_json::json;
 use service::config::ApiVersion;
-use std::collections::HashMap;
 
 use log::*;
 
@@ -122,7 +122,7 @@ pub async fn update(
     path = "/agreements",
     params(
         ApiVersion,
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id")
+        ("coaching_session_id" = Id, Query, description = "Filter by coaching_session_id")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Agreements", body = [entity::agreements::Model]),
@@ -139,15 +139,11 @@ pub async fn index(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Agreements");
-    debug!("Filter Params: {:?}", params);
-
+    info!("Params: {:?}", params);
     let agreements = AgreementApi::find_by(app_state.db_conn_ref(), params).await?;
-
-    debug!("Found Agreements: {:?}", agreements);
-
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), agreements)))
 }
 
