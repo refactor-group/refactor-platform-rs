@@ -1,3 +1,4 @@
+use crate::params::agreement::IndexParams;
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
     extract::{Query, Request, State},
@@ -5,15 +6,8 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use entity::Id;
 use entity_api::coaching_session;
 use log::*;
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct QueryParams {
-    coaching_session_id: Id,
-}
 
 /// Checks that coaching relationship record associated with the coaching session
 /// referenced by `coaching_session_id exists and that the authenticated user is associated with it.
@@ -21,7 +15,7 @@ pub(crate) struct QueryParams {
 pub(crate) async fn index(
     State(app_state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Query(params): Query<QueryParams>,
+    Query(params): Query<IndexParams>,
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
