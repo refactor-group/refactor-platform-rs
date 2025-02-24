@@ -1,4 +1,4 @@
-use entity::Id;
+use domain::Id;
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::IntoParams;

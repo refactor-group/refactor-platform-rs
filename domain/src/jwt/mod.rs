@@ -13,7 +13,7 @@
 //! use domain::jwt::generate_collab_token;
 //! use sea_orm::DatabaseConnection;
 //! use service::config::Config;
-//! use entity::Id;
+//! use crate::Id;
 //!
 //! async fn example(db: &DatabaseConnection, config: &Config, coaching_session_id: Id) {
 //!     match generate_collab_token(db, config, coaching_session_id).await {
@@ -23,17 +23,13 @@
 //! }
 //! ```
 
-use crate::coaching_session;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::{coaching_session, jwts::Jwts, Id};
 use claims::TiptapCollabClaims;
-use entity::Id;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
-
-// re-export the Jwt struct from the entity module
-pub use entity::jwt::Jwt;
 
 pub(crate) mod claims;
 
@@ -47,7 +43,7 @@ pub async fn generate_collab_token(
     db: &DatabaseConnection,
     config: &Config,
     coaching_session_id: Id,
-) -> Result<Jwt, Error> {
+) -> Result<Jwts, Error> {
     let coaching_session = coaching_session::find_by_id(db, coaching_session_id).await?;
 
     let collab_document_name = coaching_session.collab_document_name.ok_or_else(|| {
@@ -105,7 +101,7 @@ pub async fn generate_collab_token(
         &EncodingKey::from_secret(tiptap_jwt_signing_key.as_bytes()),
     )?;
 
-    Ok(Jwt {
+    Ok(Jwts {
         token,
         sub: collab_document_name,
     })

@@ -1,4 +1,4 @@
-use entity::Id;
+use domain::Id;
 use serde::Deserialize;
 use utoipa::IntoParams;
 

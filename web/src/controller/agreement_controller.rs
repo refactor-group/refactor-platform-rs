@@ -8,8 +8,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::agreement as AgreementApi;
-use entity::{agreements::Model, Id};
+use domain::{agreement as AgreementApi, agreements::Model, Id};
+
 use serde_json::json;
 use service::config::ApiVersion;
 
@@ -20,9 +20,9 @@ use log::*;
     post,
     path = "/agreements",
     params(ApiVersion),
-    request_body = entity::agreements::Model,
+    request_body = agreements::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Agreement", body = [entity::agreements::Model]),
+        (status = 201, description = "Successfully Created a New Agreement", body = [agreements::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
@@ -61,7 +61,7 @@ pub async fn create(
         ("id" = String, Path, description = "Agreement id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = [entity::notes::Model]),
+        (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = [notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Agreement not found"),
         (status = 405, description = "Method not allowed")
@@ -89,9 +89,9 @@ pub async fn read(
         ApiVersion,
         ("id" = Id, Path, description = "Id of agreement to update"),
     ),
-    request_body = entity::agreements::Model,
+    request_body = agreements::Model,
     responses(
-        (status = 200, description = "Successfully Updated Agreement", body = [entity::agreements::Model]),
+        (status = 200, description = "Successfully Updated Agreement", body = [agreements::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -125,7 +125,7 @@ pub async fn update(
         ("coaching_session_id" = Id, Query, description = "Filter by coaching_session_id")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Agreements", body = [entity::agreements::Model]),
+        (status = 200, description = "Successfully retrieved all Agreements", body = [agreements::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),

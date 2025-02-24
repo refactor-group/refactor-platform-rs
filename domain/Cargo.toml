@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 chrono = { version = "0.4.38", features = ["serde"] }
-entity = { path = "../entity" }
 entity_api = { path = "../entity_api" }
 jsonwebtoken = "9"
 service = { path = "../service" }

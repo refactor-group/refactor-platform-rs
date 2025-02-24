@@ -3,7 +3,10 @@ use password_auth::generate_hash;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set, Value};
 use std::collections::HashMap;
 
-use entity::{coaching_relationships, coaching_sessions, organizations, users, Id};
+pub use entity::{
+    actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
+    organizations, overarching_goals, users, Id,
+};
 
 pub mod action;
 pub mod agreement;

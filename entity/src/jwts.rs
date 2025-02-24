@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 ///    the subject without having to decode the JWT.
 #[derive(Serialize, Debug, ToSchema)]
 #[schema(as = jwt::Jwt)] // OpenAPI schema
-pub struct Jwt {
+pub struct Jwts {
     pub token: String,
     pub sub: String,
 }

@@ -7,8 +7,7 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::coaching_session as CoachingSessionApi;
-use entity::coaching_sessions::Model;
+use domain::{coaching_session as CoachingSessionApi, coaching_sessions::Model};
 use service::config::ApiVersion;
 use std::collections::HashMap;
 
@@ -24,7 +23,7 @@ use log::*;
         ("to_date" = Option<NaiveDate>, Query, description = "Filter by to_date")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [entity::coaching_sessions::Model]),
+        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [coaching_sessions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -58,9 +57,9 @@ pub async fn index(
     post,
     path = "/coaching_sessions",
     params(ApiVersion),
-    request_body = entity::coaching_sessions::Model,
+    request_body = coaching_sessions::Model,
     responses(
-        (status = 201, description = "Successfully Created a new Coaching Session", body = [entity::coaching_sessions::Model]),
+        (status = 201, description = "Successfully Created a new Coaching Session", body = [coaching_sessions::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")

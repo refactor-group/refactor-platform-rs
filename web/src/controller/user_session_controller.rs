@@ -1,6 +1,6 @@
 use crate::controller::ApiResponse;
 use axum::{http::StatusCode, response::IntoResponse, Form, Json};
-use entity_api::user as UserApi;
+use domain::{AuthSession, Credentials};
 use log::*;
 use serde::Deserialize;
 use serde_json::json;
@@ -12,7 +12,7 @@ pub struct NextUrl {
     _next: Option<String>,
 }
 
-pub async fn protected(auth_session: UserApi::AuthSession) -> impl IntoResponse {
+pub async fn protected(auth_session: AuthSession) -> impl IntoResponse {
     debug!("UserSessionController::protected()");
 
     match auth_session.user {
@@ -37,7 +37,7 @@ pub async fn protected(auth_session: UserApi::AuthSession) -> impl IntoResponse 
 #[utoipa::path(
     post,
     path = "/login",
-    request_body(content = entity_api::user::Credentials, content_type = "application/x-www-form-urlencoded"),
+    request_body(content = Credentials, content_type = "application/x-www-form-urlencoded"),
     responses(
         (status = 200, description = "Logs in and returns session authentication cookie"),
         (status = 401, description = "Unauthorized"),
@@ -48,8 +48,8 @@ pub async fn protected(auth_session: UserApi::AuthSession) -> impl IntoResponse 
     )
 )]
 pub async fn login(
-    mut auth_session: UserApi::AuthSession,
-    Form(creds): Form<UserApi::Credentials>,
+    mut auth_session: AuthSession,
+    Form(creds): Form<Credentials>,
 ) -> impl IntoResponse {
     debug!("UserSessionController::login()");
     let user = match auth_session.authenticate(creds.clone()).await {
@@ -94,7 +94,7 @@ security(
     ("cookie_auth" = [])
 )
 )]
-pub async fn logout(mut auth_session: UserApi::AuthSession) -> impl IntoResponse {
+pub async fn logout(mut auth_session: domain::AuthSession) -> impl IntoResponse {
     debug!("UserSessionController::logout()");
     match auth_session.logout().await {
         Ok(_) => StatusCode::OK.into_response(),

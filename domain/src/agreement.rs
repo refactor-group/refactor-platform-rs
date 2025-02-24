@@ -1,5 +1,5 @@
+use crate::agreements::Model;
 use crate::error::Error;
-use entity::agreements::Model;
 pub use entity_api::agreement::{create, delete_by_id, find_by_id, update};
 use entity_api::{agreement, IntoQueryFilterMap};
 use sea_orm::DatabaseConnection;

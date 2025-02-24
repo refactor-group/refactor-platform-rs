@@ -7,8 +7,6 @@ edition = "2021"
 
 [dependencies]
 domain = { path = "../domain" }
-entity = { path = "../entity" }
-entity_api = { path = "../entity_api" }
 service = { path = "../service" }
 
 axum = "0.7.7"

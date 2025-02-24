@@ -7,8 +7,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use entity::Id;
-use entity_api::coaching_relationship;
+use domain::{coaching_relationship, Id};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueryParams {

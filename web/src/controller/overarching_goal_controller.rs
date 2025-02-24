@@ -7,8 +7,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use entity::{overarching_goals::Model, Id};
-use entity_api::overarching_goal as OverarchingGoalApi;
+use domain::overarching_goal as OverarchingGoalApi;
+use domain::{overarching_goals::Model, Id};
 use service::config::ApiVersion;
 use std::collections::HashMap;
 

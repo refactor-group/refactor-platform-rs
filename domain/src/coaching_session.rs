@@ -1,12 +1,16 @@
+use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::tiptap::client as tiptap_client;
 use chrono::{DurationRound, TimeDelta};
-use entity::coaching_sessions::Model;
 use entity_api::{coaching_relationship, coaching_session, organization};
 use log::*;
 use sea_orm::DatabaseConnection;
 use serde_json::json;
 use service::config::Config;
+
+pub use entity_api::coaching_session::{
+    find_by, find_by_id, find_by_id_with_coaching_relationship,
+};
 
 pub async fn create(
     db: &DatabaseConnection,
@@ -80,22 +84,4 @@ pub async fn create(
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
         })
     }
-}
-
-pub async fn find_by_id(db: &DatabaseConnection, id: entity::Id) -> Result<Model, Error> {
-    Ok(coaching_session::find_by_id(db, id).await?)
-}
-
-pub async fn find_by_id_with_coaching_relationship(
-    db: &DatabaseConnection,
-    id: entity::Id,
-) -> Result<(Model, entity::coaching_relationships::Model), Error> {
-    Ok(coaching_session::find_by_id_with_coaching_relationship(db, id).await?)
-}
-
-pub async fn find_by(
-    db: &DatabaseConnection,
-    params: std::collections::HashMap<String, String>,
-) -> Result<Vec<Model>, Error> {
-    Ok(coaching_session::find_by(db, params).await?)
 }

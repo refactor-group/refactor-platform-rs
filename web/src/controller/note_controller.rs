@@ -7,8 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use entity::{notes, Id};
-use entity_api::note as NoteApi;
+use domain::{note as NoteApi, notes, Id};
 use service::config::ApiVersion;
 use std::collections::HashMap;
 
@@ -19,9 +18,9 @@ use log::*;
     post,
     path = "/notes",
     params(ApiVersion),
-    request_body = entity::notes::Model,
+    request_body = notes::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Note", body = [entity::notes::Model]),
+        (status = 201, description = "Successfully Created a New Note", body = [notes::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
@@ -55,9 +54,9 @@ pub async fn create(
         ApiVersion,
         ("id" = Id, Path, description = "Id of note to update"),
     ),
-    request_body = entity::notes::Model,
+    request_body = notes::Model,
     responses(
-        (status = 200, description = "Successfully Updated Note", body = [entity::notes::Model]),
+        (status = 200, description = "Successfully Updated Note", body = [notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -91,7 +90,7 @@ pub async fn update(
         ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Notes", body = [entity::coaching_sessions::Model]),
+        (status = 200, description = "Successfully retrieved all Notes", body = [coaching_sessions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -126,7 +125,7 @@ pub async fn index(
         ("id" = String, Path, description = "Note id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain Note by its id", body = [entity::notes::Model]),
+        (status = 200, description = "Successfully retrieved a certain Note by its id", body = [notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Note not found"),
         (status = 405, description = "Method not allowed")
