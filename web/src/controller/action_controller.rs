@@ -71,9 +71,9 @@ pub async fn read(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Action by id: {}", id);
 
-    let note: Option<Model> = ActionApi::find_by_id(app_state.db_conn_ref(), id).await?;
+    let action = ActionApi::find_by_id(app_state.db_conn_ref(), id).await?;
 
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), note)))
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
 
 #[utoipa::path(

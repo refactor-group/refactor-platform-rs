@@ -63,47 +63,15 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
     let result = find_by_id(db, id).await?;
 
-    match result {
-        Some(agreement_model) => {
-            debug!(
-                "Existing Agreement model to be deleted: {:?}",
-                agreement_model
-            );
-
-            agreement_model.delete(db).await?;
-            Ok(())
-        }
-        None => Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::RecordNotFound,
-        }),
-    }
+    result.delete(db).await?;
+    Ok(())
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    match Entity::find_by_id(id).one(db).await {
-        Ok(Some(agreement)) => {
-            debug!("Agreement found: {:?}", agreement);
-
-            Ok(Some(agreement))
-        }
-        Ok(None) => {
-            error!("Agreement with id {} not found", id);
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-        Err(err) => {
-            error!("Error finding Agreement with id {}: {:?}", id, err);
-
-            Err(Error {
-                source: Some(err),
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 pub async fn find_by(

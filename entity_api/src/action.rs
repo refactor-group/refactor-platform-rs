@@ -106,43 +106,16 @@ pub async fn update_status(
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
     let result = find_by_id(db, id).await?;
 
-    match result {
-        Some(action_model) => {
-            debug!("Existing Action model to be deleted: {:?}", action_model);
+    result.delete(db).await?;
 
-            action_model.delete(db).await?;
-            Ok(())
-        }
-        None => Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::RecordNotFound,
-        }),
-    }
+    Ok(())
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    match Entity::find_by_id(id).one(db).await {
-        Ok(Some(action)) => {
-            debug!("Action found: {:?}", action);
-
-            Ok(Some(action))
-        }
-        Ok(None) => {
-            error!("Action with id {} not found", id);
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-        Err(err) => {
-            error!("Action with id {} not found and returned error {}", id, err);
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 pub async fn find_by(

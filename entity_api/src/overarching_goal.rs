@@ -129,32 +129,11 @@ pub async fn update_status(
     }
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    match Entity::find_by_id(id).one(db).await {
-        Ok(Some(overarching_goal)) => {
-            debug!("Overarching Goal found: {:?}", overarching_goal);
-
-            Ok(Some(overarching_goal))
-        }
-        Ok(None) => {
-            error!("Overarching Goal with id {} not found", id);
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-        Err(err) => {
-            error!(
-                "Overarching Goal with id {} not found and returned error {}",
-                id, err
-            );
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 pub async fn find_by(
