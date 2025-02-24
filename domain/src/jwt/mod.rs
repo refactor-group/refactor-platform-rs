@@ -66,7 +66,7 @@ pub async fn generate_collab_token(
     // becomes "refactor-coaching.jim-caleb/*""
     let allowed_document_name_str = {
         let parts: Vec<&str> = collab_document_name.rsplitn(2, '.').collect();
-        format!("{}/*", parts[1])
+        format!("{}.*", parts[1])
     };
     let tiptap_jwt_signing_key = config.tiptap_jwt_signing_key().ok_or_else(|| {
         warn!("Failed to get a useable Tiptap JWT signing key from config");
