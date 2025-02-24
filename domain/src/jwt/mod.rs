@@ -66,7 +66,7 @@ pub async fn generate_collab_token(
     // becomes "refactor-coaching.jim-caleb/*""
     let allowed_document_name_str = {
         let parts: Vec<&str> = collab_document_name.rsplitn(2, '.').collect();
-        format!("{}/*", parts[1])
+        format!("{}.*", parts[1])
     };
     let tiptap_jwt_signing_key = config.tiptap_jwt_signing_key().ok_or_else(|| {
         warn!("Failed to get a useable Tiptap JWT signing key from config");
@@ -77,12 +77,25 @@ pub async fn generate_collab_token(
         }
     })?;
 
+    let tiptap_app_id = config.tiptap_app_id().ok_or_else(|| {
+        warn!("Failed to get a useable Tiptap app ID from config");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        }
+    })?;
+
     let claims = TiptapCollabClaims {
-        exp: 0,
-        // We'll need to add something here eventually. Potentially a company email address
+        exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+        // Issued at
+        iat: chrono::Utc::now().timestamp() as usize,
+        // Not Valid before
+        ndf: chrono::Utc::now().timestamp() as usize,
         iss: "https://refactorcoach.com".to_string(),
         sub: collab_document_name.clone(),
         allowed_document_names: vec![allowed_document_name_str],
+        // Audience
+        aud: tiptap_app_id,
     };
 
     // Encode the claims into a JWT
