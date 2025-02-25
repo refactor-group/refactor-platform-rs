@@ -1,6 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::uuid_parse_str;
-use entity::overarching_goals::{self, ActiveModel, Entity, Model};
+use entity::overarching_goals::{ActiveModel, Entity, Model};
 use entity::{status::Status, Id};
 use sea_orm::ActiveValue;
 use sea_orm::{
@@ -9,7 +8,6 @@ use sea_orm::{
     ActiveValue::{Set, Unchanged},
     DatabaseConnection, TryIntoModel,
 };
-use std::collections::HashMap;
 
 use log::*;
 
@@ -136,32 +134,6 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     })
 }
 
-pub async fn find_by(
-    db: &DatabaseConnection,
-    query_params: HashMap<String, String>,
-) -> Result<Vec<Model>, Error> {
-    let mut query = Entity::find();
-
-    for (key, value) in query_params {
-        match key.as_str() {
-            "coaching_session_id" => {
-                let coaching_session_id = uuid_parse_str(&value)?;
-
-                query = query
-                    .filter(overarching_goals::Column::CoachingSessionId.eq(coaching_session_id));
-            }
-            _ => {
-                return Err(Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
-                });
-            }
-        }
-    }
-
-    Ok(query.all(db).await?)
-}
-
 #[cfg(test)]
 // We need to gate seaORM's mock feature behind conditional compilation because
 // the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
@@ -170,7 +142,7 @@ pub async fn find_by(
 mod tests {
     use super::*;
     use entity::{overarching_goals::Model, Id};
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase};
 
     #[tokio::test]
     async fn create_returns_a_new_overarching_goal_model() -> Result<(), Error> {
@@ -289,32 +261,6 @@ mod tests {
         let result = update_status(&db, Id::new_v4(), Status::Completed).await;
 
         assert_eq!(result.is_err(), true);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_by_returns_all_overarching_goals_associated_with_coaching_session(
-    ) -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let mut query_params = HashMap::new();
-        let coaching_session_id = Id::new_v4();
-
-        query_params.insert(
-            "coaching_session_id".to_owned(),
-            coaching_session_id.to_string(),
-        );
-
-        let _ = find_by(&db, query_params).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "overarching_goals"."id", "overarching_goals"."coaching_session_id", "overarching_goals"."user_id", "overarching_goals"."title", "overarching_goals"."body", CAST("overarching_goals"."status" AS text), "overarching_goals"."status_changed_at", "overarching_goals"."completed_at", "overarching_goals"."created_at", "overarching_goals"."updated_at" FROM "refactor_platform"."overarching_goals" WHERE "overarching_goals"."coaching_session_id" = $1"#,
-                [coaching_session_id.into()]
-            )]
-        );
 
         Ok(())
     }
