@@ -13,4 +13,5 @@
 
 pub(crate) mod action;
 pub(crate) mod agreement;
+pub(crate) mod coaching_session;
 pub(crate) mod jwt;

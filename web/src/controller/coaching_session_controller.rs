@@ -2,6 +2,7 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::coaching_session::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -9,7 +10,6 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::{coaching_session as CoachingSessionApi, coaching_sessions::Model};
 use service::config::ApiVersion;
-use std::collections::HashMap;
 
 use log::*;
 
@@ -37,7 +37,7 @@ pub async fn index(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Coaching Sessions");
     debug!("Filter Params: {:?}", params);

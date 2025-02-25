@@ -2,15 +2,16 @@ use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::tiptap::client as tiptap_client;
 use chrono::{DurationRound, TimeDelta};
-use entity_api::{coaching_relationship, coaching_session, organization};
+use entity_api::{
+    coaching_relationship, coaching_session, coaching_sessions, organization, query,
+    IntoQueryFilterMap,
+};
 use log::*;
 use sea_orm::DatabaseConnection;
 use serde_json::json;
 use service::config::Config;
 
-pub use entity_api::coaching_session::{
-    find_by, find_by_id, find_by_id_with_coaching_relationship,
-};
+pub use entity_api::coaching_session::{find_by_id, find_by_id_with_coaching_relationship};
 
 pub async fn create(
     db: &DatabaseConnection,
@@ -84,4 +85,17 @@ pub async fn create(
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
         })
     }
+}
+
+pub async fn find_by(
+    db: &DatabaseConnection,
+    params: impl IntoQueryFilterMap,
+) -> Result<Vec<Model>, Error> {
+    let coaching_sessions = query::find_by::<coaching_sessions::Entity, coaching_sessions::Column>(
+        db,
+        params.into_query_filter_map(),
+    )
+    .await?;
+
+    Ok(coaching_sessions)
 }

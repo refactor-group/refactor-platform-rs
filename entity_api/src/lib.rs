@@ -26,13 +26,6 @@ pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
     })
 }
 
-pub(crate) fn naive_date_parse_str(date_str: &str) -> Result<chrono::NaiveDate, error::Error> {
-    chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").map_err(|_| error::Error {
-        source: None,
-        error_kind: error::EntityApiErrorKind::InvalidQueryTerm,
-    })
-}
-
 /// `QueryFilterMap` is a data structure that serves as a bridge for translating filter parameters
 /// between different layers of the application. It is essentially a wrapper around a `HashMap`
 /// where the keys are filter parameter names (as `String`) and the values are optional `Value` types
@@ -398,20 +391,6 @@ mod tests {
     async fn uuid_parse_str_returns_error_for_invalid_uuid() {
         let uuid_str = "invalid";
         let result = uuid_parse_str(uuid_str);
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn naive_date_parse_str_parses_valid_date() {
-        let date_str = "2021-08-01";
-        let date = naive_date_parse_str(date_str).unwrap();
-        assert_eq!(date.to_string(), date_str);
-    }
-
-    #[tokio::test]
-    async fn naive_date_parse_str_returns_error_for_invalid_date() {
-        let date_str = "invalid";
-        let result = naive_date_parse_str(date_str);
         assert!(result.is_err());
     }
 }
