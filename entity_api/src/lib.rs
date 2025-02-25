@@ -16,6 +16,7 @@ pub mod error;
 pub mod note;
 pub mod organization;
 pub mod overarching_goal;
+pub mod query;
 pub mod user;
 
 pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {

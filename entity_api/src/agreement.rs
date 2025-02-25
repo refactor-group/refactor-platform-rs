@@ -1,11 +1,10 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::QueryFilterMap;
-use entity::agreements::{self, ActiveModel, Entity, Model};
+use entity::agreements::{ActiveModel, Entity, Model};
 use entity::Id;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, Iterable, TryIntoModel,
+    DatabaseConnection, TryIntoModel,
 };
 
 use log::*;
@@ -72,21 +71,6 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
-}
-
-pub async fn find_by(
-    db: &DatabaseConnection,
-    query_filter_map: QueryFilterMap,
-) -> Result<Vec<Model>, Error> {
-    let mut query = Entity::find();
-
-    for column in agreements::Column::iter() {
-        if let Some(value) = query_filter_map.get(&column.to_string()) {
-            query = query.filter(column.eq(value));
-        }
-    }
-
-    Ok(query.all(db).await?)
 }
 
 #[cfg(test)]
