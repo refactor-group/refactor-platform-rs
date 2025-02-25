@@ -142,8 +142,12 @@ pub async fn index(
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Agreements");
-    info!("Params: {:?}", params);
+    debug!("Filter Params: {:?}", params);
+
     let agreements = AgreementApi::find_by(app_state.db_conn_ref(), params).await?;
+
+    debug!("Found Agreements: {:?}", agreements);
+
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), agreements)))
 }
 

@@ -11,5 +11,6 @@
 //
 //! ```
 
+pub(crate) mod action;
 pub(crate) mod agreement;
 pub(crate) mod jwt;

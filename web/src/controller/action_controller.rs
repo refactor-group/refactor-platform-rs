@@ -2,6 +2,7 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::action::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -11,7 +12,6 @@ use domain::{action as ActionApi, actions::Model, Id};
 
 use serde_json::json;
 use service::config::ApiVersion;
-use std::collections::HashMap;
 
 use log::*;
 
@@ -168,7 +168,7 @@ pub async fn index(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Actions");
     debug!("Filter Params: {:?}", params);

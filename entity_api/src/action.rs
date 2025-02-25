@@ -7,7 +7,6 @@ use sea_orm::{
     ActiveValue::{Set, Unchanged},
     DatabaseConnection, TryIntoModel,
 };
-use std::collections::HashMap;
 
 use log::*;
 
@@ -116,31 +115,6 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
-}
-
-pub async fn find_by(
-    db: &DatabaseConnection,
-    query_params: HashMap<String, String>,
-) -> Result<Vec<Model>, Error> {
-    let mut query = Entity::find();
-
-    for (key, value) in query_params {
-        match key.as_str() {
-            "coaching_session_id" => {
-                let coaching_session_id = uuid_parse_str(&value)?;
-
-                query = query.filter(actions::Column::CoachingSessionId.eq(coaching_session_id));
-            }
-            _ => {
-                return Err(Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
-                });
-            }
-        }
-    }
-
-    Ok(query.all(db).await?)
 }
 
 #[cfg(test)]
