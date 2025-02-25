@@ -1,6 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::uuid_parse_str;
-use entity::actions::{self, ActiveModel, Entity, Model};
+use entity::actions::{ActiveModel, Entity, Model};
 use entity::{status::Status, Id};
 use sea_orm::{
     entity::prelude::*,
@@ -125,7 +124,7 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
 mod tests {
     use super::*;
     use entity::{actions::Model, Id};
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase};
 
     #[tokio::test]
     async fn create_returns_a_new_action_model() -> Result<(), Error> {
@@ -230,31 +229,6 @@ mod tests {
         let result = update_status(&db, Id::new_v4(), Status::Completed).await;
 
         assert_eq!(result.is_err(), true);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_by_returns_all_actions_associated_with_coaching_session() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let mut query_params = HashMap::new();
-        let coaching_session_id = Id::new_v4();
-
-        query_params.insert(
-            "coaching_session_id".to_owned(),
-            coaching_session_id.to_string(),
-        );
-
-        let _ = find_by(&db, query_params).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "actions"."id", "actions"."coaching_session_id", "actions"."user_id", "actions"."body", "actions"."due_by", CAST("actions"."status" AS text), "actions"."status_changed_at", "actions"."created_at", "actions"."updated_at" FROM "refactor_platform"."actions" WHERE "actions"."coaching_session_id" = $1"#,
-                [coaching_session_id.into()]
-            )]
-        );
 
         Ok(())
     }
