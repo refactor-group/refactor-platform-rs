@@ -7,12 +7,11 @@ edition = "2021"
 
 [dependencies]
 domain = { path = "../domain" }
-entity = { path = "../entity" }
-entity_api = { path = "../entity_api" }
 service = { path = "../service" }
 
 axum = "0.7.7"
 axum-login = "0.16.0"
+chrono = { version = "0.4.38", features = ["serde"] }
 log = "0.4.22"
 tower-http = { version = "0.6.1", features = ["fs", "cors"] }
 serde_json = "1.0.128"

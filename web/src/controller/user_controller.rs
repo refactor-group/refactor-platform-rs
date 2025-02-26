@@ -1,8 +1,7 @@
 use crate::{controller::ApiResponse, extractors::compare_api_version::CompareApiVersion};
 use crate::{AppState, Error};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use entity::users;
-use entity_api::user as UserApi;
+use domain::{user as UserApi, users};
 use service::config::ApiVersion;
 
 use log::*;
@@ -14,9 +13,9 @@ use log::*;
     params(
         ApiVersion,
     ),
-    request_body = entity::users::Model,
+    request_body = users::Model,
     responses(
-        (status = 200, description = "Successfully created a new User", body = [entity::users::Model]),
+        (status = 200, description = "Successfully created a new User", body = [users::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),

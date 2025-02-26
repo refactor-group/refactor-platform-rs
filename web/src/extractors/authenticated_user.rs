@@ -5,8 +5,7 @@ use axum::{
     http::{request::Parts, StatusCode},
 };
 use axum_login::AuthSession;
-use entity::users;
-use entity_api::user;
+use domain::users;
 
 pub(crate) struct AuthenticatedUser(pub users::Model);
 
@@ -20,7 +19,7 @@ where
     // This extractor wraps the AuthSession extractor from axum_login. It extracts the user from the AuthSession and returns an AuthenticatedUser.
     // If the user is authenticated. If the user is not authenticated, it returns an Unauthorized error.
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let session: user::AuthSession = AuthSession::from_request_parts(parts, state)
+        let session: domain::AuthSession = AuthSession::from_request_parts(parts, state)
             .await
             .map_err(|(status, msg)| (status, msg.to_string()))?;
         match session.user {

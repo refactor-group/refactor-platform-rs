@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use axum_login::login_required;
-use entity_api::user::Backend;
+use domain::Backend;
 use tower_http::services::ServeDir;
 
 use crate::controller::{
@@ -67,15 +67,15 @@ use self::organization::coaching_relationship_controller;
         ),
         components(
             schemas(
-                entity::actions::Model,
-                entity::agreements::Model,
-                entity::coaching_sessions::Model,
-                entity::coaching_relationships::Model,
-                entity::notes::Model,
-                entity::organizations::Model,
-                entity::overarching_goals::Model,
-                entity::users::Model,
-                entity_api::user::Credentials,
+                domain::actions::Model,
+                domain::agreements::Model,
+                domain::coaching_sessions::Model,
+                domain::coaching_relationships::Model,
+                domain::notes::Model,
+                domain::organizations::Model,
+                domain::overarching_goals::Model,
+                domain::users::Model,
+                domain::Credentials,
             )
         ),
         modifiers(&SecurityAddon),
@@ -326,8 +326,8 @@ mod organization_endpoints_tests {
         AuthManagerLayerBuilder,
     };
     use chrono::Utc;
-    use entity::{organizations, users, Id};
-    use entity_api::user::Backend;
+    use domain::Backend;
+    use domain::{organizations, users, Id};
     use log::{debug, LevelFilter};
     use password_auth::generate_hash;
     use reqwest::{header, header::HeaderValue, Url};

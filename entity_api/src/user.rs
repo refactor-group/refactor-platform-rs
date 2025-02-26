@@ -2,15 +2,13 @@ use super::error::{EntityApiErrorKind, Error};
 use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
-use entity::users::*;
+use entity::users::{ActiveModel, Column, Entity, Model};
 use log::*;
 use password_auth::{generate_hash, verify_password};
 use sea_orm::{entity::prelude::*, DatabaseConnection, Set};
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::ToSchema;
-
-use crate::user::Entity;
 
 pub async fn create(db: &DatabaseConnection, user_model: Model) -> Result<Model, Error> {
     debug!(

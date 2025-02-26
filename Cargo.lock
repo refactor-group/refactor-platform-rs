@@ -838,7 +838,6 @@ name = "domain"
 version = "1.0.0-beta1"
 dependencies = [
  "chrono",
- "entity",
  "entity_api",
  "jsonwebtoken",
  "log",
@@ -3914,8 +3913,6 @@ dependencies = [
  "axum-login",
  "chrono",
  "domain",
- "entity",
- "entity_api",
  "log",
  "password-auth",
  "reqwest",

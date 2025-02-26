@@ -7,7 +7,7 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use entity_api::coaching_session;
+use domain::coaching_session;
 use log::*;
 
 /// Checks that coaching relationship record associated with the coaching session

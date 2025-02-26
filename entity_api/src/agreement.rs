@@ -1,11 +1,10 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::QueryFilterMap;
-use entity::agreements::{self, ActiveModel, Entity, Model};
+use entity::agreements::{ActiveModel, Entity, Model};
 use entity::Id;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, Iterable, TryIntoModel,
+    DatabaseConnection, TryIntoModel,
 };
 
 use log::*;
@@ -63,62 +62,15 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
     let result = find_by_id(db, id).await?;
 
-    match result {
-        Some(agreement_model) => {
-            debug!(
-                "Existing Agreement model to be deleted: {:?}",
-                agreement_model
-            );
-
-            agreement_model.delete(db).await?;
-            Ok(())
-        }
-        None => Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::RecordNotFound,
-        }),
-    }
+    result.delete(db).await?;
+    Ok(())
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    match Entity::find_by_id(id).one(db).await {
-        Ok(Some(agreement)) => {
-            debug!("Agreement found: {:?}", agreement);
-
-            Ok(Some(agreement))
-        }
-        Ok(None) => {
-            error!("Agreement with id {} not found", id);
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-        Err(err) => {
-            error!("Error finding Agreement with id {}: {:?}", id, err);
-
-            Err(Error {
-                source: Some(err),
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
-}
-
-pub async fn find_by(
-    db: &DatabaseConnection,
-    query_filter_map: QueryFilterMap,
-) -> Result<Vec<Model>, Error> {
-    let mut query = Entity::find();
-
-    for column in agreements::Column::iter() {
-        if let Some(value) = query_filter_map.get(&column.to_string()) {
-            query = query.filter(column.eq(value));
-        }
-    }
-
-    Ok(query.all(db).await?)
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 #[cfg(test)]
@@ -129,7 +81,7 @@ pub async fn find_by(
 mod tests {
     use super::*;
     use entity::{agreements::Model, Id};
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction, Value};
+    use sea_orm::{DatabaseBackend, MockDatabase};
 
     #[tokio::test]
     async fn create_returns_a_new_agreement_model() -> Result<(), Error> {
@@ -178,51 +130,6 @@ mod tests {
         let agreement = update(&db, agreement_model.id, agreement_model.clone()).await?;
 
         assert_eq!(agreement.body, agreement_model.body);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_by_id_returns_agreement_associated_with_id() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let agreement_id = Id::new_v4();
-
-        let _ = find_by_id(&db, agreement_id).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "agreements"."id", "agreements"."coaching_session_id", "agreements"."body", "agreements"."user_id", "agreements"."created_at", "agreements"."updated_at" FROM "refactor_platform"."agreements" WHERE "agreements"."id" = $1 LIMIT $2"#,
-                [agreement_id.into(), sea_orm::Value::BigUnsigned(Some(1))]
-            )]
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_by_returns_all_agreements_associated_with_coaching_session() -> Result<(), Error>
-    {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let mut query_filter_map = QueryFilterMap::new();
-        let coaching_session_id = Id::new_v4();
-
-        query_filter_map.insert(
-            "coaching_session_id".to_owned(),
-            Some(Value::Uuid(Some(Box::new(coaching_session_id)))),
-        );
-
-        let _ = find_by(&db, query_filter_map).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "agreements"."id", "agreements"."coaching_session_id", "agreements"."body", "agreements"."user_id", "agreements"."created_at", "agreements"."updated_at" FROM "refactor_platform"."agreements" WHERE "agreements"."coaching_session_id" = $1"#,
-                [coaching_session_id.into()]
-            )]
-        );
 
         Ok(())
     }

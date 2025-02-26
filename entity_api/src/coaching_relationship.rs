@@ -1,5 +1,4 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::uuid_parse_str;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
@@ -141,29 +140,6 @@ pub async fn get_relationship_with_user_names(
         .into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.one(db).await?)
-}
-
-pub async fn find_by(
-    db: &DatabaseConnection,
-    params: std::collections::HashMap<String, String>,
-) -> Result<Vec<Model>, Error> {
-    let mut query = coaching_relationships::Entity::find();
-
-    for (key, value) in params.iter() {
-        match key.as_str() {
-            "organization_id" => {
-                query = by_organization(query, uuid_parse_str(value)?).await;
-            }
-            _ => {
-                return Err(Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
-                });
-            }
-        }
-    }
-
-    Ok(query.all(db).await?)
 }
 
 pub async fn by_coaching_relationship(

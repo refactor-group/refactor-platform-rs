@@ -3,7 +3,10 @@ use password_auth::generate_hash;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set, Value};
 use std::collections::HashMap;
 
-use entity::{coaching_relationships, coaching_sessions, organizations, users, Id};
+pub use entity::{
+    actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
+    organizations, overarching_goals, users, Id,
+};
 
 pub mod action;
 pub mod agreement;
@@ -13,17 +16,11 @@ pub mod error;
 pub mod note;
 pub mod organization;
 pub mod overarching_goal;
+pub mod query;
 pub mod user;
 
 pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
     Id::parse_str(uuid_str).map_err(|_| error::Error {
-        source: None,
-        error_kind: error::EntityApiErrorKind::InvalidQueryTerm,
-    })
-}
-
-pub(crate) fn naive_date_parse_str(date_str: &str) -> Result<chrono::NaiveDate, error::Error> {
-    chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").map_err(|_| error::Error {
         source: None,
         error_kind: error::EntityApiErrorKind::InvalidQueryTerm,
     })
@@ -394,20 +391,6 @@ mod tests {
     async fn uuid_parse_str_returns_error_for_invalid_uuid() {
         let uuid_str = "invalid";
         let result = uuid_parse_str(uuid_str);
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn naive_date_parse_str_parses_valid_date() {
-        let date_str = "2021-08-01";
-        let date = naive_date_parse_str(date_str).unwrap();
-        assert_eq!(date.to_string(), date_str);
-    }
-
-    #[tokio::test]
-    async fn naive_date_parse_str_returns_error_for_invalid_date() {
-        let date_str = "invalid";
-        let result = naive_date_parse_str(date_str);
         assert!(result.is_err());
     }
 }

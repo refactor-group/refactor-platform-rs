@@ -2,15 +2,14 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::coaching_session::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::coaching_session as CoachingSessionApi;
-use entity::coaching_sessions::Model;
+use domain::{coaching_session as CoachingSessionApi, coaching_sessions::Model};
 use service::config::ApiVersion;
-use std::collections::HashMap;
 
 use log::*;
 
@@ -24,7 +23,7 @@ use log::*;
         ("to_date" = Option<NaiveDate>, Query, description = "Filter by to_date")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [entity::coaching_sessions::Model]),
+        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [coaching_sessions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -38,7 +37,7 @@ pub async fn index(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Coaching Sessions");
     debug!("Filter Params: {:?}", params);
@@ -58,9 +57,9 @@ pub async fn index(
     post,
     path = "/coaching_sessions",
     params(ApiVersion),
-    request_body = entity::coaching_sessions::Model,
+    request_body = coaching_sessions::Model,
     responses(
-        (status = 201, description = "Successfully Created a new Coaching Session", body = [entity::coaching_sessions::Model]),
+        (status = 201, description = "Successfully Created a new Coaching Session", body = [coaching_sessions::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
