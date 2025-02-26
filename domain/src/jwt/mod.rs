@@ -24,7 +24,7 @@
 //! ```
 
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
-use crate::{coaching_session, jwts::Jwts, Id};
+use crate::{coaching_session, jwts::Jwt, Id};
 use claims::TiptapCollabClaims;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use log::*;
@@ -43,7 +43,7 @@ pub async fn generate_collab_token(
     db: &DatabaseConnection,
     config: &Config,
     coaching_session_id: Id,
-) -> Result<Jwts, Error> {
+) -> Result<Jwt, Error> {
     let coaching_session = coaching_session::find_by_id(db, coaching_session_id).await?;
 
     let collab_document_name = coaching_session.collab_document_name.ok_or_else(|| {
@@ -101,7 +101,7 @@ pub async fn generate_collab_token(
         &EncodingKey::from_secret(tiptap_jwt_signing_key.as_bytes()),
     )?;
 
-    Ok(Jwts {
+    Ok(Jwt {
         token,
         sub: collab_document_name,
     })
