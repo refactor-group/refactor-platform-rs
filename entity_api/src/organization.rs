@@ -19,8 +19,9 @@ pub async fn create(db: &DatabaseConnection, organization_model: Model) -> Resul
     let now = Utc::now();
 
     let organization_active_model: ActiveModel = ActiveModel {
-        logo: Set(organization_model.logo),
         name: Set(organization_model.name),
+        logo: Set(organization_model.logo),
+        slug: Set(organization_model.slug),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -34,9 +35,9 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 
     let active_model: ActiveModel = ActiveModel {
         id: Unchanged(organization.id),
-        logo: Set(model.logo),
         name: Set(model.name),
-        slug: Unchanged(organization.slug),
+        logo: Set(model.logo),
+        slug: Set(organization.slug),
         updated_at: Unchanged(organization.updated_at),
         created_at: Unchanged(organization.created_at),
     };
