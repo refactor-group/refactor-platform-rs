@@ -1,4 +1,7 @@
-use crate::{controller::ApiResponse, extractors::compare_api_version::CompareApiVersion};
+use crate::extractors::{
+    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+};
+use crate::{controller::ApiResponse, params::user::*};
 use crate::{AppState, Error};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use domain::{user as UserApi, users};
@@ -35,4 +38,35 @@ pub async fn create(
     debug!("Newly created Users {:?}", &user);
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
+}
+
+/// UPDATE a User
+/// NOTE: that this is for updating the current user and as such uses the user
+/// from the AuthenticatedUser extractor. If we decide to allow a user to update
+/// another user, we may want to consider something like a PUT /myself endpoint for
+/// the current user updating their own data.
+#[utoipa::path(
+    put,
+    path = "/users",
+    params(
+        ApiVersion,
+        UpdateUserParams
+    ),
+    request_body = UpdateUserParams,
+    responses(
+        (status = 200, description = "Successfully updated a User", body = [users::Model]),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn update(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Json(params): Json<UpdateUserParams>,
+) -> Result<impl IntoResponse, Error> {
+    let updated_user = UserApi::update(app_state.db_conn_ref(), user.id, params).await?;
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated_user)))
 }

@@ -4,7 +4,10 @@
 //! directly depend on the `entity_api` crate. By re-exporting these items, we provide a clear and
 //! consistent interface for working with query filters within the domain layer, while encapsulating
 //! the underlying implementation details remain in the `entity_api` crate.
-pub use entity_api::query::{IntoQueryFilterMap, QueryFilterMap};
+pub use entity_api::{
+    mutate::{IntoUpdateMap, UpdateMap},
+    query::{IntoQueryFilterMap, QueryFilterMap},
+};
 
 // Re-exports from `entity`
 pub use entity_api::user::{AuthSession, Backend, Credentials};

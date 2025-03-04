@@ -3,12 +3,13 @@ use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
 use entity::users::{ActiveModel, Column, Entity, Model};
+use entity::Id;
 use log::*;
 use password_auth::{generate_hash, verify_password};
 use sea_orm::{entity::prelude::*, DatabaseConnection, Set};
 use serde::Deserialize;
 use std::sync::Arc;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 pub async fn create(db: &DatabaseConnection, user_model: Model) -> Result<Model, Error> {
     debug!(
@@ -36,13 +37,20 @@ pub async fn create(db: &DatabaseConnection, user_model: Model) -> Result<Model,
 
 pub async fn find_by_email(db: &DatabaseConnection, email: &str) -> Result<Option<Model>, Error> {
     let user: Option<Model> = Entity::find()
-        .filter(Column::Email.contains(email))
+        .filter(Column::Email.eq(email))
         .one(db)
         .await?;
 
     debug!("User find_by_email result: {:?}", user);
 
     Ok(user)
+}
+
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
@@ -60,7 +68,7 @@ pub struct Backend {
     db: Arc<DatabaseConnection>,
 }
 
-#[derive(Debug, Clone, ToSchema, Deserialize)]
+#[derive(Debug, Clone, ToSchema, IntoParams, Deserialize)]
 #[schema(as = entity_api::user::Credentials)] // OpenAPI schema
 pub struct Credentials {
     pub email: String,
@@ -112,3 +120,55 @@ impl AuthnBackend for Backend {
 }
 
 pub type AuthSession = axum_login::AuthSession<Backend>;
+
+#[cfg(test)]
+// We need to gate seaORM's mock feature behind conditional compilation because
+// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
+// see https://github.com/SeaQL/sea-orm/issues/830
+#[cfg(feature = "mock")]
+mod test {
+    use super::*;
+    use entity::Id;
+    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+
+    #[tokio::test]
+    async fn find_by_email_returns_a_single_record() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let user_email = "test@test.com";
+        let _ = find_by_email(&db, user_email).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."email" = $1 LIMIT $2"#,
+                [user_email.into(), sea_orm::Value::BigUnsigned(Some(1))]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_id_returns_a_single_record() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let coaching_session_id = Id::new_v4();
+        let _ = find_by_id(&db, coaching_session_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."id" = $1 LIMIT $2"#,
+                [
+                    coaching_session_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+}
