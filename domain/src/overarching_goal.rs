@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::overarching_goals::Model;
-use entity_api::IntoQueryFilterMap;
+use entity_api::query::IntoQueryFilterMap;
 use entity_api::{overarching_goals, query};
 use sea_orm::DatabaseConnection;
 
