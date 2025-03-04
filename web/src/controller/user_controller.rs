@@ -54,7 +54,7 @@ pub async fn create(
     ),
     request_body = UpdateUserParams,
     responses(
-        (status = 200, description = "Successfully updated a User", body = [users::Model]),
+        (status = 204, description = "Successfully updated a User", body = ()),
         (status = 401, description = "Unauthorized"),
     ),
     security(
@@ -67,6 +67,6 @@ pub async fn update(
     State(app_state): State<AppState>,
     Json(params): Json<UpdateUserParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let updated_user = UserApi::update(app_state.db_conn_ref(), user.id, params).await?;
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated_user)))
+    UserApi::update(app_state.db_conn_ref(), user.id, params).await?;
+    Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
