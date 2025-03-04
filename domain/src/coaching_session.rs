@@ -4,7 +4,7 @@ use crate::gateway::tiptap::client as tiptap_client;
 use chrono::{DurationRound, TimeDelta};
 use entity_api::{
     coaching_relationship, coaching_session, coaching_sessions, organization, query,
-    IntoQueryFilterMap,
+    query::IntoQueryFilterMap,
 };
 use log::*;
 use sea_orm::DatabaseConnection;
