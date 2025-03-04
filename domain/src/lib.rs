@@ -9,8 +9,7 @@ pub use entity_api::{
     query::{IntoQueryFilterMap, QueryFilterMap},
 };
 
-// Re-exports from `entity`
-pub use entity_api::user::{AuthSession, Backend, Credentials};
+// Re-exports from `entity` crate
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
     organizations, overarching_goals, users, Id,

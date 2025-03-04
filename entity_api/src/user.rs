@@ -69,7 +69,7 @@ pub struct Backend {
 }
 
 #[derive(Debug, Clone, ToSchema, IntoParams, Deserialize)]
-#[schema(as = entity_api::user::Credentials)] // OpenAPI schema
+#[schema(as = domain::user::Credentials)] // OpenAPI schema
 pub struct Credentials {
     pub email: String,
     pub password: String,
