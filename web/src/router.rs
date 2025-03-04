@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use axum_login::login_required;
-use domain::Backend;
+use domain::user::Backend;
 use tower_http::services::ServeDir;
 
 use crate::controller::{
@@ -76,7 +76,7 @@ use self::organization::coaching_relationship_controller;
                 domain::organizations::Model,
                 domain::overarching_goals::Model,
                 domain::users::Model,
-                domain::Credentials,
+                domain::user::Credentials,
                 params::user::UpdateUserParams,
 
             )

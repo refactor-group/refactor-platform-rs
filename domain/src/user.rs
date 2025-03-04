@@ -3,7 +3,7 @@ use entity_api::mutate;
 use sea_orm::DatabaseConnection;
 use sea_orm::IntoActiveModel;
 
-pub use entity_api::user::{create, find_by_email, find_by_id};
+pub use entity_api::user::{create, find_by_email, find_by_id, AuthSession, Backend, Credentials};
 
 pub async fn update(
     db: &DatabaseConnection,
