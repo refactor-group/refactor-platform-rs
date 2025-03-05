@@ -1,4 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
+use crate::user;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
@@ -10,7 +11,7 @@ use sea_orm::{
     QuerySelect, QueryTrait, Set,
 };
 use serde::ser::{Serialize, SerializeStruct, Serializer};
-
+use slugify::slugify;
 use log::*;
 
 pub async fn create(
@@ -23,11 +24,15 @@ pub async fn create(
     );
 
     let now = Utc::now();
+    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
+    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
+    let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
         organization_id: Set(coaching_relationship_model.organization_id),
         coach_id: Set(coaching_relationship_model.coach_id),
         coachee_id: Set(coaching_relationship_model.coachee_id),
+        slug: Set(slug),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
