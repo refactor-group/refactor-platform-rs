@@ -1,11 +1,11 @@
-use crate::{protect, AppState};
+use crate::{params, protect, AppState};
 use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
     Router,
 };
 use axum_login::login_required;
-use domain::Backend;
+use domain::user::Backend;
 use tower_http::services::ServeDir;
 
 use crate::controller::{
@@ -61,6 +61,7 @@ use self::organization::coaching_relationship_controller;
             overarching_goal_controller::read,
             overarching_goal_controller::update_status,
             user_controller::create,
+            user_controller::update,
             user_session_controller::login,
             user_session_controller::logout,
             jwt_controller::generate_collab_token,
@@ -75,7 +76,9 @@ use self::organization::coaching_relationship_controller;
                 domain::organizations::Model,
                 domain::overarching_goals::Model,
                 domain::users::Model,
-                domain::Credentials,
+                domain::user::Credentials,
+                params::user::UpdateUserParams,
+
             )
         ),
         modifiers(&SecurityAddon),
@@ -278,6 +281,7 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/users", post(user_controller::create))
+        .route("/users", put(user_controller::update))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
@@ -326,7 +330,7 @@ mod organization_endpoints_tests {
         AuthManagerLayerBuilder,
     };
     use chrono::Utc;
-    use domain::Backend;
+    use domain::user::Backend;
     use domain::{organizations, users, Id};
     use log::{debug, LevelFilter};
     use password_auth::generate_hash;
