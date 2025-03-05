@@ -31,8 +31,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     let _admin_user: users::ActiveModel = users::ActiveModel {
         email: Set("admin@refactorcoach.com".to_owned()),
-        first_name: Set(Some("Admin".to_owned())),
-        last_name: Set(Some("User".to_owned())),
+        first_name: Set("Admin".to_owned()),
+        last_name: Set("User".to_owned()),
         display_name: Set(Some("Admin User".to_owned())),
         password: Set(generate_hash("dLxNxnjn&b!2sqkwFbb4s8jX")),
         github_username: Set(None),
@@ -47,8 +47,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     let jim_hodapp: users::ActiveModel = users::ActiveModel {
         email: Set("james.hodapp@gmail.com".to_owned()),
-        first_name: Set(Some("Jim".to_owned())),
-        last_name: Set(Some("Hodapp".to_owned())),
+        first_name: Set("Jim".to_owned()),
+        last_name: Set("Hodapp".to_owned()),
         display_name: Set(Some("Jim H".to_owned())),
         password: Set(generate_hash("password")),
         github_username: Set(Some("jhodapp".to_owned())),
@@ -63,8 +63,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     let caleb_bourg: users::ActiveModel = users::ActiveModel {
         email: Set("calebbourg2@gmail.com".to_owned()),
-        first_name: Set(Some("Caleb".to_owned())),
-        last_name: Set(Some("Bourg".to_owned())),
+        first_name: Set("Caleb".to_owned()),
+        last_name: Set("Bourg".to_owned()),
         display_name: Set(Some("cbourg2".to_owned())),
         password: Set(generate_hash("password")),
         github_username: Set(Some("calebbourg".to_owned())),
@@ -79,8 +79,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     let other_user: users::ActiveModel = users::ActiveModel {
         email: Set("other_user@gmail.com".to_owned()),
-        first_name: Set(Some("Other".to_owned())),
-        last_name: Set(Some("User".to_owned())),
+        first_name: Set("Other".to_owned()),
+        last_name: Set("User".to_owned()),
         display_name: Set(Some("Other U.".to_owned())),
         password: Set(generate_hash("password")),
         github_username: Set(None),
