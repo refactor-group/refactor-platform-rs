@@ -6,13 +6,13 @@ use entity::{
     coaching_relationships::{self, ActiveModel, Entity, Model},
     Id,
 };
+use log::*;
 use sea_orm::{
     entity::prelude::*, sea_query::Alias, Condition, DatabaseConnection, FromQueryResult, JoinType,
     QuerySelect, QueryTrait, Set,
 };
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use slugify::slugify;
-use log::*;
 
 pub async fn create(
     db: &DatabaseConnection,
