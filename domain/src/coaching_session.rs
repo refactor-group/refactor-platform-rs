@@ -40,7 +40,7 @@ pub async fn create(
         "{}.{}.{}-v0",
         organization.slug,
         coaching_relationship.slug,
-        coaching_session_model.date.and_utc().timestamp()
+        Id::new_v4()
     );
     info!(
         "Attempting to create Tiptap document with name: {}",
