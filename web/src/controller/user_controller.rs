@@ -16,9 +16,9 @@ use log::*;
     params(
         ApiVersion,
     ),
-    request_body = users::Model,
+    request_body = domain::users::Model,
     responses(
-        (status = 200, description = "Successfully created a new User", body = [users::Model]),
+        (status = 200, description = "Successfully created a new User", body = [domain::users::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -49,8 +49,7 @@ pub async fn create(
     put,
     path = "/users",
     params(
-        ApiVersion,
-        UpdateParams
+        ApiVersion
     ),
     request_body = UpdateParams,
     responses(

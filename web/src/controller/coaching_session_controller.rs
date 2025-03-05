@@ -57,9 +57,9 @@ pub async fn index(
     post,
     path = "/coaching_sessions",
     params(ApiVersion),
-    request_body = coaching_sessions::Model,
+    request_body = domain::coaching_sessions::Model,
     responses(
-        (status = 201, description = "Successfully Created a new Coaching Session", body = [coaching_sessions::Model]),
+        (status = 201, description = "Successfully Created a new Coaching Session", body = [domain::coaching_sessions::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
