@@ -1,9 +1,9 @@
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime};
 use domain::Id;
-use domain::{IntoQueryFilterMap, QueryFilterMap};
+use domain::{IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
@@ -28,5 +28,21 @@ impl IntoQueryFilterMap for IndexParams {
             Some(Value::ChronoDate(Some(Box::new(self.to_date)))),
         );
         query_filter_map
+    }
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub(crate) struct UpdateParams {
+    pub(crate) date: NaiveDateTime,
+}
+
+impl IntoUpdateMap for UpdateParams {
+    fn into_update_map(self) -> UpdateMap {
+        let mut update_map = UpdateMap::new();
+        update_map.insert(
+            "date".to_string(),
+            Some(Value::ChronoDateTime(Some(Box::new(self.date)))),
+        );
+        update_map
     }
 }

@@ -1,13 +1,14 @@
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::tiptap::client as tiptap_client;
+use crate::Id;
 use chrono::{DurationRound, TimeDelta};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_sessions, organization, query,
+    coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
     query::IntoQueryFilterMap,
 };
 use log::*;
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, IntoActiveModel};
 use serde_json::json;
 use service::config::Config;
 
@@ -98,4 +99,21 @@ pub async fn find_by(
     .await?;
 
     Ok(coaching_sessions)
+}
+
+pub async fn update(
+    db: &DatabaseConnection,
+    id: Id,
+    params: impl mutate::IntoUpdateMap + std::fmt::Debug,
+) -> Result<Model, Error> {
+    let coaching_session = coaching_session::find_by_id(db, id).await?;
+    let active_model = coaching_session.into_active_model();
+    Ok(
+        mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+            db,
+            active_model,
+            params.into_update_map(),
+        )
+        .await?,
+    )
 }
