@@ -45,9 +45,9 @@ pub(crate) async fn index(
 }
 
 /// Checks that coaching session record referenced by `coaching_session_id`
-/// * exists
-/// * that the authenticated user is associated with it.
-/// * that the authenticated user is the coach
+///     * exists
+///     * that the authenticated user is associated with it.
+///     * that the authenticated user is the coach
 ///  Intended to be given to axum::middleware::from_fn_with_state in the router
 pub(crate) async fn update(
     State(app_state): State<AppState>,
