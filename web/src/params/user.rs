@@ -5,7 +5,7 @@ use utoipa::{IntoParams, ToSchema};
 use domain::{IntoUpdateMap, UpdateMap};
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
-pub struct UpdateUserParams {
+pub struct UpdateParams {
     pub email: Option<String>,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
@@ -13,7 +13,7 @@ pub struct UpdateUserParams {
     pub github_profile_url: Option<String>,
 }
 
-impl IntoUpdateMap for UpdateUserParams {
+impl IntoUpdateMap for UpdateParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
         if let Some(email) = self.email {

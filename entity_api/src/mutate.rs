@@ -4,7 +4,6 @@ use sea_orm::{
     IntoActiveModel, Value,
 };
 use std::collections::HashMap;
-
 /// Updates an existing record in the database using a map of column names to values.
 ///
 /// This function provides a flexible way to update only specific fields of an entity

@@ -43,6 +43,7 @@ use self::organization::coaching_relationship_controller;
             agreement_controller::delete,
             coaching_session_controller::index,
             coaching_session_controller::create,
+            coaching_session_controller::update,
             note_controller::create,
             note_controller::update,
             note_controller::index,
@@ -77,8 +78,8 @@ use self::organization::coaching_relationship_controller;
                 domain::overarching_goals::Model,
                 domain::users::Model,
                 domain::user::Credentials,
-                params::user::UpdateUserParams,
-
+                params::user::UpdateParams,
+                params::coaching_session::UpdateParams,
             )
         ),
         modifiers(&SecurityAddon),
@@ -179,6 +180,18 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::coaching_sessions::index,
+                )),
+        )
+        .merge(
+            // Put /coaching_sessions
+            Router::new()
+                .route(
+                    "/coaching_sessions/:id",
+                    put(coaching_session_controller::update),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_sessions::update,
                 )),
         )
         .route_layer(login_required!(Backend, login_url = "/login"))
