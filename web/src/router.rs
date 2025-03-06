@@ -183,7 +183,7 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                 )),
         )
         .merge(
-            // Get /coaching_sessions
+            // Put /coaching_sessions
             Router::new()
                 .route(
                     "/coaching_sessions/:id",
