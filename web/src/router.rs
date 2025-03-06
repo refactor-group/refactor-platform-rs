@@ -453,8 +453,8 @@ mod organization_endpoints_tests {
             Ok(users::Model {
                 id: Id::new_v4(),
                 email: "test@domain.com".to_string(),
-                first_name: Some("test".to_string()),
-                last_name: Some("login".to_string()),
+                first_name: "test".to_string(),
+                last_name: "login".to_string(),
                 display_name: Some("test login".to_string()),
                 password: generate_hash("password2").to_owned(),
                 github_username: None,

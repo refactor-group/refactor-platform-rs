@@ -6,6 +6,7 @@ use sea_orm::{
     entity::prelude::*, sea_query, ActiveValue::Set, ActiveValue::Unchanged, DatabaseConnection,
     JoinType, QuerySelect, TryIntoModel,
 };
+use slugify::slugify;
 use std::collections::HashMap;
 
 use log::*;
@@ -17,10 +18,12 @@ pub async fn create(db: &DatabaseConnection, organization_model: Model) -> Resul
     );
 
     let now = Utc::now();
+    let name = organization_model.name;
 
     let organization_active_model: ActiveModel = ActiveModel {
         logo: Set(organization_model.logo),
-        name: Set(organization_model.name),
+        name: Set(name.clone()),
+        slug: Set(slugify!(name.as_str())),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
