@@ -1,17 +1,17 @@
-use crate::{protect, AppState};
+use crate::{params, protect, AppState};
 use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
     Router,
 };
 use axum_login::login_required;
-use entity_api::user::Backend;
+use domain::user::Backend;
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller, note_controller,
-    organization, organization_controller, overarching_goal_controller, user_controller,
-    user_session_controller,
+    action_controller, agreement_controller, coaching_session_controller, jwt_controller,
+    note_controller, organization, organization_controller, overarching_goal_controller,
+    user_controller, user_session_controller,
 };
 
 use utoipa::{
@@ -43,6 +43,7 @@ use self::organization::coaching_relationship_controller;
             agreement_controller::delete,
             coaching_session_controller::index,
             coaching_session_controller::create,
+            coaching_session_controller::update,
             note_controller::create,
             note_controller::update,
             note_controller::index,
@@ -61,20 +62,24 @@ use self::organization::coaching_relationship_controller;
             overarching_goal_controller::read,
             overarching_goal_controller::update_status,
             user_controller::create,
+            user_controller::update,
             user_session_controller::login,
             user_session_controller::logout,
+            jwt_controller::generate_collab_token,
         ),
         components(
             schemas(
-                entity::actions::Model,
-                entity::agreements::Model,
-                entity::coaching_sessions::Model,
-                entity::coaching_relationships::Model,
-                entity::notes::Model,
-                entity::organizations::Model,
-                entity::overarching_goals::Model,
-                entity::users::Model,
-                entity_api::user::Credentials,
+                domain::actions::Model,
+                domain::agreements::Model,
+                domain::coaching_sessions::Model,
+                domain::coaching_relationships::Model,
+                domain::notes::Model,
+                domain::organizations::Model,
+                domain::overarching_goals::Model,
+                domain::users::Model,
+                domain::user::Credentials,
+                params::user::UpdateParams,
+                params::coaching_session::UpdateParams,
             )
         ),
         modifiers(&SecurityAddon),
@@ -114,6 +119,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_routes())
         .merge(user_session_protected_routes())
         .merge(coaching_sessions_routes(app_state.clone()))
+        .merge(jwt_routes(app_state.clone()))
         // FIXME: protect the OpenAPI web UI
         .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
         .fallback_service(static_routes())
@@ -174,6 +180,18 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::coaching_sessions::index,
+                )),
+        )
+        .merge(
+            // Put /coaching_sessions
+            Router::new()
+                .route(
+                    "/coaching_sessions/:id",
+                    put(coaching_session_controller::update),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_sessions::update,
                 )),
         )
         .route_layer(login_required!(Backend, login_url = "/login"))
@@ -276,6 +294,7 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/users", post(user_controller::create))
+        .route("/users", put(user_controller::update))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
@@ -289,6 +308,20 @@ pub fn user_session_protected_routes() -> Router {
 
 pub fn user_session_routes() -> Router {
     Router::new().route("/login", post(user_session_controller::login))
+}
+
+fn jwt_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/jwt/generate_collab_token",
+            get(jwt_controller::generate_collab_token),
+        )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::jwt::generate_collab_token,
+        ))
+        .route_layer(login_required!(Backend, login_url = "/login"))
+        .with_state(app_state)
 }
 
 // This will serve static files that we can use as a "fallback" for when the server panics
@@ -310,8 +343,8 @@ mod organization_endpoints_tests {
         AuthManagerLayerBuilder,
     };
     use chrono::Utc;
-    use entity::{organizations, users, Id};
-    use entity_api::user::Backend;
+    use domain::user::Backend;
+    use domain::{organizations, users, Id};
     use log::{debug, LevelFilter};
     use password_auth::generate_hash;
     use reqwest::{header, header::HeaderValue, Url};
@@ -420,8 +453,8 @@ mod organization_endpoints_tests {
             Ok(users::Model {
                 id: Id::new_v4(),
                 email: "test@domain.com".to_string(),
-                first_name: Some("test".to_string()),
-                last_name: Some("login".to_string()),
+                first_name: "test".to_string(),
+                last_name: "login".to_string(),
                 display_name: Some("test login".to_string()),
                 password: generate_hash("password2").to_owned(),
                 github_username: None,

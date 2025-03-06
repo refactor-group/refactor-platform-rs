@@ -14,7 +14,7 @@ pub(crate) async fn client(config: &Config) -> Result<reqwest::Client, Error> {
 }
 
 async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
-    let auth_key = config.tip_tap_auth_key().ok_or_else(|| {
+    let auth_key = config.tiptap_auth_key().ok_or_else(|| {
         warn!("Failed to get auth key from config");
         Error {
             source: None,

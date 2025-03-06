@@ -1,12 +1,18 @@
+use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
-use crate::gateway::tiptap::client as tip_tap_client;
+use crate::gateway::tiptap::client as tiptap_client;
+use crate::Id;
 use chrono::{DurationRound, TimeDelta};
-use entity::coaching_sessions::Model;
-use entity_api::{coaching_relationship, coaching_session, organization};
+use entity_api::{
+    coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
+    query::IntoQueryFilterMap,
+};
 use log::*;
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, IntoActiveModel};
 use serde_json::json;
 use service::config::Config;
+
+pub use entity_api::coaching_session::{find_by_id, find_by_id_with_coaching_relationship};
 
 pub async fn create(
     db: &DatabaseConnection,
@@ -34,25 +40,22 @@ pub async fn create(
         "{}.{}.{}-v0",
         organization.slug,
         coaching_relationship.slug,
-        coaching_session_model.date.and_utc().timestamp()
+        Id::new_v4()
     );
     info!(
         "Attempting to create Tiptap document with name: {}",
         document_name
     );
     coaching_session_model.collab_document_name = Some(document_name.clone());
-    let tip_tap_url = config.tip_tap_url().ok_or_else(|| {
+    let tiptap_url = config.tiptap_url().ok_or_else(|| {
         warn!("Failed to get Tiptap URL from config");
         Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
         }
     })?;
-    let full_url = format!(
-        "{}/api/documents/{}?format=json",
-        tip_tap_url, document_name
-    );
-    let client = tip_tap_client(config).await?;
+    let full_url = format!("{}/api/documents/{}?format=json", tiptap_url, document_name);
+    let client = tiptap_client(config).await?;
 
     let request = client
         .post(full_url)
@@ -85,20 +88,32 @@ pub async fn create(
     }
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: entity::Id) -> Result<Option<Model>, Error> {
-    Ok(coaching_session::find_by_id(db, id).await?)
-}
-
-pub async fn find_by_id_with_coaching_relationship(
-    db: &DatabaseConnection,
-    id: entity::Id,
-) -> Result<(Model, entity::coaching_relationships::Model), Error> {
-    Ok(coaching_session::find_by_id_with_coaching_relationship(db, id).await?)
-}
-
 pub async fn find_by(
     db: &DatabaseConnection,
-    params: std::collections::HashMap<String, String>,
+    params: impl IntoQueryFilterMap,
 ) -> Result<Vec<Model>, Error> {
-    Ok(coaching_session::find_by(db, params).await?)
+    let coaching_sessions = query::find_by::<coaching_sessions::Entity, coaching_sessions::Column>(
+        db,
+        params.into_query_filter_map(),
+    )
+    .await?;
+
+    Ok(coaching_sessions)
+}
+
+pub async fn update(
+    db: &DatabaseConnection,
+    id: Id,
+    params: impl mutate::IntoUpdateMap + std::fmt::Debug,
+) -> Result<Model, Error> {
+    let coaching_session = coaching_session::find_by_id(db, id).await?;
+    let active_model = coaching_session.into_active_model();
+    Ok(
+        mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+            db,
+            active_model,
+            params.into_update_map(),
+        )
+        .await?,
+    )
 }

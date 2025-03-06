@@ -20,9 +20,26 @@ services:
     build:
       context: .  # Build context is current directory
       dockerfile: Dockerfile  # Use specified Dockerfile
-      target: runtime # Specify the build target
+      target: runtime  # Use runtime target
+    platform: ${PLATFORM}  # Specify the platform
+    container_name: ${CONTAINER_NAME}  # Name the container, default is "rust-app"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}  # Set PostgreSQL user from environment variable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # Set PostgreSQL password from environment variable
+      POSTGRES_DB: ${POSTGRES_DB}  # Set PostgreSQL database name from environment variable
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}  # Set PostgreSQL schema from environment variable
+      POSTGRES_HOST: postgres  # Set PostgreSQL host to "postgres" service
+      POSTGRES_PORT: ${POSTGRES_PORT}  # Set PostgreSQL port from environment variable
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}  # Configure database URL
+      BACKEND_PORT: ${BACKEND_PORT}  # Set service port from environment variable
+      BACKEND_INTERFACE: ${BACKEND_INTERFACE}  # Set service interface from environment variable
+      BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}
+      BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}
+      TIPTAP_URL: ${TIPTAP_URL}
+      TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
     env_file:
-      - ${ENV_FILE:-.env.local}  # Same override capability
+      - ${ENV_FILE:-.env.local}  # Override by setting ENV_FILE; defaults to .env.local
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"  # Map host port to container's service port
     depends_on:

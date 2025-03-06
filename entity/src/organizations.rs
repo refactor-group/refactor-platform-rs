@@ -16,6 +16,7 @@ pub struct Model {
     pub name: String,
     pub logo: Option<String>,
     #[serde(skip_deserializing)]
+    #[sea_orm(unique)]
     pub slug: String,
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema

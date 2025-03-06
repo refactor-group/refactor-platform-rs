@@ -2,16 +2,16 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::action::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use entity::{actions::Model, Id};
-use entity_api::action as ActionApi;
+use domain::{action as ActionApi, actions::Model, Id};
+
 use serde_json::json;
 use service::config::ApiVersion;
-use std::collections::HashMap;
 
 use log::*;
 
@@ -20,9 +20,9 @@ use log::*;
     post,
     path = "/actions",
     params(ApiVersion),
-    request_body = entity::actions::Model,
+    request_body = actions::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Action", body = [entity::actions::Model]),
+        (status = 201, description = "Successfully Created a New Action", body = [actions::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
@@ -55,7 +55,7 @@ pub async fn create(
         ("id" = String, Path, description = "Action id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Action by its id", body = [entity::notes::Model]),
+        (status = 200, description = "Successfully retrieved a specific Action by its id", body = [notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed")
@@ -71,9 +71,9 @@ pub async fn read(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Action by id: {}", id);
 
-    let note: Option<Model> = ActionApi::find_by_id(app_state.db_conn_ref(), id).await?;
+    let action = ActionApi::find_by_id(app_state.db_conn_ref(), id).await?;
 
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), note)))
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
 
 #[utoipa::path(
@@ -83,9 +83,9 @@ pub async fn read(
         ApiVersion,
         ("id" = Id, Path, description = "Id of action to update"),
     ),
-    request_body = entity::actions::Model,
+    request_body = actions::Model,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [entity::actions::Model]),
+        (status = 200, description = "Successfully Updated Action", body = [actions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -119,9 +119,9 @@ pub async fn update(
         ("id" = Id, Path, description = "Id of action to update"),
         ("value" = Option<String>, Query, description = "Status value to update"),
     ),
-    request_body = entity::actions::Model,
+    request_body = actions::Model,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [entity::actions::Model]),
+        (status = 200, description = "Successfully Updated Action", body = [actions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -154,7 +154,7 @@ pub async fn update_status(
         ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Actions", body = [entity::actions::Model]),
+        (status = 200, description = "Successfully retrieved all Actions", body = [actions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -168,7 +168,7 @@ pub async fn index(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Actions");
     debug!("Filter Params: {:?}", params);

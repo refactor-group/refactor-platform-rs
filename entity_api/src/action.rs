@@ -1,13 +1,11 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::uuid_parse_str;
-use entity::actions::{self, ActiveModel, Entity, Model};
+use entity::actions::{ActiveModel, Entity, Model};
 use entity::{status::Status, Id};
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
     DatabaseConnection, TryIntoModel,
 };
-use std::collections::HashMap;
 
 use log::*;
 
@@ -106,68 +104,16 @@ pub async fn update_status(
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
     let result = find_by_id(db, id).await?;
 
-    match result {
-        Some(action_model) => {
-            debug!("Existing Action model to be deleted: {:?}", action_model);
+    result.delete(db).await?;
 
-            action_model.delete(db).await?;
-            Ok(())
-        }
-        None => Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::RecordNotFound,
-        }),
-    }
+    Ok(())
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
-    match Entity::find_by_id(id).one(db).await {
-        Ok(Some(action)) => {
-            debug!("Action found: {:?}", action);
-
-            Ok(Some(action))
-        }
-        Ok(None) => {
-            error!("Action with id {} not found", id);
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-        Err(err) => {
-            error!("Action with id {} not found and returned error {}", id, err);
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
-}
-
-pub async fn find_by(
-    db: &DatabaseConnection,
-    query_params: HashMap<String, String>,
-) -> Result<Vec<Model>, Error> {
-    let mut query = Entity::find();
-
-    for (key, value) in query_params {
-        match key.as_str() {
-            "coaching_session_id" => {
-                let coaching_session_id = uuid_parse_str(&value)?;
-
-                query = query.filter(actions::Column::CoachingSessionId.eq(coaching_session_id));
-            }
-            _ => {
-                return Err(Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
-                });
-            }
-        }
-    }
-
-    Ok(query.all(db).await?)
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 #[cfg(test)]
@@ -178,7 +124,7 @@ pub async fn find_by(
 mod tests {
     use super::*;
     use entity::{actions::Model, Id};
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase};
 
     #[tokio::test]
     async fn create_returns_a_new_action_model() -> Result<(), Error> {
@@ -283,31 +229,6 @@ mod tests {
         let result = update_status(&db, Id::new_v4(), Status::Completed).await;
 
         assert_eq!(result.is_err(), true);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_by_returns_all_actions_associated_with_coaching_session() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let mut query_params = HashMap::new();
-        let coaching_session_id = Id::new_v4();
-
-        query_params.insert(
-            "coaching_session_id".to_owned(),
-            coaching_session_id.to_string(),
-        );
-
-        let _ = find_by(&db, query_params).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "actions"."id", "actions"."coaching_session_id", "actions"."user_id", "actions"."body", "actions"."due_by", CAST("actions"."status" AS text), "actions"."status_changed_at", "actions"."created_at", "actions"."updated_at" FROM "refactor_platform"."actions" WHERE "actions"."coaching_session_id" = $1"#,
-                [coaching_session_id.into()]
-            )]
-        );
 
         Ok(())
     }

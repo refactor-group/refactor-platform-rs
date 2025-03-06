@@ -6,7 +6,7 @@ use axum_login::{
     tower_sessions::{Expiry, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
-use entity_api::user::Backend;
+use domain::user::Backend;
 use tower_sessions::session_store::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
 
@@ -22,6 +22,7 @@ use tower_http::cors::CorsLayer;
 mod controller;
 mod error;
 pub(crate) mod extractors;
+pub(crate) mod params;
 pub(crate) mod protect;
 mod router;
 

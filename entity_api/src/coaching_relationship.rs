@@ -1,18 +1,18 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::uuid_parse_str;
+use crate::user;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationships::{self, ActiveModel, Entity, Model},
     Id,
 };
+use log::*;
 use sea_orm::{
     entity::prelude::*, sea_query::Alias, Condition, DatabaseConnection, FromQueryResult, JoinType,
     QuerySelect, QueryTrait, Set,
 };
 use serde::ser::{Serialize, SerializeStruct, Serializer};
-
-use log::*;
+use slugify::slugify;
 
 pub async fn create(
     db: &DatabaseConnection,
@@ -24,11 +24,15 @@ pub async fn create(
     );
 
     let now = Utc::now();
+    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
+    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
+    let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
         organization_id: Set(coaching_relationship_model.organization_id),
         coach_id: Set(coaching_relationship_model.coach_id),
         coachee_id: Set(coaching_relationship_model.coachee_id),
+        slug: Set(slug),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -141,29 +145,6 @@ pub async fn get_relationship_with_user_names(
         .into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.one(db).await?)
-}
-
-pub async fn find_by(
-    db: &DatabaseConnection,
-    params: std::collections::HashMap<String, String>,
-) -> Result<Vec<Model>, Error> {
-    let mut query = coaching_relationships::Entity::find();
-
-    for (key, value) in params.iter() {
-        match key.as_str() {
-            "organization_id" => {
-                query = by_organization(query, uuid_parse_str(value)?).await;
-            }
-            _ => {
-                return Err(Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::InvalidQueryTerm,
-                });
-            }
-        }
-    }
-
-    Ok(query.all(db).await?)
 }
 
 pub async fn by_coaching_relationship(

@@ -7,8 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use entity::{organizations, Id};
-use entity_api::organization as OrganizationApi;
+use domain::{organization as OrganizationApi, organizations, Id};
 use serde_json::json;
 use service::config::ApiVersion;
 
@@ -25,7 +24,7 @@ use log::debug;
         ("user_id" = Option<String>, Query, description = "Filter by user_id")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Organizations", body = [entity::organizations::Model]),
+        (status = 200, description = "Successfully retrieved all Organizations", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -61,7 +60,7 @@ pub async fn index(
         ("id" = String, Path, description = "Organization id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = [entity::organizations::Model]),
+        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed")
@@ -89,9 +88,9 @@ pub async fn read(
     params(
         ApiVersion,
     ),
-    request_body = entity::organizations::Model,
+    request_body = organizations::Model,
     responses(
-        (status = 200, description = "Successfully created a new Organization", body = [entity::organizations::Model]),
+        (status = 200, description = "Successfully created a new Organization", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -125,9 +124,9 @@ pub async fn create(
         ApiVersion,
         ("id" = i32, Path, description = "Organization id to update")
     ),
-    request_body = entity::organizations::Model,
+    request_body = organizations::Model,
     responses(
-        (status = 200, description = "Successfully updated a certain Organization by its id", body = [entity::organizations::Model]),
+        (status = 200, description = "Successfully updated a certain Organization by its id", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed")

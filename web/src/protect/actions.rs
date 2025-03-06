@@ -5,8 +5,7 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use entity::Id;
-use entity_api::coaching_session;
+use domain::{coaching_session, Id};
 use log::*;
 use serde::Deserialize;
 

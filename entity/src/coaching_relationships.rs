@@ -20,6 +20,12 @@ pub struct Model {
     pub coach_id: Id,
     pub coachee_id: Id,
     #[serde(skip_deserializing)]
+    // TODO we need to make sure this is unique in the scope of an organization_id.
+    // I did some research and there are two ways to do this:
+    // 1. Create a unique constraint at the database level.
+    // 2. Add application logic (probably in entity_api) to make the check.
+    // We'll need to add a migration for that eventually.
+    #[sea_orm(unique)]
     pub slug: String,
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema

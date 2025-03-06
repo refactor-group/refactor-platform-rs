@@ -6,8 +6,7 @@ use axum::{
     response::IntoResponse,
 };
 
-use entity::Id;
-use entity_api::organization;
+use domain::{organization, Id};
 use std::collections::HashSet;
 
 /// Checks that the organization record referenced by `organization_id`

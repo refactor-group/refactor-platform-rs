@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 
 // TODO: We should find a way to centralize the users/coaches/coachees types
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
-#[schema(as = entity::users::Model)] // OpenAPI schema
+#[schema(as = domain::users::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "users")]
 pub struct Model {
     #[serde(skip_deserializing)]
@@ -16,8 +16,8 @@ pub struct Model {
     pub id: Id,
     #[sea_orm(unique)]
     pub email: String,
-    pub first_name: Option<String>,
-    pub last_name: Option<String>,
+    pub first_name: String,
+    pub last_name: String,
     pub display_name: Option<String>,
     #[serde(skip_serializing)]
     pub password: String,
