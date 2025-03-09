@@ -2,12 +2,11 @@ name: Build and Deploy Containers
 
 on:
   push:
-    branches-ignore:
-      - main  # Run on branches that are not main
-  pull_request:
     branches:
-      - main  # Run on pull requests to merge into main
-  workflow_dispatch:  # Allow manual triggering
+      - main  # Run when changes are pushed to main (including merged prs)
+  pull_request:
+    types: [opened, synchronize, reopened]  # Run when PRs to any branch are opened, synchronized, or reopened
+  workflow_dispatch:  # Allow manual triggering from any branch
 
 env:
   REGISTRY: ghcr.io
@@ -52,6 +51,9 @@ jobs:
           echo "FRONTEND_DNS_ALIAS=${{ secrets.FRONTEND_DNS_ALIAS }}" >> $GITHUB_ENV
           echo "BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}" >> $GITHUB_ENV
           echo "BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" >> $GITHUB_ENV
+          echo "TIPTAP_URL=${{ secrets.TIPTAP_URL }}" >> $GITHUB_ENV
+          echo "TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}" >> $GITHUB_ENV
+          echo "TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAT_JWT_SIGNING_KEY }}" >> $GITHUB_ENV
 
       # Install Rust toolchain
       - name: Install Rust toolchain
