@@ -17,9 +17,10 @@ WORKDIR /usr/src/app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     build-essential \
-    gcc-aarch64-linux-gnu \ 
-    libssl-dev \
     pkg-config \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    libssl-dev \
     libpq-dev && rm -rf /var/lib/apt/lists/*
 
 # Add ARM64 architecture
@@ -29,7 +30,9 @@ RUN dpkg --add-architecture arm64
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev:arm64 \
     libpq-dev:arm64 \
-    pkg-config && \
+    pkg-config \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up environment for OpenSSL cross-compilation
