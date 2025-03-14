@@ -1,22 +1,31 @@
-version: '3.8'
 services:
   # Local PostgreSQL container (used for local development when needed)
-  db:
-    image: postgres:latest  # Use latest PostgreSQL version
-    env_file:
-      - ${ENV_FILE:-.env.local}  # Override by setting ENV_FILE; defaults to .env.local
+  postgres:
+    image: postgres:17  # Use PostgreSQL version 17
+    container_name: postgres  # Name the container "postgres"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}  # Set PostgreSQL user from environment variable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # Set PostgreSQL password from environment variable
+      POSTGRES_DB: ${POSTGRES_DB}  # Set PostgreSQL database name from environment variable
     ports:
-      - "${DB_PORT:-5432}:5432"  # Map host port from .env variable to container's PostgreSQL port
+      - "${POSTGRES_PORT}:5432"  # Map host port to container's PostgreSQL port
     volumes:
+<<<<<<< HEAD
       - db_data:/var/lib/postgresql/data  # Persist PostgreSQL data
       - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
       - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql  # Initialize with refactor_platform_rs.sql
+=======
+      - postgres_data:/var/lib/postgresql/data  # Persist PostgreSQL data
+      - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
+      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_plaform_rs.sql  # Initialize with refactor_platform_rs.sql
+>>>>>>> ca9ea8f (merges in changes from test branch.)
       - ./migration/src/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql  # Initialize with setup_default_user.sql
     networks:
       - backend_network  # Connect to backend_network
 
   # Rust application that connects to either local or remote PostgreSQL
-  backend:
+  rust-app:
+    image: rust-backend  # Use the built image
     build:
       context: .  # Build context is current directory
       dockerfile: Dockerfile  # Use specified Dockerfile
@@ -38,32 +47,51 @@ services:
       TIPTAP_URL: ${TIPTAP_URL}
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+<<<<<<< HEAD
     env_file:
       - ${ENV_FILE:-.env.local}  # Same override capability
+=======
+>>>>>>> ca9ea8f (merges in changes from test branch.)
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"  # Map host port to container's service port
     depends_on:
-      - db  # Ensure db service starts before backend
+      - postgres  # Ensure postgres service starts before rust-app
     networks:
       - backend_network  # Connect to backend_network
-    command: ["/bin/bash", "-c", "/usr/local/bin/refactor_platform_rs -l \\\"$BACKEND_LOG_FILTER_LEVEL\\\" -i \\\"$BACKEND_INTERFACE\\\" -p \\\"$BACKEND_PORT\\\" -d \\\"$DATABASE_URL\\\" --allowed-origins=\\\"$BACKEND_ALLOWED_ORIGINS\\\""]  # Wait for Postgres and run the app
+    command: ["sh", "-c", "sleep 5 && /usr/local/bin/refactor_platform_rs"]  # Wait for Postgres and run the app
   
-  frontend:
+  nextjs-app:
     build:
+<<<<<<< HEAD
       context: .
       dockerfile: Dockerfile
     env_file:
       - ${ENV_FILE:-.env.local}
+=======
+      context: https://github.com/refactor-group/refactor-platform-fe.git#main # change to fs directory to run locally
+      dockerfile: Dockerfile
+      target: runner  # Use runner target
+      args:
+        NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
+        NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
+        NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
+        NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
+        FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT}
+        FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
+    environment:
+      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
+      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
+      NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
+      NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
+>>>>>>> ca9ea8f (merges in changes from test branch.)
     ports:
-      - "${FRONTEND_PORT}:${FRONTEND_PORT}"  # Map a different host port to distinguish frontend
+      - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"  # Map host port to frontend container's service port
     depends_on:
-      - backend
-    # Override command to run the frontend binary instead of the backend binary
-    command: ["/bin/bash", "-c", "/usr/local/bin/refactor_platform_rs -l \\\"$BACKEND_LOG_FILTER_LEVEL\\\" -i \\\"$BACKEND_INTERFACE\\\" -p \\\"$BACKEND_PORT\\\" -d \\\"$DATABASE_URL\\\" --allowed-origins=\\\"$BACKEND_ALLOWED_ORIGINS\\\""]
+      - rust-app  # Ensure postgres service starts before rust-app
 
 networks:
   backend_network:
     driver: bridge  # Use bridge network driver
 
 volumes:
-  db_data:  # Define db_data volume
+  postgres_data:  # Define postgres_data volume

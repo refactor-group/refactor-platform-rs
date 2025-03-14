@@ -22,16 +22,15 @@ log = "0.4.22"
 tower-http = { version = "0.6.1", features = ["fs", "cors"] }
 serde_json = "1.0.128"
 serde = { version = "1.0.210", features = ["derive"] }
-sqlx = { version = "0.8.3", features = ["time", "runtime-tokio"] }
-tokio = { version = "1.40", features = [
-    "full",
-] } # Remove the ".0" for consistency
-tower = { version = "0.5.1", features = ["util", "http"] } # or similar
-tower-sessions = { version = "0.14.0" }
-tower-sessions-sqlx-store = { version = "0.15.0", features = ["postgres"] }
+sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
+sqlx-sqlite = { version = "0.8.2" }
+tokio = { version = "1.40.0", features = ["full"] }
+tower = "0.5.1"
+tower-sessions = { version = "0.13.0" }
+tower-sessions-sqlx-store = { version = "0.14.1", features = ["postgres"] }
 time = "0.3.36"
-utoipa = { version = "5.3.1", features = ["axum_extras", "uuid"] }
-utoipa-rapidoc = { version = "6.0.0", features = ["axum"] }
+utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
+utoipa-rapidoc = { version = "3.0.0", features = ["axum"] }
 
 [dependencies.sea-orm]
 version = "1.1.0" # sea-orm version
