@@ -43,7 +43,11 @@ env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   BACKEND_IMAGE_NAME: rust-backend
   FRONTEND_IMAGE_NAME: nextjs-frontend
+<<<<<<< HEAD
 >>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
+=======
+  OPENSSL_DIR: /usr/local/ssl
+>>>>>>> b96710a (adds openssl dependencies for cross compilation to Dockerfile and gh actions workflow.)
 
 jobs:
   build_test_run:
@@ -128,6 +132,9 @@ jobs:
           echo "POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}" >> $GITHUB_ENV
           echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> $GITHUB_ENV
           echo "DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu" >> $GITHUB_ENV
 
       # Install Rust toolchain
       - name: Install Rust toolchain

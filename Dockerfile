@@ -27,8 +27,15 @@ RUN dpkg --add-architecture arm64
 
 # Install ARM64 packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libc6-dev:arm64 \
-    && rm -rf /var/lib/apt/lists/*
+    libssl-dev:arm64 \
+    libpq-dev:arm64 \
+    pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set up environment for OpenSSL cross-compilation
+ENV PKG_CONFIG_ALLOW_CROSS=1
+ENV OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu
+ENV OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu
 
 # Install the necessary Rust target for ARM64 (Raspberry Pi 5)
 RUN rustup target add aarch64-unknown-linux-gnu
