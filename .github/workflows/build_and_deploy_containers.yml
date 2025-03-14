@@ -1,6 +1,6 @@
-name: Build and Deploy Containers  # Workflow name
+name: Build and Deploy Containers
 
-# When workflows are triggered
+# Trigger on push events to branches with open PRs
 on:
   push:
 <<<<<<< HEAD
@@ -13,8 +13,9 @@ on:
   workflow_dispatch:
 =======
     branches:
-      - main  # When changes are pushed to main (including merged PRs)
+      - main
   pull_request:
+<<<<<<< HEAD
     types: [opened, synchronize, reopened]  # Run when PRs are opened, updated, or reopened
   workflow_dispatch:  # Allow manual triggering from any branch
 >>>>>>> ca9ea8f (merges in changes from test branch.)
@@ -31,9 +32,20 @@ env:
   BACKEND_IMAGE_NAME: rust-backend  # Backend Image name
   FRONTEND_IMAGE_NAME: nextjs-frontend  # Frontend Image name
 >>>>>>> ca9ea8f (merges in changes from test branch.)
+=======
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# Global env vars available to all jobs
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  BACKEND_IMAGE_NAME: rust-backend
+  FRONTEND_IMAGE_NAME: nextjs-frontend
+>>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
 
 jobs:
-  # Build and test the Rust project
   build_test_run:
 <<<<<<< HEAD
     runs-on: ubuntu-22.04
@@ -87,21 +99,27 @@ jobs:
     needs: build_test_run
 =======
     name: Build and Test
-    runs-on: ubuntu-22.04  # Use Ubuntu 22.04 runner
+    runs-on: ubuntu-22.04
     permissions:
-      contents: read  # Permission to read repository contents
-      packages: write  # Permission to write/publish packages
-      attestations: write  # Permission to write security attestations
-      id-token: write  # Permission for OIDC token (needed for security)
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
 
     steps:
-      # Checkout the code
-      - name: Checkout
-        uses: actions/checkout@v4 
+      # Checkout code and print current branch/PR info for transparency
+      - name: Checkout and Print Context
+        uses: actions/checkout@v4
+      - run: |
+          echo "📋 Workflow Context:"
+          echo "  Branch: $GITHUB_REF"
+          echo "  Event: $GITHUB_EVENT_NAME"
+          echo "  PR Number: $GITHUB_PULL_REQUEST"
 
       # Set env vars from GitHub Secrets
       - name: Set environment variables
         run: |
+          echo "🔑 Setting environment variables..."
           # Database connection parameters
           echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> $GITHUB_ENV
           echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> $GITHUB_ENV
@@ -109,26 +127,7 @@ jobs:
           echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> $GITHUB_ENV
           echo "POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}" >> $GITHUB_ENV
           echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> $GITHUB_ENV
-          # Construct database URL from individual parameters
           echo "DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" >> $GITHUB_ENV
-          # Backend configuration
-          echo "BACKEND_PORT=${{ secrets.BACKEND_PORT }}" >> $GITHUB_ENV
-          echo "BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}" >> $GITHUB_ENV
-          echo "BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}" >> $GITHUB_ENV
-          echo "BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" >> $GITHUB_ENV
-          # Container configuration
-          echo "PLATFORM=${{ secrets.PLATFORM }}" >> $GITHUB_ENV
-          echo "CONTAINER_NAME=${{ secrets.CONTAINER_NAME }}" >> $GITHUB_ENV
-          echo "FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}" >> $GITHUB_ENV
-          echo "FRONTEND_PORT=${{ secrets.FRONTEND_PORT }}" >> $GITHUB_ENV
-          # DNS aliases for services in the compose network
-          echo "DB_DNS_ALIAS=${{ secrets.DB_DNS_ALIAS }}" >> $GITHUB_ENV
-          echo "BACKEND_DNS_ALIAS=${{ secrets.BACKEND_DNS_ALIAS }}" >> $GITHUB_ENV
-          echo "FRONTEND_DNS_ALIAS=${{ secrets.FRONTEND_DNS_ALIAS }}" >> $GITHUB_ENV
-          # Tiptap integration parameters
-          echo "TIPTAP_URL=${{ secrets.TIPTAP_URL }}" >> $GITHUB_ENV
-          echo "TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}" >> $GITHUB_ENV
-          echo "TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}" >> $GITHUB_ENV  # Fixed typo
 
       # Install Rust toolchain
       - name: Install Rust toolchain
@@ -136,13 +135,13 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      # Use cached dependencies to speed up builds
+      # Cache Rust dependencies for faster builds
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: "ubuntu-22.04-x86_64-unknown-linux-gnu"  # Cache key based on OS and architecture
+          key: "ubuntu-22.04-x86_64-unknown-linux-gnu"
 
-      # Install seaORM CLI for database migrations/management
+      # Install seaORM CLI for database migrations
       - name: Install seaORM CLI
         run: cargo install sea-orm-cli
 
@@ -153,15 +152,20 @@ jobs:
       # Run all tests to ensure code quality
       - name: Test
         run: cargo test
-  
+
   build_and_push_docker:
     name: Build and Push Docker Images
+<<<<<<< HEAD
     runs-on: ubuntu-22.04 
     needs: build_test_run  # Only run this job if the first job succeeds
     
     # Adds permissions for the job
     # This is needed for the attestations to work
 >>>>>>> ca9ea8f (merges in changes from test branch.)
+=======
+    runs-on: ubuntu-22.04
+    needs: build_test_run
+>>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
     permissions:
       contents: read
       packages: write
@@ -170,6 +174,7 @@ jobs:
 
     steps:
 <<<<<<< HEAD
+<<<<<<< HEAD
       # Checkout source code
       - uses: actions/checkout@v4
 
@@ -177,29 +182,25 @@ jobs:
       - name: Docker login
 =======
       # Checkout the code
+=======
+      # Checkout code and print current branch/PR info
+>>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
       - name: Checkout
         uses: actions/checkout@v4
+      - run: |
+          echo "📋 Workflow Context:"
+          echo "  Branch: $GITHUB_REF"
+          echo "  Event: $GITHUB_EVENT_NAME"
+          echo "  PR Number: $GITHUB_PULL_REQUEST"
 
       # Set env vars for this job
       - name: Set environment variables
         run: |
-          # Copy the same environment variables from the first job
-          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> $GITHUB_ENV
-          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> $GITHUB_ENV
-          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> $GITHUB_ENV
-          echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> $GITHUB_ENV
-          echo "POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}" >> $GITHUB_ENV
-          echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> $GITHUB_ENV
-          echo "DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" >> $GITHUB_ENV
+          echo "🔑 Setting environment variables..."
+          # Only set variables not inherited from previous job
+          echo "DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.POSTGRES_HOST }}:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}" >> $GITHUB_ENV
           echo "BACKEND_PORT=${{ secrets.BACKEND_PORT }}" >> $GITHUB_ENV
           echo "BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}" >> $GITHUB_ENV
-          echo "PLATFORM=${{ secrets.PLATFORM }}" >> $GITHUB_ENV
-          echo "CONTAINER_NAME=${{ secrets.CONTAINER_NAME }}" >> $GITHUB_ENV
-          echo "FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}" >> $GITHUB_ENV
-          echo "FRONTEND_PORT=${{ secrets.FRONTEND_PORT }}" >> $GITHUB_ENV
-          echo "DB_DNS_ALIAS=${{ secrets.DB_DNS_ALIAS }}" >> $GITHUB_ENV
-          echo "BACKEND_DNS_ALIAS=${{ secrets.BACKEND_DNS_ALIAS }}" >> $GITHUB_ENV
-          echo "FRONTEND_DNS_ALIAS=${{ secrets.FRONTEND_DNS_ALIAS }}" >> $GITHUB_ENV
           echo "BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}" >> $GITHUB_ENV
           echo "BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" >> $GITHUB_ENV
           echo "TIPTAP_URL=${{ secrets.TIPTAP_URL }}" >> $GITHUB_ENV
@@ -281,68 +282,101 @@ jobs:
       - name: Cache Docker layers
         uses: actions/cache@v4
         with:
-          path: /tmp/.buildx-cache  # Cache location
-          key: ${{ runner.os }}-buildx-${{ github.sha }}  # Cache key based on OS and commit
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-buildx-  # Fallback cache key
+            ${{ runner.os }}-buildx-
+          enableCrossOsArchive: true
 
       # Extract metadata for Docker images (tags, labels)
       - name: Extract metadata (tags, labels) for Docker
-        id: meta  # ID to reference outputs in later steps
+        id: meta
         uses: docker/metadata-action@v4
         with:
-          # Define the images to extract metadata for
-          images: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}, ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
+          images: |
+            ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
 
       # Build and push the Rust backend image
       - name: Build and Push Rust Backend Image
-        id: push_backend  # ID to reference outputs in later steps
+        id: push_backend
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64,linux/arm64  # Build for multiple architectures
-          context: .  # Build context is root directory
-          push: true  # Push to registry after building
-          tags: |  # Image tags (latest and commit SHA)
+          # Explicitly specify the Dockerfile path
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          context: .
+          push: true
+          tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}  # Apply extracted labels
-          cache-from: type=local,src=/tmp/.buildx-cache  # Use cached layers
-          cache-to: type=local,dest=/tmp/.buildx-cache-new  # Cache new layers
-          file: Dockerfile  # Use root Dockerfile
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
 
       # Build and push the Next.js frontend image
       - name: Build and Push Next.js Frontend Image
-        id: push_frontend  # ID to reference outputs in later steps
+        id: push_frontend
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64,linux/arm64  # Build for multiple architectures
-          context: web  # Build context is web directory
-          push: true  # Push to registry after building
-          tags: |  # Image tags (latest and commit SHA)
+          build-args: |
+            BACKEND_URL=${{ secrets.BACKEND_URL }}
+            BACKEND_PORT=${{ secrets.BACKEND_PORT }}
+          platforms: linux/amd64,linux/arm64
+          context: web
+          push: true
+          tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}  # Apply extracted labels
-          cache-from: type=local,src=/tmp/.buildx-cache  # Use cached layers
-          cache-to: type=local,dest=/tmp/.buildx-cache-new  # Cache new layers
-          file: web/Dockerfile  # Use web Dockerfile
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
 
       # Move new cache to the original location for future jobs
       - name: Move new cache
-        run: mv /tmp/.buildx-cache-new /tmp/.buildx-cache  # Update cache
+        run: |
+          echo "🔄 Moving new cache..."
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       # Generate artifact attestation for security and supply chain integrity
       - name: Generate artifact attestation for Rust Backend Image
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}
-          subject-digest: ${{ steps.push_backend.outputs.digest }}  # Use the digest output from build
-          push-to-registry: true  # Push attestation to registry
+          subject-digest: ${{ steps.push_backend.outputs.digest }}
+          push-to-registry: true
 
-      # Generate artifact attestation for security and supply chain integrity
+      # Generate artifact attestation for Next.js Frontend Image
       - name: Generate artifact attestation for Next.js Frontend Image
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}
+<<<<<<< HEAD
           subject-digest: ${{ steps.push_frontend.outputs.digest }}  # Use the digest output from build
           push-to-registry: true  # Push attestation to registry
 >>>>>>> ca9ea8f (merges in changes from test branch.)
+=======
+          subject-digest: ${{ steps.push_frontend.outputs.digest }}
+          push-to-registry: true
+
+      # Print artifacts and usage commands
+      - name: Print artifacts and usage commands
+        run: |
+          echo "📦 Built and pushed images:"
+          echo "  Backend: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+          echo "  Frontend: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+          echo ""
+          echo "🔑 Login command:"
+          echo "  echo $GITHUB_TOKEN | docker login ${{ env.REGISTRY }} -u $GITHUB_ACTOR --password-stdin"
+          echo ""
+          echo "📥 Pull commands:"
+          echo "  docker pull ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+          echo "  docker pull ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+          echo ""
+          echo "📤 Push commands:"
+          echo "  docker tag <image> ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+          echo "  docker tag <image> ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+          echo "  docker push ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+          echo "  docker push ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
+>>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
