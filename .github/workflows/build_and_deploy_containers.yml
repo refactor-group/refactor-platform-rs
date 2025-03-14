@@ -44,10 +44,13 @@ env:
   BACKEND_IMAGE_NAME: rust-backend
   FRONTEND_IMAGE_NAME: nextjs-frontend
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
 =======
   OPENSSL_DIR: /usr/local/ssl
 >>>>>>> b96710a (adds openssl dependencies for cross compilation to Dockerfile and gh actions workflow.)
+=======
+>>>>>>> baa751f (adds support for aarch64 architecture in CI workflow by updating Rust toolchain targets and cache key)
 
 jobs:
   build_test_run:
@@ -140,13 +143,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
       # Cache Rust dependencies for faster builds
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: "ubuntu-22.04-x86_64-unknown-linux-gnu"
+          key: "ubuntu-22.04-x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu"
 
       # Install seaORM CLI for database migrations
       - name: Install seaORM CLI
