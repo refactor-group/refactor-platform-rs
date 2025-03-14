@@ -17,9 +17,11 @@ WORKDIR /usr/src/app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     build-essential \
+    gcc-aarch64-linux-gnu \
+    libc6-dev:arm64 \ 
     libssl-dev \
     pkg-config \
-    libpq-dev # Include PostgreSQL development libraries && rm -rf /var/lib/apt/lists/*
+    libpq-dev && rm -rf /var/lib/apt/lists/*
 
 # Install the necessary Rust target for ARM64 (Raspberry Pi 5)
 RUN rustup target add aarch64-unknown-linux-gnu
