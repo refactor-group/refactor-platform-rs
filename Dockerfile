@@ -32,7 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev:arm64 \
     pkg-config \
     gcc-aarch64-linux-gnu \
-    g++-aarch64-linux-gnu && \
+    g++-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up environment for OpenSSL cross-compilation
@@ -72,6 +73,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Set the working directory
 WORKDIR /usr/src/app
