@@ -274,8 +274,12 @@ Note that to generate a new Entity using the CLI you must ignore all other table
 ```bash
  DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
 <<<<<<< HEAD
+<<<<<<< HEAD
 ```
 >>>>>>> f61c08b (merges remaining changes from main.)
 =======
 ```
 >>>>>>> ca9ea8f (merges in changes from test branch.)
+=======
+```
+>>>>>>> 527edcb (noop: addresses README linting warning.)
