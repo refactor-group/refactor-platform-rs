@@ -14,20 +14,22 @@ WORKDIR /usr/src/app
 # All subsequent commands will be executed from this directory
 
 # Install necessary packages for building Rust projects with PostgreSQL dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     bash \
     build-essential \
     pkg-config \
-    gcc-aarch64-linux-gnu \
-    g++-aarch64-linux-gnu \
     libssl-dev \
-    libpq-dev && rm -rf /var/lib/apt/lists/*
+    libpq-dev \
+    gcc-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu
 
 # Add ARM64 architecture
 RUN dpkg --add-architecture arm64
 
 # Install ARM64 packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libc6-dev-arm64-cross \
     libssl-dev:arm64 \
     libpq-dev:arm64 \
     pkg-config \
@@ -43,6 +45,13 @@ ENV OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu
 
 # Install the necessary Rust target for ARM64 (Raspberry Pi 5)
 RUN rustup target add aarch64-unknown-linux-gnu
+
+# Configure Cargo to use the ARM64 linker
+# Create a .cargo directory and set the linker for the ARM64 target
+# This ensures that the correct linker is used for cross-compilation
+RUN mkdir -p /root/.cargo && \
+    echo '[target.aarch64-unknown-linux-gnu]' >> /root/.cargo/config && \
+    echo 'linker = "aarch64-linux-gnu-gcc"' >> /root/.cargo/config
 
 # Copy the main workspace Cargo.toml and Cargo.lock to define workspace structure
 COPY Cargo.toml Cargo.lock ./
@@ -69,11 +78,13 @@ RUN cargo build --release --workspace --target aarch64-unknown-linux-gnu
 FROM debian:stable-slim AS runtime 
 
 # Install necessary runtime dependencies and clean up apt lists
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     libssl3 \
     libpq5 \
+    libssl-dev \
+    libpq-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
 
 # Set the working directory
 WORKDIR /usr/src/app
