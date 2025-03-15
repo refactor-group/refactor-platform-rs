@@ -23,35 +23,22 @@ RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     binutils-aarch64-linux-gnu
 
-# Add ARM64 architecture
-RUN dpkg --add-architecture arm64
 
-# Install ARM64 packages
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libc6-dev-arm64-cross \
-    libssl-dev:arm64 \
-    libpq-dev:arm64 \
-    pkg-config \
-    gcc-aarch64-linux-gnu \
-    g++-aarch64-linux-gnu \
-    binutils-aarch64-linux-gnu && \
-    rm -rf /var/lib/apt/lists/*
+# Add missing symlink for OpenSSL (to prevent linking errors)
+RUN ln -s /usr/lib/aarch64-linux-gnu /usr/lib
+
+# Set up Cargo for cross-compilation
+RUN mkdir -p /root/.cargo && \
+    echo '[target.aarch64-unknown-linux-gnu]' >> /root/.cargo/config && \
+    echo 'linker = "aarch64-linux-gnu-gcc"' >> /root/.cargo/config
 
 # Set up environment for OpenSSL cross-compilation
 ENV PKG_CONFIG_ALLOW_CROSS=1
-ENV OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu
+ENV OPENSSL_LIB_DIR=/usr/aarch64-linux-gnu/lib
 ENV OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu
 
 # Install the necessary Rust target for ARM64 (Raspberry Pi 5)
 RUN rustup target add aarch64-unknown-linux-gnu
-
-# Configure Cargo to use the ARM64 linker
-# Create a .cargo directory and set the linker for the ARM64 target
-# This ensures that the correct linker is used for cross-compilation
-RUN mkdir -p /root/.cargo && \
-    echo '[target.aarch64-unknown-linux-gnu]' >> /root/.cargo/config && \
-    echo 'linker = "aarch64-linux-gnu-gcc"' >> /root/.cargo/config
 
 # Copy the main workspace Cargo.toml and Cargo.lock to define workspace structure
 COPY Cargo.toml Cargo.lock ./
