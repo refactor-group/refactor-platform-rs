@@ -20,22 +20,26 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libpq-dev \
+    libssl-dev:arm64 \
+    libpq-dev:arm64 \
+    g++-aarch64-linux-gnu \
     gcc-aarch64-linux-gnu \
-    binutils-aarch64-linux-gnu
+    binutils-aarch64-linux-gnu \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
-
-# Add missing symlink for OpenSSL (to prevent linking errors)
-RUN ln -s /usr/lib/aarch64-linux-gnu /usr/lib
-
-# Set up Cargo for cross-compilation
+ENV PKG_CONFIG_ALLOW_CROSS=1
+ENV OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu
+ENV OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu
 RUN mkdir -p /root/.cargo && \
     echo '[target.aarch64-unknown-linux-gnu]' >> /root/.cargo/config && \
     echo 'linker = "aarch64-linux-gnu-gcc"' >> /root/.cargo/config
 
+
 # Set up environment for OpenSSL cross-compilation
-ENV PKG_CONFIG_ALLOW_CROSS=1
-ENV OPENSSL_LIB_DIR=/usr/aarch64-linux-gnu/lib
-ENV OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu
+RUN mkdir -p /root/.cargo && \
+    echo '[target.aarch64-unknown-linux-gnu]' >> /root/.cargo/config && \
+    echo 'linker = "aarch64-linux-gnu-gcc"' >> /root/.cargo/config
 
 # Install the necessary Rust target for ARM64 (Raspberry Pi 5)
 RUN rustup target add aarch64-unknown-linux-gnu
