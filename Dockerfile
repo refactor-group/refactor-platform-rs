@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libpq-dev \
+    libssl-dev:arm64 \
+    libpq-dev:arm64 \
     g++-aarch64-linux-gnu \
     gcc-aarch64-linux-gnu \
     binutils-aarch64-linux-gnu \
