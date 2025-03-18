@@ -61,9 +61,6 @@ FROM rust:latest AS builder-arm64
 WORKDIR /usr/src/app
 # All subsequent commands will be executed from this directory
 
-# Enable multiarch support
-RUN dpkg --add-architecture arm64
-
 # Update apt repositories
 RUN apt-get update
 
@@ -72,8 +69,8 @@ RUN apt-get install -y \
     bash \
     build-essential \
     pkg-config \
-    libssl-dev:arm64 \
-    libpq-dev:arm64 \
+    libssl-dev \
+    libpq-dev \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
