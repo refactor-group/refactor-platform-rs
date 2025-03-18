@@ -1,29 +1,29 @@
 #!/bin/sh
 set -euo pipefail
 
-case "$(uname -m)" in
-    x86_64)
+# determine the architecture of the host machine
+ARCH=$(uname -m)
+
+# select the binary based on the architecture
+if [ "$ARCH" = "x86_64" ]; then
         echo "Executing AMD64 binary"
-        exec /usr/src/app/target/x86_64-unknown-linux-gnu/release/refactor_platform_rs \
+        exec /app/refactor_platform_rs \
             -l "$BACKEND_LOG_FILTER_LEVEL" \
             -i "$BACKEND_INTERFACE" \
             -p "$BACKEND_PORT" \
             -d "$DATABASE_URL" \
             --allowed-origins="$BACKEND_ALLOWED_ORIGINS" \
             "$@"
-        ;;
-    aarch64)
+elif [ "$ARCH" = "aarch64" ]; then
         echo "Executing ARM64 binary"
-        exec /usr/src/app/target/aarch64-unknown-linux-gnu/release/refactor_platform_rs \
+        exec /app/refactor_platform_rs_arm64 \
             -l "$BACKEND_LOG_FILTER_LEVEL" \
             -i "$BACKEND_INTERFACE" \
             -p "$BACKEND_PORT" \
             -d "$DATABASE_URL" \
-            --allowed-origins="$BACKEND_ALLOWED_ORIGINS"\
+            --allowed-origins="$BACKEND_ALLOWED_ORIGINS" \
             "$@"
-        ;;
-    *)
+else
         echo "Unsupported architecture: $(uname -m)" >&2
         exit 1
-        ;;
-esac
+fi
