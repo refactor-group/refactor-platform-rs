@@ -3,11 +3,9 @@
 
 # Stage 1: Builder Stage for AMD64
 FROM rust:latest AS builder-amd64
-# AS builder names this stage for easy referencing later
 
 # Set the working directory inside the container
 WORKDIR /usr/src/app
-# All subsequent commands will be executed from this directory
 
 # Install necessary packages for building Rust projects with PostgreSQL dependencies
 RUN apt-get update && apt-get install -y \
@@ -21,8 +19,6 @@ RUN apt-get update && apt-get install -y \
 
 # Copy the main workspace Cargo.toml and Cargo.lock to define workspace structure
 COPY Cargo.toml Cargo.lock ./
-# Copy the workspace manifest and lock file. Docker caches layers, so copying these first
-# allows Docker to cache dependencies if these files don't change.
 
 # Copy each module's Cargo.toml to maintain the workspace structure
 COPY ./entity/Cargo.toml ./entity/Cargo.toml
@@ -42,29 +38,27 @@ RUN cargo build --release --workspace
 
 # Stage 2: Builder Stage for ARM64
 FROM rust:latest AS builder-arm64
-# AS builder names this stage for easy referencing later
 
 # Set the working directory inside the container
 WORKDIR /usr/src/app
-# All subsequent commands will be executed from this directory
-
-# Update apt repositories
-RUN apt-get update
 
 # Install necessary packages for building Rust projects with PostgreSQL dependencies
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
     bash \
     build-essential \
     pkg-config \
     libssl-dev \
     libpq-dev \
+    gcc-aarch64-linux-gnu \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
+# Set Cargo linker and Rust flags for ARM64
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+ENV RUSTFLAGS="-C link-arg=-L/usr/lib/aarch64-linux-gnu"
+
 # Copy the main workspace Cargo.toml and Cargo.lock to define workspace structure
 COPY Cargo.toml Cargo.lock ./
-# Copy the workspace manifest and lock file. Docker caches layers, so copying these first
-# allows Docker to cache dependencies if these files don't change.
 
 # Copy each module's Cargo.toml to maintain the workspace structure
 COPY ./entity/Cargo.toml ./entity/Cargo.toml
@@ -79,7 +73,7 @@ COPY . .
 # Remove the target directory to ensure a clean build.
 RUN cargo clean
 
-# Install cross-compliation target if needed
+# Install cross-compilation target if needed
 RUN rustup target add aarch64-unknown-linux-gnu
 
 # Build the Rust application in release mode for the ARM64 target
@@ -109,4 +103,3 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-
