@@ -2,11 +2,11 @@ name: Build and Deploy Containers
 
 # Trigger on push events to branches with open PRs
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize, reopened]
+  # push:
+  #   branches:
+  #     - main
+  # pull_request:
+  #   types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 # Global env vars available to all jobs
