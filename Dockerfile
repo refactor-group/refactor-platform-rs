@@ -61,8 +61,14 @@ FROM rust:latest AS builder-arm64
 WORKDIR /usr/src/app
 # All subsequent commands will be executed from this directory
 
+# Enable multiarch support
+RUN dpkg --add-architecture arm64
+
+# Update apt repositories
+RUN apt-get update
+
 # Install necessary packages for building Rust projects with PostgreSQL dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get install -y \
     bash \
     build-essential \
     pkg-config \
