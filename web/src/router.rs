@@ -120,7 +120,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_protected_routes())
         .merge(coaching_sessions_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
-        // FIXME: protect the OpenAPI web UI
+        // **** FIXME: protect the OpenAPI web UI
         .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
         .fallback_service(static_routes())
 }
@@ -302,7 +302,7 @@ pub fn user_routes(app_state: AppState) -> Router {
 pub fn user_session_protected_routes() -> Router {
     Router::new()
         .route("/protected", get(user_session_controller::protected))
-        .route("/logout", get(user_session_controller::logout))
+        .route("/logout", delete(user_session_controller::logout))
         .route_layer(login_required!(Backend, login_url = "/login"))
 }
 
