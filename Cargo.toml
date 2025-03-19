@@ -17,7 +17,7 @@ clap = { version = "4.5.20", features = ["cargo", "derive", "env"] }
 log = "0.4.22"
 simplelog = { version = "0.12.2", features = ["paris"] }
 tokio = "1.41.0"
-openssl-sys = "0.9.106"
+openssl-sys = { version = "0.9.106", features = ["vendored"] }
 
 [[bin]]
 name = "seed_db"
