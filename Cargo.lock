@@ -2425,6 +2425,7 @@ dependencies = [
  "clap",
  "entity_api",
  "log",
+ "openssl-sys",
  "service",
  "simplelog",
  "tokio",
