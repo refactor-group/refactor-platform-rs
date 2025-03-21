@@ -1,18 +1,13 @@
 name: Build and Deploy Containers
 
 on:
-  # Trigger workflow on push to main
   push:
     branches:
       - main
-
-  # Trigger workflow for PRs targeting main
   pull_request:
     branches:
       - main
     types: [opened, synchronize, reopened]
-
-  # Manual trigger
   workflow_dispatch:
 
 env:
@@ -27,7 +22,7 @@ jobs:
       # Checkout code
       - uses: actions/checkout@v4
 
-      # Enable QEMU for cross-arch builds (arm64 on x86)
+      # Enable QEMU for multi-arch builds (arm64 on x86)
       - name: Set up Rust + QEMU
         uses: docker/setup-qemu-action@v2
         with:
@@ -90,6 +85,14 @@ jobs:
 
       # Set up Docker Buildx for multi-platform builds
       - uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+
+      # Show current Docker cache usage
+      - name: Show Docker Build Cache (Before)
+        run: |
+          echo -e "\033[1;34m🔍 Checking buildx cache BEFORE build...\033[0m"
+          docker buildx du || echo -e "\033[1;33m⚠️ No cache found yet.\033[0m"
 
       # Compute image name based on branch name and tag as `latest`
       - name: Determine Image Tags
@@ -100,7 +103,7 @@ jobs:
           echo "backend_tags=$IMAGE_NAME:latest" >> $GITHUB_OUTPUT
           echo "backend_image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
 
-      # Build and push multi-arch Docker image
+      # Build and push multi-arch Docker image with GHA cache
       - name: Build + Push Backend
         id: push_backend
         uses: docker/build-push-action@v5
@@ -111,8 +114,16 @@ jobs:
           push: true
           provenance: true
           tags: ${{ steps.tags.outputs.backend_tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # Only on main: generate SBOM + attestation
+      # Show updated Docker cache state
+      - name: Show Docker Build Cache (After)
+        run: |
+          echo -e "\033[1;34m📦 Checking buildx cache AFTER build...\033[0m"
+          docker buildx du || echo -e "\033[1;31m❌ Failed to get updated cache info\033[0m"
+
+      # Generate SBOM + attestation only on main branch
       - name: Attest Backend
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/attest-build-provenance@v2
@@ -121,11 +132,11 @@ jobs:
           subject-digest: ${{ steps.push_backend.outputs.digest }}
           push-to-registry: true
 
-      # Print pull + run instructions for verification
+      # Output how to pull and run the pushed image
       - name: Print Usage Instructions
         run: |
-          echo "✅ Backend Image Pushed:"
+          echo -e "\033[1;32m✅ Backend Image Pushed:\033[0m"
           echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:latest"
           echo ""
-          echo "▶️ Run Backend:"
+          echo -e "\033[1;36m▶️ Run Backend:\033[0m"
           echo "  docker run --rm -p 8000:8000 ${{ steps.tags.outputs.backend_image_name }}:latest"
