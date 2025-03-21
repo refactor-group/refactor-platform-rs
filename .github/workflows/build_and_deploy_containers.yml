@@ -2,9 +2,11 @@ name: Build and Deploy Containers
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
@@ -22,18 +24,24 @@ jobs:
 
       - name: Set up Rust + QEMU
         uses: docker/setup-qemu-action@v2
-        with: { platforms: linux/amd64,linux/arm64 }
+        with:
+          platforms: linux/amd64,linux/arm64
 
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu }
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo install sea-orm-cli
+      - name: Install sea-orm-cli
+        run: cargo install sea-orm-cli
 
-      - run: cargo build --release --workspace --target aarch64-unknown-linux-gnu
+      - name: Build release binaries
+        run: cargo build --release --workspace --target aarch64-unknown-linux-gnu
 
-      - run: cargo test --release
+      - name: Run tests
+        run: cargo test --release
 
   build_and_push_docker:
     runs-on: ubuntu-22.04
@@ -47,7 +55,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v2
+      - name: Docker login
+        uses: docker/login-action@v2
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
