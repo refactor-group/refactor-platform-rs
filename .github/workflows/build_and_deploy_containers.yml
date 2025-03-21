@@ -1,62 +1,69 @@
 name: Build and Deploy Containers
 
 on:
+  # Trigger workflow on push to main
   push:
     branches:
       - main
+
+  # Trigger workflow for PRs targeting main
   pull_request:
     branches:
       - main
     types: [opened, synchronize, reopened]
+
+  # Manual trigger
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  BACKEND_IMAGE_NAME: rust-backend
 
 jobs:
   build_test_run:
     runs-on: ubuntu-22.04
+
     steps:
+      # Checkout code
       - uses: actions/checkout@v4
 
-      # Enable emulation for multi-arch builds (amd64 + arm64)
+      # Enable QEMU for cross-arch builds (arm64 on x86)
       - name: Set up Rust + QEMU
         uses: docker/setup-qemu-action@v2
         with:
           platforms: linux/amd64,linux/arm64
 
-      # Install the cross-compiler needed for ARM builds
+      # Install ARM cross-compiler
       - name: Install cross-compilation toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      # Add required Rust targets for cross-compilation
+      # Install Rust toolchain with both x86_64 and arm64 targets
       - name: Set up Rust targets
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
-      # Cache Cargo build artifacts to speed up builds
+      # Cache Rust build artifacts to speed up builds
       - uses: Swatinem/rust-cache@v2
 
+      # Install sea-orm-cli globally
       - name: Install sea-orm-cli
         run: cargo install sea-orm-cli
 
-      # Tell Cargo to use the correct linker for aarch64
+      # Configure the Rust linker for arm64 builds
       - name: Set linker for cross-compilation
         run: |
           mkdir -p ~/.cargo
           echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
 
-      # Build all Rust binaries for aarch64 target
+      # Build release binaries for ARM64
       - name: Build release binaries
         run: cargo build --release --workspace --target aarch64-unknown-linux-gnu
 
-      # Run tests (runs on native x86_64 target)
+      # Run tests for x86_64 (native)
       - name: Run tests
         run: cargo test --release
 
@@ -70,9 +77,10 @@ jobs:
       id-token: write
 
     steps:
+      # Checkout source code
       - uses: actions/checkout@v4
 
-      # Log in to GitHub Container Registry
+      # Authenticate to GitHub Container Registry
       - name: Docker login
         uses: docker/login-action@v2
         with:
@@ -80,23 +88,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Set up Docker Buildx for multi-platform builds
       - uses: docker/setup-buildx-action@v3
 
-      # Generate dynamic tags: branch-name and latest (if main)
+      # Compute image name based on branch name and tag as `latest`
       - name: Determine Image Tags
         id: tags
         run: |
-          REPO=${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}
-          BRANCH_TAG=${GITHUB_REF##*/}
-          TAGS="$REPO:$BRANCH_TAG"
+          BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF##*/}}
+          IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository }}/${BRANCH_NAME}"
+          echo "backend_tags=$IMAGE_NAME:latest" >> $GITHUB_OUTPUT
+          echo "backend_image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
 
-          if [[ "${GITHUB_REF}" == "refs/heads/main" && "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            TAGS="$TAGS,$REPO:latest"
-          fi
-
-          echo "backend_tags=$TAGS" >> $GITHUB_OUTPUT
-
-      # Build and push backend image for multi-platform (amd64 + arm64)
+      # Build and push multi-arch Docker image
       - name: Build + Push Backend
         id: push_backend
         uses: docker/build-push-action@v5
@@ -108,23 +112,20 @@ jobs:
           provenance: true
           tags: ${{ steps.tags.outputs.backend_tags }}
 
-      # Generate build attestation (only for main)
+      # Only on main: generate SBOM + attestation
       - name: Attest Backend
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}
+          subject-name: ${{ steps.tags.outputs.backend_image_name }}
           subject-digest: ${{ steps.push_backend.outputs.digest }}
           push-to-registry: true
 
-      # Output pull/run instructions
+      # Print pull + run instructions for verification
       - name: Print Usage Instructions
         run: |
-          echo "✅ Backend:"
-          echo "  docker pull ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}:${GITHUB_REF##*/}"
-          if [[ "${GITHUB_REF}" == "refs/heads/main" && "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            echo "  docker pull ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}:latest"
-          fi
+          echo "✅ Backend Image Pushed:"
+          echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:latest"
           echo ""
           echo "▶️ Run Backend:"
-          echo "  docker run --rm -p 8000:8000 ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}:${GITHUB_REF##*/}"
+          echo "  docker run --rm -p 8000:8000 ${{ steps.tags.outputs.backend_image_name }}:latest"
