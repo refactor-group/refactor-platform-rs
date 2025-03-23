@@ -82,3 +82,11 @@ impl Related<super::coachees::Entity> for Entity {
 }
 
 impl ActiveModelBehavior for ActiveModel {}
+
+// Alias to be used with queries
+#[derive(DeriveIden, Clone, Copy)]
+pub struct RelationshipAsCoach;
+
+// Alias to be used with queries
+#[derive(DeriveIden, Clone, Copy)]
+pub struct RelationshipAsCoachee;

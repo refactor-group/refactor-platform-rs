@@ -2,11 +2,14 @@ use super::error::{EntityApiErrorKind, Error};
 use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
+use entity::coaching_relationships::{RelationshipAsCoach, RelationshipAsCoachee};
 use entity::users::{ActiveModel, Column, Entity, Model};
-use entity::Id;
+use entity::{coaching_relationships, Id};
 use log::*;
 use password_auth::{generate_hash, verify_password};
-use sea_orm::{entity::prelude::*, DatabaseConnection, Set};
+use sea_orm::{
+    entity::prelude::*, sea_query::Expr, Condition, DatabaseConnection, JoinType, QuerySelect, Set,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
@@ -51,6 +54,46 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+pub async fn find_by_organization(
+    db: &DatabaseConnection,
+    organization_id: Id,
+) -> Result<Vec<Model>, Error> {
+    let query = Entity::find()
+        .join_as(
+            JoinType::InnerJoin,
+            coaching_relationships::Relation::Coaches.def().rev(),
+            // alias
+            RelationshipAsCoach,
+        )
+        .join_as(
+            JoinType::InnerJoin,
+            coaching_relationships::Relation::Coachees.def().rev(),
+            // alias
+            RelationshipAsCoachee,
+        )
+        .filter(
+            Condition::any()
+                .add(
+                    Expr::col((
+                        RelationshipAsCoach,
+                        coaching_relationships::Column::OrganizationId,
+                    ))
+                    .eq(organization_id),
+                )
+                .add(
+                    Expr::col((
+                        RelationshipAsCoachee,
+                        coaching_relationships::Column::OrganizationId,
+                    ))
+                    .eq(organization_id),
+                ),
+        );
+
+    let users = query.all(db).await?;
+
+    Ok(users)
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
@@ -166,6 +209,25 @@ mod test {
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
                 ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_organization_returns_users_who_are_coaches_or_coachees() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let organization_id = Id::new_v4();
+        let _ = find_by_organization(&db, organization_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coach" ON "users"."id" = "relationship_as_coach"."coach_id" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coachee" ON "users"."id" = "relationship_as_coachee"."coachee_id" WHERE "relationship_as_coach"."organization_id" = $1 OR "relationship_as_coachee"."organization_id" = $2"#,
+                [organization_id.into(), organization_id.into()]
             )]
         );
 
