@@ -1,49 +1,13 @@
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::user::IndexParams;
 use crate::{controller::ApiResponse, params::user::*};
 use crate::{AppState, Error};
-use axum::{
-    extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use domain::{user as UserApi, users};
 use service::config::ApiVersion;
 
 use log::*;
-
-/// INDEX all Users
-#[utoipa::path(
-    get,
-    path = "/users",
-    params(
-        ApiVersion,
-    ),
-    responses(
-        (status = 200, description = "Successfully retrieved all Users", body = [users::Model]),
-        (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
-    ),
-    security(
-        ("cookie_auth" = [])
-    )
-)]
-pub async fn index(
-    CompareApiVersion(_v): CompareApiVersion,
-    State(app_state): State<AppState>,
-    Query(params): Query<IndexParams>,
-) -> Result<impl IntoResponse, Error> {
-    debug!("INDEX all Users");
-
-    let users = UserApi::find_by(app_state.db_conn_ref(), params).await?;
-
-    debug!("Found Users {:?}", &users);
-
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), users)))
-}
 
 /// CREATE a new User
 #[utoipa::path(

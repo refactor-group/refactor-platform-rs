@@ -72,6 +72,9 @@ pub async fn find_with_coaches_coachees(
     let organization = find_by_id(db, id).await?;
     let coaches = organization.find_related(coaches::Entity).all(db).await?;
     let coachees = organization.find_related(coachees::Entity).all(db).await?;
+    // Note that a user that is a coach _and_ a coachee is a valid user. Because of this, a user
+    // may be present in both the vector of coaches, and coachees. If you need a unique set of users
+    // you will need to filter out duplicates using whatever logic is needed for your use case.
     Ok((organization, coaches, coachees))
 }
 

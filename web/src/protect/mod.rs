@@ -14,5 +14,5 @@ pub(crate) mod coaching_relationships;
 pub(crate) mod coaching_sessions;
 pub(crate) mod jwt;
 pub(crate) mod notes;
+pub(crate) mod organizations;
 pub(crate) mod overarching_goals;
-pub(crate) mod users;
