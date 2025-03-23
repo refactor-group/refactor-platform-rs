@@ -38,4 +38,32 @@ impl Related<super::coaching_relationships::Entity> for Entity {
     }
 }
 
+impl Related<super::coaches::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::coaching_relationships::Relation::Coaches.def()
+    }
+
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::coaching_relationships::Relation::Organizations
+                .def()
+                .rev(),
+        )
+    }
+}
+
+impl Related<super::coachees::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::coaching_relationships::Relation::Coachees.def()
+    }
+
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::coaching_relationships::Relation::Organizations
+                .def()
+                .rev(),
+        )
+    }
+}
+
 impl ActiveModelBehavior for ActiveModel {}

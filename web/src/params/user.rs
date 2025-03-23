@@ -1,9 +1,23 @@
+use domain::{Id, IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
-use domain::{IntoUpdateMap, UpdateMap};
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct IndexParams {
+    pub(crate) organization_id: Id,
+}
 
+impl IntoQueryFilterMap for IndexParams {
+    fn into_query_filter_map(self) -> QueryFilterMap {
+        let mut query_filter_map = QueryFilterMap::new();
+        query_filter_map.insert(
+            "organization_id".to_string(),
+            Some(Value::Uuid(Some(Box::new(self.organization_id)))),
+        );
+        query_filter_map
+    }
+}
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct UpdateParams {
     pub email: Option<String>,

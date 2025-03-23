@@ -63,6 +63,7 @@ use self::organization::coaching_relationship_controller;
             overarching_goal_controller::update_status,
             user_controller::create,
             user_controller::update,
+            user_controller::index,
             user_session_controller::login,
             user_session_controller::logout,
             jwt_controller::generate_collab_token,
@@ -295,6 +296,12 @@ pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/users", post(user_controller::create))
         .route("/users", put(user_controller::update))
+        .merge(
+            // GET /overarching_goals
+            Router::new()
+                .route("/users", get(user_controller::index))
+                .route_layer(from_fn_with_state(app_state.clone(), protect::users::index)),
+        )
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }

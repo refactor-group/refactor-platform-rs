@@ -1,7 +1,9 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
-use entity::{coaching_relationships, organizations::*, prelude::Organizations, Id};
+use entity::{
+    coachees, coaches, coaching_relationships, organizations::*, prelude::Organizations, Id,
+};
 use sea_orm::{
     entity::prelude::*, sea_query, ActiveValue::Set, ActiveValue::Unchanged, DatabaseConnection,
     JoinType, QuerySelect, TryIntoModel,
@@ -61,6 +63,16 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+pub async fn find_with_coaches_coachees(
+    db: &DatabaseConnection,
+    id: Id,
+) -> Result<(Model, Vec<coaches::Model>, Vec<coachees::Model>), Error> {
+    let organization = find_by_id(db, id).await?;
+    let coaches = organization.find_related(coaches::Entity).all(db).await?;
+    let coachees = organization.find_related(coachees::Entity).all(db).await?;
+    Ok((organization, coaches, coachees))
 }
 
 pub async fn find_by(
