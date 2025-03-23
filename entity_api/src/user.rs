@@ -89,7 +89,8 @@ pub async fn find_by_organization(
                     ))
                     .eq(organization_id),
                 ),
-        );
+        )
+        .distinct();
 
     let users = query.all(db).await?;
 
@@ -226,7 +227,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coach" ON "users"."id" = "relationship_as_coach"."coach_id" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coachee" ON "users"."id" = "relationship_as_coachee"."coachee_id" WHERE "relationship_as_coach"."organization_id" = $1 OR "relationship_as_coachee"."organization_id" = $2"#,
+                r#"SELECT DISTINCT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coach" ON "users"."id" = "relationship_as_coach"."coach_id" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coachee" ON "users"."id" = "relationship_as_coachee"."coachee_id" WHERE "relationship_as_coach"."organization_id" = $1 OR "relationship_as_coachee"."organization_id" = $2"#,
                 [organization_id.into(), organization_id.into()]
             )]
         );
