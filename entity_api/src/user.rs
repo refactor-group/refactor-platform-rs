@@ -2,14 +2,12 @@ use super::error::{EntityApiErrorKind, Error};
 use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
-use entity::coaching_relationships::{RelationshipAsCoach, RelationshipAsCoachee};
+
 use entity::users::{ActiveModel, Column, Entity, Model};
-use entity::{coaching_relationships, Id};
+use entity::{organizations, organizations_users, Id};
 use log::*;
 use password_auth::{generate_hash, verify_password};
-use sea_orm::{
-    entity::prelude::*, sea_query::Expr, Condition, DatabaseConnection, JoinType, QuerySelect, Set,
-};
+use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, QuerySelect, Set};
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
@@ -60,39 +58,19 @@ pub async fn find_by_organization(
     db: &DatabaseConnection,
     organization_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    let query = Entity::find()
-        .join_as(
+    let users = Entity::find()
+        .distinct()
+        .join(
             JoinType::InnerJoin,
-            coaching_relationships::Relation::Coaches.def().rev(),
-            // alias
-            RelationshipAsCoach,
+            organizations_users::Relation::Users.def().rev(),
         )
-        .join_as(
+        .join(
             JoinType::InnerJoin,
-            coaching_relationships::Relation::Coachees.def().rev(),
-            // alias
-            RelationshipAsCoachee,
+            organizations_users::Relation::Organizations.def(),
         )
-        .filter(
-            Condition::any()
-                .add(
-                    Expr::col((
-                        RelationshipAsCoach,
-                        coaching_relationships::Column::OrganizationId,
-                    ))
-                    .eq(organization_id),
-                )
-                .add(
-                    Expr::col((
-                        RelationshipAsCoachee,
-                        coaching_relationships::Column::OrganizationId,
-                    ))
-                    .eq(organization_id),
-                ),
-        )
-        .distinct();
-
-    let users = query.all(db).await?;
+        .filter(organizations::Column::Id.eq(organization_id))
+        .all(db)
+        .await?;
 
     Ok(users)
 }
@@ -227,8 +205,8 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coach" ON "users"."id" = "relationship_as_coach"."coach_id" INNER JOIN "refactor_platform"."coaching_relationships" AS "relationship_as_coachee" ON "users"."id" = "relationship_as_coachee"."coachee_id" WHERE "relationship_as_coach"."organization_id" = $1 OR "relationship_as_coachee"."organization_id" = $2"#,
-                [organization_id.into(), organization_id.into()]
+                r#"SELECT DISTINCT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" WHERE "organizations"."id" = $1"#,
+                [organization_id.into()]
             )]
         );
 
