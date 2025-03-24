@@ -1,9 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
-use entity::{
-    coachees, coaches, coaching_relationships, organizations::*, prelude::Organizations, Id,
-};
+use entity::{coaching_relationships, organizations::*, prelude::Organizations, Id};
 use sea_orm::{
     entity::prelude::*, sea_query, ActiveValue::Set, ActiveValue::Unchanged, DatabaseConnection,
     JoinType, QuerySelect, TryIntoModel,
@@ -63,19 +61,6 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
-}
-
-pub async fn find_with_coaches_coachees(
-    db: &DatabaseConnection,
-    id: Id,
-) -> Result<(Model, Vec<coaches::Model>, Vec<coachees::Model>), Error> {
-    let organization = find_by_id(db, id).await?;
-    let coaches = organization.find_related(coaches::Entity).all(db).await?;
-    let coachees = organization.find_related(coachees::Entity).all(db).await?;
-    // Note that a user that is a coach _and_ a coachee is a valid user. Because of this, a user
-    // may be present in both the vector of coaches, and coachees. If you need a unique set of users
-    // you will need to filter out duplicates using whatever logic is needed for your use case.
-    Ok((organization, coaches, coachees))
 }
 
 pub async fn find_by(

@@ -5,23 +5,21 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use domain::{organization::find_with_coaches_coachees, Id};
+use domain::{user, Id};
 use log::error;
 
 /// Checks that the authenticated user is associated with the organization specified by `organization_id`
 /// Intended to be given to axum::middleware::from_fn_with_state in the router
 pub(crate) async fn index(
     State(app_state): State<AppState>,
-    AuthenticatedUser(user): AuthenticatedUser,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
     Path(organization_id): Path<Id>,
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    match find_with_coaches_coachees(app_state.db_conn_ref(), organization_id).await {
-        Ok((_organization, coaches, coachees)) => {
-            if coaches.iter().any(|coach| coach.id == user.id)
-                || coachees.iter().any(|coachee| coachee.id == user.id)
-            {
+    match user::find_by_organization(app_state.db_conn_ref(), organization_id).await {
+        Ok(users) => {
+            if users.iter().any(|user| user.id == authenticated_user.id) {
                 next.run(request).await
             } else {
                 (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
