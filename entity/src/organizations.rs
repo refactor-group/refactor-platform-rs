@@ -30,11 +30,58 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::coaching_relationships::Entity")]
     CoachingRelationships,
+
+    #[sea_orm(has_many = "super::organizations_users::Entity")]
+    OrganizationsUsers,
 }
 
 impl Related<super::coaching_relationships::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::CoachingRelationships.def()
+    }
+}
+
+impl Related<super::coaches::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::coaching_relationships::Relation::Coaches.def()
+    }
+
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::coaching_relationships::Relation::Organizations
+                .def()
+                .rev(),
+        )
+    }
+}
+
+impl Related<super::coachees::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::coaching_relationships::Relation::Coachees.def()
+    }
+
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::coaching_relationships::Relation::Organizations
+                .def()
+                .rev(),
+        )
+    }
+}
+
+// Through relationship for users by way of organizations_users
+// organizations -> organizations_users -> users
+impl Related<super::users::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::organizations_users::Relation::Users.def()
+    }
+
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::organizations_users::Relation::Organizations
+                .def()
+                .rev(),
+        )
     }
 }
 

@@ -3929,6 +3929,7 @@ dependencies = [
  "axum-login",
  "chrono",
  "domain",
+ "entity_api",
  "log",
  "password-auth",
  "reqwest",

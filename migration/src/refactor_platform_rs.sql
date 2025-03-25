@@ -1,6 +1,6 @@
--- SQL dump generated using DBML (dbml-lang.org)
+-- SQL dump generated using DBML (dbml.dbdiagram.io)
 -- Database: PostgreSQL
--- Generated at: 2025-02-26T21:52:09.494Z
+-- Generated at: 2025-03-24T23:00:14.648Z
 
 
 CREATE TYPE "refactor_platform"."status" AS ENUM (
@@ -38,6 +38,14 @@ CREATE TABLE "refactor_platform"."users" (
   "password" varchar NOT NULL,
   "github_username" varchar,
   "github_profile_url" varchar,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE TABLE "refactor_platform"."organizations_users" (
+  "id" uuid UNIQUE PRIMARY KEY NOT NULL DEFAULT (gen_random_uuid()),
+  "organization_id" uuid NOT NULL,
+  "user_id" uuid NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
@@ -94,6 +102,10 @@ CREATE TABLE "refactor_platform"."actions" (
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
 
+CREATE UNIQUE INDEX "coaching_relationships_coach_coachee_org" ON "refactor_platform"."coaching_relationships" ("coach_id", "coachee_id", "organization_id");
+
+CREATE UNIQUE INDEX "organizations_users_org_user" ON "refactor_platform"."organizations_users" ("organization_id", "user_id");
+
 COMMENT ON COLUMN "refactor_platform"."organizations"."name" IS 'The name of the organization that the coach <--> coachee belong to';
 
 COMMENT ON COLUMN "refactor_platform"."organizations"."logo" IS 'A URI pointing to the organization''s logo icon file';
@@ -115,6 +127,12 @@ COMMENT ON COLUMN "refactor_platform"."coaching_relationships"."updated_at" IS '
 COMMENT ON COLUMN "refactor_platform"."users"."display_name" IS 'If a user wants to go by something other than first & last names';
 
 COMMENT ON COLUMN "refactor_platform"."users"."updated_at" IS 'The last date and time fields were changed';
+
+COMMENT ON COLUMN "refactor_platform"."organizations_users"."organization_id" IS 'The organization joined to the user';
+
+COMMENT ON COLUMN "refactor_platform"."organizations_users"."user_id" IS 'The user joined to the organization';
+
+COMMENT ON COLUMN "refactor_platform"."organizations_users"."updated_at" IS 'The last date and time fields were changed';
 
 COMMENT ON COLUMN "refactor_platform"."coaching_sessions"."coaching_relationship_id" IS 'The coaching relationship (i.e. what coach & coachee under what organization) associated with this coaching session';
 
@@ -169,3 +187,7 @@ ALTER TABLE "refactor_platform"."agreements" ADD FOREIGN KEY ("coaching_session_
 ALTER TABLE "refactor_platform"."agreements" ADD FOREIGN KEY ("user_id") REFERENCES "refactor_platform"."users" ("id");
 
 ALTER TABLE "refactor_platform"."actions" ADD FOREIGN KEY ("coaching_session_id") REFERENCES "refactor_platform"."coaching_sessions" ("id");
+
+ALTER TABLE "refactor_platform"."organizations_users" ADD FOREIGN KEY ("organization_id") REFERENCES "refactor_platform"."organizations" ("id");
+
+ALTER TABLE "refactor_platform"."organizations_users" ADD FOREIGN KEY ("user_id") REFERENCES "refactor_platform"."users" ("id");

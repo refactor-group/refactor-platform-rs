@@ -20,6 +20,10 @@ Table refactor_platform.coaching_relationships {
   slug varchar [note: 'A human-friendly canonical name for a record. Considered immutable by convention. Must be unique.']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
+
+  Indexes {
+    (coach_id, coachee_id, organization_id) [unique, name: "coaching_relationships_coach_coachee_org"]
+  }
 }
 
 Table refactor_platform.users {
@@ -33,6 +37,18 @@ Table refactor_platform.users {
   github_profile_url varchar
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
+}
+
+Table refactor_platform.organizations_users {
+  id uuid [primary key, unique, not null, default: `gen_random_uuid()`]
+  organization_id uuid [not null, note: 'The organization joined to the user']
+  user_id uuid [not null, note: 'The user joined to the organization']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
+
+  Indexes {
+    (organization_id, user_id) [unique, name: "organizations_users_org_user"]
+  }
 }
 
 Table refactor_platform.coaching_sessions {
@@ -118,3 +134,7 @@ Ref: refactor_platform.agreements.user_id > refactor_platform.users.id
 
 // actions relationships
 Ref: refactor_platform.actions.coaching_session_id > refactor_platform.coaching_sessions.id
+
+// organizations_users relationships
+Ref: refactor_platform.organizations_users.organization_id > refactor_platform.organizations.id
+Ref: refactor_platform.organizations_users.user_id > refactor_platform.users.id

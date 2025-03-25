@@ -1,9 +1,7 @@
+use domain::{IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
-
-use domain::{IntoUpdateMap, UpdateMap};
-
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct UpdateParams {
     pub email: Option<String>,

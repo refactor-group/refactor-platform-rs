@@ -56,6 +56,7 @@ use self::organization::coaching_relationship_controller;
             organization::coaching_relationship_controller::create,
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
+            organization::user_controller::index,
             overarching_goal_controller::create,
             overarching_goal_controller::update,
             overarching_goal_controller::index,
@@ -114,6 +115,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_routes(app_state.clone()))
         .merge(note_routes(app_state.clone()))
         .merge(organization_coaching_relationship_routes(app_state.clone()))
+        .merge(organization_user_routes(app_state.clone()))
         .merge(overarching_goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
         .merge(user_session_routes())
@@ -239,6 +241,23 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+fn organization_user_routes(app_state: AppState) -> Router {
+    Router::new()
+        .merge(
+            // GET /organizations/:organization_id/users
+            Router::new()
+                .route(
+                    "/organizations/:organization_id/users",
+                    get(organization::user_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::organizations::users::index,
+                )),
+        )
+        .route_layer(login_required!(Backend, login_url = "/login"))
+        .with_state(app_state)
+}
 pub fn organization_routes(app_state: AppState) -> Router {
     Router::new()
         // The goal will be able to do something like the follow Node.js code does for
