@@ -47,6 +47,9 @@ pub(crate) async fn create(
     .await
 
     // TODO: Check that the authenticated user is a coach
+    // It's not immediately clear whether or not this endpoint will be only for coaches in the future until we work out some of the specifics
+    //around the user creation workflow. Ex create user -> assign user to coaching relationship later.
+    // Leaving this out at the moment. It may be that we decide on separate endpoints for different "flavors" of user creation.
 }
 
 async fn check_user_in_organization(
