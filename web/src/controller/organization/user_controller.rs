@@ -36,11 +36,7 @@ pub async fn index(
     State(app_state): State<AppState>,
     Path(organization_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("INDEX all Users for Organization {:?}", organization_id);
-
     let users = UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await?;
-
-    debug!("Found Users {:?}", &users);
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), users)))
 }
@@ -66,13 +62,17 @@ pub async fn index(
 )]
 pub(crate) async fn create(
     State(app_state): State<AppState>,
-    AuthenticatedUser(_authenticated_user): AuthenticatedUser,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
     Path(organization_id): Path<Id>,
     Json(user_model): Json<users::Model>,
 ) -> Result<impl IntoResponse, Error> {
-    let user =
-        UserApi::create_by_organization(app_state.db_conn_ref(), organization_id, user_model)
-            .await?;
-
+    let user = UserApi::create_user_and_coaching_relationship(
+        app_state.db_conn_ref(),
+        organization_id,
+        authenticated_user.id,
+        user_model,
+    )
+    .await?;
+    info!("User created: {:?}", user);
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }

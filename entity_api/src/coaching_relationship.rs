@@ -15,7 +15,7 @@ use serde::ser::{Serialize, SerializeStruct, Serializer};
 use slugify::slugify;
 
 pub async fn create(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_relationship_model: Model,
 ) -> Result<Model, Error> {
     debug!(
@@ -37,7 +37,6 @@ pub async fn create(
         updated_at: Set(now.into()),
         ..Default::default()
     };
-
     Ok(coaching_relationship_active_model.insert(db).await?)
 }
 

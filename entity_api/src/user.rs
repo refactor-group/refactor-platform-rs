@@ -8,7 +8,8 @@ use entity::{organizations, organizations_users, Id};
 use log::*;
 use password_auth::{generate_hash, verify_password};
 use sea_orm::{
-    entity::prelude::*, DatabaseConnection, JoinType, QuerySelect, Set, TransactionTrait,
+    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QuerySelect, Set,
+    TransactionTrait,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -39,7 +40,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
 }
 
 pub async fn create_by_organization(
-    db: &DatabaseConnection,
+    db: &impl TransactionTrait,
     organization_id: Id,
     user_model: Model,
 ) -> Result<Model, Error> {
@@ -74,7 +75,7 @@ pub async fn find_by_email(db: &DatabaseConnection, email: &str) -> Result<Optio
     Ok(user)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
@@ -127,7 +128,6 @@ pub struct Credentials {
 
 impl Backend {
     pub fn new(db: &Arc<DatabaseConnection>) -> Self {
-        info!("** Backend::new()");
         Self {
             // Arc is cloned, but the source DatabaseConnection refers to the same instance
             // as the one passed in to new() (see the Arc documentation for more info)

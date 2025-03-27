@@ -25,7 +25,7 @@ pub(crate) async fn index(
         request,
         next,
     )
-    .await;
+    .await
 }
 
 /// Checks that the authenticated user is associated with the organization specified by `organization_id`
@@ -44,7 +44,7 @@ pub(crate) async fn create(
         request,
         next,
     )
-    .await;
+    .await
 
     // TODO: Check that the authenticated user is a coach
 }
