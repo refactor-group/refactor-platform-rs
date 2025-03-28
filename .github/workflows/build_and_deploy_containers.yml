@@ -26,7 +26,7 @@ jobs:
       - name: Set up Rust + QEMU
         uses: docker/setup-qemu-action@v2
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64  # ✅ Only needed once per buildx host
 
       # Install ARM cross-compiler
       - name: Install cross-compilation toolchain
@@ -38,10 +38,12 @@ jobs:
       - name: Set up Rust targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu  # ✅ Targets declared here
 
-      # Cache Rust build artifacts to speed up builds
+      # Cache Rust build artifacts (unique key avoids 409 Conflict errors)
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-key: ${{ runner.os }}-cargo-${{ github.sha }}
 
       # Install sea-orm-cli globally
       - name: Install sea-orm-cli
@@ -110,7 +112,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64  # ✅ Declared again for buildx
           push: true
           provenance: true
           tags: ${{ steps.tags.outputs.backend_tags }}
