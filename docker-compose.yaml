@@ -10,15 +10,9 @@ services:
     ports:
       - "${POSTGRES_PORT}:5432"  # Map host port to container's PostgreSQL port
     volumes:
-<<<<<<< HEAD
-      - db_data:/var/lib/postgresql/data  # Persist PostgreSQL data
-      - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
-      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql  # Initialize with refactor_platform_rs.sql
-=======
       - postgres_data:/var/lib/postgresql/data  # Persist PostgreSQL data
       - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
       - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_plaform_rs.sql  # Initialize with refactor_platform_rs.sql
->>>>>>> ca9ea8f (merges in changes from test branch.)
       - ./migration/src/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql  # Initialize with setup_default_user.sql
     networks:
       - backend_network  # Connect to backend_network
@@ -47,11 +41,6 @@ services:
       TIPTAP_URL: ${TIPTAP_URL}
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
-<<<<<<< HEAD
-    env_file:
-      - ${ENV_FILE:-.env.local}  # Same override capability
-=======
->>>>>>> ca9ea8f (merges in changes from test branch.)
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"  # Map host port to container's service port
     depends_on:
@@ -62,12 +51,6 @@ services:
   
   nextjs-app:
     build:
-<<<<<<< HEAD
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - ${ENV_FILE:-.env.local}
-=======
       context: https://github.com/refactor-group/refactor-platform-fe.git#main # change to fs directory to run locally
       dockerfile: Dockerfile
       target: runner  # Use runner target
@@ -83,7 +66,6 @@ services:
       NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
       NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
->>>>>>> ca9ea8f (merges in changes from test branch.)
     ports:
       - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"  # Map host port to frontend container's service port
     depends_on:
