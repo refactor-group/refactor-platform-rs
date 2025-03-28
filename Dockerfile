@@ -4,7 +4,7 @@
 FROM --platform=${BUILDPLATFORM} rust:bullseye AS builder
 
 RUN apt-get update && apt-get install -y \
-    build-essential pkg-config libssl-dev libpq-dev curl git \
+    build-essential bash pkg-config libssl-dev libpq-dev curl git \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
