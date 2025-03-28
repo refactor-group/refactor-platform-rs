@@ -57,12 +57,12 @@ use self::organization::coaching_relationship_controller;
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
             organization::user_controller::index,
+            organization::user_controller::create,
             overarching_goal_controller::create,
             overarching_goal_controller::update,
             overarching_goal_controller::index,
             overarching_goal_controller::read,
             overarching_goal_controller::update_status,
-            user_controller::create,
             user_controller::update,
             user_session_controller::login,
             user_session_controller::logout,
@@ -255,6 +255,18 @@ fn organization_user_routes(app_state: AppState) -> Router {
                     protect::organizations::users::index,
                 )),
         )
+        .merge(
+            // POST /organizations/:organization_id/users
+            Router::new()
+                .route(
+                    "/organizations/:organization_id/users",
+                    post(organization::user_controller::create),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::organizations::users::create,
+                )),
+        )
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
@@ -312,7 +324,6 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
 
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
-        .route("/users", post(user_controller::create))
         .route("/users", put(user_controller::update))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)

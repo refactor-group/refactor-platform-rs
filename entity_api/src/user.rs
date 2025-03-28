@@ -7,12 +7,15 @@ use entity::users::{ActiveModel, Column, Entity, Model};
 use entity::{organizations, organizations_users, Id};
 use log::*;
 use password_auth::{generate_hash, verify_password};
-use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, QuerySelect, Set};
+use sea_orm::{
+    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QuerySelect, Set,
+    TransactionTrait,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
 
-pub async fn create(db: &DatabaseConnection, user_model: Model) -> Result<Model, Error> {
+pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Model, Error> {
     debug!(
         "New User Relationship Model to be inserted: {:?}",
         user_model
@@ -36,6 +39,31 @@ pub async fn create(db: &DatabaseConnection, user_model: Model) -> Result<Model,
     Ok(user_active_model.insert(db).await?)
 }
 
+pub async fn create_by_organization(
+    db: &impl TransactionTrait,
+    organization_id: Id,
+    user_model: Model,
+) -> Result<Model, Error> {
+    // start database transaction
+    let txn = db.begin().await?;
+
+    let user = create(&txn, user_model).await?;
+    let now = Utc::now();
+    let organization_user = organizations_users::ActiveModel {
+        organization_id: Set(organization_id),
+        user_id: Set(user.id),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    };
+
+    organization_user.insert(&txn).await?;
+
+    txn.commit().await?;
+    // end database transaction
+    Ok(user)
+}
+
 pub async fn find_by_email(db: &DatabaseConnection, email: &str) -> Result<Option<Model>, Error> {
     let user: Option<Model> = Entity::find()
         .filter(Column::Email.eq(email))
@@ -47,7 +75,7 @@ pub async fn find_by_email(db: &DatabaseConnection, email: &str) -> Result<Optio
     Ok(user)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
@@ -100,7 +128,6 @@ pub struct Credentials {
 
 impl Backend {
     pub fn new(db: &Arc<DatabaseConnection>) -> Self {
-        info!("** Backend::new()");
         Self {
             // Arc is cloned, but the source DatabaseConnection refers to the same instance
             // as the one passed in to new() (see the Arc documentation for more info)
@@ -209,6 +236,77 @@ mod test {
                 [organization_id.into()]
             )]
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_by_organization_returns_a_new_user_model() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let organization_id = Id::new_v4();
+
+        let user_model = entity::users::Model {
+            id: user_id,
+            email: "test@test.com".to_owned(),
+            first_name: "Test".to_owned(),
+            last_name: "User".to_owned(),
+            display_name: None,
+            password: "password123".to_owned(),
+            github_username: None,
+            github_profile_url: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let organization_user_model = entity::organizations_users::Model {
+            id: Id::new_v4(),
+            organization_id,
+            user_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[user_model.clone()]])
+            .append_query_results([[organization_user_model.clone()]])
+            .into_connection();
+
+        let user = create_by_organization(&db, organization_id, user_model.clone()).await?;
+
+        assert_eq!(user.id, user_model.id);
+        assert_eq!(user.email, user_model.email);
+        assert_eq!(user.first_name, user_model.first_name);
+        assert_eq!(user.last_name, user_model.last_name);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_by_organization_returns_error_on_duplicate_email() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let organization_id = Id::new_v4();
+
+        let user_model = entity::users::Model {
+            id: user_id,
+            email: "test@test.com".to_owned(),
+            first_name: "Test".to_owned(),
+            last_name: "User".to_owned(),
+            display_name: None,
+            password: "password123".to_owned(),
+            github_username: None,
+            github_profile_url: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_errors([sea_orm::DbErr::Custom("Duplicate email".to_string())])
+            .into_connection();
+
+        let result = create_by_organization(&db, organization_id, user_model).await;
+        assert!(result.is_err());
 
         Ok(())
     }
