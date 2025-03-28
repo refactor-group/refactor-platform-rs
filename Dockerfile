@@ -22,6 +22,8 @@ RUN cargo build --release --workspace
 # Stage 2: Minimal runtime image using non-root user
 FROM debian:bullseye-slim
 
+RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
+
 RUN useradd -m -s /bin/bash appuser
 WORKDIR /app
 
