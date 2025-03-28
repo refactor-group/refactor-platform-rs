@@ -1,9 +1,7 @@
 name: Build and Deploy Containers
 
-# Trigger on push events to branches with open PRs
 on:
   push:
-<<<<<<< HEAD
     branches:
       - main
   pull_request:
@@ -11,50 +9,13 @@ on:
       - main
     types: [opened, synchronize, reopened]
   workflow_dispatch:
-=======
-    branches:
-      - main
-  pull_request:
-<<<<<<< HEAD
-    types: [opened, synchronize, reopened]  # Run when PRs are opened, updated, or reopened
-  workflow_dispatch:  # Allow manual triggering from any branch
->>>>>>> ca9ea8f (merges in changes from test branch.)
 
-# Global env vars available to all jobs
-env:
-<<<<<<< HEAD
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-=======
-  REGISTRY: ghcr.io  # GitHub Container Registry URL
-  IMAGE_NAME: ${{ github.repository }}  # Uses the format org/repo-name
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GH token for authentication
-  BACKEND_IMAGE_NAME: rust-backend  # Backend Image name
-  FRONTEND_IMAGE_NAME: nextjs-frontend  # Frontend Image name
->>>>>>> ca9ea8f (merges in changes from test branch.)
-=======
-    types: [opened, synchronize, reopened]
-  workflow_dispatch:
-
-# Global env vars available to all jobs
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  BACKEND_IMAGE_NAME: rust-backend
-  FRONTEND_IMAGE_NAME: nextjs-frontend
-<<<<<<< HEAD
-<<<<<<< HEAD
->>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
-=======
-  OPENSSL_DIR: /usr/local/ssl
->>>>>>> b96710a (adds openssl dependencies for cross compilation to Dockerfile and gh actions workflow.)
-=======
->>>>>>> baa751f (adds support for aarch64 architecture in CI workflow by updating Rust toolchain targets and cache key)
 
 jobs:
   build_test_run:
-<<<<<<< HEAD
     runs-on: ubuntu-22.04
 
     steps:
@@ -104,9 +65,6 @@ jobs:
   build_and_push_docker:
     runs-on: ubuntu-22.04
     needs: build_test_run
-=======
-    name: Build and Test
-    runs-on: ubuntu-22.04
     permissions:
       contents: read
       packages: write
@@ -114,128 +72,11 @@ jobs:
       id-token: write
 
     steps:
-      # Checkout code and print current branch/PR info for transparency
-      - name: Checkout and Print Context
-        uses: actions/checkout@v4
-      - run: |
-          echo "📋 Workflow Context:"
-          echo "  Branch: $GITHUB_REF"
-          echo "  Event: $GITHUB_EVENT_NAME"
-          echo "  PR Number: $GITHUB_PULL_REQUEST"
-
-      # Set env vars from GitHub Secrets
-      - name: Set environment variables
-        run: |
-          echo "🔑 Setting environment variables..."
-          # Database connection parameters
-          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> $GITHUB_ENV
-          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> $GITHUB_ENV
-          echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> $GITHUB_ENV
-          echo "POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}" >> $GITHUB_ENV
-          echo "POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}" >> $GITHUB_ENV
-          echo "POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}" >> $GITHUB_ENV
-          echo "DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/aarch64-linux-gnu/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu" >> $GITHUB_ENV
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-        with:
-          platforms: linux/amd64,linux/arm64
-
-      # Install Rust toolchain
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-
-      # Cache Rust dependencies for faster builds
-      - name: Use cached dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: "ubuntu-22.04-x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu"
-
-      # Cache Rust dependencies for faster builds
-      - name: Use cached dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: "aarch64-unknown-linux-gnu"
-
-      # Install seaORM CLI for database migrations
-      - name: Install seaORM CLI
-        run: cargo install sea-orm-cli
-
-      # Build all project targets
-      - name: Build
-        run: cargo build --all-targets --release --workspace --target aarch64-unknown-linux-gnu
-
-      # Run all tests to ensure code quality
-      - name: Test
-        run: cargo test --release  # Ensure tests are run in release mode
-
-      - name: Clean and Rebuild
-        run: |
-          cargo clean
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="aarch64-linux-gnu-gcc" cargo build --release --workspace --target aarch64-unknown-linux-gnu
-
-  build_and_push_docker:
-    name: Build and Push Docker Images
-<<<<<<< HEAD
-    runs-on: ubuntu-22.04 
-    needs: build_test_run  # Only run this job if the first job succeeds
-    
-    # Adds permissions for the job
-    # This is needed for the attestations to work
->>>>>>> ca9ea8f (merges in changes from test branch.)
-=======
-    runs-on: ubuntu-22.04
-    needs: build_test_run
->>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-
-    steps:
-<<<<<<< HEAD
-<<<<<<< HEAD
       # Checkout source code
       - uses: actions/checkout@v4
 
       # Authenticate to GitHub Container Registry
       - name: Docker login
-=======
-      # Checkout the code
-=======
-      # Checkout code and print current branch/PR info
->>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
-      - name: Checkout
-        uses: actions/checkout@v4
-      - run: |
-          echo "📋 Workflow Context:"
-          echo "  Branch: $GITHUB_REF"
-          echo "  Event: $GITHUB_EVENT_NAME"
-          echo "  PR Number: $GITHUB_PULL_REQUEST"
-
-      # Set env vars for this job
-      - name: Set environment variables
-        run: |
-          echo "🔑 Setting environment variables..."
-          # Only set variables not inherited from previous job
-          echo "DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ secrets.POSTGRES_HOST }}:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}" >> $GITHUB_ENV
-          echo "BACKEND_PORT=${{ secrets.BACKEND_PORT }}" >> $GITHUB_ENV
-          echo "BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}" >> $GITHUB_ENV
-          echo "BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}" >> $GITHUB_ENV
-          echo "BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" >> $GITHUB_ENV
-          echo "TIPTAP_URL=${{ secrets.TIPTAP_URL }}" >> $GITHUB_ENV
-          echo "TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}" >> $GITHUB_ENV
-          echo "TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}" >> $GITHUB_ENV
-
-      # Log in to GitHub Container Registry
-      - name: Log in to the Container registry
->>>>>>> ca9ea8f (merges in changes from test branch.)
         uses: docker/login-action@v2
         with:
           registry: ${{ env.REGISTRY }}
@@ -243,7 +84,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Set up Docker Buildx for multi-platform builds
-<<<<<<< HEAD
       - uses: docker/setup-buildx-action@v3
         with:
           install: true
@@ -300,109 +140,3 @@ jobs:
           echo ""
           echo -e "\033[1;36m▶️ Run Backend:\033[0m"
           echo "  docker run --rm -p 8000:8000 ${{ steps.tags.outputs.backend_image_name }}:latest"
-=======
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Cache Docker layers to speed up subsequent builds
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-          enableCrossOsArchive: true
-
-      # Extract metadata for Docker images (tags, labels)
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: |
-            ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
-
-      # Build and push the Rust backend image
-      - name: Build and Push Rust Backend Image
-        id: push_backend
-        uses: docker/build-push-action@v6
-        with:
-          # Explicitly specify the Dockerfile path
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          context: .
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new
-
-      # Build and push the Next.js frontend image
-      - name: Build and Push Next.js Frontend Image
-        id: push_frontend
-        uses: docker/build-push-action@v6
-        with:
-          build-args: |
-            BACKEND_URL=${{ secrets.BACKEND_URL }}
-            BACKEND_PORT=${{ secrets.BACKEND_PORT }}
-          platforms: linux/amd64,linux/arm64
-          context: web
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new
-
-      # Move new cache to the original location for future jobs
-      - name: Move new cache
-        run: |
-          echo "🔄 Moving new cache..."
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
-
-      # Generate artifact attestation for security and supply chain integrity
-      - name: Generate artifact attestation for Rust Backend Image
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}
-          subject-digest: ${{ steps.push_backend.outputs.digest }}
-          push-to-registry: true
-
-      # Generate artifact attestation for Next.js Frontend Image
-      - name: Generate artifact attestation for Next.js Frontend Image
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}
-<<<<<<< HEAD
-          subject-digest: ${{ steps.push_frontend.outputs.digest }}  # Use the digest output from build
-          push-to-registry: true  # Push attestation to registry
->>>>>>> ca9ea8f (merges in changes from test branch.)
-=======
-          subject-digest: ${{ steps.push_frontend.outputs.digest }}
-          push-to-registry: true
-
-      # Print artifacts and usage commands
-      - name: Print artifacts and usage commands
-        run: |
-          echo "📦 Built and pushed images:"
-          echo "  Backend: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
-          echo "  Frontend: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
-          echo ""
-          echo "🔑 Login command:"
-          echo "  echo $GITHUB_TOKEN | docker login ${{ env.REGISTRY }} -u $GITHUB_ACTOR --password-stdin"
-          echo ""
-          echo "📥 Pull commands:"
-          echo "  docker pull ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
-          echo "  docker pull ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
-          echo ""
-          echo "📤 Push commands:"
-          echo "  docker tag <image> ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
-          echo "  docker tag <image> ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
-          echo "  docker push ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.BACKEND_IMAGE_NAME }}-${{ github.actor }}:latest"
-          echo "  docker push ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.FRONTEND_IMAGE_NAME }}-${{ github.actor }}:latest"
->>>>>>> 4c4ef94 (updates build and deploy container gh actions workflow)
