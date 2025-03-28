@@ -43,7 +43,7 @@ jobs:
       # Cache Rust build artifacts (unique key avoids 409 Conflict errors)
       - uses: Swatinem/rust-cache@v2
         with:
-          cache-key: ${{ runner.os }}-cargo-${{ github.sha }}
+          shared-key: ${{ runner.os }}-cargo-${{ github.sha }}
 
       # Install sea-orm-cli globally
       - name: Install sea-orm-cli
