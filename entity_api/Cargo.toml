@@ -14,14 +14,9 @@ log = "0.4.22"
 axum-login = "0.16.0"
 async-trait = "0.1.83"
 password-auth = "1.0.0"
-<<<<<<< HEAD
-sqlx = { version = "0.8.3", features = ["time", "runtime-tokio"] }
-utoipa = { version = "5.3.1", features = ["axum_extras", "uuid"] }
-=======
 slugify = "0.1.0"
 sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
 utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
->>>>>>> f61c08b (merges remaining changes from main.)
 
 [dependencies.sea-orm]
 version = "1.1.0"                                                       # sea-orm version
