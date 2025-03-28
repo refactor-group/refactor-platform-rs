@@ -19,11 +19,7 @@ services:
 
   # Rust application that connects to either local or remote PostgreSQL
   rust-app:
-    image: rust-backend  # Use the built image
-    build:
-      context: .  # Build context is current directory
-      dockerfile: Dockerfile  # Use specified Dockerfile
-      target: runtime  # Use runtime target
+    image: docker pull ghcr.io/refactor-group/refactor-platform-rs/82-feature-request-suggestion-create-github-actions-workflow-for-automating-the-build-and-deployments-for-feature-branches:latest  # Use the built image
     platform: ${PLATFORM}  # Specify the platform
     container_name: ${CONTAINER_NAME}  # Name the container, default is "rust-app"
     environment:
