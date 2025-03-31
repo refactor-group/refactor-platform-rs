@@ -8,7 +8,9 @@ pub use entity_api::user::{
     create, create_by_organization, find_by_email, find_by_id, find_by_organization, AuthSession,
     Backend, Credentials,
 };
-use entity_api::{coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user};
+use entity_api::{
+    coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
+};
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait};
 
@@ -87,7 +89,7 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     coaching_relationship::delete_by_user_id(&txn, user_id).await?;
     organizations_user::delete_by_user_id(&txn, user_id).await?;
     user::delete(&txn, user_id).await?;
-    
+
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Other)),
