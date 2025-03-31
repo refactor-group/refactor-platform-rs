@@ -175,6 +175,18 @@ async fn by_organization(
     )
 }
 
+pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
+    Entity::delete_many()
+        .filter(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids. This should be used as an implementation detail only.
 #[derive(FromQueryResult, Debug)]
@@ -299,6 +311,25 @@ mod tests {
                     user_id.clone().into(),
                     user_id.clone().into()
                 ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_by_user_id_deletes_all_records_associated_with_user() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let user_id = Id::new_v4();
+        let _ = delete_by_user_id(&db, user_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                [user_id.clone().into(), user_id.clone().into()]
             )]
         );
 

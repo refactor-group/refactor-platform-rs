@@ -15,6 +15,7 @@ pub mod error;
 pub mod mutate;
 pub mod note;
 pub mod organization;
+pub mod organizations_user;
 pub mod overarching_goal;
 pub mod query;
 pub mod user;

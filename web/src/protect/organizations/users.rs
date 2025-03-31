@@ -52,6 +52,25 @@ pub(crate) async fn create(
     // Leaving this out at the moment. It may be that we decide on separate endpoints for different "flavors" of user creation.
 }
 
+/// Checks that the authenticated user is associated with the organization specified by `organization_id`
+/// Intended to be given to axum::middleware::from_fn_with_state in the router
+pub(crate) async fn delete(
+    State(app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path((organization_id, _user_id)): Path<(Id, Id)>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    check_user_in_organization(
+        &app_state,
+        authenticated_user,
+        organization_id,
+        request,
+        next,
+    )
+    .await
+}
+
 async fn check_user_in_organization(
     app_state: &AppState,
     authenticated_user: users::Model,
