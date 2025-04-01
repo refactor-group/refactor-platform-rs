@@ -1,10 +1,12 @@
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
+    body::Body,
     extract::{Path, Request, State},
     http::StatusCode,
     middleware::Next,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
+
 use domain::{user as UserApi, users, Id};
 
 use log::*;
@@ -57,10 +59,13 @@ pub(crate) async fn create(
 pub(crate) async fn delete(
     State(app_state): State<AppState>,
     AuthenticatedUser(authenticated_user): AuthenticatedUser,
-    Path((organization_id, _user_id)): Path<(Id, Id)>,
+    Path((organization_id, user_id)): Path<(Id, Id)>,
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
+    if authenticated_user.id == user_id {
+        return (StatusCode::FORBIDDEN, "FORBIDDEN").into_response();
+    }
     check_user_in_organization(
         &app_state,
         authenticated_user,
@@ -77,7 +82,7 @@ async fn check_user_in_organization(
     organization_id: Id,
     request: Request,
     next: Next,
-) -> impl IntoResponse {
+) -> Response<Body> {
     match UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await {
         Ok(users) => {
             if users.iter().any(|user| user.id == authenticated_user.id) {
