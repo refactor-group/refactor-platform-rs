@@ -61,6 +61,7 @@ pub async fn index(
     )
 )]
 pub(crate) async fn create(
+    CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     AuthenticatedUser(authenticated_user): AuthenticatedUser,
     Path(organization_id): Path<Id>,
@@ -75,4 +76,35 @@ pub(crate) async fn create(
     .await?;
     info!("User created: {:?}", user);
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
+}
+
+/// DELETE a User for an organization
+#[utoipa::path(
+    delete,
+    path = "/organizations/{organization_id}/users/{user_id}",
+    params(
+        ApiVersion,
+        ("organization_id" = Id, Path, description = "The ID of the organization"),
+        ("user_id" = Id, Path, description = "The ID of the user to delete")
+    ),
+    responses(
+        (status = 200, description = "User deleted successfully"),
+        (status = 401, description = "Unauthorized"),
+        (status = 405, description = "Method not allowed")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn delete(
+    CompareApiVersion(_v): CompareApiVersion,
+    State(app_state): State<AppState>,
+    AuthenticatedUser(_authenticated_user): AuthenticatedUser,
+    Path((_organization_id, user_id)): Path<(Id, Id)>,
+) -> Result<impl IntoResponse, Error> {
+    info!("Deleting user: {:?}", user_id);
+    UserApi::delete(app_state.db_conn_ref(), user_id).await?;
+    Ok(Json(ApiResponse::<()>::no_content(
+        StatusCode::NO_CONTENT.into(),
+    )))
 }

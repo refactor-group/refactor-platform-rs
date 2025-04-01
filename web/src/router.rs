@@ -58,6 +58,7 @@ use self::organization::coaching_relationship_controller;
             organization::coaching_relationship_controller::read,
             organization::user_controller::index,
             organization::user_controller::create,
+            organization::user_controller::delete,
             overarching_goal_controller::create,
             overarching_goal_controller::update,
             overarching_goal_controller::index,
@@ -265,6 +266,18 @@ fn organization_user_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::organizations::users::create,
+                )),
+        )
+        .merge(
+            // POST /organizations/:organization_id/users
+            Router::new()
+                .route(
+                    "/organizations/:organization_id/users/:user_id",
+                    delete(organization::user_controller::delete),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::organizations::users::delete,
                 )),
         )
         .route_layer(login_required!(Backend, login_url = "/login"))

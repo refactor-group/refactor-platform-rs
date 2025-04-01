@@ -1,10 +1,12 @@
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
+    body::Body,
     extract::{Path, Request, State},
     http::StatusCode,
     middleware::Next,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
+
 use domain::{user as UserApi, users, Id};
 
 use log::*;
@@ -52,13 +54,35 @@ pub(crate) async fn create(
     // Leaving this out at the moment. It may be that we decide on separate endpoints for different "flavors" of user creation.
 }
 
+/// Checks that the authenticated user is associated with the organization specified by `organization_id`
+/// Intended to be given to axum::middleware::from_fn_with_state in the router
+pub(crate) async fn delete(
+    State(app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path((organization_id, user_id)): Path<(Id, Id)>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    if authenticated_user.id == user_id {
+        return (StatusCode::FORBIDDEN, "FORBIDDEN").into_response();
+    }
+    check_user_in_organization(
+        &app_state,
+        authenticated_user,
+        organization_id,
+        request,
+        next,
+    )
+    .await
+}
+
 async fn check_user_in_organization(
     app_state: &AppState,
     authenticated_user: users::Model,
     organization_id: Id,
     request: Request,
     next: Next,
-) -> impl IntoResponse {
+) -> Response<Body> {
     match UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await {
         Ok(users) => {
             if users.iter().any(|user| user.id == authenticated_user.id) {

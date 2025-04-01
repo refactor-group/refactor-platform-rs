@@ -103,6 +103,11 @@ pub async fn find_by_organization(
     Ok(users)
 }
 
+pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
+    Entity::delete_by_id(user_id).exec(db).await?;
+    Ok(())
+}
+
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
     match verify_password(creds.password, &user.password) {
         Ok(_) => Ok(Some(user)),
@@ -307,6 +312,25 @@ mod test {
 
         let result = create_by_organization(&db, organization_id, user_model).await;
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_deletes_a_user() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let user_id = Id::new_v4();
+        let _ = delete(&db, user_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"DELETE FROM "refactor_platform"."users" WHERE "users"."id" = $1"#,
+                [user_id.into()]
+            )]
+        );
 
         Ok(())
     }
