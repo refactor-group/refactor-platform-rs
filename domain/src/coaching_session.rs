@@ -12,7 +12,7 @@ use sea_orm::{DatabaseConnection, IntoActiveModel};
 use serde_json::json;
 use service::config::Config;
 
-pub use entity_api::coaching_session::{find_by_id, find_by_id_with_coaching_relationship};
+pub use entity_api::coaching_session::{delete, find_by_id, find_by_id_with_coaching_relationship};
 
 pub async fn create(
     db: &DatabaseConnection,

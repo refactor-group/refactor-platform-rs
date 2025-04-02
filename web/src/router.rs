@@ -44,6 +44,7 @@ use self::organization::coaching_relationship_controller;
             coaching_session_controller::index,
             coaching_session_controller::create,
             coaching_session_controller::update,
+            coaching_session_controller::delete,
             note_controller::create,
             note_controller::update,
             note_controller::index,
@@ -195,6 +196,18 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::coaching_sessions::update,
+                )),
+        )
+        .merge(
+            // DELETE /coaching_sessions
+            Router::new()
+                .route(
+                    "/coaching_sessions/:id",
+                    delete(coaching_session_controller::delete),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_sessions::delete,
                 )),
         )
         .route_layer(login_required!(Backend, login_url = "/login"))
