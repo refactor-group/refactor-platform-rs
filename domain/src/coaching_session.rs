@@ -12,7 +12,7 @@ use sea_orm::{DatabaseConnection, IntoActiveModel};
 use serde_json::json;
 use service::config::Config;
 
-pub use entity_api::coaching_session::{delete, find_by_id, find_by_id_with_coaching_relationship};
+pub use entity_api::coaching_session::{find_by_id, find_by_id_with_coaching_relationship};
 
 pub async fn create(
     db: &DatabaseConnection,
@@ -74,7 +74,6 @@ pub async fn create(
     // Tiptap's API will return a 200 for successful creation of a new document
     // and will return a 409 if the document already exists. We consider both "successful".
     if response.status().is_success() || response.status().as_u16() == 409 {
-        // TODO: Save document_name to record
         Ok(coaching_session::create(db, coaching_session_model).await?)
     } else {
         warn!(
@@ -116,4 +115,53 @@ pub async fn update(
         )
         .await?,
     )
+}
+
+pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
+    let coaching_session = find_by_id(db, id).await?;
+    let document_name = coaching_session.collab_document_name.ok_or_else(|| {
+        warn!("Failed to get document name from coaching session");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        }
+    })?;
+
+    let tiptap_url = config.tiptap_url().ok_or_else(|| {
+        warn!("Failed to get Tiptap URL from config");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        }
+    })?;
+    let full_url = format!("{}/api/documents/{}?format=json", tiptap_url, document_name);
+    let client = tiptap_client(config).await?;
+
+    let request = client.delete(full_url);
+    let response = match request.send().await {
+        Ok(response) => {
+            info!("Tiptap response: {:?}", response);
+            response
+        }
+        Err(e) => {
+            warn!("Failed to send request: {:?}", e);
+            return Err(e.into());
+        }
+    };
+
+    // Tiptap's API will return a 204 for successful deletion of a document
+    // and will return a 404 if the document does not exist.
+    let status = response.status();
+    if status.is_success() {
+        Ok(coaching_session::delete(db, id).await?)
+    } else {
+        warn!(
+            "Failed to delete Tiptap document: {}, with status: {}",
+            document_name, status
+        );
+        Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+        })
+    }
 }
