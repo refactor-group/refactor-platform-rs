@@ -1,61 +1,58 @@
 services:
-  # Local PostgreSQL container (used for local development when needed)
   postgres:
-    image: postgres:17  # Use PostgreSQL version 17
-    container_name: postgres  # Name the container "postgres"
+    image: postgres:17
+    container_name: postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}  # Set PostgreSQL user from environment variable
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # Set PostgreSQL password from environment variable
-      POSTGRES_DB: ${POSTGRES_DB}  # Set PostgreSQL database name from environment variable
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT}:5432"  # Map host port to container's PostgreSQL port
+      - "${POSTGRES_PORT}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data  # Persist PostgreSQL data
-      - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql  # Initialize database with setup.sql
-      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql  # Initialize with refactor_platform_rs.sql
-      - ./migration/src/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql  # Initialize with setup_default_user.sql
+      - postgres_data:/var/lib/postgresql/data
+      - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql
+      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql
+      - ./migration/src/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql
     networks:
-      - backend_network  # Connect to backend_network
+      - backend_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # Rust application that connects to either local or remote PostgreSQL
   rust-app:
-    image: docker pull ghcr.io/refactor-group/refactor-platform-rs/82-feature-request-suggestion-create-github-actions-workflow-for-automating-the-build-and-deployments-for-feature-branches:latest  # Use the built image
-    platform: ${PLATFORM}  # Specify the platform
-    container_name: ${CONTAINER_NAME}  # Name the container, default is "rust-app"
+    image: ${IMAGE_NAME}
+    platform: ${PLATFORM}
+    container_name: ${CONTAINER_NAME}
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}  # Set PostgreSQL user from environment variable
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # Set PostgreSQL password from environment variable
-      POSTGRES_DB: ${POSTGRES_DB}  # Set PostgreSQL database name from environment variable
-      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}  # Set PostgreSQL schema from environment variable
-      POSTGRES_HOST: postgres  # Set PostgreSQL host to "postgres" service
-      POSTGRES_PORT: ${POSTGRES_PORT}  # Set PostgreSQL port from environment variable
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}  # Configure database URL
-      BACKEND_PORT: ${BACKEND_PORT}  # Set service port from environment variable
-      BACKEND_INTERFACE: ${BACKEND_INTERFACE}  # Set service interface from environment variable
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      BACKEND_PORT: ${BACKEND_PORT}
+      BACKEND_INTERFACE: ${BACKEND_INTERFACE}
       BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}
       BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}
       TIPTAP_URL: ${TIPTAP_URL}
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
     ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"  # Map host port to container's service port
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
     depends_on:
       postgres:
-        condition: service_healthy  # Ensure postgres service is healthy before rust-app
+        condition: service_healthy
     networks:
-      - backend_network  # Connect to backend_network
-    command: ["sh", "-c", "sleep 5 && /usr/local/bin/refactor_platform_rs"]  # Wait for Postgres and run the app
-  
+      - backend_network
+
   nextjs-app:
     build:
-      context: https://github.com/refactor-group/refactor-platform-fe.git#main # change to fs directory to run locally
+      context: ${FRONTEND_CONTEXT}
       dockerfile: Dockerfile
-      target: runner  # Use runner target
+      target: runner
       args:
         NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
         NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
@@ -69,13 +66,13 @@ services:
       NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
     ports:
-      - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"  # Map host port to frontend container's service port
+      - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"
     depends_on:
-      - rust-app  # Ensure postgres service starts before rust-app
+      - rust-app
 
 networks:
   backend_network:
-    driver: bridge  # Use bridge network driver
+    driver: bridge
 
 volumes:
-  postgres_data:  # Define postgres_data volume
+  postgres_data:
