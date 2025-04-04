@@ -23,7 +23,7 @@ COPY . .
 RUN cargo build --release --workspace
 
 # Stage 2: Minimal runtime image
-FROM debian:bullseye-slim
+FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
 
 # Install Bash to support entrypoint.sh
 RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
@@ -43,6 +43,6 @@ RUN chmod +x /entrypoint.sh && chown -R appuser:appuser /app /entrypoint.sh
 
 USER appuser
 
-EXPOSE 8000
+EXPOSE 4000
 
 ENTRYPOINT ["/entrypoint.sh"]
