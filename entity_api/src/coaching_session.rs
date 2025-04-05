@@ -58,6 +58,12 @@ pub async fn find_by_id_with_coaching_relationship(
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
 }
+
+pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Result<(), Error> {
+    Entity::delete_by_id(coaching_session_id).exec(db).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 // We need to gate seaORM's mock feature behind conditional compilation because
 // the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
@@ -130,6 +136,25 @@ mod tests {
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
                 ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_deletes_a_single_record() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let coaching_session_id = Id::new_v4();
+        let _ = delete(&db, coaching_session_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"DELETE FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1"#,
+                [coaching_session_id.into(),]
             )]
         );
 

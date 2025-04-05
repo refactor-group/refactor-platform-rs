@@ -123,3 +123,32 @@ pub async fn update(
     CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session_id, params).await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
+
+/// DELETE a Coaching Session
+#[utoipa::path(
+    delete,
+    path = "/coaching_sessions/{id}",
+    params(ApiVersion, ("id" = Id, Path, description = "Coaching Session ID to Delete")),
+    responses(
+        (status = 204, description = "Successfully deleted a Coaching Session", body = ()),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn delete(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path(coaching_session_id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    CoachingSessionApi::delete(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        coaching_session_id,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
+}
