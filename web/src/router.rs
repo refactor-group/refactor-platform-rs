@@ -345,7 +345,10 @@ pub fn user_routes(app_state: AppState) -> Router {
 pub fn user_session_protected_routes() -> Router {
     Router::new()
         .route("/protected", get(user_session_controller::protected))
-        .route("/user_sessions/:id", delete(user_session_controller::delete))
+        .route(
+            "/user_sessions/:id",
+            delete(user_session_controller::delete),
+        )
         .route_layer(login_required!(Backend, login_url = "/login"))
 }
 
