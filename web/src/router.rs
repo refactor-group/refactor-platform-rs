@@ -66,7 +66,7 @@ use self::organization::coaching_relationship_controller;
             overarching_goal_controller::update_status,
             user_controller::update,
             user_session_controller::login,
-            user_session_controller::logout,
+            user_session_controller::delete,
             jwt_controller::generate_collab_token,
         ),
         components(
@@ -345,7 +345,7 @@ pub fn user_routes(app_state: AppState) -> Router {
 pub fn user_session_protected_routes() -> Router {
     Router::new()
         .route("/protected", get(user_session_controller::protected))
-        .route("/logout", delete(user_session_controller::logout))
+        .route("/user_sessions/:id", delete(user_session_controller::delete))
         .route_layer(login_required!(Backend, login_url = "/login"))
 }
 
