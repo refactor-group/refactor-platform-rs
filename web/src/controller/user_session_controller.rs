@@ -81,10 +81,10 @@ pub async fn login(
 /// Logs the user out of the platform by destroying their session.
 /// Test this with curl: curl -v \
 /// --header "Cookie: id=07bbbe54-bd35-425f-8e63-618a8d8612df" \
-/// --request GET http://localhost:4000/logout
+/// --request DELETE http://localhost:4000/user_sessions/:id
 #[utoipa::path(
 get,
-path = "/logout",
+path = "/delete",
 responses(
     (status = 200, description = "Successfully logged out"),
     (status = 401, description = "Unauthorized"),
@@ -94,8 +94,8 @@ security(
     ("cookie_auth" = [])
 )
 )]
-pub async fn logout(mut auth_session: AuthSession) -> impl IntoResponse {
-    debug!("UserSessionController::logout()");
+pub async fn delete(mut auth_session: AuthSession) -> impl IntoResponse {
+    trace!("UserSessionController::delete()");
     match auth_session.logout().await {
         Ok(_) => StatusCode::OK.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
