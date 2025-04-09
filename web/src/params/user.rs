@@ -9,8 +9,10 @@ pub struct UpdateParams {
     pub last_name: Option<String>,
     pub display_name: Option<String>,
     pub github_profile_url: Option<String>,
+    // Note that this will be ignored and is only used here for an extra verification
+    // step
+    pub password: Option<String>,
 }
-
 impl IntoUpdateMap for UpdateParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
@@ -42,6 +44,12 @@ impl IntoUpdateMap for UpdateParams {
             update_map.insert(
                 "github_profile_url".to_string(),
                 Some(Value::String(Some(Box::new(github_profile_url)))),
+            );
+        }
+        if let Some(password) = self.password {
+            update_map.insert(
+                "password".to_string(),
+                Some(Value::String(Some(Box::new(password)))),
             );
         }
         update_map
