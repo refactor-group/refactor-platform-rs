@@ -5,8 +5,8 @@ use crate::{
 };
 use chrono::Utc;
 pub use entity_api::user::{
-    create, create_by_organization, find_by_email, find_by_id, find_by_organization, AuthSession,
-    Backend, Credentials,
+    create, create_by_organization, find_by_email, find_by_id, find_by_organization,
+    verify_password, AuthSession, Backend, Credentials,
 };
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
@@ -30,13 +30,15 @@ pub async fn update(
     params: impl mutate::IntoUpdateMap,
 ) -> Result<users::Model, Error> {
     let existing_user = find_by_id(db, user_id).await?;
+
+    let mut params = params.into_update_map();
+    // remove the password and verify it so that we will not attempt to update the password
+    // downstream.
+    let password_to_verify = extract_password(&mut params).await?;
+    verify_password(&password_to_verify, &existing_user.password).await?;
+
     let active_model = existing_user.into_active_model();
-    Ok(mutate::update::<users::ActiveModel, users::Column>(
-        db,
-        active_model,
-        params.into_update_map(),
-    )
-    .await?)
+    Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
 }
 
 // This function is intended to be a temporary solution until we finalize our user experience strategy for assigning a new user
@@ -96,4 +98,14 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     })?;
 
     Ok(())
+}
+
+async fn extract_password(params: &mut mutate::UpdateMap) -> Result<String, Error> {
+    params
+        .remove("password")
+        .map(|v| v.to_string())
+        .ok_or(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        })
 }

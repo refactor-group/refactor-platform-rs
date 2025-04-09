@@ -67,6 +67,13 @@ impl UpdateMap {
         self.map.get(key).and_then(|opt| opt.as_ref())
     }
 
+    /// Removes a key-value pair from the map.
+    ///
+    /// Returns the removed value if it exists, or None if the key is not found.
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.map.remove(key).and_then(|opt| opt)
+    }
+
     /// Inserts a key-value pair into the map.
     ///
     /// If the key already exists, the value will be overwritten.

@@ -350,7 +350,15 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
 
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
-        .route("/users", put(user_controller::update))
+        .merge(
+            // PUT /users/:id
+            Router::new()
+                .route("/users/:id", put(user_controller::update))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::update,
+                )),
+        )
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
