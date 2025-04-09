@@ -54,10 +54,7 @@ impl TiptapDocument {
     }
 
     pub async fn create(&self, document_name: &str) -> Result<(), Error> {
-        let url = format!(
-            "{}/api/documents/{}?format=json",
-            self.base_url, document_name
-        );
+        let url = self.format_url(document_name);
         let response = self
             .client
             .post(url)
@@ -85,10 +82,7 @@ impl TiptapDocument {
     }
 
     pub async fn delete(&self, document_name: &str) -> Result<(), Error> {
-        let url = format!(
-            "{}/api/documents/{}?format=json",
-            self.base_url, document_name
-        );
+        let url = self.format_url(document_name);
         let response = self.client.delete(url).send().await.map_err(|e| {
             warn!("Failed to send request: {:?}", e);
             Error {
@@ -110,5 +104,12 @@ impl TiptapDocument {
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
             })
         }
+    }
+
+    fn format_url(&self, document_name: &str) -> String {
+        format!(
+            "{}/api/documents/{}?format=json",
+            self.base_url, document_name
+        )
     }
 }
