@@ -12,7 +12,7 @@ use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
 };
 use sea_orm::IntoActiveModel;
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use sea_orm::{DatabaseConnection, TransactionTrait, Value};
 
 pub async fn find_by(
     db: &DatabaseConnection,
@@ -32,11 +32,12 @@ pub async fn update(
     let existing_user = find_by_id(db, user_id).await?;
 
     let mut params = params.into_update_map();
-    // remove the password and verify it so that we will not attempt to update the password
-    // downstream.
+
+    // Extract and verify the user's password as a security check before allowing any updates
     let password_to_verify = extract_password(&mut params).await?;
     verify_password(&password_to_verify, &existing_user.password).await?;
 
+    // After verification passes, proceed with the update
     let active_model = existing_user.into_active_model();
     Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
 }
@@ -100,12 +101,21 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     Ok(())
 }
 
+/// Extracts the password from the update parameters.
+/// First removes the "password" field from the params map, then ensures it's a valid string value.
+/// Returns the password as a String if found and valid, otherwise returns an Internal Error.
 async fn extract_password(params: &mut mutate::UpdateMap) -> Result<String, Error> {
     params
         .remove("password")
-        .map(|v| v.to_string())
-        .ok_or(Error {
+        .ok_or_else(|| Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        })
+        .and_then(|v| match v {
+            Value::String(Some(boxed_str)) => Ok((*boxed_str).clone()),
+            _ => Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            }),
         })
 }
