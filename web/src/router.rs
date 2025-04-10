@@ -351,6 +351,12 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
         .merge(
+            // GET /users/:id
+            Router::new()
+                .route("/users/:id", get(user_controller::read))
+                .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
+        )
+        .merge(
             // PUT /users/:id
             Router::new()
                 .route("/users/:id", put(user_controller::update))

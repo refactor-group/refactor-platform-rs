@@ -48,7 +48,7 @@ where
 /// This structure provides a flexible way to specify which fields should be updated
 /// and their new values. It's designed to work with SeaORM's Value type and supports
 /// optional values to handle nullable fields.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct UpdateMap {
     map: HashMap<String, Option<Value>>,
 }
