@@ -34,9 +34,33 @@ pub async fn update(
     let mut params = params.into_update_map();
 
     // Extract and verify the user's password as a security check before allowing any updates
-    let password_to_verify = extract_password(&mut params).await?;
+    let password_to_verify = remove_from_params(&mut params, "password").await?;
     verify_password(&password_to_verify, &existing_user.password).await?;
 
+    // After verification passes, proceed with the update
+    let active_model = existing_user.into_active_model();
+    Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
+}
+
+pub async fn update_password(
+    db: &DatabaseConnection,
+    user_id: Id,
+    params: impl mutate::IntoUpdateMap,
+) -> Result<users::Model, Error> {
+    let existing_user = find_by_id(db, user_id).await?;
+    let mut params = params.into_update_map();
+    // Extract and verify the user's password as a security check before allowing any updates
+    let password_to_verify = remove_from_params(&mut params, "current_password").await?;
+    // Also check that the confirm password matches
+    let confirm_password = remove_from_params(&mut params, "confirm_password").await?;
+
+    if confirm_password != password_to_verify {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        });
+    }
+    verify_password(&password_to_verify, &existing_user.password).await?;
     // After verification passes, proceed with the update
     let active_model = existing_user.into_active_model();
     Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
@@ -104,9 +128,9 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
 /// Extracts the password from the update parameters.
 /// First removes the "password" field from the params map, then ensures it's a valid string value.
 /// Returns the password as a String if found and valid, otherwise returns an Internal Error.
-async fn extract_password(params: &mut mutate::UpdateMap) -> Result<String, Error> {
+async fn remove_from_params(params: &mut mutate::UpdateMap, key: &str) -> Result<String, Error> {
     params
-        .remove("password")
+        .remove(key)
         .ok_or_else(|| Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),

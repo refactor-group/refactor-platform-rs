@@ -8,6 +8,8 @@ use axum::{
 use domain::Id;
 use log::*;
 
+pub(crate) mod passwords;
+
 // checks:
 // - that the `user_id` matches the `authenticated_user.id`
 pub(crate) async fn read(

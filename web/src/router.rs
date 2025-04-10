@@ -10,7 +10,7 @@ use tower_http::services::ServeDir;
 
 use crate::controller::{
     action_controller, agreement_controller, coaching_session_controller, jwt_controller,
-    note_controller, organization, organization_controller, overarching_goal_controller,
+    note_controller, organization, organization_controller, overarching_goal_controller, user,
     user_controller, user_session_controller,
 };
 
@@ -68,6 +68,7 @@ use self::organization::coaching_relationship_controller;
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
+            user::password_controller::update_password,
             jwt_controller::generate_collab_token,
         ),
         components(
@@ -120,6 +121,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_user_routes(app_state.clone()))
         .merge(overarching_goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
+        .merge(user_password_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes())
         .merge(coaching_sessions_routes(app_state.clone()))
@@ -365,6 +367,20 @@ pub fn user_routes(app_state: AppState) -> Router {
                     protect::users::update,
                 )),
         )
+        .route_layer(login_required!(Backend, login_url = "/login"))
+        .with_state(app_state)
+}
+
+pub fn user_password_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/users/:id/password",
+            put(user::password_controller::update_password),
+        )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::users::passwords::update_password,
+        ))
         .route_layer(login_required!(Backend, login_url = "/login"))
         .with_state(app_state)
 }
