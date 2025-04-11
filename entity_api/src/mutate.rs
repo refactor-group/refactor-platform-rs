@@ -1,9 +1,10 @@
-use crate::error::Error;
+use crate::error::{EntityApiErrorKind, Error};
 use sea_orm::{
     ActiveModelBehavior, ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait,
     IntoActiveModel, Value,
 };
 use std::collections::HashMap;
+
 /// Updates an existing record in the database using a map of column names to values.
 ///
 /// This function provides a flexible way to update only specific fields of an entity
@@ -36,7 +37,7 @@ where
     <A::Entity as EntityTrait>::Model: IntoActiveModel<A>,
 {
     for column in C::iter() {
-        if let Some(value) = update_map.get(&column.to_string()) {
+        if let Some(value) = update_map.get_value(&column.to_string()) {
             active_model.set(column, value.clone());
         }
     }
@@ -59,26 +60,56 @@ impl UpdateMap {
         Self::default()
     }
 
-    /// Retrieves a value from the map by its key.
-    ///
-    /// Returns an Option containing a reference to the Value if it exists,
-    /// or None if the key is not found or the value is None.
-    pub fn get(&self, key: &str) -> Option<&Value> {
-        self.map.get(key).and_then(|opt| opt.as_ref())
-    }
-
-    /// Removes a key-value pair from the map.
-    ///
-    /// Returns the removed value if it exists, or None if the key is not found.
-    pub fn remove(&mut self, key: &str) -> Option<Value> {
-        self.map.remove(key).and_then(|opt| opt)
-    }
-
     /// Inserts a key-value pair into the map.
     ///
     /// If the key already exists, the value will be overwritten.
     pub fn insert(&mut self, key: String, value: Option<Value>) {
         self.map.insert(key, value);
+    }
+
+    /// Retrieves a value from the map by its key.
+    ///
+    /// Returns an Option containing a reference to the Value if it exists,
+    /// or None if the key is not found or the value is None.
+    pub fn get_value(&self, key: &str) -> Option<&Value> {
+        self.map.get(key).and_then(|opt| opt.as_ref())
+    }
+
+    /// Removes a value from the update map and returns it.
+    /// Returns Error if the key doesn't exist or the value is not a valid string.
+    pub fn remove(&mut self, key: &str) -> Result<String, Error> {
+        self.map
+            .remove(key)
+            .ok_or_else(|| Error {
+                source: None,
+                error_kind: EntityApiErrorKind::Other,
+            })
+            .and_then(|v| match v {
+                Some(Value::String(Some(boxed_str))) => Ok((*boxed_str).clone()),
+                _ => Err(Error {
+                    source: None,
+                    error_kind: EntityApiErrorKind::Other,
+                }),
+            })
+    }
+
+    /// Gets a value from the update map without removing it.
+    /// Returns Error if the key doesn't exist or the value is not a valid string.
+    pub fn get(&self, key: &str) -> Result<&String, Error> {
+        self.map
+            .get(key)
+            .and_then(|opt| opt.as_ref())
+            .ok_or_else(|| Error {
+                source: None,
+                error_kind: EntityApiErrorKind::Other,
+            })
+            .and_then(|v| match v {
+                Value::String(Some(boxed_str)) => Ok(&**boxed_str),
+                _ => Err(Error {
+                    source: None,
+                    error_kind: EntityApiErrorKind::Other,
+                }),
+            })
     }
 }
 

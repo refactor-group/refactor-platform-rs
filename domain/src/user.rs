@@ -6,7 +6,7 @@ use crate::{
 use chrono::Utc;
 pub use entity_api::user::{
     create, create_by_organization, find_by_email, find_by_id, find_by_organization,
-    verify_password, AuthSession, Backend, Credentials,
+    generate_hash, verify_password, AuthSession, Backend, Credentials,
 };
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
@@ -34,7 +34,7 @@ pub async fn update(
     let mut params = params.into_update_map();
 
     // Extract and verify the user's password as a security check before allowing any updates
-    let password_to_verify = remove_from_params(&mut params, "password").await?;
+    let password_to_verify = params.remove("password")?;
     verify_password(&password_to_verify, &existing_user.password).await?;
 
     // After verification passes, proceed with the update
@@ -49,19 +49,30 @@ pub async fn update_password(
 ) -> Result<users::Model, Error> {
     let existing_user = find_by_id(db, user_id).await?;
     let mut params = params.into_update_map();
-    // Extract and verify the user's password as a security check before allowing any updates
-    let password_to_verify = remove_from_params(&mut params, "current_password").await?;
-    // Also check that the confirm password matches
-    let confirm_password = remove_from_params(&mut params, "confirm_password").await?;
 
-    if confirm_password != password_to_verify {
+    // Remove and verify the user's current password as a security check before allowing any updates
+    let password_to_verify = params.remove("current_password")?;
+    verify_password(&password_to_verify, &existing_user.password).await?;
+
+    // remove confirm_password
+    let confirm_password = params.remove("confirm_password")?;
+
+    // remove password
+    let password = params.remove("password")?;
+    // check password confirmation
+    if confirm_password != password {
         return Err(Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
         });
     }
-    verify_password(&password_to_verify, &existing_user.password).await?;
-    // After verification passes, proceed with the update
+
+    // generate new password hash and insert it back into params overwriting the raw password
+    params.insert(
+        "password".to_string(),
+        Some(Value::String(Some(Box::new(generate_hash(password))))),
+    );
+
     let active_model = existing_user.into_active_model();
     Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
 }
@@ -123,23 +134,4 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     })?;
 
     Ok(())
-}
-
-/// Extracts the password from the update parameters.
-/// First removes the "password" field from the params map, then ensures it's a valid string value.
-/// Returns the password as a String if found and valid, otherwise returns an Internal Error.
-async fn remove_from_params(params: &mut mutate::UpdateMap, key: &str) -> Result<String, Error> {
-    params
-        .remove(key)
-        .ok_or_else(|| Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
-        })
-        .and_then(|v| match v {
-            Value::String(Some(boxed_str)) => Ok((*boxed_str).clone()),
-            _ => Err(Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
-            }),
-        })
 }
