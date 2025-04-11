@@ -22,7 +22,7 @@ services:
       retries: 5
 
   rust-app:
-    image: ${IMAGE_NAME}
+    image: ${BACKEND_IMAGE_NAME}
     platform: ${PLATFORM}
     container_name: ${CONTAINER_NAME}
     environment:
@@ -49,17 +49,8 @@ services:
       - backend_network
 
   nextjs-app:
-    build:
-      context: ${FRONTEND_CONTEXT}
-      dockerfile: Dockerfile
-      target: runner
-      args:
-        NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
-        NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
-        NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
-        NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
-        FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT}
-        FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
+    image: ${FRONTEND_IMAGE_NAME}
+    container_name: ${FRONTEND_CONTAINER_NAME}
     environment:
       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
       NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
