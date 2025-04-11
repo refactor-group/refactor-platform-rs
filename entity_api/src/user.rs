@@ -6,7 +6,7 @@ use chrono::Utc;
 use entity::users::{ActiveModel, Column, Entity, Model};
 use entity::{organizations, organizations_users, Id};
 use log::*;
-use password_auth::generate_hash;
+use password_auth;
 use sea_orm::{
     entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QuerySelect, Set,
     TransactionTrait,
@@ -109,6 +109,10 @@ pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error>
 }
 
 pub async fn verify_password(password_to_verify: &str, password_hash: &str) -> Result<(), Error> {
+    info!(
+        "** verify_password(): {:?}:{:?}",
+        password_to_verify, password_hash
+    );
     match password_auth::verify_password(password_to_verify, password_hash) {
         Ok(_) => Ok(()),
         Err(_) => Err(Error {
@@ -116,6 +120,10 @@ pub async fn verify_password(password_to_verify: &str, password_hash: &str) -> R
             error_kind: EntityApiErrorKind::RecordUnauthenticated,
         }),
     }
+}
+
+pub fn generate_hash(password: String) -> String {
+    password_auth::generate_hash(password)
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
