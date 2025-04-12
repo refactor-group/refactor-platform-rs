@@ -1,71 +1,133 @@
-# Refactor Platform – Docker Quickstart
+# Refactor Platform: Docker Quickstart
 
-This project uses Docker & Docker Compose for local development. It deploys a PostgreSQL database, a Rust back-end, and a Next.js front-end (all pre-built images from GitHub Container Registry).
+*This project uses Docker & Docker Compose for local development. It deploys a PostgreSQL database, a Rust back-end, and a Next.js front-end (all pre-built images from GitHub Container Registry).*
 
 ## Prerequisites
 
 - Docker (v20+)
 - Docker Compose (v1.29+)
-- A configured .env file (see examples)
+- A configured .env file (see below)
+
+## Example .env File
+
+Below is an example of a complete and correct .env file. Copy this content (or adjust values as needed) and save it as .env in the project root.
+
+```bash
+# ==============================
+#   PostgreSQL Configuration
+# ==============================
+POSTGRES_USER=refactor                       # PostgreSQL username
+POSTGRES_PASSWORD=password                   # PostgreSQL password
+POSTGRES_DB=refactor                         # PostgreSQL database name
+POSTGRES_HOST=postgres                       # Hostname for the PostgreSQL container (set in docker-compose)
+POSTGRES_PORT=5432                           # Internal PostgreSQL port
+POSTGRES_SCHEMA=refactor_platform            # Database schema
+# DATABASE_URL used by the Rust back-end to connect to Postgres
+DATABASE_URL=postgres://refactor:password@postgres:5432/refactor
+
+# ==============================
+#   Rust Back-end Configuration
+# ==============================
+BACKEND_CONTAINER_NAME=refactor-platform     # Name for the Rust back-end container
+BACKEND_IMAGE_NAME=ghcr.io/refactor-group/refactor-platform-rs/<branch-name>:latest
+                                             # Pre-built image for the Rust back-end from GHCR
+BACKEND_ENV=development                      # Environment (development/production)
+BACKEND_ALLOWED_ORIGINS=*                    # Allowed CORS origins
+BACKEND_LOG_FILTER_LEVEL=DEBUG               # Logging level for the back-end
+BACKEND_PORT=4000                            # Port on which the Rust back-end listens
+BACKEND_INTERFACE=0.0.0.0                    # Interface for the Rust back-end
+BACKEND_SERVICE_PROTOCOL=http                # Protocol (usually http)
+BACKEND_SERVICE_PORT=4000         # Derived service port
+BACKEND_SERVICE_HOST=localhost               # Hostname used by the service
+BACKEND_API_VERSION=0.0.1                    # API version
+
+# ==============================
+#   Next.js Front-end Configuration
+# ==============================
+FRONTEND_IMAGE_NAME=ghcr.io/refactor-group/refactor-platform-fe/<branch-name>:latest
+                                             # Pre-built image for the Next.js front-end from GHCR
+FRONTEND_CONTAINER_NAME=refactor-platform-frontend  # Name for the front-end container
+FRONTEND_SERVICE_INTERFACE=0.0.0.0             # Interface for the front-end service
+FRONTEND_SERVICE_PORT=3000                     # Port for the front-end service
+
+# ==============================
+#   TipTap Service Configuration
+# ==============================
+TIPTAP_URL="https://ok01532m.collab.tiptap.cloud"   # URL for the TipTap service
+TIPTAP_AUTH_KEY="6122462e59d7cc8c6146f4e3b5c93dfad28c8a219838df69b59ffcec4cdc0041"
+                                             # Authentication key for TipTap
+TIPTAP_JWT_SIGNING_KEY="0f38cb0650a8fc262258ad415f25c52579bfc4095b222f486557d24c8fafaeb8"                                      # JWT signing key for TipTap
+```
 
 ## Steps & Commands
 
-1. Clone the repository & set up the environment:
+1. **Clone the repository & set up the environment:**
 
-```bash
+   ```bash
+   # Clone the repository and change into the project directory
    git clone <repository-url> && cd <repository-directory>
-  ```
-  
-## Copy the example .env file and adjust values as needed
 
-  ```bash
-    cp .env.example .env
-  ```
+   # Copy the example .env file and adjust values as needed
+   cp .env.example .env
+   ```
 
-2. Use Docker Compose to build and start services:
+1. **Build and Start the Containers with Docker Compose:**
+
+   ```bash
    docker-compose --env-file .env up --build
-
-   ## This starts PostgreSQL (local), the Rust back-end, and the Next.js front-end
-
-3. Basic Management Commands:
-
-```bash
-   docker-compose ps          # List running containers
-   docker-compose logs -f     # Follow logs; press Ctrl+C to exit
-   docker-compose restart rust-app  # Restart the Rust back-end service
-   docker-compose down       # Stop and remove all containers and networks
-   docker-compose down -v    # Also remove volumes for a fresh start
-   docker-compose exec rust-app cargo check  # Run a command inside the Rust back-end container
-   docker-compose exec rust-app cargo run    # Run the Rust back-end application
+   # This command starts:
+   # - PostgreSQL (local)
+   # - Rust back-end
+   # - Next.js front-end
    ```
 
-4. Direct Docker Commands (Optional):
+1. **Basic Management Commands:**
 
-   <!-- Pull the Rust back-end image from GHCR (if not built locally) -->
    ```bash
-   docker pull ghcr.io/refactor-group/refactor-platform-rs/your-tag:latest  # Replace 'your-tag' accordingly
+   docker-compose ps                      # List running containers
+   docker-compose logs -f                 # Follow live logs (press Ctrl+C to exit)
+   docker-compose restart rust-app        # Restart the Rust back-end container
+   docker-compose down                   # Stop and remove all containers and networks
+   docker-compose down -v                # Stop containers and remove volumes for a fresh start
+   docker-compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
+   docker-compose exec rust-app cargo run       # Run the Rust back-end application
+   docker-compose ps                      # List running containers
+   docker-compose logs -f                 # Follow live logs (press Ctrl+C to exit)
+   docker-compose restart rust-app        # Restart the Rust back-end container
+   docker-compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
+   docker-compose exec rust-app cargo run       # Run the Rust back-end application
    ```
 
-   ## Run the Rust back-end image directly
+1. **Direct Docker Commands (Optional):**
 
    ```bash
+   # Pull the Rust back-end image from GHCR (if not built locally)
+   docker pull ghcr.io/refactor-group/refactor-platform-rs/your-tag:latest  # Replace 'your-tag' as needed
+
+   # Run the Rust back-end image directly
    docker run -p 4000:4000 --env-file .env --name refactor-backend ghcr.io/refactor-group/refactor-platform-rs/your-tag:latest
    ```
-   
-4. **Debugging / Troubleshooting:**
+
+   **Note:** *By default, Docker Compose uses locally cached images. The remote image is pulled only once unless you force a new pull using commands like `docker-compose pull` or by passing the `--no-cache` flag.*
+
+1. **Debugging & Troubleshooting:**
 
    ```bash
-
+   docker-compose exec rust-app bash       # Access a shell in the Rust back-end container
+   docker-compose exec rust-app env        # View environment variables in the Rust back-end container
+   docker-compose exec postgres bash       # Access a shell in the PostgreSQL container
+   docker-compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  
+                                          # Verify PostgreSQL is ready
    docker-compose exec rust-app bash       # Access a shell in the Rust back-end container
    docker-compose exec rust-app env            # Check environment variables inside the rust-app container
    docker-compose exec postgres bash           # Access a shell in the PostgreSQL container for troubleshooting
    docker-compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  # Verify PostgreSQL is ready
+   docker-compose exec rust-app cargo test       # Run tests inside the Rust back-end container
    ```
 
-**Notes:**
+**Final Notes:**
 
 - Ensure your `.env` file includes required variables such as `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `BACKEND_PORT`, `BACKEND_INTERFACE`, `BACKEND_ALLOWED_ORIGINS`, `BACKEND_LOG_FILTER_LEVEL`, etc.
-- The nextjs-app service uses the pre-built image from GHCR (update the image name if necessary).
-- If using docker-compose, the `.env` file located in the project root is automatically loaded.
-
-*This guide provides all essential commands to safely work with the containers using Docker and Docker Compose.*
+- Docker Compose automatically loads the `.env` file located in the project root.
+- The pre-built images from GHCR for both the Rust back-end and the Next.js front-end are used by default. These remote images are only pulled if not already available locally, unless a pull is forced.
+- The commands above follow best practices and help ensure a reliable setup every time you run the project.
