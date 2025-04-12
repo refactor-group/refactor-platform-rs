@@ -1,4 +1,4 @@
-[![Build & Tests (backend)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml)
+[![Build & Tests (backend)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml) [![Build and Deploy Containers](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_deploy_containers.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_deploy_containers.yml)
 
 # Refactor Coaching & Mentoring Platform
 
