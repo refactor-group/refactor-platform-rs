@@ -37,7 +37,7 @@ BACKEND_LOG_FILTER_LEVEL=DEBUG               # Logging level for the back-end
 BACKEND_PORT=4000                            # Port on which the Rust back-end listens
 BACKEND_INTERFACE=0.0.0.0                    # Interface for the Rust back-end
 BACKEND_SERVICE_PROTOCOL=http                # Protocol (usually http)
-BACKEND_SERVICE_PORT=4000         # Derived service port
+BACKEND_SERVICE_PORT=4000                    # Derived service port
 BACKEND_SERVICE_HOST=localhost               # Hostname used by the service
 BACKEND_API_VERSION=0.0.1                    # API version
 
@@ -47,16 +47,15 @@ BACKEND_API_VERSION=0.0.1                    # API version
 FRONTEND_IMAGE_NAME=ghcr.io/refactor-group/refactor-platform-fe/<branch-name>:latest
                                              # Pre-built image for the Next.js front-end from GHCR
 FRONTEND_CONTAINER_NAME=refactor-platform-frontend  # Name for the front-end container
-FRONTEND_SERVICE_INTERFACE=0.0.0.0             # Interface for the front-end service
-FRONTEND_SERVICE_PORT=3000                     # Port for the front-end service
+FRONTEND_SERVICE_INTERFACE=0.0.0.0           # Interface for the front-end service
+FRONTEND_SERVICE_PORT=3000                   # Port for the front-end service
 
 # ==============================
 #   TipTap Service Configuration
 # ==============================
-TIPTAP_URL="https://ok01532m.collab.tiptap.cloud"   # URL for the TipTap service
-TIPTAP_AUTH_KEY="6122462e59d7cc8c6146f4e3b5c93dfad28c8a219838df69b59ffcec4cdc0041"
-                                             # Authentication key for TipTap
-TIPTAP_JWT_SIGNING_KEY="0f38cb0650a8fc262258ad415f25c52579bfc4095b222f486557d24c8fafaeb8"                                      # JWT signing key for TipTap
+TIPTAP_URL=""                                # URL for the TipTap service
+TIPTAP_AUTH_KEY=""                           # Authentication key for TipTap
+TIPTAP_JWT_SIGNING_KEY=""                    # JWT signing key for TipTap
 ```
 
 ## Steps & Commands
@@ -84,18 +83,18 @@ TIPTAP_JWT_SIGNING_KEY="0f38cb0650a8fc262258ad415f25c52579bfc4095b222f486557d24c
 1. **Basic Management Commands:**
 
    ```bash
-   docker-compose ps                      # List running containers
-   docker-compose logs -f                 # Follow live logs (press Ctrl+C to exit)
-   docker-compose restart rust-app        # Restart the Rust back-end container
-   docker-compose down                   # Stop and remove all containers and networks
-   docker-compose down -v                # Stop containers and remove volumes for a fresh start
+   docker-compose ps                          # List running containers
+   docker-compose logs -f                     # Follow live logs (press Ctrl+C to exit)
+   docker-compose restart rust-app            # Restart the Rust back-end container
+   docker-compose down                        # Stop and remove all containers and networks
+   docker-compose down -v                     # Stop containers and remove volumes for a fresh start
    docker-compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
-   docker-compose exec rust-app cargo run       # Run the Rust back-end application
-   docker-compose ps                      # List running containers
-   docker-compose logs -f                 # Follow live logs (press Ctrl+C to exit)
-   docker-compose restart rust-app        # Restart the Rust back-end container
+   docker-compose exec rust-app cargo run     # Run the Rust back-end application
+   docker-compose ps                          # List running containers
+   docker-compose logs -f                     # Follow live logs (press Ctrl+C to exit)
+   docker-compose restart rust-app            # Restart the Rust back-end container
    docker-compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
-   docker-compose exec rust-app cargo run       # Run the Rust back-end application
+   docker-compose exec rust-app cargo run     # Run the Rust back-end application
    ```
 
 1. **Direct Docker Commands (Optional):**
@@ -113,16 +112,16 @@ TIPTAP_JWT_SIGNING_KEY="0f38cb0650a8fc262258ad415f25c52579bfc4095b222f486557d24c
 1. **Debugging & Troubleshooting:**
 
    ```bash
-   docker-compose exec rust-app bash       # Access a shell in the Rust back-end container
-   docker-compose exec rust-app env        # View environment variables in the Rust back-end container
-   docker-compose exec postgres bash       # Access a shell in the PostgreSQL container
+   docker-compose exec rust-app bash         # Access a shell in the Rust back-end container
+   docker-compose exec rust-app env          # View environment variables in the Rust back-end container
+   docker-compose exec postgres bash         # Access a shell in the PostgreSQL container
    docker-compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  
-                                          # Verify PostgreSQL is ready
-   docker-compose exec rust-app bash       # Access a shell in the Rust back-end container
-   docker-compose exec rust-app env            # Check environment variables inside the rust-app container
-   docker-compose exec postgres bash           # Access a shell in the PostgreSQL container for troubleshooting
+                                             # Verify PostgreSQL is ready
+   docker-compose exec rust-app bash         # Access a shell in the Rust back-end container
+   docker-compose exec rust-app env          # Check environment variables inside the rust-app container
+   docker-compose exec postgres bash         # Access a shell in the PostgreSQL container for troubleshooting
    docker-compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  # Verify PostgreSQL is ready
-   docker-compose exec rust-app cargo test       # Run tests inside the Rust back-end container
+   docker-compose exec rust-app cargo test   # Run tests inside the Rust back-end container
    ```
 
 **Final Notes:**
