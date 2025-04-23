@@ -19,7 +19,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - name: Use cached dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: "ubuntu-22.04-x86_64-and-aarch64"
+          
+      - name: Set OpenSSL Paths
+        run: |
+          echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
 
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2

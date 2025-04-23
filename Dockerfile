@@ -1,73 +1,48 @@
-# Stage 1: Build Stage
-FROM rust:latest AS builder
+# syntax=docker/dockerfile:1.4
 
-# Set the working directory inside the container
+# Stage 1: Build Rust app on platform-specific image
+FROM --platform=${BUILDPLATFORM} rust:bullseye AS builder
+
+# Install required build tools
+RUN apt-get update && apt-get install -y \
+    build-essential bash pkg-config libssl-dev libpq-dev curl git \
+    --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /usr/src/app
 
-# Install necessary packages
-RUN apt-get update && apt-get install -y \
-    bash \
-    build-essential \
-    libssl-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install the necessary Rust target for ARM64 (Raspberry Pi 5)
-RUN rustup target add aarch64-unknown-linux-gnu
-
-# Copy the main workspace Cargo.toml and Cargo.lock to define workspace structure
+# Copy workspace and packages
 COPY Cargo.toml Cargo.lock ./
-
-# Copy each module's Cargo.toml to maintain the workspace structure
 COPY ./entity/Cargo.toml ./entity/Cargo.toml
 COPY ./entity_api/Cargo.toml ./entity_api/Cargo.toml
 COPY ./migration/Cargo.toml ./migration/Cargo.toml
 COPY ./service/Cargo.toml ./service/Cargo.toml
 COPY ./web/Cargo.toml ./web/Cargo.toml
-
-# Copy the complete source code into the container's working directory
 COPY . .
 
-# Build the project
+# Build release binaries for the current platform only
 RUN cargo build --release --workspace
 
-# logs the contents of the /usr/src/app directory to the docker build log and outputs them to the console
-RUN ls -la /usr/src/app/target/release/
+# Stage 2: Minimal runtime image
+FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
 
-RUN file /usr/src/app/target/release/*
+# Install Bash to support entrypoint.sh
+RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
 
-# Stage 2: Runtime Stage
-FROM debian:stable-slim AS runtime
+# Create non-root user
+RUN useradd -m -s /bin/bash appuser
+WORKDIR /app
 
-# Install necessary runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libssl3 \
-    libpq5 \
-    bash \
-    && rm -rf /var/lib/apt/lists/*
+# Copy only the necessary release binaries
+COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
+COPY --from=builder /usr/src/app/target/release/migration .
+COPY --from=builder /usr/src/app/target/release/seed_db .
 
-# Set the working directory
-WORKDIR /usr/src/app
+# Copy entrypoint script and make it executable
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && chown -R appuser:appuser /app /entrypoint.sh
 
-# Copy the compiled binaries from the builder stage
-COPY --from=builder /usr/src/app/target/release/refactor_platform_rs /usr/local/bin/refactor_platform_rs
-COPY --from=builder /usr/src/app/target/release/migration /usr/local/bin/migration
-COPY --from=builder /usr/src/app/target/release/seed_db /usr/local/bin/seed_db
-
-# Create a non-root user for running the application
-RUN useradd -m appuser && \
-    chown -R appuser:appuser /usr/src/app /usr/local/bin && \
-    chmod +x /usr/local/bin/*
-
-# Switch to the non-root user
 USER appuser
 
-# Expose the necessary ports
 EXPOSE 4000
 
-# Default command starts an interactive bash shell
-# Set ENTRYPOINT to default to run the Rust binary with arguments
-ENTRYPOINT ["/bin/bash", "-c", "/usr/local/bin/refactor_platform_rs -l \"$BACKEND_LOG_FILTER_LEVEL\" -i \"$BACKEND_INTERFACE\" -p \"$BACKEND_PORT\" -d \"$DATABASE_URL\" --allowed-origins=$BACKEND_ALLOWED_ORIGINS"]
-
-# Default CMD allows overriding with custom commands
-CMD ["bash"]
+ENTRYPOINT ["/entrypoint.sh"]

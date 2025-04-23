@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 domain = { path = "../domain" }
 service = { path = "../service" }
-entity_api = { path = "../entity_api" }
 
 axum = "0.7.7"
 axum-login = "0.16.0"
@@ -18,7 +17,6 @@ tower-http = { version = "0.6.1", features = ["fs", "cors"] }
 serde_json = "1.0.128"
 serde = { version = "1.0.210", features = ["derive"] }
 sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
-sqlx-sqlite = { version = "0.8.2" }
 tokio = { version = "1.40.0", features = ["full"] }
 tower = "0.5.1"
 tower-sessions = { version = "0.13.0" }
