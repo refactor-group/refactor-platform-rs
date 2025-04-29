@@ -109,10 +109,6 @@ pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error>
 }
 
 pub async fn verify_password(password_to_verify: &str, password_hash: &str) -> Result<(), Error> {
-    info!(
-        "** verify_password(): {:?}:{:?}",
-        password_to_verify, password_hash
-    );
     match password_auth::verify_password(password_to_verify, password_hash) {
         Ok(_) => Ok(()),
         Err(_) => Err(Error {
