@@ -387,7 +387,7 @@ pub fn user_password_routes(app_state: AppState) -> Router {
 
 pub fn user_session_protected_routes() -> Router {
     Router::new()
-        .route("/logout", delete(user_session_controller::delete))
+        .route("/delete", delete(user_session_controller::delete))
         .route_layer(login_required!(Backend, login_url = "/"))
 }
 
