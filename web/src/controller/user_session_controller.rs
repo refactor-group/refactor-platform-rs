@@ -12,20 +12,6 @@ pub struct NextUrl {
     _next: Option<String>,
 }
 
-pub async fn protected(auth_session: AuthSession) -> impl IntoResponse {
-    debug!("UserSessionController::protected()");
-
-    match auth_session.user {
-        Some(user) => json!({
-            "email": &user.email,
-        })
-        .to_string()
-        .into_response(),
-
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
 /// Logs the user into the platform and returns a new session cookie.
 ///
 /// Successful login will return a session cookie with id, e.g.:
@@ -52,6 +38,7 @@ pub async fn login(
     Form(creds): Form<Credentials>,
 ) -> impl IntoResponse {
     debug!("UserSessionController::login()");
+
     let user = match auth_session.authenticate(creds.clone()).await {
         Ok(Some(user)) => user,
         Ok(None) => return Err(StatusCode::UNAUTHORIZED.into_response()),

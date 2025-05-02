@@ -10,7 +10,7 @@ use tower_http::services::ServeDir;
 
 use crate::controller::{
     action_controller, agreement_controller, coaching_session_controller, jwt_controller,
-    note_controller, organization, organization_controller, overarching_goal_controller,
+    note_controller, organization, organization_controller, overarching_goal_controller, user,
     user_controller, user_session_controller,
 };
 
@@ -68,6 +68,7 @@ use self::organization::coaching_relationship_controller;
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
+            user::password_controller::update_password,
             jwt_controller::generate_collab_token,
         ),
         components(
@@ -120,6 +121,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_user_routes(app_state.clone()))
         .merge(overarching_goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
+        .merge(user_password_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes())
         .merge(coaching_sessions_routes(app_state.clone()))
@@ -145,7 +147,7 @@ fn action_routes(app_state: AppState) -> Router {
                     protect::actions::index,
                 )),
         )
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
@@ -164,7 +166,7 @@ fn agreement_routes(app_state: AppState) -> Router {
         )
         .route("/agreements/:id", get(agreement_controller::read))
         .route("/agreements/:id", delete(agreement_controller::delete))
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
@@ -210,7 +212,7 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                     protect::coaching_sessions::delete,
                 )),
         )
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
@@ -225,7 +227,7 @@ fn note_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(app_state.clone(), protect::notes::index)),
         )
         .route("/notes/:id", get(note_controller::read))
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
@@ -251,7 +253,7 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships/:relationship_id",
             get(organization::coaching_relationship_controller::read),
         )
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
@@ -293,7 +295,7 @@ fn organization_user_routes(app_state: AppState) -> Router {
                     protect::organizations::users::delete,
                 )),
         )
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 pub fn organization_routes(app_state: AppState) -> Router {
@@ -310,7 +312,7 @@ pub fn organization_routes(app_state: AppState) -> Router {
             "/organizations/:id",
             delete(organization_controller::delete),
         )
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
@@ -344,25 +346,49 @@ pub fn overarching_goal_routes(app_state: AppState) -> Router {
             "/overarching_goals/:id/status",
             put(overarching_goal_controller::update_status),
         )
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
-        .route("/users", put(user_controller::update))
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .merge(
+            // GET /users/:id
+            Router::new()
+                .route("/users/:id", get(user_controller::read))
+                .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
+        )
+        .merge(
+            // PUT /users/:id
+            Router::new()
+                .route("/users/:id", put(user_controller::update))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::update,
+                )),
+        )
+        .route_layer(login_required!(Backend, login_url = "/"))
+        .with_state(app_state)
+}
+
+pub fn user_password_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/users/:id/password",
+            put(user::password_controller::update_password),
+        )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::users::passwords::update_password,
+        ))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 
 pub fn user_session_protected_routes() -> Router {
     Router::new()
-        .route("/protected", get(user_session_controller::protected))
-        .route(
-            "/user_sessions/:id",
-            delete(user_session_controller::delete),
-        )
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route("/delete", delete(user_session_controller::delete))
+        .route_layer(login_required!(Backend, login_url = "/"))
 }
 
 pub fn user_session_routes() -> Router {
@@ -379,7 +405,7 @@ fn jwt_routes(app_state: AppState) -> Router {
             app_state.clone(),
             protect::jwt::generate_collab_token,
         ))
-        .route_layer(login_required!(Backend, login_url = "/login"))
+        .route_layer(login_required!(Backend, login_url = "/"))
         .with_state(app_state)
 }
 

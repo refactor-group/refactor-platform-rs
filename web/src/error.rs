@@ -23,6 +23,7 @@ pub enum Error {
 #[derive(Debug)]
 pub enum WebErrorKind {
     Input,
+    Auth,
     Other,
 }
 
@@ -124,6 +125,13 @@ impl Error {
                     self
                 );
                 (StatusCode::BAD_REQUEST, "BAD REQUEST").into_response()
+            }
+            WebErrorKind::Auth => {
+                warn!(
+                    "WebErrorKind::Auth: Responding with 401 Unauthorized. Error: {:?}",
+                    self
+                );
+                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
             }
             WebErrorKind::Other => {
                 warn!(

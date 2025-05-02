@@ -5,14 +5,14 @@ use crate::{
 };
 use chrono::Utc;
 pub use entity_api::user::{
-    create, create_by_organization, find_by_email, find_by_id, find_by_organization, AuthSession,
-    Backend, Credentials,
+    create, create_by_organization, find_by_email, find_by_id, find_by_organization, generate_hash,
+    verify_password, AuthSession, Backend, Credentials,
 };
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
 };
 use sea_orm::IntoActiveModel;
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use sea_orm::{DatabaseConnection, TransactionTrait, Value};
 
 pub async fn find_by(
     db: &DatabaseConnection,
@@ -30,6 +30,7 @@ pub async fn update(
     params: impl mutate::IntoUpdateMap,
 ) -> Result<users::Model, Error> {
     let existing_user = find_by_id(db, user_id).await?;
+
     let active_model = existing_user.into_active_model();
     Ok(mutate::update::<users::ActiveModel, users::Column>(
         db,
@@ -37,6 +38,41 @@ pub async fn update(
         params.into_update_map(),
     )
     .await?)
+}
+
+pub async fn update_password(
+    db: &DatabaseConnection,
+    user_id: Id,
+    params: impl mutate::IntoUpdateMap,
+) -> Result<users::Model, Error> {
+    let existing_user = find_by_id(db, user_id).await?;
+    let mut params = params.into_update_map();
+
+    // Remove and verify the user's current password as a security check before allowing any updates
+    let password_to_verify = params.remove("current_password")?;
+    verify_password(&password_to_verify, &existing_user.password).await?;
+
+    // remove confirm_password
+    let confirm_password = params.remove("confirm_password")?;
+
+    // remove password
+    let password = params.remove("password")?;
+    // check password confirmation
+    if confirm_password != password {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+        });
+    }
+
+    // generate new password hash and insert it back into params overwriting the raw password
+    params.insert(
+        "password".to_string(),
+        Some(Value::String(Some(Box::new(generate_hash(password))))),
+    );
+
+    let active_model = existing_user.into_active_model();
+    Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
 }
 
 // This function is intended to be a temporary solution until we finalize our user experience strategy for assigning a new user
