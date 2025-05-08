@@ -21,6 +21,26 @@ services:
       timeout: 5s
       retries: 5
 
+  migrations:
+    image: ${BACKEND_IMAGE_NAME}
+    platform: ${PLATFORM}
+    entrypoint: []
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend_network
+    command: ["/app/migration", "up", "-s", "${POSTGRES_SCHEMA}"]
+
   rust-app:
     image: ${BACKEND_IMAGE_NAME}
     platform: ${PLATFORM}
