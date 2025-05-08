@@ -10,12 +10,11 @@ if [[ $# -gt 0 ]]; then
     esac
 fi
 
-# run SeaORM migration up
-if [[ "$1" == "migrate" ]]; then
+# If no args passed (default case for migrator service), run SeaORM migration up
+if [[ "$(basename "$0")" == "entrypoint.sh" ]]; then
     echo "🔧 Running SeaORM migration up (initial setup if needed)..."
-    exec /app/migrationctl up
-
-else
+    exec /app/migration up
+fi
 
 # Otherwise, start the main backend app
 exec /app/refactor_platform_rs \

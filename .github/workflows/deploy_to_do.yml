@@ -1,0 +1,75 @@
+name: Deploy to DigitalOcean via Tailscale
+
+# ✅ Manual-only trigger
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Manual Deploy Over Tailscale
+    runs-on: ubuntu-24.04
+
+    steps:
+      # 📥 Step 1: Set up Tailscale on the GitHub Actions runner
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+          version: latest
+          use-cache: 'true'
+
+      # ✅ Step 2: SSH and deploy to the droplet over Tailscale IP
+      - name: SSH and Deploy with Docker Compose
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DO_TAILSCALE_NAME }} # 👈 The droplet's Tailscale IP (not public)
+          username: ${{ secrets.DO_USERNAME }}   # e.g. "deploy"
+          key: ${{ secrets.DO_SSH_KEY }}         # Private SSH key in GitHub secrets
+          script: |
+            set -e
+
+            echo "📦 Starting manual deployment to Tailscale-connected droplet..."
+            cd /home/deploy
+
+            echo "📥 Pulling latest stable image from GHCR..."
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+            docker pull ${{ env.BACKEND_IMAGE_NAME }}
+
+            echo "📌 Capturing current rust-app container ID for rollback..."
+            docker compose ps -q rust-app > old_container_id.txt || true
+            OLD_CONTAINER_ID=$(cat old_container_id.txt || echo "")
+            OLD_IMAGE=$(docker inspect --format='{{.Image}}' $OLD_CONTAINER_ID 2>/dev/null || echo "")
+
+            echo "🛑 Stopping existing containers..."
+            docker compose down
+
+            echo "🚀 Starting new containers with updated image..."
+            docker compose up -d
+
+            echo "⏳ Waiting for rust-app to initialize..."
+            sleep 15
+
+            echo "🩺 Checking rust-app status..."
+            docker ps | grep rust-app > /dev/null
+            if [ $? -ne 0 ]; then
+              echo "❌ rust-app failed to start. Initiating rollback..."
+
+              if [ ! -z "$OLD_IMAGE" ]; then
+                echo "🔁 Rolling back to previous image: $OLD_IMAGE"
+                docker compose down
+                docker rmi ${{ env.BACKEND_IMAGE_NAME }} || true
+                docker tag $OLD_IMAGE ${{ env.BACKEND_IMAGE_NAME }}
+
+                echo "🔄 Restarting services with previous image..."
+                docker compose up -d
+                echo "✅ Rollback complete."
+              else
+                echo "⚠️ No image available to roll back to. Manual intervention may be required."
+              fi
+            else
+              echo "✅ Deployment succeeded! rust-app is running."
+            fi
+
+            echo "🎉 Deployment completed."
