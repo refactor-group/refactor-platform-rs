@@ -11,8 +11,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql
-      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql
-      - ./migration/src/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql
     networks:
       - backend_network
     healthcheck:
