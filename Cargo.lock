@@ -1762,7 +1762,11 @@ name = "migration"
 version = "1.0.0-beta1"
 dependencies = [
  "async-std",
+ "chrono",
+ "entity",
+ "password-auth",
  "sea-orm-migration",
+ "service",
  "sqlx",
 ]
 
