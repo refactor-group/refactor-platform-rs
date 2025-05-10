@@ -18,6 +18,7 @@ COPY ./migration/Cargo.toml ./migration/Cargo.toml
 COPY ./service/Cargo.toml ./service/Cargo.toml
 COPY ./web/Cargo.toml ./web/Cargo.toml
 COPY . .
+COPY src/bin/seed_db.rs ./src/bin/seed_db.rs
 
 # Build release binaries for the current platform only
 RUN cargo build --release --workspace
