@@ -1,4 +1,5 @@
-name: Build and Deploy Containers
+name: Build and Push Containers
+description: Builds the backend source into binary containers for the current branch and pushes to the GitHub Container Registry.
 
 on:
   push:
