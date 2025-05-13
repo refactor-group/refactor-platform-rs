@@ -1,5 +1,5 @@
 name: Build a New Production Release
-description: Builds the backend source into binary containers for branch main and pushes to the GitHub Container Registry as stable tag.
+# Builds the backend source into binary containers for branch main and pushes to the GitHub Container Registry as stable tag.
 
 on:
   release:
