@@ -37,7 +37,7 @@ services:
         condition: service_healthy
     networks:
       - backend_network
-    command: ["/app/migration", "up", "-s", "${POSTGRES_SCHEMA}"]
+    command: ["/app/migration-binary", "up", "-s", "${POSTGRES_SCHEMA}"]
 
   rust-app:
     image: ${BACKEND_IMAGE_NAME}
@@ -63,6 +63,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
     networks:
       - backend_network
 

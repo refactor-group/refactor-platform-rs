@@ -32,10 +32,16 @@ RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -s /bin/bash appuser
 WORKDIR /app
 
-# Copy only the necessary release binaries
+# Copy the necessary release binaries
 COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
-COPY --from=builder /usr/src/app/target/release/migration .
+# Naming this to avoid collision with the migration directory added below
+COPY --from=builder /usr/src/app/target/release/migration migration-binary
 COPY --from=builder /usr/src/app/target/release/seed_db .
+
+# In order to run our initial migration which applies a SQL file directly, we need to
+# make sure the directory exists on the container and copy the SQL file into it.
+RUN mkdir -p /app/migration/src
+COPY --from=builder /usr/src/app/migration/src/refactor_platform_rs.sql /app/migration/src/
 
 # Copy entrypoint script and make it executable
 COPY entrypoint.sh /entrypoint.sh
