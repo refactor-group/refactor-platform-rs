@@ -17,8 +17,20 @@ COPY ./entity_api/Cargo.toml ./entity_api/Cargo.toml
 COPY ./migration/Cargo.toml ./migration/Cargo.toml
 COPY ./service/Cargo.toml ./service/Cargo.toml
 COPY ./web/Cargo.toml ./web/Cargo.toml
+
+# Make sure the src/bin directory exists before copying to it
+RUN mkdir -p src/bin
+
+# Copy everything else
 COPY . .
-COPY src/bin/seed_db.rs ./src/bin/seed_db.rs
+
+# Verifying file structure and src files existence
+RUN echo "Checking file structure:" && \
+    ls -la && \
+    echo "Checking src/bin directory:" && \
+    ls -la src/bin && \
+    echo "Checking if seed_db.rs exists:" && \
+    test -f src/bin/seed_db.rs && echo "File exists!" || echo "File does not exist!"
 
 # Build release binaries for the current platform only
 RUN cargo build --release --workspace
