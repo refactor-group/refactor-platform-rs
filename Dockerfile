@@ -17,23 +17,12 @@ COPY ./entity_api/Cargo.toml ./entity_api/Cargo.toml
 COPY ./migration/Cargo.toml ./migration/Cargo.toml
 COPY ./service/Cargo.toml ./service/Cargo.toml
 COPY ./web/Cargo.toml ./web/Cargo.toml
-
-# Make sure the src/bin directory exists before copying to it
-RUN mkdir -p src/bin
-
-# Copy everything else
 COPY . .
 
-# Verifying file structure and src files existence
-RUN echo "Checking file structure:" && \
-    ls -la && \
-    echo "Checking src/bin directory:" && \
-    ls -la src/bin && \
-    echo "Checking if seed_db.rs exists:" && \
-    test -f src/bin/seed_db.rs && echo "File exists!" || echo "File does not exist!"
+RUN cargo build --release -p refactor_platform_rs -p migration
 
-# Build release binaries for the current platform only
-RUN cargo build --release --workspace
+RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app  
+
 
 # Stage 2: Minimal runtime image
 FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
@@ -48,7 +37,7 @@ WORKDIR /app
 # Copy only the necessary release binaries
 COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
 COPY --from=builder /usr/src/app/target/release/migration .
-COPY --from=builder /usr/src/app/target/release/seed_db .
+# COPY --from=builder /usr/src/app/target/release/seed_db .
 
 # Copy entrypoint script and make it executable
 COPY entrypoint.sh /entrypoint.sh
