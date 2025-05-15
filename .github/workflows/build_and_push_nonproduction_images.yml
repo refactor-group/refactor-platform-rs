@@ -1,4 +1,4 @@
-name: Build and Push Containers
+name: Build and Push Non-Production Images
 # Builds the backend source into binary containers for the current branch and pushes to the GitHub Container Registry.
 
 on:

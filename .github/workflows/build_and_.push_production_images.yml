@@ -1,10 +1,10 @@
-name: Build a New Production Release
+name: Build and Push Production Images
 # Builds the backend source into binary containers for branch main and pushes to the GitHub Container Registry as stable tag.
 
 on:
   release:
     types: [released]  # This workflow only runs when a new GitHub release is *actually* released publicly
-
+  workflow_dispatch:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
