@@ -3,7 +3,8 @@ name: Deploy to DigitalOcean via Tailscale
 # ✅ Manual-only trigger
 on:
   workflow_dispatch:
-  pull_request: 
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
 
 jobs:
   deploy:
