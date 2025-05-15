@@ -35,7 +35,7 @@ jobs:
 
             echo "📥 Pulling latest stable image from GHCR..."
             echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
-            docker pull ${{ env.BACKEND_IMAGE_NAME }}
+            docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
 
             echo "📌 Capturing current rust-app container ID for rollback..."
             docker compose ps -q rust-app > old_container_id.txt || true
@@ -59,8 +59,8 @@ jobs:
               if [ ! -z "$OLD_IMAGE" ]; then
                 echo "🔁 Rolling back to previous image: $OLD_IMAGE"
                 docker compose down
-                docker rmi ${{ env.BACKEND_IMAGE_NAME }} || true
-                docker tag $OLD_IMAGE ${{ env.BACKEND_IMAGE_NAME }}
+                docker rmi ${{ secrets.BACKEND_IMAGE_NAME }} || true
+                docker tag $OLD_IMAGE ${{ secrets.BACKEND_IMAGE_NAME }}
 
                 echo "🔄 Restarting services with previous image..."
                 docker compose up -d
