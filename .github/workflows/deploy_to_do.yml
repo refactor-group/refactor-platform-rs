@@ -62,7 +62,7 @@ jobs:
             cd /home/deploy
 
             echo "📥 Pulling latest stable image from GHCR..."
-            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
             docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
 
             echo "📌 Capturing current rust-app container ID for rollback..."
