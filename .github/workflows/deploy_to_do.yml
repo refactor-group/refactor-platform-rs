@@ -65,6 +65,9 @@ jobs:
             echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
             docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
 
+            echo "📥 Retrieving the docker-compose.yaml"
+            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml
+
             echo "📌 Capturing current rust-app container ID for rollback..."
             docker compose ps -q rust-app > old_container_id.txt || true
             OLD_CONTAINER_ID=$(cat old_container_id.txt || echo "")
