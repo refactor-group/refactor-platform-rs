@@ -35,7 +35,7 @@ WORKDIR /app
 # Copy the necessary release binaries
 COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
 # Naming this to avoid collision with the migration directory added below
-COPY --from=builder /usr/src/app/target/release/migration migration-binary
+COPY --from=builder /usr/src/app/target/release/migration migrationctl
 COPY --from=builder /usr/src/app/target/release/seed_db .
 
 # In order to run our initial migration which applies a SQL file directly, we need to

@@ -44,7 +44,6 @@ services:
     restart: "no"  # Run once, do not restart
     networks:
       - backend_network
-    # No command override — will default to running `migration up` once
 
   rust-app:
     image: ${BACKEND_IMAGE_NAME}

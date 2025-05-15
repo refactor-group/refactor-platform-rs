@@ -13,7 +13,7 @@ fi
 # run SeaORM migration up
 if [[ "$1" == "migrate" ]]; then
     echo "🔧 Running SeaORM migration up (initial setup if needed)..."
-    exec /app/migration-binary up
+    exec /app/migrationctl up
 
 else
 
