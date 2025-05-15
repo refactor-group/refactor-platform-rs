@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define default variables
-DB_NAME=${1:-"refactor_platform"}
+DB_NAME=${1:-"refactor"}
 DB_USER=${2:-"refactor"}
 SCHEMA_NAME=${3:-"refactor_platform"}
 

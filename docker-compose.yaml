@@ -11,8 +11,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql
-      - ./migration/src/refactor_platform_rs.sql:/docker-entrypoint-initdb.d/1-refactor_platform_rs.sql
-      - ./migration/src/setup_default_user.sql:/docker-entrypoint-initdb.d/2-setup_default_user.sql
     networks:
       - backend_network
     healthcheck:
@@ -20,6 +18,32 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  migrator:
+    image: ${BACKEND_IMAGE_NAME}  # Reuse your backend image
+    container_name: db-migrator
+    depends_on:
+      postgres:
+        condition: service_healthy  # Wait for DB before running
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      BACKEND_PORT: ${BACKEND_PORT}
+      BACKEND_INTERFACE: ${BACKEND_INTERFACE}
+      BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}
+      BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}
+      TIPTAP_URL: ${TIPTAP_URL}
+      TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+    command: ["migrate"]
+    restart: "no"  # Run once, do not restart
+    networks:
+      - backend_network
 
   rust-app:
     image: ${BACKEND_IMAGE_NAME}
@@ -45,6 +69,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     networks:
       - backend_network
 

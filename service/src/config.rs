@@ -5,6 +5,7 @@ use log::LevelFilter;
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::Deserialize;
 use std::fmt;
+use std::str::FromStr;
 use utoipa::IntoParams;
 
 type APiVersionList = [&'static str; 1];
@@ -22,6 +23,38 @@ pub struct ApiVersion {
     /// The version of the API to use for a request.
     #[param(rename = "x-version", style = Simple, required, example = "0.0.1")]
     pub version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RustEnv {
+    Development,
+    Production,
+    Staging,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct RustEnvParseError;
+
+impl FromStr for RustEnv {
+    type Err = RustEnvParseError;
+    fn from_str(level: &str) -> Result<RustEnv, Self::Err> {
+        match level.to_lowercase().as_str() {
+            "development" => Ok(RustEnv::Development),
+            "production" => Ok(RustEnv::Production),
+            "staging" => Ok(RustEnv::Staging),
+            _ => Err(RustEnvParseError),
+        }
+    }
+}
+
+impl fmt::Display for RustEnv {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RustEnv::Development => write!(f, "development"),
+            RustEnv::Production => write!(f, "production"),
+            RustEnv::Staging => write!(f, "staging"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -88,6 +121,20 @@ pub struct Config {
             .map(|s| s.parse::<LevelFilter>().unwrap()),
         )]
     pub log_level_filter: LevelFilter,
+
+    /// Set the Rust runtime environment to use.
+    #[arg(
+    short,
+    long,
+    env,
+    default_value_t = RustEnv::Development,
+    value_parser = clap::builder::PossibleValuesParser::new([
+        "DEVELOPMENT", "PRODUCTION", "STAGING", 
+        "development", "production", "staging"
+    ])
+        .map(|s| s.parse::<RustEnv>().unwrap()),
+    )]
+    pub runtime_env: RustEnv,
 }
 
 impl Default for Config {
@@ -135,6 +182,10 @@ impl Config {
 
     pub fn tiptap_app_id(&self) -> Option<String> {
         self.tiptap_app_id.clone()
+    }
+
+    pub fn runtime_env(&self) -> RustEnv {
+        self.runtime_env.clone()
     }
 }
 
