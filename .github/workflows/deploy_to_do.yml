@@ -21,36 +21,37 @@ jobs:
           tags: tag:github-actions
           version: latest
           use-cache: 'true'
-      - name: Debug ED25519 Key
-        run: |
-          # Setup the key
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+      # - name: Debug ED25519 Key
+      #   run: |
+      #     # Setup the key
+      #     mkdir -p ~/.ssh
+      #     echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
+      #     chmod 600 ~/.ssh/id_ed25519
           
-          # Verify the key type and fingerprint
-          echo "Key information:"
-          ssh-keygen -l -f ~/.ssh/id_ed25519
+      #     # Verify the key type and fingerprint
+      #     echo "Key information:"
+      #     ssh-keygen -l -f ~/.ssh/id_ed25519
           
-          # Generate public key
-          echo "Public key that should be in authorized_keys:"
-          ssh-keygen -y -f ~/.ssh/id_ed25519
+      #     # Generate public key
+      #     echo "Public key that should be in authorized_keys:"
+      #     ssh-keygen -y -f ~/.ssh/id_ed25519
           
-          # Attempt connection with specific key
-          echo "Attempting connection with verbose output:"
-          ssh -vvv -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'
+      #     # Attempt connection with specific key
+      #     echo "Attempting connection with verbose output:"
+      #     ssh -vvv -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'
 
       # ✅ Step 2: SSH and deploy to the droplet over Tailscale IP
       - name: SSH and Deploy with Docker Compose
         run: |
-          # Set up SSH key
           mkdir -p ~/.ssh
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts
-    
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          
+          # Add the host key to known_hosts
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts
+          
           # Execute SSH command
-          ssh -o StrictHostKeyChecking=no ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
             set -e
 
             echo "📦 Starting manual deployment to Tailscale-connected droplet..."
