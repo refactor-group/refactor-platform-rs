@@ -24,12 +24,15 @@ jobs:
 
       # ✅ Step 2: SSH and deploy to the droplet over Tailscale IP
       - name: SSH and Deploy with Docker Compose
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.DO_TAILSCALE_NAME }} # 👈 The droplet's Tailscale IP (not public)
-          username: ${{ secrets.DO_USERNAME }}   # e.g. "deploy"
-          key: ${{ secrets.DO_SSH_KEY }}         # Private SSH key in GitHub secrets
-          script: |
+        run: |
+          # Set up SSH key
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts
+    
+          # Execute SSH command
+          ssh -o StrictHostKeyChecking=no ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
             set -e
 
             echo "📦 Starting manual deployment to Tailscale-connected droplet..."
