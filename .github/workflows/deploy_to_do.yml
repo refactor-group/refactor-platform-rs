@@ -67,8 +67,9 @@ jobs:
             # Backend Configuration
             export BACKEND_IMAGE_NAME="${{ secrets.BACKEND_IMAGE_NAME }}" # Docker image for backend
             export BACKEND_CONTAINER_NAME="${{ secrets.BACKEND_CONTAINER_NAME }}" # Container name
+            export BACKEND_PORT="${{ secrets.BACKEND_PORT }}" # Port for backend service
             BACKEND_PORT="${{ secrets.BACKEND_PORT }}" # Port for backend service
-            exportBACKEND_PORT="${BACKEND_PORT:-4000}" # Default port if not set
+            export BACKEND_PORT="${BACKEND_PORT:-4000}" # Default port if not set
             echo "🔑 Backend port: $BACKEND_PORT" # log the backend port
             export BACKEND_INTERFACE="${{ secrets.BACKEND_INTERFACE }}" # Network interface
             export BACKEND_ALLOWED_ORIGINS="${{ secrets.BACKEND_ALLOWED_ORIGINS }}" # CORS origins
