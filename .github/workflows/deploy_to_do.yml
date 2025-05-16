@@ -1,0 +1,201 @@
+name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub
+
+# ✅ Manual-only trigger
+on:
+  workflow_dispatch: # Allow manual triggering from GitHub UI
+  pull_request:
+    types: [opened, synchronize, reopened, closed] # Run on PR events
+
+jobs:
+  deploy:
+    name: Manual Deploy Over Tailscale # Job name for display
+    runs-on: ubuntu-24.04 # Use latest Ubuntu runner
+
+    steps:
+      # 📥 Step 1: Set up Tailscale on the GitHub Actions runner
+      - name: Setup Tailscale # Connect to Tailscale network
+        uses: tailscale/github-action@v3 # Use Tailscale's official action
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }} # Tailscale OAuth client ID
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }} # Tailscale OAuth secret
+          tags: tag:github-actions # Tag for this Tailscale node
+          version: latest # Use latest Tailscale version
+          use-cache: 'true' # Cache Tailscale for faster setup
+
+      - name: Debug ED25519 Key # Setup and verify SSH key
+        run: |
+          mkdir -p ~/.ssh # Create SSH directory
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
+          chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
+          
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts # Add host key
+          
+          echo "Key information:" # Display key information for debugging
+          ssh-keygen -l -f ~/.ssh/id_ed25519 # Show key fingerprint
+          
+          echo "Public key that should be in authorized_keys:" # Show public key
+          ssh-keygen -y -f ~/.ssh/id_ed25519 # Generate public key from private
+          
+          echo "Attempting connection with verbose output:" # Test connection
+          ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'
+
+      # ✅ Step 2: SSH and deploy to the droplet over Tailscale IP
+      - name: SSH and Deploy with Docker Compose # Main deployment step
+        run: |
+          mkdir -p ~/.ssh # Create SSH directory
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
+          chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
+          
+          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts # Add host key
+
+          # Deploy with SSH - add multiple options to disable all prompts
+          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
+            set -e # Exit on any error
+
+            echo "📦 Starting manual deployment to Tailscale-connected droplet..." # Announce start
+            cd /home/deploy # Change to deployment directory
+            
+            echo "🔑 Exporting environment variables for docker-compose..." # Export env vars
+            
+            # PostgreSQL Configuration
+            export POSTGRES_USER="${{ secrets.POSTGRES_USER }}" # Database username
+            echo "DEBUG: POSTGRES_USER=${POSTGRES_USER}"
+            
+            export POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" # Database password
+            echo "DEBUG: POSTGRES_PASSWORD=***" # Mask password in logs
+            
+            export POSTGRES_DB="${{ secrets.POSTGRES_DB }}" # Database name
+            echo "DEBUG: POSTGRES_DB=${POSTGRES_DB}"
+            
+            export POSTGRES_PORT="${{ secrets.POSTGRES_PORT }}" # Database port
+            # Set default if not provided
+            POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+            export POSTGRES_PORT="${POSTGRES_PORT}"
+            echo "DEBUG: POSTGRES_PORT=${POSTGRES_PORT}"
+            
+            export POSTGRES_SCHEMA="${{ secrets.POSTGRES_SCHEMA }}" # Database schema
+            echo "DEBUG: POSTGRES_SCHEMA=${POSTGRES_SCHEMA}"
+            
+            export POSTGRES_HOST="postgres" # Hardcode host to Docker service name
+            echo "DEBUG: POSTGRES_HOST=${POSTGRES_HOST}"
+            
+            # Backend Configuration
+            export BACKEND_IMAGE_NAME="${{ secrets.BACKEND_IMAGE_NAME }}" # Docker image for backend
+            echo "DEBUG: BACKEND_IMAGE_NAME=${BACKEND_IMAGE_NAME}"
+            
+            export BACKEND_CONTAINER_NAME="${{ secrets.BACKEND_CONTAINER_NAME }}" # Container name
+            # Set default if not provided
+            BACKEND_CONTAINER_NAME="${BACKEND_CONTAINER_NAME:-rust-app}"
+            export BACKEND_CONTAINER_NAME="${BACKEND_CONTAINER_NAME}"
+            echo "DEBUG: BACKEND_CONTAINER_NAME=${BACKEND_CONTAINER_NAME}"
+            
+            export BACKEND_PORT="${{ secrets.BACKEND_PORT }}" # Port for backend service
+            # Set default if not provided
+            BACKEND_PORT="${BACKEND_PORT:-4000}"
+            export BACKEND_PORT="${BACKEND_PORT}"
+            echo "DEBUG: BACKEND_PORT=${BACKEND_PORT}"
+            
+            export BACKEND_INTERFACE="${{ secrets.BACKEND_INTERFACE }}" # Network interface
+            # Set default if not provided
+            BACKEND_INTERFACE="${BACKEND_INTERFACE:-0.0.0.0}"
+            export BACKEND_INTERFACE="${BACKEND_INTERFACE}"
+            echo "DEBUG: BACKEND_INTERFACE=${BACKEND_INTERFACE}"
+            
+            export BACKEND_ALLOWED_ORIGINS="${{ secrets.BACKEND_ALLOWED_ORIGINS }}" # CORS origins
+            # Set default if not provided
+            BACKEND_ALLOWED_ORIGINS="${BACKEND_ALLOWED_ORIGINS:-http://localhost:3000}"
+            export BACKEND_ALLOWED_ORIGINS="${BACKEND_ALLOWED_ORIGINS}"
+            echo "DEBUG: BACKEND_ALLOWED_ORIGINS=${BACKEND_ALLOWED_ORIGINS}"
+            
+            export BACKEND_LOG_FILTER_LEVEL="${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" # Log level
+            # Set default if not provided
+            BACKEND_LOG_FILTER_LEVEL="${BACKEND_LOG_FILTER_LEVEL:-info}"
+            export BACKEND_LOG_FILTER_LEVEL="${BACKEND_LOG_FILTER_LEVEL}"
+            echo "DEBUG: BACKEND_LOG_FILTER_LEVEL=${BACKEND_LOG_FILTER_LEVEL}"
+            
+            # Explicitly compute DATABASE_URL from components
+            export DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+            echo "DEBUG: DATABASE_URL=postgres://${POSTGRES_USER}:***@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" # Mask password
+            
+            # TipTap Configuration
+            export TIPTAP_URL="${{ secrets.TIPTAP_URL }}" # TipTap URL
+            echo "DEBUG: TIPTAP_URL=${TIPTAP_URL:-not set}"
+            
+            export TIPTAP_AUTH_KEY="${{ secrets.TIPTAP_AUTH_KEY }}" # TipTap auth key
+            echo "DEBUG: TIPTAP_AUTH_KEY=${TIPTAP_AUTH_KEY:+***}" # Mask if set
+            
+            export TIPTAP_JWT_SIGNING_KEY="${{ secrets.TIPTAP_JWT_SIGNING_KEY }}" # JWT signing key
+            echo "DEBUG: TIPTAP_JWT_SIGNING_KEY=${TIPTAP_JWT_SIGNING_KEY:+***}" # Mask if set
+            
+            # Frontend Configuration
+            export FRONTEND_IMAGE_NAME="${{ secrets.FRONTEND_IMAGE_NAME }}" # Frontend image
+            echo "DEBUG: FRONTEND_IMAGE_NAME=${FRONTEND_IMAGE_NAME:-not set}"
+            
+            export FRONTEND_CONTAINER_NAME="${{ secrets.FRONTEND_CONTAINER_NAME }}" # Frontend container
+            # Set default if not provided
+            FRONTEND_CONTAINER_NAME="${FRONTEND_CONTAINER_NAME:-nextjs-app}"
+            export FRONTEND_CONTAINER_NAME="${FRONTEND_CONTAINER_NAME}"
+            echo "DEBUG: FRONTEND_CONTAINER_NAME=${FRONTEND_CONTAINER_NAME}"
+            
+            export BACKEND_SERVICE_PROTOCOL="${{ secrets.BACKEND_SERVICE_PROTOCOL }}" # Backend protocol
+            # Set default if not provided
+            BACKEND_SERVICE_PROTOCOL="${BACKEND_SERVICE_PROTOCOL:-http}"
+            export BACKEND_SERVICE_PROTOCOL="${BACKEND_SERVICE_PROTOCOL}"
+            echo "DEBUG: BACKEND_SERVICE_PROTOCOL=${BACKEND_SERVICE_PROTOCOL}"
+            
+            export BACKEND_SERVICE_HOST="${{ secrets.BACKEND_SERVICE_HOST }}" # Backend host
+            # Set default if not provided
+            BACKEND_SERVICE_HOST="${BACKEND_SERVICE_HOST:-localhost}"
+            export BACKEND_SERVICE_HOST="${BACKEND_SERVICE_HOST}"
+            echo "DEBUG: BACKEND_SERVICE_HOST=${BACKEND_SERVICE_HOST}"
+            
+            export BACKEND_API_VERSION="${{ secrets.BACKEND_API_VERSION }}" # API version
+            # Set default if not provided
+            BACKEND_API_VERSION="${BACKEND_API_VERSION:-0.0.1}"
+            export BACKEND_API_VERSION="${BACKEND_API_VERSION}"
+            echo "DEBUG: BACKEND_API_VERSION=${BACKEND_API_VERSION}"
+            
+            export FRONTEND_SERVICE_PORT="${{ secrets.FRONTEND_SERVICE_PORT }}" # Frontend port
+            # Set default if not provided
+            FRONTEND_SERVICE_PORT="${FRONTEND_SERVICE_PORT:-3000}"
+            export FRONTEND_SERVICE_PORT="${FRONTEND_SERVICE_PORT}"
+            echo "DEBUG: FRONTEND_SERVICE_PORT=${FRONTEND_SERVICE_PORT}"
+            
+            # Platform Configuration (critical for Docker)
+            export PLATFORM="${{ secrets.PLATFORM }}" # Target platform for Intel droplet
+            echo "DEBUG: PLATFORM=${PLATFORM}"
+            
+            echo "📥 Pulling latest stable image from GHCR..." # Pull Docker image
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin # Login to GHCR
+            docker pull ${{ secrets.BACKEND_IMAGE_NAME }} # Pull the backend image
+            echo "DEBUG: Pulled image: ${{ secrets.BACKEND_IMAGE_NAME }}"
+
+            echo "📥 Retrieving the docker-compose.yaml" # Get compose file
+            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/118-platform-production-release-deployment-from-github/docker-compose.yaml # Download compose
+            
+            echo "🔍 Verifying docker-compose file and environment..." # Verify config
+            docker compose config --services # List all services to verify config
+            
+            echo "🛑 Stopping existing containers..." # Stop containers
+            docker compose down # Bring down existing services
+
+            echo "🚀 Starting new containers with updated image..." # Start containers
+            docker compose up -d # Deploy in detached mode
+
+            echo "⏳ Waiting for rust-app to initialize..." # Wait for startup
+            sleep 15 # Brief pause to let containers start
+
+            echo "🩺 Checking container status..." # Check container status
+            docker ps -a # Show all containers, including stopped ones
+            
+            echo "🩺 Checking rust-app status..." # Simple status check
+            if docker ps | grep -q rust-app; then
+              echo "✅ Deployment succeeded! rust-app is running."
+            else
+              echo "⚠️ rust-app not found in running containers."
+              echo "📋 Last 30 lines of rust-app logs:"
+              docker logs ${BACKEND_CONTAINER_NAME:-rust-app} --tail 30 || echo "❌ Could not get logs"
+            fi
+
+            echo "🎉 Deployment completed." # Finish message
+          '
