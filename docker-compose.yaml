@@ -22,6 +22,7 @@ services:
   migrator:
     image: ${BACKEND_IMAGE_NAME}  # Reuse your backend image
     container_name: db-migrator
+    platform: ${PLATFORM}
     depends_on:
       postgres:
         condition: service_healthy  # Wait for DB before running
