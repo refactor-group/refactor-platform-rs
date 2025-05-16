@@ -162,7 +162,7 @@ jobs:
             echo "DEBUG: FRONTEND_SERVICE_PORT=${FRONTEND_SERVICE_PORT}"
             
             # Platform Configuration (critical for Docker)
-            export PLATFORM="linux/amd64" # Target platform for Intel droplet
+            export PLATFORM="${{ secrets.PLATFORM }}" # Target platform for Intel droplet
             echo "DEBUG: PLATFORM=${PLATFORM}"
             
             echo "📥 Pulling latest stable image from GHCR..." # Pull Docker image
