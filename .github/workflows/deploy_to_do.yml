@@ -171,7 +171,7 @@ jobs:
             echo "DEBUG: Pulled image: ${{ secrets.BACKEND_IMAGE_NAME }}"
 
             echo "📥 Retrieving the docker-compose.yaml" # Get compose file
-            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml # Download compose
+            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/118-platform-production-release-deployment-from-github/docker-compose.yaml # Download compose
             
             echo "🔍 Verifying docker-compose file and environment..." # Verify config
             docker compose config --services # List all services to verify config
