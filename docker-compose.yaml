@@ -28,6 +28,9 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
     restart: "no"  # Run once, do not restart
+    ports:
+      - "${POSTGRES_PORT}:${POSTGRES_PORT}"  # Expose DB port for migrations
+      - "${BACKEND_PORT}:${BACKEND_PORT}"  # Expose backend port for migrations
     networks:
       - backend_network
     # No command override — will default to running `migration up` once
