@@ -1,107 +1,111 @@
-name: Deploy to DigitalOcean via Tailscale
+name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub
 
 # ✅ Manual-only trigger
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allow manual triggering from GitHub UI
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, closed] # Run on PR events
 
 jobs:
   deploy:
-    name: Manual Deploy Over Tailscale
-    runs-on: ubuntu-24.04
+    name: Manual Deploy Over Tailscale # Job name for display
+    runs-on: ubuntu-24.04 # Use latest Ubuntu runner
 
     steps:
       # 📥 Step 1: Set up Tailscale on the GitHub Actions runner
-      - name: Setup Tailscale
-        uses: tailscale/github-action@v3
+      - name: Setup Tailscale # Connect to Tailscale network
+        uses: tailscale/github-action@v3 # Use Tailscale's official action
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:github-actions
-          version: latest
-          use-cache: 'true'
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }} # Tailscale OAuth client ID
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }} # Tailscale OAuth secret
+          tags: tag:github-actions # Tag for this Tailscale node
+          version: latest # Use latest Tailscale version
+          use-cache: 'true' # Cache Tailscale for faster setup
 
-      - name: Debug ED25519 Key
+      - name: Debug ED25519 Key # Setup and verify SSH key
         run: |
-          # Setup the key
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-          # Add the host key to known_hosts
-          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts
+          mkdir -p ~/.ssh # Create SSH directory
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
+          chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
           
-          # Verify the key type and fingerprint
-          echo "Key information:"
-          ssh-keygen -l -f ~/.ssh/id_ed25519
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts # Add host key
           
-          # Generate public key
-          echo "Public key that should be in authorized_keys:"
-          ssh-keygen -y -f ~/.ssh/id_ed25519
+          echo "Key information:" # Display key information for debugging
+          ssh-keygen -l -f ~/.ssh/id_ed25519 # Show key fingerprint
           
-          # Attempt connection with specific key
-          echo "Attempting connection with verbose output:"
+          echo "Public key that should be in authorized_keys:" # Show public key
+          ssh-keygen -y -f ~/.ssh/id_ed25519 # Generate public key from private
+          
+          echo "Attempting connection with verbose output:" # Test connection
           ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'
 
       # ✅ Step 2: SSH and deploy to the droplet over Tailscale IP
-      - name: SSH and Deploy with Docker Compose
+      - name: SSH and Deploy with Docker Compose # Main deployment step
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+          mkdir -p ~/.ssh # Create SSH directory
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
+          chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
           
-          # Add the host's key to known_hosts with the correct format
-          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts # Add host key
     
           # Deploy with SSH - add multiple options to disable all prompts
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
-            set -e
+            set -e # Exit on any error
 
-            echo "📦 Starting manual deployment to Tailscale-connected droplet..."
-            cd /home/deploy
+            echo "📦 Starting manual deployment to Tailscale-connected droplet..." # Announce start
+            cd /home/deploy # Change to deployment directory
+            
+            echo "🔑 Exporting environment variables for docker-compose..." # Export env vars
+            
+            # PostgreSQL Configuration
+            export POSTGRES_USER="${{ secrets.POSTGRES_USER }}" # Database username
+            export POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" # Database password
+            export POSTGRES_DB="${{ secrets.POSTGRES_DB }}" # Database name
+            export POSTGRES_PORT="${{ secrets.POSTGRES_PORT }}" # Database port
+            export POSTGRES_SCHEMA="${{ secrets.POSTGRES_SCHEMA }}" # Database schema
+            
+            # Backend Configuration
+            export BACKEND_IMAGE_NAME="${{ secrets.BACKEND_IMAGE_NAME }}" # Docker image for backend
+            export BACKEND_CONTAINER_NAME="${{ secrets.BACKEND_CONTAINER_NAME }}" # Container name
+            export BACKEND_PORT="${{ secrets.BACKEND_PORT }}" # Port for backend service
+            export BACKEND_INTERFACE="${{ secrets.BACKEND_INTERFACE }}" # Network interface
+            export BACKEND_ALLOWED_ORIGINS="${{ secrets.BACKEND_ALLOWED_ORIGINS }}" # CORS origins
+            export BACKEND_LOG_FILTER_LEVEL="${{ secrets.BACKEND_LOG_FILTER_LEVEL }}" # Log level
+            export DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}" # DB URL
+            
+            # TipTap Configuration
+            export TIPTAP_URL="${{ secrets.TIPTAP_URL }}" # TipTap URL
+            export TIPTAP_AUTH_KEY="${{ secrets.TIPTAP_AUTH_KEY }}" # TipTap auth key
+            export TIPTAP_JWT_SIGNING_KEY="${{ secrets.TIPTAP_JWT_SIGNING_KEY }}" # JWT signing key
+            
+            # Frontend Configuration
+            export FRONTEND_IMAGE_NAME="${{ secrets.FRONTEND_IMAGE_NAME }}" # Frontend image
+            export FRONTEND_CONTAINER_NAME="${{ secrets.FRONTEND_CONTAINER_NAME }}" # Frontend container
+            export BACKEND_SERVICE_PROTOCOL="${{ secrets.BACKEND_SERVICE_PROTOCOL }}" # Backend protocol
+            export BACKEND_SERVICE_HOST="${{ secrets.BACKEND_SERVICE_HOST }}" # Backend host
+            export BACKEND_API_VERSION="${{ secrets.BACKEND_API_VERSION }}" # API version
+            export FRONTEND_SERVICE_PORT="${{ secrets.FRONTEND_SERVICE_PORT }}" # Frontend port
+            
+            export PLATFORM="linux/amd64" # Target platform for containers
+            
+            echo "📥 Pulling latest stable image from GHCR..." # Pull Docker image
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin # Login to GHCR
+            docker pull ${{ secrets.BACKEND_IMAGE_NAME }} # Pull the backend image
 
-            echo "📥 Pulling latest stable image from GHCR..."
-            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
-            docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
+            echo "📥 Retrieving the docker-compose.yaml" # Get compose file
+            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml # Download compose
 
-            echo "📥 Retrieving the docker-compose.yaml"
-            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml
+            echo "🛑 Stopping existing containers..." # Stop containers
+            docker compose down # Bring down existing services
 
-            echo "📌 Capturing current rust-app container ID for rollback..."
-            docker compose ps -q rust-app > old_container_id.txt || true
-            OLD_CONTAINER_ID=$(cat old_container_id.txt || echo "")
-            OLD_IMAGE=$(docker inspect --format='{{.Image}}' $OLD_CONTAINER_ID 2>/dev/null || echo "")
+            echo "🚀 Starting new containers with updated image..." # Start containers
+            docker compose up -d # Deploy in detached mode
 
-            echo "🛑 Stopping existing containers..."
-            docker compose down
+            echo "⏳ Waiting for rust-app to initialize..." # Wait for startup
+            sleep 15 # Brief pause to let containers start
 
-            echo "🚀 Starting new containers with updated image..."
-            docker compose up -d
+            echo "🩺 Checking rust-app status..." # Simple status check
+            docker ps | grep -q rust-app && echo "✅ Deployment succeeded! rust-app is running." || echo "⚠️ rust-app not found in running containers. Check logs with: docker logs rust-app" # Check if running
 
-            echo "⏳ Waiting for rust-app to initialize..."
-            sleep 15
-
-            echo "🩺 Checking rust-app status..."
-            docker ps | grep rust-app > /dev/null
-            if [ $? -ne 0 ]; then
-              echo "❌ rust-app failed to start. Initiating rollback..."
-
-              if [ ! -z "$OLD_IMAGE" ]; then
-                echo "🔁 Rolling back to previous image: $OLD_IMAGE"
-                docker compose down
-                docker rmi ${{ secrets.BACKEND_IMAGE_NAME }} || true
-                docker tag $OLD_IMAGE ${{ secrets.BACKEND_IMAGE_NAME }}
-
-                echo "🔄 Restarting services with previous image..."
-                docker compose up -d
-                echo "✅ Rollback complete."
-              else
-                echo "⚠️ No image available to roll back to. Manual intervention may be required."
-              fi
-            else
-              echo "✅ Deployment succeeded! rust-app is running."
-            fi
-
-            echo "🎉 Deployment completed."
+            echo "🎉 Deployment completed." # Finish message
           '
