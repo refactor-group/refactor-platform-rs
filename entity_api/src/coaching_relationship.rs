@@ -23,6 +23,23 @@ pub async fn create(
         coaching_relationship_model
     );
 
+    // Coaching Relationship must be unique within the context of an organization
+    // Note: this is enforced at the database level as well
+    let existing_coaching_relationships =
+        find_by_organization(db, coaching_relationship_model.organization_id).await?;
+    let existing_coaching_relationship = existing_coaching_relationships.iter().find(|cr| {
+        cr.coach_id == coaching_relationship_model.coach_id
+            && cr.coachee_id == coaching_relationship_model.coachee_id
+    });
+
+    if existing_coaching_relationship.is_some() {
+        error!("Coaching relationship already exists for coach: {} and coachee: {} in organization: {}", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, coaching_relationship_model.organization_id);
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError,
+        });
+    }
+
     let now = Utc::now();
     let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
     let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
@@ -62,7 +79,7 @@ pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Mo
 }
 
 pub async fn find_by_organization(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     organization_id: Id,
 ) -> Result<Vec<Model>, Error> {
     let query = by_organization(coaching_relationships::Entity::find(), organization_id).await;
@@ -314,6 +331,52 @@ mod tests {
             )]
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_returns_validation_error_for_duplicate_relationship() -> Result<(), Error> {
+        use entity::coaching_relationships::Model;
+        use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+
+        let organization_id = Id::new_v4();
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![Model {
+                id: Id::new_v4(),
+                organization_id: organization_id.clone(),
+                coach_id: coach_id.clone(),
+                coachee_id: coachee_id.clone(),
+                slug: "coach-coachee".to_string(),
+                created_at: chrono::Utc::now().into(),
+                updated_at: chrono::Utc::now().into(),
+            }]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let model = Model {
+            id: Id::new_v4(),
+            organization_id: organization_id.clone(),
+            coach_id: coach_id.clone(),
+            coachee_id: coachee_id.clone(),
+            slug: "coach-coachee".to_string(),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
+
+        let result = create(&db, model).await;
+        assert!(
+            result
+                == Err(Error {
+                    source: None,
+                    error_kind: EntityApiErrorKind::ValidationError,
+                })
+        );
         Ok(())
     }
 

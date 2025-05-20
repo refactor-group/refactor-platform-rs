@@ -30,6 +30,8 @@ pub enum EntityApiErrorKind {
     RecordUnauthenticated,
     // Errors related to interactions with the database itself. Ex DbError::Conn
     SystemError,
+    // Validation error
+    ValidationError,
     // Other errors
     Other,
 }
