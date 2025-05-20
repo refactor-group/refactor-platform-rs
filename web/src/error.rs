@@ -62,9 +62,16 @@ impl Error {
             InternalErrorKind::Entity(ref entity_error_kind) => {
                 self.handle_entity_error(entity_error_kind)
             }
-            InternalErrorKind::Other => {
+            InternalErrorKind::Config => {
                 warn!(
-                    "InternalErrorKind::Other: Responding with 500 Internal Server Error. Error: {:?}",
+                    "InternalErrorKind::Config: Responding with 500 Internal Server Error. Error: {:?}",
+                    self
+                );
+                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+            }
+            InternalErrorKind::Other(_description) => {
+                warn!(
+                    "InternalErrorKind::Other: Responding with 500 Internal Server Error. Error:: {:?}",
                     self
                 );
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
@@ -81,6 +88,13 @@ impl Error {
                 );
                 (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
             }
+            EntityErrorKind::DbTransaction => {
+                warn!(
+                    "EntityErrorKind::DbTransaction: Responding with 500 Internal Server Error. Error: {:?}",
+                    self
+                );
+                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+            }
             EntityErrorKind::Invalid => {
                 warn!(
                     "EntityErrorKind::Invalid: Responding with 422 Unprocessable Entity. Error: {:?}",
@@ -88,7 +102,7 @@ impl Error {
                 );
                 (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
             }
-            EntityErrorKind::Other => {
+            EntityErrorKind::Other(_description) => {
                 warn!(
                     "EntityErrorKind::Other: Responding with 500 Internal Server Error. Error: {:?}",
                     self
@@ -107,7 +121,7 @@ impl Error {
                 );
                 (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
             }
-            ExternalErrorKind::Other => {
+            ExternalErrorKind::Other(_description) => {
                 warn!(
                     "ExternalErrorKind::Other: Responding with 500 Internal Server Error. Error: {:?}",
                     self

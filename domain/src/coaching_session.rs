@@ -22,7 +22,9 @@ impl SessionDate {
             warn!("Failed to truncate date_time: {:?}", err);
             Error {
                 source: Some(Box::new(err)),
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                    "Failed to truncate date_time".to_string(),
+                )),
             }
         })?;
         Ok(Self(truncated))
@@ -94,7 +96,9 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
         warn!("Failed to get document name from coaching session");
         Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Failed to get document name from coaching session".to_string(),
+            )),
         }
     })?;
 

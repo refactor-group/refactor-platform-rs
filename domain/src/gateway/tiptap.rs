@@ -19,7 +19,7 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
         warn!("Failed to get auth key from config");
         Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
     let mut headers = reqwest::header::HeaderMap::new();
@@ -27,7 +27,9 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
         warn!("Failed to create auth header value: {:?}", err);
         Error {
             source: Some(Box::new(err)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Failed to create auth header value".to_string(),
+            )),
         }
     })?;
     auth_value.set_sensitive(true);
@@ -47,7 +49,7 @@ impl TiptapDocument {
             warn!("Failed to get Tiptap URL from config");
             Error {
                 source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
             }
         })?;
         Ok(Self { client, base_url })

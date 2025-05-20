@@ -11,6 +11,7 @@ pub use entity_api::user::{
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
 };
+use log::*;
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait, Value};
 
@@ -59,9 +60,12 @@ pub async fn update_password(
     let password = params.remove("password")?;
     // check password confirmation
     if confirm_password != password {
+        warn!("Password confirmation does not match");
         return Err(Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Password confirmation does not match".to_string(),
+            )),
         });
     }
 
@@ -91,7 +95,9 @@ pub async fn create_user_and_coaching_relationship(
     // This is not probably the type of error we'll ultimately be exposing. Again just temporary (hopfully)
     let txn = db.begin().await.map_err(|e| Error {
         source: Some(Box::new(e)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Other)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
     })?;
 
     // Create the user within the organization
@@ -111,7 +117,9 @@ pub async fn create_user_and_coaching_relationship(
     // This is not probably the type of error we'll ultimately be exposing. Again just temporary (hopfully
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Other)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
     })?;
     Ok(new_user)
 }
@@ -119,7 +127,9 @@ pub async fn create_user_and_coaching_relationship(
 pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     let txn = db.begin().await.map_err(|e| Error {
         source: Some(Box::new(e)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Other)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
     })?;
 
     coaching_relationship::delete_by_user_id(&txn, user_id).await?;
@@ -128,7 +138,9 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
 
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Other)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
     })?;
 
     Ok(())

@@ -33,7 +33,7 @@ pub enum EntityApiErrorKind {
     // Validation error
     ValidationError,
     // Other errors
-    Other,
+    Other(String),
 }
 
 impl fmt::Display for Error {

@@ -53,7 +53,9 @@ pub async fn generate_collab_token(
         );
         Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Failed to get collab document name from coaching session".to_string(),
+            )),
         }
     })?;
 
@@ -68,8 +70,7 @@ pub async fn generate_collab_token(
         warn!("Failed to get a useable Tiptap JWT signing key from config");
         Error {
             source: None,
-            // TODO make this InternalErrorKind::ConfigError
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
 
@@ -77,7 +78,7 @@ pub async fn generate_collab_token(
         warn!("Failed to get a useable Tiptap app ID from config");
         Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
 

@@ -82,13 +82,13 @@ impl UpdateMap {
             .remove(key)
             .ok_or_else(|| Error {
                 source: None,
-                error_kind: EntityApiErrorKind::Other,
+                error_kind: EntityApiErrorKind::Other("Key not found".to_string()),
             })
             .and_then(|v| match v {
                 Some(Value::String(Some(boxed_str))) => Ok((*boxed_str).clone()),
                 _ => Err(Error {
                     source: None,
-                    error_kind: EntityApiErrorKind::Other,
+                    error_kind: EntityApiErrorKind::Other("Value is not a string".to_string()),
                 }),
             })
     }
@@ -101,13 +101,13 @@ impl UpdateMap {
             .and_then(|opt| opt.as_ref())
             .ok_or_else(|| Error {
                 source: None,
-                error_kind: EntityApiErrorKind::Other,
+                error_kind: EntityApiErrorKind::Other("Key not found".to_string()),
             })
             .and_then(|v| match v {
                 Value::String(Some(boxed_str)) => Ok(&**boxed_str),
                 _ => Err(Error {
                     source: None,
-                    error_kind: EntityApiErrorKind::Other,
+                    error_kind: EntityApiErrorKind::Other("Value is not a string".to_string()),
                 }),
             })
     }
