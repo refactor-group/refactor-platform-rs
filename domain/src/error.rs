@@ -29,7 +29,8 @@ pub enum DomainErrorKind {
 #[derive(Debug, PartialEq)]
 pub enum InternalErrorKind {
     Entity(EntityErrorKind),
-    Other,
+    Config,
+    Other(String),
 }
 
 /// Enum representing the various kinds of entity errors that can bubble up from the "Entity" layer (`entity_api` and `entity`).
@@ -39,14 +40,15 @@ pub enum InternalErrorKind {
 pub enum EntityErrorKind {
     NotFound,
     Invalid,
-    Other,
+    DbTransaction,
+    Other(String),
 }
 
 /// Enum representing the various kinds of external errors that can occur in the `domain`` layer.
 #[derive(Debug, PartialEq)]
 pub enum ExternalErrorKind {
     Network,
-    Other,
+    Other(String),
 }
 
 impl fmt::Display for Error {
@@ -69,7 +71,7 @@ impl From<EntityApiError> for Error {
         let entity_error_kind = match err.error_kind {
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
-            _ => EntityErrorKind::Other,
+            _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
 
         Error {
@@ -86,7 +88,9 @@ impl From<reqwest::Error> for Error {
         if err.is_builder() {
             Error {
                 source: Some(Box::new(err)),
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                    "Failed to build reqwest client".to_string(),
+                )),
             }
         // Errors that result from issues with the network call itself.
         } else {
@@ -102,7 +106,9 @@ impl From<jsonwebtoken::errors::Error> for Error {
     fn from(err: jsonwebtoken::errors::Error) -> Self {
         Error {
             source: Some(Box::new(err)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "JWT encoding related error".to_string(),
+            )),
         }
     }
 }
