@@ -1,0 +1,31 @@
+[Unit]
+Description=Refactor coaching platform service managed with docker compose
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/deploy
+ExecStart=/usr/bin/docker compose -f /home/deploy/docker-compose.yaml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f /home/deploy/docker-compose.yaml down
+
+# Restart configuration
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=0
+
+# Run as non-root user
+User=deploy
+Group=deploy
+
+# Environment variables file for the service to use
+EnvironmentFile=-/home/deploy/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
