@@ -1,43 +1,44 @@
 services:
   postgres:
-    image: postgres:17  # PostgreSQL image
-    container_name: postgres
+    image: postgres:17                      # official Postgres 17 image
+    container_name: postgres                # fixed name for easier links
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}  # From .env
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_PORT: ${POSTGRES_PORT}
-    restart: unless-stopped  # Restart policy
+    restart: unless-stopped                 # auto-restart unless stopped
     ports:
       - "${POSTGRES_PORT}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data  # Persist data
+      - postgres_data:/var/lib/postgresql/data  # persist data
     networks:
       - backend_network
-    healthcheck:  # Wait for DB to become ready
+    healthcheck:                            # wait until DB is ready
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  migrator:
-    image: ${BACKEND_IMAGE_NAME}  # Reuse your backend image
+  migrator:                                 # db migration service
+    image: ${BACKEND_IMAGE_NAME}            # reuse backend image
     container_name: db-migrator
     platform: ${PLATFORM}
-    depends_on:
-      postgres:
-        condition: service_healthy  # Wait for DB before running
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      ROLE: migrator                        # entrypoint knows to migrate
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PLATFORM: ${PLATFORM}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
-    restart: "no"  # Run once, do not restart
+    depends_on:
+      postgres:
+        condition: service_healthy          # start after DB is healthy
+    restart: "no"                           # run once, then exit
+    command: []                             # keep original ENTRYPOINT
     networks:
       - backend_network
-    # No command override — will default to running `migration up` once
 
   rust-app:
-    image: ${BACKEND_IMAGE_NAME}  # Rust backend app
+    image: ${BACKEND_IMAGE_NAME}
     platform: ${PLATFORM}
     container_name: ${BACKEND_CONTAINER_NAME}
     environment:
@@ -47,7 +48,7 @@ services:
       POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: ${POSTGRES_PORT}
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BACKEND_PORT: ${BACKEND_PORT}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
       BACKEND_INTERFACE: ${BACKEND_INTERFACE}
@@ -61,12 +62,12 @@ services:
       - "${BACKEND_PORT}:${BACKEND_PORT}"
     depends_on:
       migrator:
-        condition: service_completed_successfully  # App only runs if migrator succeeds
+        condition: service_completed_successfully  # only start if OK
     networks:
       - backend_network
 
   nextjs-app:
-    image: ${FRONTEND_IMAGE_NAME}  # Next.js frontend
+    image: ${FRONTEND_IMAGE_NAME}
     container_name: ${FRONTEND_CONTAINER_NAME}
     environment:
       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
@@ -77,15 +78,15 @@ services:
       FRONTEND_IMAGE_NAME: ${FRONTEND_IMAGE_NAME}
       FRONTEND_CONTAINER_NAME: ${FRONTEND_CONTAINER_NAME}
     ports:
-      - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"
+      - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"  # expose FE
     depends_on:
       - rust-app
     networks:
       - backend_network
 
 volumes:
-  postgres_data:
+  postgres_data:                            # named volume for PG data
 
 networks:
-  backend_network:
+  backend_network:                          # shared bridge network
     driver: bridge
