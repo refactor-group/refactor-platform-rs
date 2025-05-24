@@ -1,28 +1,27 @@
 #!/bin/bash
-set -euo pipefail
+set -euo pipefail                                      # strict mode
 
-# If an explicit tool is passed (migration/seed_db), run it directly
-if [[ $# -gt 0 ]]; then
-    case "$1" in
-        migration|seed_db)
-            exec /app/"$@"
-            ;;
-    esac
+
+ROLE="${ROLE}"                                    # defaults to running the app server
+
+# If explicitly calls a helper (e.g. `migrationctl status`)
+if [[ $# -gt 0 ]]; then                                # check for CLI args
+  case "$1" in
+    migrationctl|seed_db) exec "/app/$@" ;;               # hand-off to migrator
+  esac
 fi
 
-# run SeaORM migration up
-if [[ "$1" == "migrate" ]]; then
-    echo "🔧 Running SeaORM migration up (initial setup if needed)..."
-    exec /app/migrationctl up
+# if ROLE is migrator, run migrations
+if [[ "$ROLE" == "migrator" ]]; then
+  echo "🔧 Running SeaORM migratectl up…"
+  exec /app/migrationctl up                               # exits 0 if nothing to do
+fi
 
-else
-
-# Otherwise, start the main backend app
+# default to start API server
 exec /app/refactor_platform_rs \
-    -l "$BACKEND_LOG_FILTER_LEVEL" \
-    -i "$BACKEND_INTERFACE" \
-    -p "$BACKEND_PORT" \
-    -d "$DATABASE_URL" \
-    --allowed-origins="$BACKEND_ALLOWED_ORIGINS" \
-    "$@"
-fi
+  -l "${BACKEND_LOG_FILTER_LEVEL:-info}" \
+  -i "${BACKEND_INTERFACE:-0.0.0.0}" \
+  -p "${BACKEND_PORT:-4000}" \
+  -d "${DATABASE_URL}" \
+  --allowed-origins="${BACKEND_ALLOWED_ORIGINS:-*}" \
+  "$@"

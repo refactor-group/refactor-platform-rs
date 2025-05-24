@@ -19,6 +19,7 @@ simplelog = { version = "0.12.2", features = ["paris"] }
 tokio = "1.44.2"
 openssl-sys = { version = "0.9.107", features = ["vendored"] }
 
-[[bin]]
-name = "seed_db"
-path = "src/bin/seed_db.rs"
+# TODO change to seeding data through seaOrm migrations
+# [[bin]]
+# name = "seed_db"
+# path = "src/bin/seed_db.rs"
