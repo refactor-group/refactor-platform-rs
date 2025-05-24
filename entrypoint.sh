@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail                                      # strict mode
 
-# ROLE defines what to run: migrator or app server
-ROLE="${ROLE:-app}"                                    # defaults to app server
+
+ROLE="${ROLE}"                                    # defaults to running the app server
 
 # If explicitly calls a helper (e.g. `migrationctl status`)
 if [[ $# -gt 0 ]]; then                                # check for CLI args
@@ -21,7 +21,7 @@ fi
 exec /app/refactor_platform_rs \
   -l "${BACKEND_LOG_FILTER_LEVEL:-info}" \
   -i "${BACKEND_INTERFACE:-0.0.0.0}" \
-  -p "${BACKEND_PORT:-8080}" \
+  -p "${BACKEND_PORT:-4000}" \
   -d "${DATABASE_URL}" \
   --allowed-origins="${BACKEND_ALLOWED_ORIGINS:-*}" \
   "$@"
