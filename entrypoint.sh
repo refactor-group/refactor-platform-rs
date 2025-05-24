@@ -4,17 +4,17 @@ set -euo pipefail                                      # strict mode
 # ROLE defines what to run: migrator or app server
 ROLE="${ROLE:-app}"                                    # defaults to app server
 
-# If explicitly calls a helper (e.g. `migration status`)
+# If explicitly calls a helper (e.g. `migrationctl status`)
 if [[ $# -gt 0 ]]; then                                # check for CLI args
   case "$1" in
-    migration|seed_db) exec "/app/$@" ;;               # hand-off to migrator
+    migrationctl|seed_db) exec "/app/$@" ;;               # hand-off to migrator
   esac
 fi
 
 # if ROLE is migrator, run migrations
 if [[ "$ROLE" == "migrator" ]]; then
-  echo "🔧 Running SeaORM migrate up…"
-  exec /app/migration up                               # exits 0 if nothing to do
+  echo "🔧 Running SeaORM migratectl up…"
+  exec /app/migrationctl up                               # exits 0 if nothing to do
 fi
 
 # default to start API server
