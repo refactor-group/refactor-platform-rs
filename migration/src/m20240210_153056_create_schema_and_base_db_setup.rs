@@ -17,17 +17,6 @@ impl MigrationTrait for Migration {
             .execute_unprepared("SET search_path TO refactor_platform, public;")
             .await?;
 
-        // Add the Postgresql extensions that we use
-        manager
-            .get_connection()
-            .execute_unprepared("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
-            .await?;
-
-        manager
-            .get_connection()
-            .execute_unprepared("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\";")
-            .await?;
-
         // Create the base DB user that will execute all platform queries
         manager
             .get_connection()
