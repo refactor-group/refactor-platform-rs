@@ -1,27 +1,26 @@
 #!/bin/bash
 set -euo pipefail                                      # strict mode
 
-
-ROLE="${ROLE}"                                    # defaults to running the app server
+ROLE="${ROLE:-app}"                                    # defaults to running the app server
 
 # If explicitly calls a helper (e.g. `migrationctl status`)
 if [[ $# -gt 0 ]]; then                                # check for CLI args
   case "$1" in
-    migrationctl|seed_db) exec "/app/$@" ;;               # hand-off to migrator
+    migrationctl|seed_db) exec "/app/$@" ;;            # hand-off to migrator
   esac
 fi
 
 # if ROLE is migrator, run migrations
 if [[ "$ROLE" == "migrator" ]]; then
   echo "🔧 Running SeaORM migratectl up…"
-  exec /app/migrationctl up                               # exits 0 if nothing to do
+  exec /app/migrationctl up                            # exits 0 if nothing to do
+else
+  # default to start API server
+  exec /app/refactor_platform_rs \
+    -l "${BACKEND_LOG_FILTER_LEVEL:-info}" \
+    -i "${BACKEND_INTERFACE:-0.0.0.0}" \
+    -p "${BACKEND_PORT:-4000}" \
+    -d "${DATABASE_URL}" \
+    --allowed-origins="${BACKEND_ALLOWED_ORIGINS:-*}" \
+    "$@"
 fi
-
-# default to start API server
-exec /app/refactor_platform_rs \
-  -l "${BACKEND_LOG_FILTER_LEVEL:-info}" \
-  -i "${BACKEND_INTERFACE:-0.0.0.0}" \
-  -p "${BACKEND_PORT:-4000}" \
-  -d "${DATABASE_URL}" \
-  --allowed-origins="${BACKEND_ALLOWED_ORIGINS:-*}" \
-  "$@"
