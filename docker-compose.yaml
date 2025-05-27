@@ -10,7 +10,6 @@ services:
       - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migration/src/setup.sql:/docker-entrypoint-initdb.d/0-setup.sql
     networks:
       - backend_network
     healthcheck:
