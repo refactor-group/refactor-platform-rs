@@ -105,4 +105,4 @@ jobs:
           echo "Backend Image Pushed to ghcr.io as STABLE:"
           echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:stable"
           echo "Run it locally:"
-          echo "  docker run --rm --env-file .env -p 8000:8000 ${{ steps.tags.outputs.backend_image_name }}:stable"
+          echo "  docker run --rm --env-file .env -p ${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }} ${{ steps.tags.outputs.backend_image_name }}:stable"
