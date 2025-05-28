@@ -87,7 +87,6 @@ jobs:
             BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}
             BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}
 
-``
             # ==============================
             #   TipTap Configuration
             # ==============================
