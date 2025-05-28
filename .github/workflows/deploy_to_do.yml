@@ -57,7 +57,7 @@ jobs:
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml # Download compose
             
             echo "📝 Creating .env file with GitHub secrets..." # Create env file
-            cat > .env << EOF
+            cat > .env << 'EOF'
             # ==============================
             #   PostgreSQL Configuration
             # ==============================
