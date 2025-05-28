@@ -17,7 +17,7 @@ if [[ "$ROLE" == "migrator" ]]; then
 else
   # default to start API server
   exec /app/refactor_platform_rs \
-    -l "${BACKEND_LOG_FILTER_LEVEL:-info}" \
+    -l "${BACKEND_LOG_FILTER_LEVEL:-INFO}" \
     -i "${BACKEND_INTERFACE:-0.0.0.0}" \
     -p "${BACKEND_PORT:-4000}" \
     -d "${DATABASE_URL}" \

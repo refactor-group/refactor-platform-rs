@@ -37,7 +37,6 @@ WORKDIR /app
 # Copy the necessary release binaries
 COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
 COPY --from=builder /usr/src/app/target/release/migration ./migrationctl
-# COPY --from=builder /usr/src/app/target/release/seed_db .
 
 # In order to run our initial migration which applies a SQL file directly, we need to
 # make sure the directory exists on the container and copy the SQL file into it.
