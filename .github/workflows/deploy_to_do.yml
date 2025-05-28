@@ -1,169 +1,146 @@
-name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub
+name: Deploy to DigitalOcean via Tailscale  # Workflow name displayed in GitHub UI
 # Deploys the latest stable tagged container images to production servers.
 
-# ✅ Manual trigger with debug option
+# Manual trigger with debug ssh option
 on:
-  workflow_dispatch: # Allow manual triggering from GitHub UI
+  workflow_dispatch:  # Manual trigger via GitHub UI
     inputs:
-      enable_ssh_debugging:
-        description: 'Enable verbose SSH debugging'
-        required: false
-        default: false
-        type: boolean
+      enable_ssh_debugging:  # Optional debugging parameter
+        description: 'Enable verbose SSH debugging'  # Help text shown in UI
+        required: false  # Not required to run the workflow
+        default: false  # Disabled by default
+        type: boolean  # Simple checkbox in the UI
 
 jobs:
   deploy:
-    name: Manual Deploy Over Tailscale # Job name for display
-    runs-on: ubuntu-24.04 # Use latest Ubuntu runner
+    name: Manual Deploy Over Tailscale  # Display name for this job
+    runs-on: ubuntu-24.04  # Latest Ubuntu runner
 
     steps:
-      # 📥 Step 1: Set up Tailscale on the GitHub Actions runner
-      - name: Setup Tailscale # Connect to Tailscale network
-        uses: tailscale/github-action@v3 # Use Tailscale's official action
+      # Step 1: Setup Tailscale on the GitHub Actions runner
+      - name: Setup Tailscale  # Connect to the Tailscale network
+        uses: tailscale/github-action@v3  # Official Tailscale GitHub Action
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }} # Tailscale OAuth client ID
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }} # Tailscale OAuth secret
-          tags: tag:github-actions # Tag for this Tailscale node
-          version: latest # Use latest Tailscale version
-          use-cache: 'true' # Cache Tailscale for faster setup
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}  # OAuth client ID for Tailscale
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}  # OAuth client secret for Tailscale
+          tags: tag:github-actions  # Tag to identify this connection in Tailscale
+          version: latest  # Use the latest version of Tailscale
+          use-cache: 'true'  # Cache Tailscale binary for faster startup
 
-      # 🔍 Debug step (only runs when debugging is enabled)
-      - name: Debug ED25519 Key # Setup and verify SSH key
-        if: ${{ inputs.enable_ssh_debugging == true }}
+      # Step 2: (Debug only) Verifies SSH ED25519 SSH key
+      - name: Debug ED25519 Key  # SSH key debugging step
+        if: ${{ inputs.enable_ssh_debugging == true }}  # Only run when debugging is enabled
         run: |
-          mkdir -p ~/.ssh # Create SSH directory
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
-          chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
-          
-          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts # Add host key explicitly from secret
-          
-          echo "Key information:" # Display key information for debugging
-          ssh-keygen -l -f ~/.ssh/id_ed25519 # Show key fingerprint
-          
-          echo "Public key that should be in authorized_keys:" # Show public key
-          ssh-keygen -y -f ~/.ssh/id_ed25519 # Generate public key from private
-          
-          echo "Attempting connection with verbose output:" # Test connection
-          ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'
+          mkdir -p ~/.ssh  # Create SSH directory if it doesn't exist
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519  # Create private SSH key file
+          chmod 600 ~/.ssh/id_ed25519  # Set secure permissions on the key
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts  # Add host key to known hosts
+          ssh-keygen -l -f ~/.ssh/id_ed25519  # Show fingerprint of the key
+          ssh-keygen -y -f ~/.ssh/id_ed25519  # Show public key derived from private key
+          ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'  # Test connection with verbose output
 
-      # ✅ Step 2: SSH and deploy to the droplet over private Tailscale tailnet
-      - name: SSH and Deploy with Docker Compose # Main deployment step
+      # Step 3: Create .env File Locally
+      - name: Create .env File Locally  # Create environment file for deployment
         run: |
-          mkdir -p ~/.ssh # Create SSH directory
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
-          chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
-          
-          # Add host key through both methods for reliability
-          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts # Add host key explicitly from secret
-          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts # Add host key dynamically
+          cat > envfile <<EOF  # Start heredoc to create env file
+          # PostgreSQL
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}  # Database username
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}  # Database password
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}  # Database name
+          POSTGRES_HOST=postgres  # Container hostname for database
+          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}  # Database port
+          POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}  # Database schema
+          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}  # Connection string
 
-          # Deploy with SSH - add multiple options to disable all prompts
+          # Backend
+          BACKEND_IMAGE_NAME=${{ secrets.BACKEND_IMAGE_NAME }}  # Docker image for backend
+          BACKEND_CONTAINER_NAME=${{ secrets.BACKEND_CONTAINER_NAME }}  # Container name for backend
+          BACKEND_PORT=${{ secrets.BACKEND_PORT }}  # Backend service port
+          BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}  # Network interface for backend
+          BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}  # CORS allowed origins
+          BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}  # Logging level
+          BACKEND_SERVICE_PROTOCOL=${{ secrets.BACKEND_SERVICE_PROTOCOL }}  # Protocol for backend
+          BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}  # Host for backend
+          BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}  # API version
+
+          # TipTap
+          TIPTAP_URL=${{ secrets.TIPTAP_URL }}  # TipTap collaborative editor URL
+          TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}  # TipTap authentication key
+          TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}  # JWT signing key for TipTap
+
+          # Frontend
+          FRONTEND_IMAGE_NAME=${{ secrets.FRONTEND_IMAGE_NAME }}  # Docker image for frontend
+          FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}  # Container name for frontend
+          FRONTEND_SERVICE_PORT=${{ secrets.FRONTEND_SERVICE_PORT }}  # Frontend service port
+
+          # Platform
+          PLATFORM=${{ secrets.PLATFORM }}  # Target platform for Docker containers
+          EOF
+
+      # Step 4: SSH and deploy to the digitalocean droplet over private Tailscale tailnet
+      - name: SSH and Deploy with Docker Compose  # Main deployment step
+        run: |
+          mkdir -p ~/.ssh  # Create SSH directory
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519  # Save SSH private key
+          chmod 600 ~/.ssh/id_ed25519  # Set secure permissions on key
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts  # Add static host key
+          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts  # Add dynamic host key
+
+          # Copy .env to server
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 envfile ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }}:/home/deploy/.env  # Upload env file
+
+          # SSH and deploy
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
-            set -e # Exit on any error
+            set -e  # Exit immediately if any command fails
 
-            echo "📦 Starting manual deployment to Tailscale-connected droplet..." # Announce start
-            cd /home/deploy # Change to deployment directory
-            
-            echo "📥 Retrieving the docker-compose.yaml" # Get compose file first
-            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml # Download compose
-            chmod 640 docker-compose.yaml
-            
-            echo "📝 Creating .env file with GitHub secrets..." # Create env file
-            cat > .env << 'EOF'
-            # ==============================
-            #   PostgreSQL Configuration
-            # ==============================
-            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-            POSTGRES_HOST=postgres
-            POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
-            POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}
-            # ==============================
-            #   Database URL (computed)
-            # ==============================
-            DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}
+            echo "📦 Starting deployment..."  # Announce start of deployment
+            cd /home/deploy  # Change to deployment directory
+            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml  # Get compose file
+            chmod 640 docker-compose.yaml  # Set permissions on compose file
 
-            # ==============================
-            #   Backend Configuration
-            # ==============================
-            BACKEND_IMAGE_NAME=${{ secrets.BACKEND_IMAGE_NAME }}
-            BACKEND_CONTAINER_NAME=${{ secrets.BACKEND_CONTAINER_NAME }}
-            BACKEND_PORT=${{ secrets.BACKEND_PORT }}
-            BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}
-            BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}
-            BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}
-            BACKEND_SERVICE_PROTOCOL=${{ secrets.BACKEND_SERVICE_PROTOCOL }}
-            BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}
-            BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}
+            echo "🔧 Matching .env permissions to docker-compose.yaml..."  # Update env file permissions
+            chmod --reference=docker-compose.yaml .env  # Copy permissions from compose file
+            chown --reference=docker-compose.yaml .env  # Copy ownership from compose file
 
-            # ==============================
-            #   TipTap Configuration
-            # ==============================
-            TIPTAP_URL=${{ secrets.TIPTAP_URL }}
-            TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}
-            TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}
+            echo "📋 Showing masked .env:"  # Display environment with sensitive data masked
+            sed "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/g; s/TIPTAP_AUTH_KEY=.*/TIPTAP_AUTH_KEY=***/g; s/TIPTAP_JWT_SIGNING_KEY=.*/TIPTAP_JWT_SIGNING_KEY=***/g" .env  # Print env with passwords hidden
 
-            # ==============================
-            #   Frontend Configuration
-            # ==============================
-            FRONTEND_IMAGE_NAME=${{ secrets.FRONTEND_IMAGE_NAME }}
-            FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}
-            FRONTEND_SERVICE_PORT=${{ secrets.FRONTEND_SERVICE_PORT }}
+            echo "📥 Logging into GHCR..."  # Login to GitHub Container Registry
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin  # Docker login
 
-            # ==============================
-            #   Platform Configuration
-            # ==============================
-            PLATFORM=${{ secrets.PLATFORM }}
-            
-            EOF
-
-            echo "🔧 Setting .env file permissions to match docker-compose.yaml..." # Set permissions
-            chmod --reference=docker-compose.yaml .env # Copy permissions from docker-compose.yaml
-            chown --reference=docker-compose.yaml .env # Copy ownership from docker-compose.yaml
-            
-            echo "📋 Displaying .env file contents (with masked secrets):" # Debug output
-            sed "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/g; s/TIPTAP_AUTH_KEY=.*/TIPTAP_AUTH_KEY=***/g; s/TIPTAP_JWT_SIGNING_KEY=.*/TIPTAP_JWT_SIGNING_KEY=***/g" .env
-            
-            echo "📥 Logging into GHCR..." # Login to container registry
-            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin # Login to GHCR
-            
-            echo "📥 Pulling images from .env file..." # Pull images
-            if [ -n "${{ secrets.BACKEND_IMAGE_NAME }}" ]; then
-              echo "Pulling backend image: ${{ secrets.BACKEND_IMAGE_NAME }}"
-              docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
+            echo "📥 Pulling images..."  # Pull Docker images
+            if [ -n "${{ secrets.BACKEND_IMAGE_NAME }}" ]; then  # Check if backend image is set
+              echo "Pulling backend image: ${{ secrets.BACKEND_IMAGE_NAME }}"  # Announce image pull
+              docker pull ${{ secrets.BACKEND_IMAGE_NAME }}  # Pull backend image
             fi
-            
-            if [ -n "${{ secrets.FRONTEND_IMAGE_NAME }}" ]; then
-              echo "Pulling frontend image: ${{ secrets.FRONTEND_IMAGE_NAME }}"
-              docker pull ${{ secrets.FRONTEND_IMAGE_NAME }}
+            if [ -n "${{ secrets.FRONTEND_IMAGE_NAME }}" ]; then  # Check if frontend image is set
+              echo "Pulling frontend image: ${{ secrets.FRONTEND_IMAGE_NAME }}"  # Announce image pull
+              docker pull ${{ secrets.FRONTEND_IMAGE_NAME }}  # Pull frontend image
             fi
-            
-            echo "🔍 Verifying docker-compose configuration..." # Verify config
-            docker compose config --quiet # Validate compose file with .env
-            
-            echo "🛑 Stopping existing containers..." # Stop containers
-            docker compose down # Bring down existing services
 
-            echo "🚀 Starting new containers with updated images..." # Start containers
-            docker compose up -d # Deploy in detached mode
+            echo "🔍 Validating config..."  # Verify docker-compose configuration
+            docker compose config --quiet  # Check config without output unless error
 
-            echo "⏳ Waiting for containers to initialize..." # Wait for startup
-            sleep 15 # Brief pause to let containers start
+            echo "🛑 Stopping old containers..."  # Stop existing containers
+            docker compose down  # Stop and remove containers
 
-            echo "🩺 Checking container status..." # Check container status
-            docker ps -a # Show all containers
-            
-            echo "🩺 Checking rust-app status..." # Check specific container
-            if docker_output=$(docker ps) && echo "$docker_output" | grep -q rust-app && echo "$docker_output" | grep -q nextjs-app; then
-              echo "✅ Deployment succeeded! Refactor Platform is running."
+            echo "🚀 Starting new containers..."  # Start updated containers
+            docker compose up -d  # Start containers in detached mode
+
+            echo "⏳ Waiting for startup..."  # Wait for containers to start
+            sleep 15  # Pause for 15 seconds
+
+            echo "🩺 Checking status..."  # Check container status
+            docker ps -a  # List all containers
+
+            echo "🩺 Verifying app status..."  # Verify application health
+            if docker_output=$(docker ps) && echo "$docker_output" | grep -q rust-app && echo "$docker_output" | grep -q nextjs-app; then  # Check if both containers are running
+              echo "✅ Deployment succeeded!"  # Success message
             else
-              echo "⚠️ rust-app or nextjs-app not found in running list of containers."
-              echo "📋 Last 30 lines of rust-app logs:"
-              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Could not display logs"
-              echo "📋 Last 30 lines of nextjs-app logs:"
-              docker logs ${{ secrets.FRONTEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Could not display logs"
+              echo "⚠️ Missing container(s). Logs follow:"  # Error message
+              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"  # Show backend logs
+              docker logs ${{ secrets.FRONTEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Frontend logs unavailable"  # Show frontend logs
             fi
 
-            echo "🎉 Deployment completed." # Finish message
+            echo "🎉 Deployment complete."  # Final deployment message
           '
