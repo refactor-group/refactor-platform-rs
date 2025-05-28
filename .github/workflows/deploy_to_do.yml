@@ -31,116 +31,189 @@ jobs:
       - name: Debug ED25519 Key  # SSH key debugging step
         if: ${{ inputs.enable_ssh_debugging == true }}  # Only run when debugging is enabled
         run: |
-          mkdir -p ~/.ssh  # Create SSH directory if it doesn't exist
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519  # Create private SSH key file
-          chmod 600 ~/.ssh/id_ed25519  # Set secure permissions on the key
-          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts  # Add host key to known hosts
-          ssh-keygen -l -f ~/.ssh/id_ed25519  # Show fingerprint of the key
-          ssh-keygen -y -f ~/.ssh/id_ed25519  # Show public key derived from private key
-          ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'  # Test connection with verbose output
+          mkdir -p ~/.ssh
+          # Create SSH directory if it doesn't exist
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
+          # Create private SSH key file
+          chmod 600 ~/.ssh/id_ed25519
+          # Set secure permissions on the key
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts
+          # Add host key to known hosts
+          ssh-keygen -l -f ~/.ssh/id_ed25519
+          # Show fingerprint of the key
+          ssh-keygen -y -f ~/.ssh/id_ed25519
+          # Show public key derived from private key
+          ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'
+          # Test connection with verbose output
 
       # Step 3: Create .env File Locally
       - name: Create .env File Locally  # Create environment file for deployment
         run: |
-          cat > envfile <<EOF  # Start heredoc to create env file
+          cat > envfile <<EOF
+          # Start heredoc to create env file
           # PostgreSQL
-          POSTGRES_USER=${{ secrets.POSTGRES_USER }}  # Database username
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}  # Database password
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}  # Database name
-          POSTGRES_HOST=postgres  # Container hostname for database
-          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}  # Database port
-          POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}  # Database schema
-          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}  # Connection string
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          # Database username
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          # Database password
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          # Database name
+          POSTGRES_HOST=postgres
+          # Container hostname for database
+          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
+          # Database port
+          POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}
+          # Database schema
+          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}
+          # Connection string
 
           # Backend
-          BACKEND_IMAGE_NAME=${{ secrets.BACKEND_IMAGE_NAME }}  # Docker image for backend
-          BACKEND_CONTAINER_NAME=${{ secrets.BACKEND_CONTAINER_NAME }}  # Container name for backend
-          BACKEND_PORT=${{ secrets.BACKEND_PORT }}  # Backend service port
-          BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}  # Network interface for backend
-          BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}  # CORS allowed origins
-          BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}  # Logging level
-          BACKEND_SERVICE_PROTOCOL=${{ secrets.BACKEND_SERVICE_PROTOCOL }}  # Protocol for backend
-          BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}  # Host for backend
-          BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}  # API version
+          BACKEND_IMAGE_NAME=${{ secrets.BACKEND_IMAGE_NAME }}
+          # Docker image for backend
+          BACKEND_CONTAINER_NAME=${{ secrets.BACKEND_CONTAINER_NAME }}
+          # Container name for backend
+          BACKEND_PORT=${{ secrets.BACKEND_PORT }}
+          # Backend service port
+          BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}
+          # Network interface for backend
+          BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}
+          # CORS allowed origins
+          BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}
+          # Logging level
+          BACKEND_SERVICE_PROTOCOL=${{ secrets.BACKEND_SERVICE_PROTOCOL }}
+          # Protocol for backend
+          BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}
+          # Host for backend
+          BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}
+          # API version
 
           # TipTap
-          TIPTAP_URL=${{ secrets.TIPTAP_URL }}  # TipTap collaborative editor URL
-          TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}  # TipTap authentication key
-          TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}  # JWT signing key for TipTap
+          TIPTAP_URL=${{ secrets.TIPTAP_URL }}
+          # TipTap collaborative editor URL
+          TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}
+          # TipTap authentication key
+          TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}
+          # JWT signing key for TipTap
 
           # Frontend
-          FRONTEND_IMAGE_NAME=${{ secrets.FRONTEND_IMAGE_NAME }}  # Docker image for frontend
-          FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}  # Container name for frontend
-          FRONTEND_SERVICE_PORT=${{ secrets.FRONTEND_SERVICE_PORT }}  # Frontend service port
+          FRONTEND_IMAGE_NAME=${{ secrets.FRONTEND_IMAGE_NAME }}
+          # Docker image for frontend
+          FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}
+          # Container name for frontend
+          FRONTEND_SERVICE_PORT=${{ secrets.FRONTEND_SERVICE_PORT }}
+          # Frontend service port
 
           # Platform
-          PLATFORM=${{ secrets.PLATFORM }}  # Target platform for Docker containers
+          PLATFORM=${{ secrets.PLATFORM }}
+          # Target platform for Docker containers
           EOF
 
       # Step 4: SSH and deploy to the digitalocean droplet over private Tailscale tailnet
       - name: SSH and Deploy with Docker Compose  # Main deployment step
         run: |
-          mkdir -p ~/.ssh  # Create SSH directory
-          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519  # Save SSH private key
-          chmod 600 ~/.ssh/id_ed25519  # Set secure permissions on key
-          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts  # Add static host key
-          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts  # Add dynamic host key
+          mkdir -p ~/.ssh
+          # Create SSH directory
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
+          # Save SSH private key
+          chmod 600 ~/.ssh/id_ed25519
+          # Set secure permissions on key
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts
+          # Add static host key
+          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts
+          # Add dynamic host key
 
           # Copy .env to server
-          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 envfile ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }}:/home/deploy/.env  # Upload env file
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 envfile ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }}:/home/deploy/.env
+          # Upload env file
 
           # SSH and deploy
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
-            set -e  # Exit immediately if any command fails
+            set -e
+            # Exit immediately if any command fails
 
-            echo "📦 Starting deployment..."  # Announce start of deployment
-            cd /home/deploy  # Change to deployment directory
-            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml  # Get compose file
-            chmod 640 docker-compose.yaml  # Set permissions on compose file
+            echo "📦 Starting deployment..."
+            # Announce start of deployment
+            cd /home/deploy
+            # Change to deployment directory
+            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml
+            # Get compose file
+            chmod 640 docker-compose.yaml
+            # Set permissions on compose file
 
-            echo "🔧 Matching .env permissions to docker-compose.yaml..."  # Update env file permissions
-            chmod --reference=docker-compose.yaml .env  # Copy permissions from compose file
-            chown --reference=docker-compose.yaml .env  # Copy ownership from compose file
+            echo "🔧 Matching .env permissions to docker-compose.yaml..."
+            # Update env file permissions
+            chmod --reference=docker-compose.yaml .env
+            # Copy permissions from compose file
+            chown --reference=docker-compose.yaml .env
+            # Copy ownership from compose file
 
-            echo "📋 Showing masked .env:"  # Display environment with sensitive data masked
-            sed "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/g; s/TIPTAP_AUTH_KEY=.*/TIPTAP_AUTH_KEY=***/g; s/TIPTAP_JWT_SIGNING_KEY=.*/TIPTAP_JWT_SIGNING_KEY=***/g" .env  # Print env with passwords hidden
+            echo "📋 Showing masked .env:"
+            # Display environment with sensitive data masked
+            sed "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/g; s/TIPTAP_AUTH_KEY=.*/TIPTAP_AUTH_KEY=***/g; s/TIPTAP_JWT_SIGNING_KEY=.*/TIPTAP_JWT_SIGNING_KEY=***/g" .env
+            # Print env with passwords hidden
 
-            echo "📥 Logging into GHCR..."  # Login to GitHub Container Registry
-            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin  # Docker login
+            echo "📥 Logging into GHCR..."
+            # Login to GitHub Container Registry
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
+            # Docker login
 
-            echo "📥 Pulling images..."  # Pull Docker images
-            if [ -n "${{ secrets.BACKEND_IMAGE_NAME }}" ]; then  # Check if backend image is set
-              echo "Pulling backend image: ${{ secrets.BACKEND_IMAGE_NAME }}"  # Announce image pull
-              docker pull ${{ secrets.BACKEND_IMAGE_NAME }}  # Pull backend image
+            echo "📥 Pulling images..."
+            # Pull Docker images
+            if [ -n "${{ secrets.BACKEND_IMAGE_NAME }}" ]; then
+              # Check if backend image is set
+              echo "Pulling backend image: ${{ secrets.BACKEND_IMAGE_NAME }}"
+              # Announce image pull
+              docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
+              # Pull backend image
             fi
-            if [ -n "${{ secrets.FRONTEND_IMAGE_NAME }}" ]; then  # Check if frontend image is set
-              echo "Pulling frontend image: ${{ secrets.FRONTEND_IMAGE_NAME }}"  # Announce image pull
-              docker pull ${{ secrets.FRONTEND_IMAGE_NAME }}  # Pull frontend image
+            if [ -n "${{ secrets.FRONTEND_IMAGE_NAME }}" ]; then
+              # Check if frontend image is set
+              echo "Pulling frontend image: ${{ secrets.FRONTEND_IMAGE_NAME }}"
+              # Announce image pull
+              docker pull ${{ secrets.FRONTEND_IMAGE_NAME }}
+              # Pull frontend image
             fi
 
-            echo "🔍 Validating config..."  # Verify docker-compose configuration
-            docker compose config --quiet  # Check config without output unless error
+            echo "🔍 Validating config..."
+            # Verify docker-compose configuration
+            docker compose config --quiet
+            # Check config without output unless error
 
-            echo "🛑 Stopping old containers..."  # Stop existing containers
-            docker compose down  # Stop and remove containers
+            echo "🛑 Stopping old containers..."
+            # Stop existing containers
+            docker compose down
+            # Stop and remove containers
 
-            echo "🚀 Starting new containers..."  # Start updated containers
-            docker compose up -d  # Start containers in detached mode
+            echo "🚀 Starting new containers..."
+            # Start updated containers
+            docker compose up -d
+            # Start containers in detached mode
 
-            echo "⏳ Waiting for startup..."  # Wait for containers to start
-            sleep 15  # Pause for 15 seconds
+            echo "⏳ Waiting for startup..."
+            # Wait for containers to start
+            sleep 15
+            # Pause for 15 seconds
 
-            echo "🩺 Checking status..."  # Check container status
-            docker ps -a  # List all containers
+            echo "🩺 Checking status..."
+            # Check container status
+            docker ps -a
+            # List all containers
 
-            echo "🩺 Verifying app status..."  # Verify application health
-            if docker_output=$(docker ps) && echo "$docker_output" | grep -q rust-app && echo "$docker_output" | grep -q nextjs-app; then  # Check if both containers are running
-              echo "✅ Deployment succeeded!"  # Success message
+            echo "🩺 Verifying app status..."
+            # Verify application health
+            if docker_output=$(docker ps) && echo "$docker_output" | grep -q rust-app && echo "$docker_output" | grep -q nextjs-app; then
+              # Check if both containers are running
+              echo "✅ Deployment succeeded!"
+              # Success message
             else
-              echo "⚠️ Missing container(s). Logs follow:"  # Error message
-              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"  # Show backend logs
-              docker logs ${{ secrets.FRONTEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Frontend logs unavailable"  # Show frontend logs
+              echo "⚠️ Missing container(s). Logs follow:"
+              # Error message
+              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
+              # Show backend logs
+              docker logs ${{ secrets.FRONTEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Frontend logs unavailable"
+              # Show frontend logs
             fi
 
-            echo "🎉 Deployment complete."  # Final deployment message
+            echo "🎉 Deployment complete."
+            # Final deployment message
           '
