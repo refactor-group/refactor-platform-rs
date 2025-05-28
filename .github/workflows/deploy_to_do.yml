@@ -11,6 +11,9 @@ on:
         default: false  # Disabled by default
         type: boolean  # Simple checkbox in the UI
 
+permissions:
+  contents: read  # Minimal permissions required for this workflow
+
 jobs:
   deploy:
     name: Manual Deploy Over Tailscale  # Display name for this job
