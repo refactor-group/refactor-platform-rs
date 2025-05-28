@@ -1,9 +1,15 @@
 name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub
 # Deploys the latest stable tagged container images to production servers.
 
-# ✅ Manual-only trigger
+# ✅ Manual trigger with debug option
 on:
   workflow_dispatch: # Allow manual triggering from GitHub UI
+    inputs:
+      enable_ssh_debugging:
+        description: 'Enable verbose SSH debugging'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   deploy:
@@ -21,13 +27,15 @@ jobs:
           version: latest # Use latest Tailscale version
           use-cache: 'true' # Cache Tailscale for faster setup
 
+      # 🔍 Debug step (only runs when debugging is enabled)
       - name: Debug ED25519 Key # Setup and verify SSH key
+        if: ${{ inputs.enable_ssh_debugging == true }}
         run: |
           mkdir -p ~/.ssh # Create SSH directory
           echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
           chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
           
-          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts # Add host key
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts # Add host key explicitly from secret
           
           echo "Key information:" # Display key information for debugging
           ssh-keygen -l -f ~/.ssh/id_ed25519 # Show key fingerprint
@@ -45,7 +53,9 @@ jobs:
           echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519 # Save SSH key
           chmod 600 ~/.ssh/id_ed25519 # Set correct permissions
           
-          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts # Add host key
+          # Add host key through both methods for reliability
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts # Add host key explicitly from secret
+          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts # Add host key dynamically
 
           # Deploy with SSH - add multiple options to disable all prompts
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
