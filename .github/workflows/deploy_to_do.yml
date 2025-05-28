@@ -69,6 +69,10 @@ jobs:
             POSTGRES_HOST=postgres
             POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
             POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}
+            # ==============================
+            #   Database URL (computed)
+            # ==============================
+            DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}
 
             # ==============================
             #   Backend Configuration
@@ -83,11 +87,7 @@ jobs:
             BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}
             BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}
 
-            # ==============================
-            #   Database URL (computed)
-            # ==============================
-            DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}
-
+``
             # ==============================
             #   TipTap Configuration
             # ==============================
@@ -106,6 +106,7 @@ jobs:
             #   Platform Configuration
             # ==============================
             PLATFORM=${{ secrets.PLATFORM }}
+            
             EOF
 
             echo "🔧 Setting .env file permissions to match docker-compose.yaml..." # Set permissions
@@ -145,12 +146,14 @@ jobs:
             docker ps -a # Show all containers
             
             echo "🩺 Checking rust-app status..." # Check specific container
-            if docker ps | grep -q rust-app; then
-              echo "✅ Deployment succeeded! rust-app is running."
+            if docker_output=$(docker ps) && echo "$docker_output" | grep -q rust-app && echo "$docker_output" | grep -q nextjs-app; then
+              echo "✅ Deployment succeeded! Refactor Platform is running."
             else
-              echo "⚠️ rust-app not found in running containers."
+              echo "⚠️ rust-app or nextjs-app not found in running list of containers."
               echo "📋 Last 30 lines of rust-app logs:"
-              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Could not get logs"
+              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Could not display logs"
+              echo "📋 Last 30 lines of nextjs-app logs:"
+              docker logs ${{ secrets.FRONTEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Could not display logs"
             fi
 
             echo "🎉 Deployment completed." # Finish message
