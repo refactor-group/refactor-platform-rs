@@ -1,4 +1,5 @@
 name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub
+# Deploys the latest stable tagged container images to production servers.
 
 # ✅ Manual-only trigger
 on:
@@ -37,7 +38,7 @@ jobs:
           echo "Attempting connection with verbose output:" # Test connection
           ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "Connection successful"'
 
-      # ✅ Step 2: SSH and deploy to the droplet over Tailscale IP
+      # ✅ Step 2: SSH and deploy to the droplet over private Tailscale tailnet
       - name: SSH and Deploy with Docker Compose # Main deployment step
         run: |
           mkdir -p ~/.ssh # Create SSH directory
@@ -55,6 +56,7 @@ jobs:
             
             echo "📥 Retrieving the docker-compose.yaml" # Get compose file first
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml # Download compose
+            chmod 640 docker-compose.yaml
             
             echo "📝 Creating .env file with GitHub secrets..." # Create env file
             cat > .env << 'EOF'
