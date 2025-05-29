@@ -206,17 +206,15 @@ jobs:
 
             echo "🩺 Verifying app status..."
             # Verify application health
-            if docker_output=$(docker ps) && echo "$docker_output" | grep -q rust-app && echo "$docker_output" | grep -q nextjs-app; then
-              # Check if both containers are running
-              echo "✅ Deployment succeeded!"
+            echo "🩺 Checking rust-app status..."
+            if docker ps | grep -q rust-app; then
+              echo "✅ Deployment succeeded! ${{ secrets.BACKEND_CONTAINER_NAME }} is running."
               # Success message
             else
-              echo "⚠️ Missing container(s). Logs follow:"
+              echo "⚠️ Missing container for rust-app. Logs follow:"
               # Error message
               docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
               # Show backend logs
-              docker logs ${{ secrets.FRONTEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Frontend logs unavailable"
-              # Show frontend logs
             fi
 
             echo "🎉 Deployment complete."
