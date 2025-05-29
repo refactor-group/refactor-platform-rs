@@ -103,6 +103,8 @@ jobs:
           # Docker image for frontend
           FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}
           # Container name for frontend
+          FRONTEND_SERVICE_INTERFACE=${{ secrets.FRONTEND_SERVICE_INTERFACE }}
+          # Frontend service interface to listen for connections on
           FRONTEND_SERVICE_PORT=${{ secrets.FRONTEND_SERVICE_PORT }}
           # Frontend service port
 
