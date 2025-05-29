@@ -133,17 +133,14 @@ jobs:
 
           # SSH and deploy
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
+            export GITHUB_BRANCH='${{ github.ref_name }}'
             set -e
             # Exit immediately if any command fails
 
-            echo "📦 Starting deployment..."
-            # Announce start of deployment
+            echo \"📦 Starting deployment from branch: \$GITHUB_BRANCH...\"
             cd /home/deploy
-            # Change to deployment directory
-            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/main/docker-compose.yaml
-            # Get compose file
+            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/\$GITHUB_BRANCH/docker-compose.yaml
             chmod 640 docker-compose.yaml
-            # Set permissions on compose file
 
             echo "🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
