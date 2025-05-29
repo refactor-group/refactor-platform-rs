@@ -180,22 +180,19 @@ jobs:
             docker compose config --quiet
             # Check config without output unless error
 
-            echo "🛑 Stopping old containers..."
-            # Stop existing containers
-            docker compose down
-            # Stop and remove containers
+            echo "🛑 Stopping Refactor Platform service..."
+            sudo systemctl stop refactor-platform.service
 
-            echo "🚀 Starting new containers..."
-            # Start updated containers
-            docker compose up -d
-            # Start containers in detached mode
+            echo "🚀 Starting Refactor Platform service..."
+            sudo systemctl start refactor-platform.service
 
             echo "⏳ Waiting for startup..."
             # Wait for containers to start
             sleep 15
             # Pause for 15 seconds
 
-            echo "🩺 Checking status..."
+            echo "🩺 Checking service and status..."
+            systemctl status refactor-platform.service
             # Check container status
             docker ps -a
             # List all containers
@@ -203,7 +200,7 @@ jobs:
             echo "🩺 Verifying app status..."
             # Verify application health
             echo "🩺 Checking rust-app status..."
-            if docker ps | grep -q rust-app; then
+            if docker ps | grep -q ${{ secrets.BACKEND_CONTAINER_NAME }}; then
               echo "✅ Deployment succeeded! ${{ secrets.BACKEND_CONTAINER_NAME }} is running."
               # Success message
             else
