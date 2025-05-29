@@ -34,9 +34,6 @@ validate_env() {
 main() {
     log_info "Starting Refactor Platform entrypoint..."
     
-    # Debug current ROLE value
-    log_debug "ROLE before assignment: '${ROLE:-UNSET}'"
-    
     # Set default role
     ROLE="${ROLE:-app}"
     log_info "ROLE is set to: $ROLE"
