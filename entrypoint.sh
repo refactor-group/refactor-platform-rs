@@ -3,6 +3,8 @@ set -euo pipefail                                      # strict mode
 
 ROLE="${ROLE:-app}"                                    # defaults to running the app server
 
+echo "🔍 ROLE is set to ${ROLE}"
+
 # If explicitly calls a helper (e.g. `migrationctl status`)
 if [[ $# -gt 0 ]]; then                                # check for CLI args
   case "$1" in
@@ -15,6 +17,7 @@ if [[ "$ROLE" == "migrator" ]]; then
   echo "🔧 Running SeaORM migratectl up…"
   exec /app/migrationctl up                            # exits 0 if nothing to do
 else
+  echo "🚀 Starting Refactor Platform…"
   # default to start API server
   exec /app/refactor_platform_rs \
     -l "${BACKEND_LOG_FILTER_LEVEL:-INFO}" \
