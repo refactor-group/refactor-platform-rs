@@ -71,8 +71,6 @@ jobs:
           # Connection string
 
           # Backend
-          # Role for backend entrypoint
-          ROLE=${{ secrets.ROLE }}
           BACKEND_IMAGE_NAME=${{ secrets.BACKEND_IMAGE_NAME }}
           # Docker image for backend
           BACKEND_CONTAINER_NAME=${{ secrets.BACKEND_CONTAINER_NAME }}
