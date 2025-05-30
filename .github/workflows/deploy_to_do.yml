@@ -5,7 +5,7 @@ name: Deploy to DigitalOcean via Tailscale  # Workflow name displayed in GitHub 
 on:
   workflow_dispatch:  # Manual trigger via GitHub UI
     inputs:
-      enable_ssh_debugging:  # Optional debugging parameter
+      enable_ssh_debugging:  # Optional debugging parameter useful to debug the ssh connection to the server
         description: 'Enable verbose SSH debugging'  # Help text shown in UI
         required: false  # Not required to run the workflow
         default: false  # Disabled by default
@@ -17,7 +17,8 @@ permissions:
 jobs:
   deploy:
     name: Manual Deploy Over Tailscale  # Display name for this job
-    runs-on: ubuntu-24.04  # Latest Ubuntu runner
+    runs-on: ubuntu-24.04
+    environment: production             # Use the production environment settings
 
     steps:
       # Step 1: Setup Tailscale on the GitHub Actions runner
@@ -89,6 +90,7 @@ jobs:
           # Host for backend
           BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}
           # API version
+          RUST_ENV=${{ vars.RUST_ENV }}
 
           # TipTap
           TIPTAP_URL=${{ secrets.TIPTAP_URL }}
