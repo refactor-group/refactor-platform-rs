@@ -162,18 +162,18 @@ jobs:
 
             echo "📥 Pulling images..."
             # Pull Docker images
-            if [ -n "${{ secrets.BACKEND_IMAGE_NAME }}" ]; then
+            if [ -n "${{ vars.BACKEND_IMAGE_NAME }}" ]; then
               # Check if backend image is set
-              echo "Pulling backend image: ${{ secrets.BACKEND_IMAGE_NAME }}"
+              echo "Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
               # Announce image pull
-              docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
+              docker pull ${{ vars.BACKEND_IMAGE_NAME }}
               # Pull backend image
             fi
-            if [ -n "${{ secrets.FRONTEND_IMAGE_NAME }}" ]; then
+            if [ -n "${{ vars.FRONTEND_IMAGE_NAME }}" ]; then
               # Check if frontend image is set
-              echo "Pulling frontend image: ${{ secrets.FRONTEND_IMAGE_NAME }}"
+              echo "Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
               # Announce image pull
-              docker pull ${{ secrets.FRONTEND_IMAGE_NAME }}
+              docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
               # Pull frontend image
             fi
 
@@ -202,13 +202,13 @@ jobs:
             echo "🩺 Verifying app status..."
             # Verify application health
             echo "🩺 Checking rust-app status..."
-            if docker ps | grep -q ${{ secrets.BACKEND_CONTAINER_NAME }}; then
-              echo "✅ Deployment succeeded! ${{ secrets.BACKEND_CONTAINER_NAME }} is running."
+            if docker ps | grep -q ${{ vars.BACKEND_CONTAINER_NAME }}; then
+              echo "✅ Deployment succeeded! ${{ vars.BACKEND_CONTAINER_NAME }} is running."
               # Success message
             else
               echo "⚠️ Missing container for rust-app. Logs follow:"
               # Error message
-              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
+              docker logs ${{ vars.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
               # Show backend logs
             fi
 
