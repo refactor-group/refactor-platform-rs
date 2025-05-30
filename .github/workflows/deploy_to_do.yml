@@ -18,7 +18,7 @@ jobs:
   deploy:
     name: Manual Deploy Over Tailscale  # Display name for this job
     runs-on: ubuntu-24.04
-    # environment: production             # Use the production environment settings
+    environment: production             # Use the production environment settings
 
     steps:
       # Step 1: Setup Tailscale on the GitHub Actions runner
