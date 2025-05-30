@@ -18,11 +18,11 @@ jobs:
   deploy:
     name: Manual Deploy Over Tailscale  # Display name for this job
     runs-on: ubuntu-24.04
-    environment: production             # Use the production environment settings
+    # environment: production             # Use the production environment settings
 
     steps:
       # Step 1: Setup Tailscale on the GitHub Actions runner
-      - name: Setup Tailscale  # Connect to the Tailscale network
+      - name: Set up Tailscale  # Connect to the Tailscale network
         uses: tailscale/github-action@v3  # Official Tailscale GitHub Action
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}  # OAuth client ID for Tailscale
@@ -51,7 +51,7 @@ jobs:
           # Test connection with verbose output
 
       # Step 3: Create .env File Locally
-      - name: Create .env File Locally  # Create environment file for deployment
+      - name: Create .env File on Server  # Create environment file for deployment
         run: |
           cat > envfile <<EOF
           # Start heredoc to create env file
@@ -116,7 +116,7 @@ jobs:
           EOF
 
       # Step 4: SSH and deploy to the digitalocean droplet over private Tailscale tailnet
-      - name: SSH and Deploy with Docker Compose  # Main deployment step
+      - name: Deploy Over SSH to Server and Restart Service # Main deployment step
         run: |
           mkdir -p ~/.ssh
           # Create SSH directory
