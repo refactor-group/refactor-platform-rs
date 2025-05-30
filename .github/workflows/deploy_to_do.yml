@@ -111,7 +111,7 @@ jobs:
           # Frontend service port
 
           # Platform
-          PLATFORM=${{ secrets.PLATFORM }}
+          PLATFORM=${{ vars.PLATFORM }}
           # Target platform for Docker containers
           EOF
 
