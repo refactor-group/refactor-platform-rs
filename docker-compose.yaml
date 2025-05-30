@@ -22,10 +22,16 @@ services:
 
   migrator:                                 # db migration service
     image: ${BACKEND_IMAGE_NAME}            # reuse backend image
+    build:
+      # Set a path to build from source locally, or
+      # set to empty string or not set and set a container registry
+      # URI in BACKEND_IMAGE_NAME to pull a prebuilt image
+      context: ${BACKEND_BUILD_CONTEXT}
     container_name: db-migrator
     platform: ${PLATFORM}
     environment:
       ROLE: migrator                        # entrypoint knows to migrate
+      RUST_ENV: ${RUST_ENV}                 # development, staging, production
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
       PLATFORM: ${PLATFORM}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
@@ -39,10 +45,16 @@ services:
 
   rust-app:
     image: ${BACKEND_IMAGE_NAME}
+    build:
+      # Set a path to build from source locally, or
+      # set to empty string or not set and set a container registry
+      # URI in BACKEND_IMAGE_NAME to pull a prebuilt image
+      context: ${BACKEND_BUILD_CONTEXT}
     platform: ${PLATFORM}
     container_name: ${BACKEND_CONTAINER_NAME}
     environment:
       ROLE: app
+      RUST_ENV: ${RUST_ENV}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -69,6 +81,11 @@ services:
 
   nextjs-app:
     image: ${FRONTEND_IMAGE_NAME}
+    build:
+      # Set a path to build from source locally, or
+      # set to empty string or not set and set a container registry
+      # URI in BACKEND_IMAGE_NAME to pull a prebuilt image
+      context: ${FRONTEND_BUILD_CONTEXT}
     container_name: ${FRONTEND_CONTAINER_NAME}
     environment:
       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
