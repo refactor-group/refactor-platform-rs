@@ -64,6 +64,7 @@ main() {
             log_info "Running in MIGRATOR mode"
             validate_binary "migrationctl"
             validate_env "DATABASE_URL"
+            validate_env "RUST_ENV"
             
             log_success "Running SeaORM migrations..."
             exec /app/migrationctl up
@@ -73,6 +74,7 @@ main() {
             log_info "Running in APP mode"
             validate_binary "refactor_platform_rs"
             validate_env "DATABASE_URL"
+            validate_env "RUST_ENV"
             
             # Set application defaults
             local log_level="${BACKEND_LOG_FILTER_LEVEL:-INFO}"
@@ -87,7 +89,6 @@ main() {
                 -l "$log_level" \
                 -i "$interface" \
                 -p "$port" \
-                -d "$DATABASE_URL" \
                 --allowed-origins="$origins" \
                 "$@"
             ;;
