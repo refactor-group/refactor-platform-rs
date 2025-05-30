@@ -2,7 +2,7 @@ pub use sea_orm_migration::prelude::*;
 
 mod m20240210_153056_create_schema_and_base_db_setup;
 mod m20240211_174355_base_migration;
-mod m20250509_164646_add_initial_non_prod_user;
+mod m20250509_164646_add_initial_user;
 
 pub struct Migrator;
 
@@ -12,7 +12,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20240210_153056_create_schema_and_base_db_setup::Migration),
             Box::new(m20240211_174355_base_migration::Migration),
-            Box::new(m20250509_164646_add_initial_non_prod_user::Migration),
+            Box::new(m20250509_164646_add_initial_user::Migration),
         ]
     }
 }

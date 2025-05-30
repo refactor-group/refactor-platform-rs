@@ -14,9 +14,6 @@ use password_auth::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, Set};
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::{ModelTrait, QueryFilter};
-use service::config::RustEnv;
-use std::env;
-use std::str::FromStr;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -24,39 +21,11 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let rust_env: RustEnv = RustEnv::from_str(
-            env::var("RUST_ENV")
-                .unwrap_or_else(|_| "development".to_string())
-                .as_str(),
-        )
-        .unwrap();
-
-        match rust_env {
-            RustEnv::Development => insert_initial_admin_user_and_org(manager).await,
-            RustEnv::Staging => insert_initial_admin_user_and_org(manager).await,
-            RustEnv::Production => {
-                // We have a different process for initial setup in production
-                Ok(())
-            }
-        }
+        insert_initial_admin_user_and_org(manager).await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let rust_env: RustEnv = RustEnv::from_str(
-            env::var("RUST_ENV")
-                .unwrap_or_else(|_| "development".to_string())
-                .as_str(),
-        )
-        .unwrap();
-
-        match rust_env {
-            RustEnv::Development => delete_initial_admin_user_and_org(manager).await,
-            RustEnv::Staging => delete_initial_admin_user_and_org(manager).await,
-            RustEnv::Production => {
-                // We have a different process for initial setup in production
-                Ok(())
-            }
-        }
+        delete_initial_admin_user_and_org(manager).await
     }
 }
 
