@@ -19,8 +19,10 @@ COPY ./service/Cargo.toml ./service/Cargo.toml
 COPY ./web/Cargo.toml ./web/Cargo.toml
 COPY . .
 
-# Build release binaries for the current platform only
-RUN cargo build --release --workspace
+RUN cargo build --release -p refactor_platform_rs -p migration
+
+RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app  
+
 
 # Stage 2: Minimal runtime image
 FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
@@ -34,9 +36,7 @@ WORKDIR /app
 
 # Copy the necessary release binaries
 COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
-# Naming this to avoid collision with the migration directory added below
-COPY --from=builder /usr/src/app/target/release/migration migrationctl
-COPY --from=builder /usr/src/app/target/release/seed_db .
+COPY --from=builder /usr/src/app/target/release/migration ./migrationctl
 
 # In order to run our initial migration which applies a SQL file directly, we need to
 # make sure the directory exists on the container and copy the SQL file into it.

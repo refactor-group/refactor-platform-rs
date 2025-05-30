@@ -1,0 +1,108 @@
+name: Build and Push Production Images
+# Builds the backend source into binary containers for branch main and pushes to the GitHub Container Registry as stable tag.
+
+on:
+  release:
+    types: [released]  # This workflow only runs when a new GitHub release is *actually* released publicly
+  workflow_dispatch:
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build_test_run:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4  # Checkout the repository
+
+      - name: Set up Rust + QEMU
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: linux/amd64,linux/arm64  # Enable multi-arch builds
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable  # Install stable Rust toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-cargo-${{ github.sha }}  # Caches Rust build artifacts
+
+      - name: Install sea-orm-cli
+        run: cargo install sea-orm-cli  # If needed for migrations / seeds
+
+      - name: Run tests
+        run: cargo test --release  # Basic test step
+
+  build_and_push_docker:
+    runs-on: ubuntu-24.04
+    needs: build_test_run
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4  # Checkout code again for the Docker build
+
+      - name: Docker login
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          install: true  # Set up Docker Buildx for multi-arch
+
+      - name: Show Docker Build Cache (Before)
+        run: |
+          echo "🔍 Checking buildx cache BEFORE build..."
+          docker buildx du || echo "No cache found yet."
+
+      # Compute stable tag instead of using branch name
+      - name: Determine Image Tags
+        id: tags
+        run: |
+          IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository }}"
+          echo "backend_tags=$IMAGE_NAME:stable" >> $GITHUB_OUTPUT  # Tag image as "stable"
+          echo "backend_image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Build + Push Backend
+        id: push_backend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64  # Multi-arch build
+          push: true
+          provenance: true
+          tags: ${{ steps.tags.outputs.backend_tags }}  # Use "stable" tag
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Show Docker Build Cache (After)
+        run: |
+          echo "📦 Checking buildx cache AFTER build..."
+          docker buildx du || echo "Failed to get updated cache info."
+
+      # Optionally attest build provenance (can be kept if desired)
+      - name: Attest Backend
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.tags.outputs.backend_image_name }}
+          subject-digest: ${{ steps.push_backend.outputs.digest }}
+          push-to-registry: true
+
+      - name: Print Usage Instructions
+        run: |
+          echo "Backend Image Pushed to ghcr.io as STABLE:"
+          echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:stable"
+          echo "Run it locally:"
+          echo "  docker run --rm --env-file .env -p ${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }} ${{ steps.tags.outputs.backend_image_name }}:stable"
