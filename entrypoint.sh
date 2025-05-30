@@ -36,7 +36,6 @@ main() {
     
     # Set default role
     ROLE="${ROLE:-app}"
-    log_info "ROLE is set to: $ROLE"
     
     # Handle direct CLI commands first
     if [[ $# -gt 0 ]]; then
@@ -66,7 +65,7 @@ main() {
             validate_env "DATABASE_URL"
             validate_env "RUST_ENV"
 
-            log_info "RUST_ENV is set to: $RUST_ENV"
+            log_info "Running in $RUST_ENV environment"
             
             log_success "Running SeaORM migrations..."
             exec /app/migrationctl up
@@ -78,7 +77,7 @@ main() {
             validate_env "DATABASE_URL"
             validate_env "RUST_ENV"
 
-            log_info "RUST_ENV is set to: $RUST_ENV"
+            log_info "Running in $RUST_ENV environment"
             
             # Set application defaults
             local database_url="${DATABASE_URL}"
