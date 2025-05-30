@@ -81,6 +81,7 @@ main() {
             log_info "RUST_ENV is set to: $RUST_ENV"
             
             # Set application defaults
+            local database_url="${DATABASE_URL}"
             local log_level="${BACKEND_LOG_FILTER_LEVEL:-INFO}"
             local interface="${BACKEND_INTERFACE:-0.0.0.0}"
             local port="${BACKEND_PORT:-4000}"
@@ -90,6 +91,7 @@ main() {
             log_debug "Log level: $log_level, Interface: $interface, Port: $port"
             
             exec /app/refactor_platform_rs \
+                -d "$database_url" \
                 -l "$log_level" \
                 -i "$interface" \
                 -p "$port" \
