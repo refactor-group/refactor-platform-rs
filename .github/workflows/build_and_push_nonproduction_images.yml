@@ -17,15 +17,7 @@ env:
 
 jobs:
   build_test_run:
-    strategy:
-      matrix:
-        runner-config:
-          - { runner: self-hosted, name: "self-hosted" }
-          - { runner: ubuntu-24.04, name: "github-hosted" }
-      fail-fast: false
-    runs-on: ${{ matrix.runner-config.runner }}
-    continue-on-error: ${{ matrix.runner-config.name == 'self-hosted' }}
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
 
     steps:
       # Checkout code
@@ -45,7 +37,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.runner-config.name }}-cargo-${{ github.sha }}
+          shared-key: ${{ runner.os }}-cargo-${{ github.sha }}
 
       # Install sea-orm-cli globally (if needed for migration or seed)
       - name: Install sea-orm-cli
@@ -55,44 +47,9 @@ jobs:
       - name: Run tests
         run: cargo test --release
 
-      # Mark this runner as successful
-      - name: Mark success
-        id: success
-        run: echo "success=true" >> $GITHUB_OUTPUT
-
-    outputs:
-      self-hosted-success: ${{ matrix.runner-config.name == 'self-hosted' && steps.success.outputs.success == 'true' }}
-      github-hosted-success: ${{ matrix.runner-config.name == 'github-hosted' && steps.success.outputs.success == 'true' }}
-
-  # Determine which runner succeeded for the docker build job
-  determine-runner:
-    needs: build_test_run
-    runs-on: ubuntu-latest
-    if: always()
-    outputs:
-      selected-runner: ${{ steps.select.outputs.runner }}
-      runner-name: ${{ steps.select.outputs.name }}
-    steps:
-      - name: Select successful runner
-        id: select
-        run: |
-          if [[ "${{ needs.build_test_run.outputs.self-hosted-success }}" == "true" ]]; then
-            echo "runner=self-hosted" >> $GITHUB_OUTPUT
-            echo "name=self-hosted" >> $GITHUB_OUTPUT
-            echo "✅ Using self-hosted runner for Docker build"
-          elif [[ "${{ needs.build_test_run.outputs.github-hosted-success }}" == "true" ]]; then
-            echo "runner=ubuntu-24.04" >> $GITHUB_OUTPUT
-            echo "name=github-hosted" >> $GITHUB_OUTPUT
-            echo "✅ Using GitHub-hosted runner for Docker build"
-          else
-            echo "❌ Both runners failed"
-            exit 1
-          fi
-
   build_and_push_docker:
-    runs-on: ${{ needs.determine-runner.outputs.selected-runner }}
-    needs: [build_test_run, determine-runner]
-    if: always() && needs.determine-runner.result == 'success'
+    runs-on: ubuntu-24.04
+    needs: build_test_run
     permissions:
       contents: read
       packages: write
@@ -102,13 +59,6 @@ jobs:
     steps:
       # Checkout source code
       - uses: actions/checkout@v4
-
-      # Show which runner we're using
-      - name: Show runner info
-        run: |
-          echo "🏃 Running on: ${{ needs.determine-runner.outputs.runner-name }}"
-          echo "🖥️  Runner OS: ${{ runner.os }}"
-          echo "🏗️  Runner Arch: ${{ runner.arch }}"
 
       # Docker login to GHCR
       - name: Docker login
@@ -175,5 +125,3 @@ jobs:
           echo ""
           echo -e "\033[1;36m▶️ Run Backend:\033[0m"
           echo "  docker run --rm --env-file .env -p ${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }} ${{ steps.tags.outputs.backend_image_name }}:latest"
-          echo ""
-          echo -e "\033[1;35m🏃 Built using: ${{ needs.determine-runner.outputs.runner-name }} runner\033[0m"
