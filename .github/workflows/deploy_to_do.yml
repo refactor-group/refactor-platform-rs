@@ -5,7 +5,7 @@ name: Deploy to DigitalOcean via Tailscale  # Workflow name displayed in GitHub 
 on:
   workflow_dispatch:  # Manual trigger via GitHub UI
     inputs:
-      enable_ssh_debugging:  # Optional debugging parameter
+      enable_ssh_debugging:  # Optional debugging parameter useful to debug the ssh connection to the server
         description: 'Enable verbose SSH debugging'  # Help text shown in UI
         required: false  # Not required to run the workflow
         default: false  # Disabled by default
@@ -17,11 +17,12 @@ permissions:
 jobs:
   deploy:
     name: Manual Deploy Over Tailscale  # Display name for this job
-    runs-on: ubuntu-24.04  # Latest Ubuntu runner
+    runs-on: ubuntu-24.04
+    environment: production             # Use the production environment settings
 
     steps:
       # Step 1: Setup Tailscale on the GitHub Actions runner
-      - name: Setup Tailscale  # Connect to the Tailscale network
+      - name: Set up Tailscale  # Connect to the Tailscale network
         uses: tailscale/github-action@v3  # Official Tailscale GitHub Action
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}  # OAuth client ID for Tailscale
@@ -50,7 +51,7 @@ jobs:
           # Test connection with verbose output
 
       # Step 3: Create .env File Locally
-      - name: Create .env File Locally  # Create environment file for deployment
+      - name: Create .env File on Server  # Create environment file for deployment
         run: |
           cat > envfile <<EOF
           # Start heredoc to create env file
@@ -59,36 +60,37 @@ jobs:
           # Database username
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           # Database password
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          POSTGRES_DB=${{ vars.POSTGRES_DB }}
           # Database name
-          POSTGRES_HOST=postgres
+          POSTGRES_HOST=${{ vars.POSTGRES_HOST }}
           # Container hostname for database
-          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
+          POSTGRES_PORT=${{ vars.POSTGRES_PORT }}
           # Database port
-          POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}
+          POSTGRES_SCHEMA=${{ vars.POSTGRES_SCHEMA }}
           # Database schema
-          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}
+          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}
           # Connection string
 
           # Backend
-          BACKEND_IMAGE_NAME=${{ secrets.BACKEND_IMAGE_NAME }}
+          BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
           # Docker image for backend
-          BACKEND_CONTAINER_NAME=${{ secrets.BACKEND_CONTAINER_NAME }}
+          BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
           # Container name for backend
-          BACKEND_PORT=${{ secrets.BACKEND_PORT }}
+          BACKEND_PORT=${{ vars.BACKEND_PORT }}
           # Backend service port
-          BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}
+          BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
           # Network interface for backend
-          BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}
+          BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
           # CORS allowed origins
-          BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}
+          BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
           # Logging level
-          BACKEND_SERVICE_PROTOCOL=${{ secrets.BACKEND_SERVICE_PROTOCOL }}
+          BACKEND_SERVICE_PROTOCOL=${{ vars.BACKEND_SERVICE_PROTOCOL }}
           # Protocol for backend
-          BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}
+          BACKEND_SERVICE_HOST=${{ vars.BACKEND_SERVICE_HOST }}
           # Host for backend
-          BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}
+          BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION }}
           # API version
+          RUST_ENV=${{ vars.RUST_ENV }}
 
           # TipTap
           TIPTAP_URL=${{ secrets.TIPTAP_URL }}
@@ -99,22 +101,22 @@ jobs:
           # JWT signing key for TipTap
 
           # Frontend
-          FRONTEND_IMAGE_NAME=${{ secrets.FRONTEND_IMAGE_NAME }}
+          FRONTEND_IMAGE_NAME=${{ vars.FRONTEND_IMAGE_NAME }}
           # Docker image for frontend
-          FRONTEND_CONTAINER_NAME=${{ secrets.FRONTEND_CONTAINER_NAME }}
+          FRONTEND_CONTAINER_NAME=${{ vars.FRONTEND_CONTAINER_NAME }}
           # Container name for frontend
-          FRONTEND_SERVICE_INTERFACE=${{ secrets.FRONTEND_SERVICE_INTERFACE }}
+          FRONTEND_SERVICE_INTERFACE=${{ vars.FRONTEND_SERVICE_INTERFACE }}
           # Frontend service interface to listen for connections on
-          FRONTEND_SERVICE_PORT=${{ secrets.FRONTEND_SERVICE_PORT }}
+          FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT }}
           # Frontend service port
 
           # Platform
-          PLATFORM=${{ secrets.PLATFORM }}
+          PLATFORM=${{ vars.PLATFORM }}
           # Target platform for Docker containers
           EOF
 
       # Step 4: SSH and deploy to the digitalocean droplet over private Tailscale tailnet
-      - name: SSH and Deploy with Docker Compose  # Main deployment step
+      - name: Deploy Over SSH to Server and Restart Service # Main deployment step
         run: |
           mkdir -p ~/.ssh
           # Create SSH directory
@@ -160,18 +162,18 @@ jobs:
 
             echo "📥 Pulling images..."
             # Pull Docker images
-            if [ -n "${{ secrets.BACKEND_IMAGE_NAME }}" ]; then
+            if [ -n "${{ vars.BACKEND_IMAGE_NAME }}" ]; then
               # Check if backend image is set
-              echo "Pulling backend image: ${{ secrets.BACKEND_IMAGE_NAME }}"
+              echo "Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
               # Announce image pull
-              docker pull ${{ secrets.BACKEND_IMAGE_NAME }}
+              docker pull ${{ vars.BACKEND_IMAGE_NAME }}
               # Pull backend image
             fi
-            if [ -n "${{ secrets.FRONTEND_IMAGE_NAME }}" ]; then
+            if [ -n "${{ vars.FRONTEND_IMAGE_NAME }}" ]; then
               # Check if frontend image is set
-              echo "Pulling frontend image: ${{ secrets.FRONTEND_IMAGE_NAME }}"
+              echo "Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
               # Announce image pull
-              docker pull ${{ secrets.FRONTEND_IMAGE_NAME }}
+              docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
               # Pull frontend image
             fi
 
@@ -200,13 +202,13 @@ jobs:
             echo "🩺 Verifying app status..."
             # Verify application health
             echo "🩺 Checking rust-app status..."
-            if docker ps | grep -q ${{ secrets.BACKEND_CONTAINER_NAME }}; then
-              echo "✅ Deployment succeeded! ${{ secrets.BACKEND_CONTAINER_NAME }} is running."
+            if docker ps | grep -q ${{ vars.BACKEND_CONTAINER_NAME }}; then
+              echo "✅ Deployment succeeded! ${{ vars.BACKEND_CONTAINER_NAME }} is running."
               # Success message
             else
               echo "⚠️ Missing container for rust-app. Logs follow:"
               # Error message
-              docker logs ${{ secrets.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
+              docker logs ${{ vars.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
               # Show backend logs
             fi
 

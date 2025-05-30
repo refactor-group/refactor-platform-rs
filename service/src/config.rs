@@ -78,14 +78,14 @@ pub struct Config {
         )]
     pub api_version: Option<String>,
 
-    /// Sets the Postgresql database URI to connect to
+    /// Sets the Postgresql database URL to connect to
     #[arg(
         short,
         long,
         env,
         default_value = "postgres://refactor:password@localhost:5432/refactor_platform"
     )]
-    database_uri: Option<String>,
+    database_url: Option<String>,
 
     /// The URL for the Tiptap Cloud API provider
     #[arg(long, env)]
@@ -157,15 +157,15 @@ impl Config {
             .expect("No API version string provided")
     }
 
-    pub fn set_database_uri(mut self, database_uri: String) -> Self {
-        self.database_uri = Some(database_uri);
+    pub fn set_database_uri(mut self, database_url: String) -> Self {
+        self.database_url = Some(database_url);
         self
     }
 
     pub fn database_uri(&self) -> &str {
-        self.database_uri
+        self.database_url
             .as_ref()
-            .expect("No Database URI Provided")
+            .expect("No Database URL provided")
     }
 
     pub fn tiptap_url(&self) -> Option<String> {

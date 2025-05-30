@@ -15,6 +15,6 @@ platform containers.
 
 **To stop the containers (as deploy user):** `systemctl stop refactor-platform.service`
 
-**To restart the containers (as deploy user):** `systemctl start refactor-platform.service`
+**To restart the containers (as deploy user):** `systemctl restart refactor-platform.service`
 
 **To view the containers' systemd logs (as deploy user):** `journalctl -xeu refactor-platform.service`
