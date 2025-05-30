@@ -60,35 +60,35 @@ jobs:
           # Database username
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           # Database password
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          POSTGRES_DB=${{ vars.POSTGRES_DB }}
           # Database name
-          POSTGRES_HOST=postgres
+          POSTGRES_HOST=${{ vars.POSTGRES_HOST }}
           # Container hostname for database
-          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
+          POSTGRES_PORT=${{ vars.POSTGRES_PORT }}
           # Database port
-          POSTGRES_SCHEMA=${{ secrets.POSTGRES_SCHEMA }}
+          POSTGRES_SCHEMA=${{ vars.POSTGRES_SCHEMA }}
           # Database schema
-          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ secrets.POSTGRES_PORT }}/${{ secrets.POSTGRES_DB }}
+          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}
           # Connection string
 
           # Backend
-          BACKEND_IMAGE_NAME=${{ secrets.BACKEND_IMAGE_NAME }}
+          BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
           # Docker image for backend
-          BACKEND_CONTAINER_NAME=${{ secrets.BACKEND_CONTAINER_NAME }}
+          BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
           # Container name for backend
-          BACKEND_PORT=${{ secrets.BACKEND_PORT }}
+          BACKEND_PORT=${{ vars.BACKEND_PORT }}
           # Backend service port
-          BACKEND_INTERFACE=${{ secrets.BACKEND_INTERFACE }}
+          BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
           # Network interface for backend
-          BACKEND_ALLOWED_ORIGINS=${{ secrets.BACKEND_ALLOWED_ORIGINS }}
+          BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
           # CORS allowed origins
-          BACKEND_LOG_FILTER_LEVEL=${{ secrets.BACKEND_LOG_FILTER_LEVEL }}
+          BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
           # Logging level
-          BACKEND_SERVICE_PROTOCOL=${{ secrets.BACKEND_SERVICE_PROTOCOL }}
+          BACKEND_SERVICE_PROTOCOL=${{ vars.BACKEND_SERVICE_PROTOCOL }}
           # Protocol for backend
-          BACKEND_SERVICE_HOST=${{ secrets.BACKEND_SERVICE_HOST }}
+          BACKEND_SERVICE_HOST=${{ vars.BACKEND_SERVICE_HOST }}
           # Host for backend
-          BACKEND_API_VERSION=${{ secrets.BACKEND_API_VERSION }}
+          BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION }}
           # API version
           RUST_ENV=${{ vars.RUST_ENV }}
 
