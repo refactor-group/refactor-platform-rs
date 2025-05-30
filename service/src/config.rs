@@ -78,14 +78,14 @@ pub struct Config {
         )]
     pub api_version: Option<String>,
 
-    /// Sets the Postgresql database URI to connect to
+    /// Sets the Postgresql database URL to connect to
     #[arg(
         short,
         long,
         env,
         default_value = "postgres://refactor:password@localhost:5432/refactor_platform"
     )]
-    database_uri: Option<String>,
+    database_url: Option<String>,
 
     /// The URL for the Tiptap Cloud API provider
     #[arg(long, env)]
