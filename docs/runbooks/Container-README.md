@@ -31,7 +31,7 @@ DATABASE_URL=postgres://refactor:password@postgres:5432/refactor
 BACKEND_CONTAINER_NAME=refactor-platform     # Name for the Rust back-end container
 BACKEND_IMAGE_NAME=ghcr.io/refactor-group/refactor-platform-rs/<branch-name>:latest
                                              # Pre-built image for the Rust back-end from GHCR
-BACKEND_ENV=development                      # Environment (development/production)
+BACKEND_BUILD_CONTEXT="<refactor_platform_rs_source_dir>" # Optional, set to build locally and shorten $BACKEND_IMAGE_NAME
 BACKEND_ALLOWED_ORIGINS=*                    # Allowed CORS origins
 BACKEND_LOG_FILTER_LEVEL=DEBUG               # Logging level for the back-end
 BACKEND_PORT=4000                            # Port on which the Rust back-end listens
@@ -40,6 +40,7 @@ BACKEND_SERVICE_PROTOCOL=http                # Protocol (usually http)
 BACKEND_SERVICE_PORT=4000                    # Derived service port
 BACKEND_SERVICE_HOST=localhost               # Hostname used by the service
 BACKEND_API_VERSION=0.0.1                    # API version
+RUST_ENV=development                         # development, staging, production
 
 # ==============================
 #   Next.js Front-end Configuration
@@ -47,8 +48,11 @@ BACKEND_API_VERSION=0.0.1                    # API version
 FRONTEND_IMAGE_NAME=ghcr.io/refactor-group/refactor-platform-fe/<branch-name>:latest
                                              # Pre-built image for the Next.js front-end from GHCR
 FRONTEND_CONTAINER_NAME=refactor-platform-frontend  # Name for the front-end container
+FRONTEND_BUILD_CONTEXT="<refactor_platform_fe_source_dir>" # Optional, set to build locally and shorten $FRONTEND_IMAGE_NAME
 FRONTEND_SERVICE_INTERFACE=0.0.0.0           # Interface for the front-end service
 FRONTEND_SERVICE_PORT=3000                   # Port for the front-end service
+
+PLATFORM="linux/arm64/v8"                    # Or linux/amd64
 
 # ==============================
 #   TipTap Service Configuration
