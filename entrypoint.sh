@@ -10,6 +10,12 @@ log_info() { echo "ℹ️  $*"; }
 log_success() { echo "✅ $*"; }
 log_error() { echo "❌ $*" >&2; }
 log_debug() { echo "🐛 $*"; }
+log_db_url() {
+    local db_url="$1"
+    
+    # Replace password in postgresql://user:password@host format
+    echo "ℹ️ $db_url" | sed 's|://[^:]*:[^@]*@|://[^:]*:*@|g'
+}
 
 # Validate required binaries exist
 validate_binary() {
@@ -66,6 +72,8 @@ main() {
             validate_env "RUST_ENV"
 
             log_info "Running in $RUST_ENV environment"
+
+            log_db_url "DATABASE_URL: $DATABASE_URL"
             
             log_success "Running SeaORM migrations..."
             exec /app/migrationctl up

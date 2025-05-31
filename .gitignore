@@ -10,3 +10,7 @@ dbml-error.log
 
 # environment files
 .env*
+
+# CA certificates
+ca-certificate.crt
+*.crt
