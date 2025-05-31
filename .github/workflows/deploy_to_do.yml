@@ -55,64 +55,68 @@ jobs:
         run: |
           cat > envfile <<EOF
           # Start heredoc to create env file
-          # PostgreSQL
-          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          # -------- PostgreSQL Config
           # Database username
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
           # Database password
-          POSTGRES_DB=${{ vars.POSTGRES_DB }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           # Database name
-          POSTGRES_HOST=${{ vars.POSTGRES_HOST }}
+          POSTGRES_DB=${{ vars.POSTGRES_DB }}
           # Container hostname for database
-          POSTGRES_PORT=${{ vars.POSTGRES_PORT }}
+          POSTGRES_HOST=${{ vars.POSTGRES_HOST }}
           # Database port
-          POSTGRES_SCHEMA=${{ vars.POSTGRES_SCHEMA }}
+          POSTGRES_PORT=${{ vars.POSTGRES_PORT }}
           # Database schema
+          POSTGRES_SCHEMA=${{ vars.POSTGRES_SCHEMA }}
+          # Database connection options
+          POSTGRES_OPTIONS=${{ vars.POSTGRES_OPTIONS }}
+          # Database connection string
           DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}?${{ vars.POSTGRES_OPTIONS }}
-          # Connection string
 
-          # Backend
-          BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
+          # -------- Backend Config
           # Docker image for backend
-          BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
+          BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
           # Container name for backend
-          BACKEND_PORT=${{ vars.BACKEND_PORT }}
+          BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
           # Backend service port
+          BACKEND_PORT=${{ vars.BACKEND_PORT }}
+          # Network interface for backend to listen for incoming connections on
           BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
-          # Network interface for backend
-          BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
           # CORS allowed origins
+          BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
+          # Logging filter level to apply
           BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
-          # Logging level
+          # Protocol for backend (http, https)
           BACKEND_SERVICE_PROTOCOL=${{ vars.BACKEND_SERVICE_PROTOCOL }}
-          # Protocol for backend
+          # Hostname or IP address to reach the backend on
           BACKEND_SERVICE_HOST=${{ vars.BACKEND_SERVICE_HOST }}
-          # Host for backend
+          # API version to use between frontend and backend
           BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION }}
-          # API version
+          # Deployment environment used (development, staging, production)
           RUST_ENV=${{ vars.RUST_ENV }}
 
-          # TipTap
-          TIPTAP_URL=${{ secrets.TIPTAP_URL }}
+          # -------- TipTap Config
           # TipTap collaborative editor URL
-          TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}
+          TIPTAP_URL=${{ secrets.TIPTAP_URL }}
           # TipTap authentication key
-          TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}
+          TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}
           # JWT signing key for TipTap
+          TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}
 
-          # Frontend
-          FRONTEND_IMAGE_NAME=${{ vars.FRONTEND_IMAGE_NAME }}
+          # Frontend Config
           # Docker image for frontend
-          FRONTEND_CONTAINER_NAME=${{ vars.FRONTEND_CONTAINER_NAME }}
+          FRONTEND_IMAGE_NAME=${{ vars.FRONTEND_IMAGE_NAME }}
           # Container name for frontend
+          FRONTEND_CONTAINER_NAME=${{ vars.FRONTEND_CONTAINER_NAME }}
+          # Frontend service interface to listen for client connections on
           FRONTEND_SERVICE_INTERFACE=${{ vars.FRONTEND_SERVICE_INTERFACE }}
-          # Frontend service interface to listen for connections on
-          FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT }}
           # Frontend service port
+          FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT }}
 
-          # Platform
-          PLATFORM=${{ vars.PLATFORM }}
+          # Platform Config
           # Target platform for Docker containers
+          PLATFORM=${{ vars.PLATFORM }}
+
           EOF
 
       # Step 4: SSH and deploy to the digitalocean droplet over private Tailscale tailnet
