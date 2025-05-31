@@ -78,7 +78,7 @@ main() {
             slog_db_url "DATABASE_URL: $DATABASE_URL"
             
             log_success "Running SeaORM migrations..."
-            exec /app/migrationctl up
+            exec /app/migrationctl -u $DATABASE_URL up
             ;;
             
         app)
