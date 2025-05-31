@@ -15,7 +15,7 @@ slog_db_url() {
     local db_url="$1"
     
     # Replace password in postgresql://user:password@host format
-    echo "ℹ️ $db_url" | sed 's|://[^:]*:[^@]*@|://[^:]*:*@|g'
+    echo "ℹ️ $db_url" | sed -E 's|^([^:]+://[^:]+:)[^@]*(@.*)$|\1*\2|'
 }
 
 # Validate required binaries exist
