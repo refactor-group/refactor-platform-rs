@@ -7,6 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_OPTIONS: ${POSTGRES_OPTIONS}
     restart: unless-stopped                 # auto-restart unless stopped
     ports:
       - "${POSTGRES_PORT}:5432"
@@ -32,7 +33,7 @@ services:
     environment:
       ROLE: migrator                        # entrypoint knows to migrate
       RUST_ENV: ${RUST_ENV}                 # development, staging, production
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}${POSTGRES_OPTIONS}
       PLATFORM: ${PLATFORM}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
     depends_on:
@@ -61,7 +62,8 @@ services:
       POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      POSTGRES_OPTIONS: ${POSTGRES_OPTIONS}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}${POSTGRES_OPTIONS}
       BACKEND_PORT: ${BACKEND_PORT}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
       BACKEND_INTERFACE: ${BACKEND_INTERFACE}

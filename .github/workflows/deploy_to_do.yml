@@ -68,7 +68,7 @@ jobs:
           # Database port
           POSTGRES_SCHEMA=${{ vars.POSTGRES_SCHEMA }}
           # Database schema
-          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}
+          DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}${{ vars.POSTGRES_OPTIONS }}
           # Connection string
 
           # Backend
