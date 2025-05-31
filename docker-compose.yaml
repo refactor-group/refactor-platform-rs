@@ -41,6 +41,9 @@ services:
         condition: service_healthy          # start after DB is healthy
     restart: "no"                           # run once, then exit
     command: []                             # keep original ENTRYPOINT
+    volumes:
+      # Read-only bind mount of our production DB CA certificate
+      - /home/deploy/postgres_ssl_cert.crt:/app/root.crt:ro
     networks:
       - backend_network
 
