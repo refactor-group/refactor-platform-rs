@@ -157,12 +157,12 @@ impl Config {
             .expect("No API version string provided")
     }
 
-    pub fn set_database_uri(mut self, database_url: String) -> Self {
+    pub fn set_database_url(mut self, database_url: String) -> Self {
         self.database_url = Some(database_url);
         self
     }
 
-    pub fn database_uri(&self) -> &str {
+    pub fn database_url(&self) -> &str {
         self.database_url
             .as_ref()
             .expect("No Database URL provided")

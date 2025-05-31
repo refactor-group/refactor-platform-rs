@@ -9,7 +9,7 @@ async fn main() {
 
     info!("Seeding Database...");
 
-    let db = Arc::new(service::init_database(config.database_uri()).await.unwrap());
+    let db = Arc::new(service::init_database(config.database_url()).await.unwrap());
 
     let app_state = AppState::new(config, &db);
 
