@@ -35,7 +35,7 @@ async fn main() {
     info!("Starting up...");
 
     let db_conn = Arc::new(
-        service::init_database(config.database_uri())
+        service::init_database(config.database_url())
             .await
             .map_err(|e| panic!("Failed to establish DBConnection: {:?}", e.to_string()))
             .unwrap_or_default(),
