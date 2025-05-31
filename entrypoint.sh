@@ -68,7 +68,7 @@ main() {
             log_info "Running in $RUST_ENV environment"
 
             log_success "Running SeaORM migrations..."
-            exec /app/migrationctl -u $DATABASE_URL up
+            exec /app/migrationctl up
             ;;
             
         app)
