@@ -80,6 +80,8 @@ jobs:
           BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
           # Container name for backend
           BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
+          # We are not building locally so setting to empty string to quiet warning
+          BACKEND_BUILD_CONTEXT=""
           # Backend service port
           BACKEND_PORT=${{ vars.BACKEND_PORT }}
           # Network interface for backend to listen for incoming connections on
@@ -110,6 +112,8 @@ jobs:
           FRONTEND_IMAGE_NAME=${{ vars.FRONTEND_IMAGE_NAME }}
           # Container name for frontend
           FRONTEND_CONTAINER_NAME=${{ vars.FRONTEND_CONTAINER_NAME }}
+          # We are not building locally so setting to empty string to quiet warning
+          FRONTEND_BUILD_CONTEXT=""
           # Frontend service interface to listen for client connections on
           FRONTEND_SERVICE_INTERFACE=${{ vars.FRONTEND_SERVICE_INTERFACE }}
           # Frontend service port
