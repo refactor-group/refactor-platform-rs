@@ -33,7 +33,7 @@ services:
     environment:
       ROLE: migrator                        # entrypoint knows to migrate
       RUST_ENV: ${RUST_ENV}                 # development, staging, production
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
       PLATFORM: ${PLATFORM}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
     depends_on:
@@ -43,7 +43,7 @@ services:
     command: []                             # keep original ENTRYPOINT
     volumes:
       # Read-only bind mount of our production DB CA certificate
-      - /home/deploy/postgres_ssl_cert.crt:/app/root.crt:ro
+      - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
     networks:
       - backend_network
 
@@ -66,7 +66,7 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_OPTIONS: ${POSTGRES_OPTIONS}
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
       BACKEND_PORT: ${BACKEND_PORT}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
       BACKEND_INTERFACE: ${BACKEND_INTERFACE}
@@ -81,6 +81,9 @@ services:
     depends_on:
       migrator:
         condition: service_completed_successfully  # only start if OK
+    volumes:
+      # Read-only bind mount of our production DB CA certificate
+      - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
     networks:
       - backend_network
 
