@@ -12,5 +12,4 @@ dbml-error.log
 .env*
 
 # CA certificates
-ca-certificate.crt
 *.crt
