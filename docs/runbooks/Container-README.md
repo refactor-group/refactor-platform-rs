@@ -22,7 +22,7 @@ POSTGRES_DB=refactor                         # PostgreSQL database name
 POSTGRES_HOST=postgres                       # Hostname for the PostgreSQL container (set in docker-compose)
 POSTGRES_PORT=5432                           # Internal PostgreSQL port
 POSTGRES_SCHEMA=refactor_platform            # Database schema
-POSTGRES_OPTIONS="sslmode=require&sslrootcert=./" # Set connection string options like sslmode and sslrootcert
+POSTGRES_OPTIONS="sslmode=require"           # Set connection string options like sslmode
 # DATABASE_URL used by the Rust back-end to connect to Postgres
 DATABASE_URL=postgres://refactor:password@postgres:5432/refactor
 
