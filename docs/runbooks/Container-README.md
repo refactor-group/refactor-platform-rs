@@ -22,6 +22,7 @@ POSTGRES_DB=refactor                         # PostgreSQL database name
 POSTGRES_HOST=postgres                       # Hostname for the PostgreSQL container (set in docker-compose)
 POSTGRES_PORT=5432                           # Internal PostgreSQL port
 POSTGRES_SCHEMA=refactor_platform            # Database schema
+POSTGRES_OPTIONS="sslmode=require"           # Set connection string options like sslmode
 # DATABASE_URL used by the Rust back-end to connect to Postgres
 DATABASE_URL=postgres://refactor:password@postgres:5432/refactor
 
@@ -74,63 +75,71 @@ TIPTAP_JWT_SIGNING_KEY=""                    # JWT signing key for TipTap
    cp .env.example .env
    ```
 
-1. **Build and Start the Containers with Docker Compose:**
+2. **Build and Start the Containers with Docker Compose:**
 
    ```bash
-   docker-compose --env-file .env up --build
+   docker compose --env-file .env up --build
    # This command starts:
-   # - PostgreSQL (local)
+   # - PostgreSQL (development and staging environments only)
    # - Rust back-end
    # - Next.js front-end
    ```
 
-1. **Basic Management Commands:**
+3. **Basic Management Commands:**
 
    ```bash
-   docker-compose ps                          # List running containers
-   docker-compose logs -f                     # Follow live logs (press Ctrl+C to exit)
-   docker-compose restart rust-app            # Restart the Rust back-end container
-   docker-compose down                        # Stop and remove all containers and networks
-   docker-compose down -v                     # Stop containers and remove volumes for a fresh start
-   docker-compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
-   docker-compose exec rust-app cargo run     # Run the Rust back-end application
-   docker-compose ps                          # List running containers
-   docker-compose logs -f                     # Follow live logs (press Ctrl+C to exit)
-   docker-compose restart rust-app            # Restart the Rust back-end container
-   docker-compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
-   docker-compose exec rust-app cargo run     # Run the Rust back-end application
+   docker compose ps                          # List running containers
+   docker compose logs -f                     # Follow live logs (press Ctrl+C to exit)
+   docker compose restart rust-app            # Restart the Rust back-end container
+   docker compose down                        # Stop and remove all containers and networks
+   docker compose down -v                     # Stop containers and remove volumes for a fresh start
+   docker compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
+   docker compose exec rust-app cargo run     # Run the Rust back-end application
+   docker compose ps                          # List running containers
+   docker compose logs -f                     # Follow live logs (press Ctrl+C to exit)
+   docker compose restart rust-app            # Restart the Rust back-end container
+   docker compose exec rust-app cargo check   # Run 'cargo check' inside the Rust back-end container
+   docker compose exec rust-app cargo run     # Run the Rust back-end application
    ```
 
-1. **Direct Docker Commands (Optional):**
+4. **Direct Docker Commands (Optional):**
 
    ```bash
    # Pull the Rust back-end image from GHCR (if not built locally)
-   docker pull ghcr.io/refactor-group/refactor-platform-rs/your-tag:latest  # Replace 'your-tag' as needed
+   docker pull ghcr.io/refactor-group/refactor-platform-rs/your-branch-tag:latest  # Replace 'your-branch-tag' as needed
 
    # Run the Rust back-end image directly
-   docker run -p 4000:4000 --env-file .env --name refactor-backend ghcr.io/refactor-group/refactor-platform-rs/your-tag:latest
+   docker run -p 4000:4000 --env-file .env --name refactor-platform-backend ghcr.io/refactor-group/refactor-platform-rs/your-tag:latest
    ```
 
-   **Note:** *By default, Docker Compose uses locally cached images. The remote image is pulled only once unless you force a new pull using commands like `docker-compose pull` or by passing the `--no-cache` flag.*
-
-1. **Debugging & Troubleshooting:**
+   **Note:** *By default, Docker Compose uses locally cached images. The remote image is pulled only once unless you force a new pull using commands like `docker compose pull` or by passing the `--no-cache` flag.*
 
    ```bash
-   docker-compose exec rust-app bash         # Access a shell in the Rust back-end container
-   docker-compose exec rust-app env          # View environment variables in the Rust back-end container
-   docker-compose exec postgres bash         # Access a shell in the PostgreSQL container
-   docker-compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  
+   # Directly run the migrationctl binary, checking the migration status, in the migrator docker compose service passing it an explicit DB connection string
+   docker compose run migrator migrationctl status
+
+   # Or do the same thing but override the environment variable for the DATABASE_URL
+   docker compose run migrator migrationctl -u "postgresql://<$POSTGRES_USER>:<$POSTGRES_PASSWORD>@dbserver:5432/refactor" status
+   ```
+
+5. **Debugging & Troubleshooting:**
+
+   ```bash
+   docker compose exec rust-app bash         # Access a shell in the Rust back-end container
+   docker compose exec rust-app env          # View environment variables in the Rust back-end container
+   docker compose exec postgres bash         # Access a shell in the PostgreSQL container
+   docker compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  
                                              # Verify PostgreSQL is ready
-   docker-compose exec rust-app bash         # Access a shell in the Rust back-end container
-   docker-compose exec rust-app env          # Check environment variables inside the rust-app container
-   docker-compose exec postgres bash         # Access a shell in the PostgreSQL container for troubleshooting
-   docker-compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  # Verify PostgreSQL is ready
-   docker-compose exec rust-app cargo test   # Run tests inside the Rust back-end container
+   docker compose exec rust-app bash         # Access a shell in the Rust back-end container
+   docker compose exec rust-app env          # Check environment variables inside the rust-app container
+   docker compose exec postgres bash         # Access a shell in the PostgreSQL container for troubleshooting
+   docker compose exec postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB  # Verify PostgreSQL is ready
+   docker compose exec rust-app cargo test   # Run tests inside the Rust back-end container
    ```
 
 **Final Notes:**
 
-- Ensure your `.env` file includes required variables such as `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `BACKEND_PORT`, `BACKEND_INTERFACE`, `BACKEND_ALLOWED_ORIGINS`, `BACKEND_LOG_FILTER_LEVEL`, etc.
+- Ensure your `.env` file includes required variables such as `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_OPTIONS` `DATABASE_URL`, `BACKEND_PORT`, `BACKEND_INTERFACE`, `BACKEND_ALLOWED_ORIGINS`, `BACKEND_LOG_FILTER_LEVEL`, `RUST_ENV`, etc.
 - Docker Compose automatically loads the `.env` file located in the project root.
 - The pre-built images from GHCR for both the Rust back-end and the Next.js front-end are used by default. These remote images are only pulled if not already available locally, unless a pull is forced.
 - The commands above follow best practices and help ensure a reliable setup every time you run the project.

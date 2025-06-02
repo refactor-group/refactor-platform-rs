@@ -6,8 +6,8 @@ use tokio::time::Duration;
 pub mod config;
 pub mod logging;
 
-pub async fn init_database(database_uri: &str) -> Result<DatabaseConnection, DbErr> {
-    let mut opt = ConnectOptions::new::<&str>(database_uri);
+pub async fn init_database(database_url: &str) -> Result<DatabaseConnection, DbErr> {
+    let mut opt = ConnectOptions::new::<&str>(database_url);
     opt.max_connections(100)
         .min_connections(5)
         .connect_timeout(Duration::from_secs(8))
