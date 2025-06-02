@@ -1,10 +1,10 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
-use entity::{coaching_relationships, organizations::*, prelude::Organizations, Id};
+use entity::{organizations::*, organizations_users, prelude::Organizations, Id};
 use sea_orm::{
-    entity::prelude::*, sea_query, ActiveValue::Set, ActiveValue::Unchanged, DatabaseConnection,
-    JoinType, QuerySelect, TryIntoModel,
+    entity::prelude::*, ActiveValue::Set, ActiveValue::Unchanged, DatabaseConnection, JoinType,
+    QuerySelect, TryIntoModel,
 };
 use slugify::slugify;
 use std::collections::HashMap;
@@ -95,12 +95,8 @@ pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Mo
 
 async fn by_user(query: Select<Organizations>, user_id: Id) -> Select<Organizations> {
     query
-        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(
-            sea_query::Condition::any()
-                .add(coaching_relationships::Column::CoachId.eq(user_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
+        .join(JoinType::InnerJoin, Relation::OrganizationsUsers.def())
+        .filter(organizations_users::Column::UserId.eq(user_id))
         .distinct()
 }
 
@@ -155,8 +151,8 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."coaching_relationships" ON "organizations"."id" = "coaching_relationships"."organization_id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
-                [user_id.clone().into(), user_id.into()]
+                r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."organizations_users" ON "organizations"."id" = "organizations_users"."organization_id" WHERE "organizations_users"."user_id" = $1"#,
+                [user_id.into()]
             )]
         );
 
