@@ -116,6 +116,9 @@ TIPTAP_JWT_SIGNING_KEY=""                    # JWT signing key for TipTap
 
    ```bash
    # Directly run the migrationctl binary, checking the migration status, in the migrator docker compose service passing it an explicit DB connection string
+   docker compose run migrator migrationctl status
+
+   # Or do the same thing but override the environment variable for the DATABASE_URL
    docker compose run migrator migrationctl -u "postgresql://<$POSTGRES_USER>:<$POSTGRES_PASSWORD>@dbserver:5432/refactor" status
    ```
 
