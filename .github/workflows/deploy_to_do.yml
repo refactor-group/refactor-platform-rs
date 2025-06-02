@@ -68,6 +68,7 @@ jobs:
           POSTGRES_PORT=${{ vars.POSTGRES_PORT }}
           # Database schema
           POSTGRES_SCHEMA=${{ vars.POSTGRES_SCHEMA }}
+          POSTGRES_SSL_ROOT_CERT=${{ secrets.POSTGRES_SSL_ROOT_CERT }}
           # Database connection options, hardcoded intentionally
           POSTGRES_OPTIONS=sslmode=verify-full&sslrootcert=/app/root.crt
           # Database connection string
