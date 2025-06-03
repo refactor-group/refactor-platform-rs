@@ -52,17 +52,24 @@ fn get_x_version(parts: &mut Parts) -> Result<HeaderValue, RejectionType> {
     }
 }
 
+fn normalize_version(value: &HeaderValue) -> String {
+    let s = value.to_str().unwrap_or_default().trim();
+    s.trim_matches('"').to_string()
+}
+
 fn is_current_api_version(
     version: HeaderValue,
     api_version: HeaderValue,
 ) -> Result<CompareApiVersion, RejectionType> {
+    let version_str = normalize_version(&version);
+    let api_version_str = normalize_version(&api_version);
     debug!(
         "API version comparison {:?} == {:?}: {}",
-        version,
-        api_version,
-        version == api_version
+        version_str,
+        api_version_str,
+        version_str == api_version_str
     );
-    if version == api_version {
+    if version_str == api_version_str {
         Ok(CompareApiVersion(version))
     } else {
         Err((
