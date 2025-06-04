@@ -8,12 +8,12 @@ use std::fmt;
 use std::str::FromStr;
 use utoipa::IntoParams;
 
-type APiVersionList = [&'static str; 1];
+type APiVersionList = [&'static str; 2];
 
-const DEFAULT_API_VERSION: &str = "0.0.1";
+const DEFAULT_API_VERSION: &str = "1.0.0-beta1";
 // Expand this array to include all valid API versions. Versions that have been
 // completely removed should be removed from this list - they're no longer valid.
-const API_VERSIONS: APiVersionList = [DEFAULT_API_VERSION];
+const API_VERSIONS: APiVersionList = ["0.0.1", DEFAULT_API_VERSION];
 
 static X_VERSION: &str = "x-version";
 
@@ -21,7 +21,7 @@ static X_VERSION: &str = "x-version";
 #[into_params(parameter_in = Header)]
 pub struct ApiVersion {
     /// The version of the API to use for a request.
-    #[param(rename = "x-version", style = Simple, required, example = "0.0.1")]
+    #[param(rename = "x-version", style = Simple, required, example = "1.0.0-beta1")]
     pub version: Version,
 }
 
