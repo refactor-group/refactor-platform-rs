@@ -40,7 +40,7 @@ BACKEND_INTERFACE=0.0.0.0                    # Interface for the Rust back-end
 BACKEND_SERVICE_PROTOCOL=http                # Protocol (usually http)
 BACKEND_SERVICE_PORT=4000                    # Derived service port
 BACKEND_SERVICE_HOST=localhost               # Hostname used by the service
-BACKEND_API_VERSION=0.0.1                    # API version
+BACKEND_API_VERSION=1.0.0-beta1              # API version to use between frontend and backend
 RUST_ENV=development                         # development, staging, production
 
 # ==============================
