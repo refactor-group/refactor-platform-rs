@@ -32,12 +32,6 @@ where
             .ok()
             .unwrap_or_else(|| HeaderValue::from_static(ApiVersion::default_version()));
 
-        trace!("API version provided by client: {:?}", version);
-        trace!(
-            "API version set in AppState.config.api_version: {:?}",
-            api_version
-        );
-
         Ok(is_current_api_version(version, api_version)?)
     }
 }
@@ -53,11 +47,24 @@ fn get_x_version(parts: &mut Parts) -> Result<HeaderValue, RejectionType> {
     }
 }
 
+fn normalize_version(value: &HeaderValue) -> String {
+    let s = value.to_str().unwrap_or_default().trim();
+    s.trim_matches('"').to_string()
+}
+
 fn is_current_api_version(
     version: HeaderValue,
     api_version: HeaderValue,
 ) -> Result<CompareApiVersion, RejectionType> {
-    if version == api_version {
+    let version_str = normalize_version(&version);
+    let api_version_str = normalize_version(&api_version);
+    warn!(
+        "API version comparison {:?} == {:?}: {}",
+        version_str,
+        api_version_str,
+        version_str == api_version_str
+    );
+    if version_str == api_version_str {
         Ok(CompareApiVersion(version))
     } else {
         Err((

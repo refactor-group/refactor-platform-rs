@@ -27,10 +27,6 @@ pub(crate) mod protect;
 mod router;
 
 pub async fn init_server(app_state: AppState) -> Result<()> {
-    info!(
-        "Connecting to DB with URI: {}",
-        app_state.config.database_url()
-    );
     // Session layer
     let session_store = PostgresStore::new(
         app_state

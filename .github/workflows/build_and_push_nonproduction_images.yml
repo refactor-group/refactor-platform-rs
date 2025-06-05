@@ -124,4 +124,4 @@ jobs:
           echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:latest"
           echo ""
           echo -e "\033[1;36m▶️ Run Backend:\033[0m"
-          echo "  docker run --rm --env-file .env -p ${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }} ${{ steps.tags.outputs.backend_image_name }}:latest"
+          echo "  docker run --rm --env-file .env -p ${{ vars.BACKEND_PORT }}:${{ vars.BACKEND_PORT }} ${{ steps.tags.outputs.backend_image_name }}:latest"
