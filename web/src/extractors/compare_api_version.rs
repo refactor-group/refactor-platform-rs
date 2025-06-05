@@ -27,15 +27,10 @@ where
         let state = AppState::from_ref(state);
         // Provided by the client in the HTTP header
         let version = get_x_version(parts)?;
-        debug!("API version provided by client: {:?}", version);
         // Provided as part of the AppState environment configuration
         let api_version = HeaderValue::from_str(state.config.api_version())
             .ok()
             .unwrap_or_else(|| HeaderValue::from_static(ApiVersion::default_version()));
-        debug!(
-            "API version set in AppState.config.api_version: {:?}",
-            api_version
-        );
 
         Ok(is_current_api_version(version, api_version)?)
     }
@@ -63,7 +58,7 @@ fn is_current_api_version(
 ) -> Result<CompareApiVersion, RejectionType> {
     let version_str = normalize_version(&version);
     let api_version_str = normalize_version(&api_version);
-    debug!(
+    warn!(
         "API version comparison {:?} == {:?}: {}",
         version_str,
         api_version_str,
