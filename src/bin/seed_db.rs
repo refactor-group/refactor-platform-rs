@@ -7,7 +7,7 @@ async fn main() {
     let config = Config::new();
     Logger::init_logger(&config as &Config);
 
-    info!("Seeding Database...");
+    info!("Seeding database [{}]...", config.database_url());
 
     let db = Arc::new(service::init_database(config.database_url()).await.unwrap());
 

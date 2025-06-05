@@ -197,9 +197,8 @@ jobs:
             sudo systemctl start refactor-platform.service
 
             echo "⏳ Waiting for startup..."
-            # Wait for containers to start
-            sleep 15
-            # Pause for 15 seconds
+            # Wait for containers to reach steady state
+            sleep 3
 
             echo "🩺 Checking service and status..."
             systemctl status refactor-platform.service
