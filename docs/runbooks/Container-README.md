@@ -22,9 +22,12 @@ POSTGRES_DB=refactor                         # PostgreSQL database name
 POSTGRES_HOST=postgres                       # Hostname for the PostgreSQL container (set in docker-compose)
 POSTGRES_PORT=5432                           # Internal PostgreSQL port
 POSTGRES_SCHEMA=refactor_platform            # Database schema
-POSTGRES_OPTIONS="sslmode=require"           # Set connection string options like sslmode
+POSTGRES_SSL_ROOT_CERT=/path/to/ca_root.crt  # Set the path to the production CA cert, or empty string to not set
+# Set connection string options like sslmode to require, verify-full or not set
+# Set sslrootcert if one is provided, usually only for production
+POSTGRES_OPTIONS="sslmode=verify-full&sslrootcert=/app/root.crt"
 # DATABASE_URL used by the Rust back-end to connect to Postgres
-DATABASE_URL=postgres://refactor:password@postgres:5432/refactor
+DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
 
 # ==============================
 #   Rust Back-end Configuration
@@ -75,15 +78,29 @@ TIPTAP_JWT_SIGNING_KEY=""                    # JWT signing key for TipTap
    cp .env.example .env
    ```
 
-2. **Build and Start the Containers with Docker Compose:**
+2. **Build and Start the Containers with Docker Compose**
+
+   **For Production:**
 
    ```bash
-   docker compose --env-file .env up --build
    # This command starts:
-   # - PostgreSQL (development and staging environments only)
    # - Rust back-end
    # - Next.js front-end
+
+   docker compose --env-file .env -f docker-compose.yaml up --build
    ```
+
+   **For Development or Staging:**
+
+   ```bash
+   # This command starts:
+   # - PostgreSQL
+   # - Rust back-end
+   # - Next.js front-end
+
+   docker compose --env-file .env -f docker-compose.yaml -f docker-compose.dev-staging.yaml up --build
+   ```
+
 
 3. **Basic Management Commands:**
 
