@@ -1,6 +1,6 @@
-##########################################################
-# Docker compose override file for development environment
-##########################################################
+######################################################################
+# Docker compose override file for development + staging environments
+######################################################################
 services:
   postgres:
     image: postgres:17                      # official Postgres 17 image
