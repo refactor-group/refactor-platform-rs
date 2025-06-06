@@ -30,9 +30,10 @@ FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
 # Install Bash to support entrypoint.sh
 RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd -m -s /bin/bash appuser
+# Create non-root user with 1001 UID and /bin/bash shell
+RUN useradd -m -u 1001 -s /bin/bash appuser
 WORKDIR /app
+RUN chown appuser:appuser /app
 
 # Copy the necessary release binaries
 COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
