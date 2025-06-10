@@ -1753,6 +1753,7 @@ dependencies = [
  "sea-orm-migration",
  "service",
  "sqlx",
+ "uuid",
 ]
 
 [[package]]

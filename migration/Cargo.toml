@@ -13,6 +13,7 @@ async-std = { version = "1.13", features = ["attributes", "tokio1"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 password-auth = "1.0.0"
 sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
+uuid = { version = "1.11.0", features = ["v4", "serde"] }
 service = { path = "../service" }
 entity = { path = "../entity" }
 
