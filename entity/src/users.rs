@@ -25,6 +25,7 @@ pub struct Model {
     pub github_username: Option<String>,
     pub github_profile_url: Option<String>,
     #[sea_orm(default = "user")]
+    #[serde(skip_deserializing)]
     pub role: Role,
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema

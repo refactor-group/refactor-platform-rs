@@ -64,7 +64,7 @@ pub async fn create_by_organization(
     Ok(user)
 }
 
-pub async fn find_by_email(db: &DatabaseConnection, email: &str) -> Result<Option<Model>, Error> {
+pub async fn find_by_email(db: &impl ConnectionTrait, email: &str) -> Result<Option<Model>, Error> {
     let user: Option<Model> = Entity::find()
         .filter(Column::Email.eq(email))
         .one(db)
@@ -167,7 +167,7 @@ impl AuthnBackend for Backend {
     ) -> Result<Option<Self::User>, Self::Error> {
         debug!("** authenticate(): {:?}:{:?}", creds.email, creds.password);
 
-        match find_by_email(&self.db, &creds.email).await? {
+        match find_by_email(self.db.as_ref(), &creds.email).await? {
             Some(user) => authenticate_user(creds, user).await,
             None => Err(Error {
                 source: None,

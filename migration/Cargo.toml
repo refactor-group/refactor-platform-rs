@@ -16,6 +16,7 @@ sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
 uuid = { version = "1.11.0", features = ["v4", "serde"] }
 service = { path = "../service" }
 entity = { path = "../entity" }
+entity_api = { path = "../entity_api" }
 
 [dependencies.sea-orm-migration]
 version = "1.1.0"

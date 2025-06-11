@@ -1749,6 +1749,7 @@ dependencies = [
  "async-std",
  "chrono",
  "entity",
+ "entity_api",
  "password-auth",
  "sea-orm-migration",
  "service",
