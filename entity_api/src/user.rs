@@ -15,6 +15,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
 
+pub use entity::users::Role;
+
 pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Model, Error> {
     debug!(
         "New User Relationship Model to be inserted: {:?}",
@@ -210,7 +212,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."email" = $1 LIMIT $2"#,
+                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."email" = $1 LIMIT $2"#,
                 [user_email.into(), sea_orm::Value::BigUnsigned(Some(1))]
             )]
         );
@@ -229,7 +231,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."id" = $1 LIMIT $2"#,
+                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -251,7 +253,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" WHERE "organizations"."id" = $1"#,
+                r#"SELECT DISTINCT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" WHERE "organizations"."id" = $1"#,
                 [organization_id.into()]
             )]
         );
@@ -276,6 +278,7 @@ mod test {
             github_profile_url: None,
             created_at: now.into(),
             updated_at: now.into(),
+            role: entity::users::Role::User,
         };
 
         let organization_user_model = entity::organizations_users::Model {
@@ -318,6 +321,7 @@ mod test {
             github_profile_url: None,
             created_at: now.into(),
             updated_at: now.into(),
+            role: entity::users::Role::User,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)

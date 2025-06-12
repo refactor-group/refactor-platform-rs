@@ -45,9 +45,9 @@ async fn insert_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
             user_sql,
             vec![
                 Value::String(Some(Box::new("admin@refactorcoach.com".to_owned()))),
-                Value::String(Some(Box::new("admin".to_owned()))),
-                Value::String(Some(Box::new("admin".to_owned()))),
-                Value::String(Some(Box::new("admin".to_owned()))),
+                Value::String(Some(Box::new("Admin".to_owned()))),
+                Value::String(Some(Box::new("Admin".to_owned()))),
+                Value::String(Some(Box::new("Admin".to_owned()))),
                 Value::String(Some(Box::new(password_hash))),
                 Value::ChronoDateTimeUtc(Some(Box::new(now))),
                 Value::ChronoDateTimeUtc(Some(Box::new(now))),
