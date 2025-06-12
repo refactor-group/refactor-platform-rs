@@ -218,8 +218,7 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
 }
 
 fn health_routes() -> Router {
-    Router::new()
-        .route("/health", get(health_check_controller::health_check))
+    Router::new().route("/health", get(health_check_controller::health_check))
 }
 
 fn note_routes(app_state: AppState) -> Router {

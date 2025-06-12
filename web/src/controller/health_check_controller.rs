@@ -1,5 +1,5 @@
-use axum::response::IntoResponse;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 
 /// GET generate a collaboration token
 #[utoipa::path(
