@@ -93,6 +93,8 @@ jobs:
           BACKEND_SERVICE_PROTOCOL=${{ vars.BACKEND_SERVICE_PROTOCOL }}
           # Hostname or IP address to reach the backend on
           BACKEND_SERVICE_HOST=${{ vars.BACKEND_SERVICE_HOST }}
+          # The URL path to proxy the backend API on (e.g. "api" would resolve to https://backend/api/)
+          BACKEND_SERVICE_API_PATH=${{ vars.BACKEND_SERVICE_API_PATH }}
           # API version to use between frontend and backend
           BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION }}
           # Deployment environment used (development, staging, production)

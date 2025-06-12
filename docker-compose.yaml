@@ -1,7 +1,28 @@
 ######################################################
 # Docker compose base file for production environment
 ######################################################
+
 services:
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-reverse-proxy  # Match the name from your error message
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Mount your custom nginx configuration
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # Optional: nginx logs for debugging
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - nextjs-app
+      - rust-app
+    networks:
+      - backend_network
+    restart: unless-stopped
+    # Remove health check temporarily to simplify startup
+
   migrator:                                 # db migration service
     image: ${BACKEND_IMAGE_NAME}            # reuse backend image
     build:
@@ -28,7 +49,7 @@ services:
     build:
       context: ${BACKEND_BUILD_CONTEXT}
     platform: ${PLATFORM}
-    container_name: ${BACKEND_CONTAINER_NAME}
+    container_name: rust-app  # Explicitly set the name nginx expects
     environment:
       ROLE: app
       RUST_ENV: ${RUST_ENV}
@@ -51,8 +72,7 @@ services:
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
       PLATFORM: ${PLATFORM}
-    ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
+    # Note: No longer exposing ports directly - nginx handles external access
     depends_on:
       - migrator
     volumes:
@@ -65,17 +85,25 @@ services:
     image: ${FRONTEND_IMAGE_NAME}
     build:
       context: ${FRONTEND_BUILD_CONTEXT}
-    container_name: ${FRONTEND_CONTAINER_NAME}
+      args:
+        NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
+        NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
+        NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_SERVICE_PORT:-443}
+        NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${BACKEND_SERVICE_API_PATH}
+        NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
+        FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
+        FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT}
+    container_name: nextjs-app
     environment:
+      # Keep these for any server-side usage
       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
-      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
       NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
+      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_SERVICE_PORT:-443}
+      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${BACKEND_SERVICE_API_PATH}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
       FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT}
       FRONTEND_IMAGE_NAME: ${FRONTEND_IMAGE_NAME}
       FRONTEND_CONTAINER_NAME: ${FRONTEND_CONTAINER_NAME}
-    ports:
-      - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"
     depends_on:
       - rust-app
     networks:
