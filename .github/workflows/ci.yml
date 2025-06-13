@@ -157,7 +157,7 @@ jobs:
             type=local,src=/tmp/.buildx-cache
           # Export only metadata to registry to avoid EOF errors
           cache-to: |
-            type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache,mode=max,nocontent,image-manifest=true,oci-mediatypes=true,ignore-error=true
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
             type=local,dest=/tmp/.buildx-cache
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: true
