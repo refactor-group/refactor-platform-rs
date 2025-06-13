@@ -164,11 +164,22 @@ jobs:
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
             chmod 640 docker-compose.yaml
 
+            # Check if docker-compose.yaml exists before using it as reference
+            if [ ! -f docker-compose.yaml ]; then
+                log_error "docker-compose.yaml not found - cannot set permissions"
+                exit 1
+            fi
+
             log_info "Creating nginx directories..."
             if ! mkdir -p nginx/conf.d nginx/logs; then
               log_error "Failed to create nginx directories"
               exit 1
             fi
+
+            # Set directory permissions
+            find nginx -type d -exec chmod 770 {} \;
+            # Set file permissions  
+            find nginx -type f -exec chmod 660 {} \;
 
             log_info "Downloading nginx configuration files..."
 
@@ -178,13 +189,13 @@ jobs:
                 exit 1
             fi
 
-            # Verify the main config file was downloaded and is not empty
+            # Verify the main nginx config file was downloaded and is not empty
             if [ ! -s nginx/nginx.conf ]; then
                 log_error "Downloaded nginx.conf is empty or doesn't exist"
                 exit 1
             fi
 
-            # Download refactor platform config
+            # Download refactor platform nginx reverse proxy config
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/conf.d/refactor-platform.conf" -o nginx/conf.d/refactor-platform.conf; then
                 log_error "Failed to download refactor-platform.conf"
                 exit 1
@@ -193,12 +204,6 @@ jobs:
             # Verify the platform config file was downloaded and is not empty
             if [ ! -s nginx/conf.d/refactor-platform.conf ]; then
                 log_error "Downloaded refactor-platform.conf is empty or doesn't exist"
-                exit 1
-            fi
-
-            # Check if docker-compose.yaml exists before using it as reference
-            if [ ! -f docker-compose.yaml ]; then
-                log_error "docker-compose.yaml not found - cannot set permissions"
                 exit 1
             fi
 
