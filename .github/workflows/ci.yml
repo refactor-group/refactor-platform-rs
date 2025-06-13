@@ -153,9 +153,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Build and push image with caching
+      - name: Build and push image
         id: docker_build
-        continue-on-error: true  # Allow image build to fail softly
+        continue-on-error: true
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -165,14 +165,33 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
           cache-from: |
-            type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache
             type=local,src=/tmp/.buildx-cache
+          # Remove registry cache export to avoid EOF errors
           cache-to: |
-            type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
-            type=local,dest=/tmp/.buildx-cache
+            type=local,dest=/tmp/.buildx-cache-new,mode=max
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Move cache in a separate step to avoid breaking the build
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+      
+      # Optional - Export cache to registry as separate step
+      - name: Export cache to registry
+        continue-on-error: true
+        run: |
+          echo "Exporting cache to registry (this may fail without impacting the build)..."
+          docker buildx build \
+            --cache-from=type=local,src=/tmp/.buildx-cache \
+            --cache-to=type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max,image-manifest=true,oci-mediatypes=true \
+            --platform linux/amd64 \
+            --output=type=image \
+            --push=false \
+            . || true
 
       - name: Verify image was pushed successfully
         id: verify_image
@@ -329,6 +348,22 @@ jobs:
             target/coverage/**/*
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Copy test results (if any)
+        continue-on-error: true
+        run: |
+          mkdir -p ./test-results
+          echo "# Test Results Summary" > ./test-results/summary.md
+          echo "Test run completed at $(date)" >> ./test-results/summary.md
+          echo "Branch: ${{ needs.code-quality.outputs.branch_name }}" >> ./test-results/summary.md
+          
+          # Look for any test-related output in the target directory
+          find . -path "*/target/debug/deps/*" -type f -executable | grep -v "\.d" > ./test-results/test-binaries.txt || true
+          
+          # If we found nothing, create a placeholder
+          if [ ! -s ./test-results/test-binaries.txt ]; then
+            echo "No test binaries found" > ./test-results/test-binaries.txt
+          fi
 
       - name: Generate deployment preview
         continue-on-error: true
