@@ -1,6 +1,6 @@
 name: Build and Push Non-Production Images
 
-# Restrictive default permissions for security
+# Set restrictive default permissions
 permissions:
   contents: read
 
@@ -9,42 +9,42 @@ on:
     branches:
       - main
     types: [opened, synchronize, reopened]
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 env:
-  CARGO_TERM_COLOR: always  # Enable colored output in Cargo logs
-  REGISTRY: ghcr.io         # GitHub Container Registry domain
-  BASE_REPO: ${{ github.repository }}  # Full repository name (e.g., org/repo)
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  BASE_REPO: ${{ github.repository }}
 
 jobs:
   # ---------------------- CODE QUALITY JOB ----------------------
   code-quality:
     name: Code Tests & Linting
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
-      branch_name: ${{ steps.branch_info.outputs.branch_name }}
-      image_name: ${{ steps.set-outputs.outputs.image_name }}
+      branch_name: ${{ steps.branch_name.outputs.branch_name }}
+      image_name: ${{ steps.image_name.outputs.image_name }}  # 🛠️ Corrected output ref
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Needed for full commit/branch history
+          fetch-depth: 0
 
-      - name: Extract branch info
-        id: branch_info
+      - name: Extract branch name
+        id: branch_name
         run: |
           BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
-          BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
-          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          BRANCH_NAME=${BRANCH_NAME//\//-}  # Replace slashes with dashes
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
-      - name: Generate image name with branch
+      - name: Set image name
         id: image_name
         run: |
-          IMAGE_NAME="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-${{ steps.branch_info.outputs.branch_name }}"
-          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          IMAGE_NAME="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-${{ steps.branch_name.outputs.branch_name }}"
+          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
 
-      - name: Set up Rust toolchain
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -84,10 +84,6 @@ jobs:
       - name: Check code formatting
         run: cargo fmt --check
 
-      - name: Set outputs for next jobs
-        id: set-outputs
-        run: echo "image_name=${{ steps.image_name.outputs.image_name }}" >> $GITHUB_OUTPUT
-
   # ---------------------- BUILD & PUSH JOB ----------------------
   container-build:
     name: Build & Push Container
@@ -122,7 +118,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Local cache fallback to improve cache reliability
       - name: Cache Docker layers (local fallback)
         uses: actions/cache@v3
         with:
@@ -138,11 +133,22 @@ jobs:
           images: ${{ needs.code-quality.outputs.image_name }}
           tags: |
             type=raw,value=stable
+            type=raw,value=latest
             type=sha,format=long
+          annotations: |
+            org.opencontainers.image.description=Refactor Platform Rust Backend - Branch: ${{ needs.code-quality.outputs.branch_name }}
+
+      - name: Set up buildx cache
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
 
       - name: Build and push image with caching
         id: docker_build
-        continue-on-error: true  # Prevent cache upload errors from breaking build
+        continue-on-error: true  # Allow image build to fail softly
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -151,11 +157,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-          # Use branch-specific registry cache and local fallback
           cache-from: |
             type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache
             type=local,src=/tmp/.buildx-cache
-          # Export only metadata to registry to avoid EOF errors
           cache-to: |
             type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
             type=local,dest=/tmp/.buildx-cache
@@ -179,11 +183,19 @@ jobs:
           exit 1
 
       - name: Print image summary
+        if: steps.verify_image.outcome == 'success'
         run: |
           echo "✅ Image built and pushed"
           echo "📦 ${{ needs.code-quality.outputs.image_name }}:stable"
           echo "🔖 Digest: ${{ steps.verify_image.outputs.image_digest }}"
-        if: steps.verify_image.outcome == 'success'
+
+      - name: Push stable + latest tags via imagetools
+        run: |
+          DIGEST=$(docker inspect ${{ needs.code-quality.outputs.image_name }}:stable --format='{{index .RepoDigests 0}}' | cut -d'@' -f2)
+          docker buildx imagetools create \
+            --tag ${{ needs.code-quality.outputs.image_name }}:latest \
+            --tag ${{ needs.code-quality.outputs.image_name }}:stable \
+            ${{ needs.code-quality.outputs.image_name }}@${DIGEST}
 
   # ---------------------- SECURITY & SIGNING JOB ----------------------
   security-scan:
@@ -191,17 +203,17 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [code-quality, container-build]
     if: ${{ success() }}
-    
+
     permissions:
       contents: read
-      packages: write  # Changed from 'read' to 'write' for signature uploads
+      packages: write
       id-token: write
       security-events: write
-    
+
     steps:
-      - name: Checkout repository  # Add this missing checkout step
+      - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -209,19 +221,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull image with retries
+      - name: Pull image with retry logic
         id: pull_image
         run: |
           IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
           for i in {1..5}; do
+            echo "Attempt $i to pull $IMAGE..."
             if docker pull $IMAGE; then
+              echo "✅ Pulled $IMAGE"
               exit 0
             fi
             sleep 20
           done
           echo "::warning::Failed to pull image after retries"
-          exit 0
+          exit 0  # Soft-fail
 
       - name: Cache Trivy database
         uses: actions/cache@v3
@@ -231,7 +245,7 @@ jobs:
           restore-keys: |
             trivy-${{ runner.os }}-
 
-      - name: Run Trivy vulnerability scan
+      - name: Run Trivy vulnerability scanner
         continue-on-error: true
         id: trivy_scan
         uses: aquasecurity/trivy-action@master
@@ -243,7 +257,7 @@ jobs:
           timeout: '10m'
           cache-dir: ~/.cache/trivy
 
-      - name: Upload scan results
+      - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         continue-on-error: true
@@ -258,10 +272,10 @@ jobs:
 
       - name: Sign the container image
         id: sign_image
-        continue-on-error: true  # Don't fail workflow if signing fails
+        continue-on-error: true
         run: |
           IMAGE="${{ steps.pull_image.outputs.image }}"
-          if ! cosign sign --yes ${IMAGE}; then
+          if ! cosign sign --yes $IMAGE; then
             echo "::warning::Image signing failed, but continuing workflow"
             echo "signed=false" >> $GITHUB_OUTPUT
           else
@@ -274,9 +288,57 @@ jobs:
           echo "::group::📦 Deployment Information"
           echo "✅ Image: ${{ needs.code-quality.outputs.image_name }}:stable"
           echo "🔖 Digest: ${{ needs.container-build.outputs.image_digest }}"
-          if [[ "${{ steps.sign_image.outputs.signed }}" == "true" ]]; then
-            echo "🔐 Cosign Signature: ✅"
-          else
-            echo "⚠️ Cosign Signature: Skipped/Failed"
-          fi
+          echo "🔐 Signed: ${{ steps.sign_image.outputs.signed }}"
           echo "::endgroup::"
+
+      - name: Generate build metrics
+        continue-on-error: true
+        run: |
+          mkdir -p ./artifacts
+          echo "Build completed at: $(date)" > ./artifacts/metrics.txt
+          echo "Branch: ${{ needs.code-quality.outputs.branch_name }}" >> ./artifacts/metrics.txt
+          echo "Commit: ${{ github.sha }}" >> ./artifacts/metrics.txt
+          if docker image inspect ${{ needs.code-quality.outputs.image_name }}:stable &>/dev/null; then
+            echo "Image size: $(docker image inspect ${{ needs.code-quality.outputs.image_name }}:stable --format='{{.Size}}' | numfmt --to=iec 2>/dev/null || echo 'Size calculation failed')" >> ./artifacts/metrics.txt
+          fi
+
+      - name: Upload build metrics
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: build-metrics
+          path: ./artifacts/metrics.txt
+          if-no-files-found: warn
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        if: always()
+        with:
+          name: rust-test-results
+          path: |
+            target/**/debug/test-*.log
+            target/**/debug/*.xml
+            target/coverage/**/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Generate deployment preview
+        continue-on-error: true
+        run: |
+          mkdir -p ./artifacts/deploy
+          if ! command -v envsubst &>/dev/null; then
+            echo "Installing envsubst..."
+            sudo apt-get update && sudo apt-get install -y gettext-base
+          fi
+          export IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
+          envsubst '${IMAGE}' < docker-compose.yaml > ./artifacts/deploy/docker-compose.preview.yaml
+
+      - name: Upload deployment preview
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: deployment-preview
+          path: ./artifacts/deploy/
+          if-no-files-found: warn
+          retention-days: 7
