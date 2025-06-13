@@ -1,20 +1,16 @@
-name: Build and Push Non-Production Images
-# Builds the backend source into binary containers for the current branch and pushes to the GitHub Container Registry.
+name: CI and Container Build
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
     types: [opened, synchronize, reopened]
-  workflow_dispatch:
+  workflow_dispatch: # Allow manual triggering
 
 env:
   CARGO_TERM_COLOR: always # Enable colored Cargo output
   REGISTRY: ghcr.io # Container registry
-  IMAGE_NAME: ${{ github.repository }} # Use repository name for image
+  BASE_REPO: ${{ github.repository }} # Base repository name
 
 jobs:
   test:
@@ -24,6 +20,7 @@ jobs:
       contents: read
     outputs:
       branch_name: ${{ steps.branch_info.outputs.branch_name }} # Export branch name for other jobs
+      image_name: ${{ steps.image_name.outputs.image_name }} # Export full image name
       
     steps:
       - name: Checkout repository # Get source code
@@ -31,9 +28,22 @@ jobs:
         with:
           fetch-depth: 0 # Full history for better versioning
 
-      - name: Extract branch info # Get branch name for tagging
+      - name: Extract branch info # Get branch name for image naming
         id: branch_info
-        run: echo "branch_name=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+        run: |
+          BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
+          # Replace slashes with dashes for Docker compatibility
+          BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "Detected branch: ${BRANCH_NAME}"
+      
+      - name: Generate image name with branch # Create full image name with branch
+        id: image_name
+        run: |
+          # Append branch name to base repository name
+          IMAGE_NAME="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-${{ steps.branch_info.outputs.branch_name }}"
+          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "Full image name: ${IMAGE_NAME}"
       
       - name: Set up Rust toolchain # Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -46,12 +56,12 @@ jobs:
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
 
-      - name: Cache dependencies # SINGLE cache step with combined key
+      - name: Cache dependencies # Use Swatinem/rust-cache for efficient caching
         uses: Swatinem/rust-cache@v2
         with:
-          key: "v1-cargo-${{ runner.os }}-all-targets" # Version prefixed cache key
-          shared-key: "rust-cache"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }} # Only save cache on main branches
+          key: "v1-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}" # Hash-based cache key
+          shared-key: "rust-cache-${{ runner.os }}"
+          save-if: true # Always save cache
 
       - name: Install seaORM CLI # Install database tools
         uses: taiki-e/install-action@v2 # Faster installation than cargo install
@@ -71,7 +81,7 @@ jobs:
         run: cargo fmt --check
         
   build-images:
-    name: Build Multi-Arch Container Images # Second job - build containers
+    name: Build Container Images
     runs-on: ubuntu-24.04
     needs: test # Only run if tests pass
     if: ${{ success() }}
@@ -82,30 +92,18 @@ jobs:
       id-token: write # Needed for signing and attestations
       security-events: write # Needed for security scanning reports
     
-    strategy:
-      matrix:
-        include:
-          - platform: linux/amd64
-            target: x86_64-unknown-linux-gnu
-          - platform: linux/arm64
-            target: aarch64-unknown-linux-gnu
-    
     steps:
       - name: Checkout repository # Get source code
         uses: actions/checkout@v4
 
-      # Setup for multi-arch building
+      - name: Set up Docker Buildx # Set up enhanced Docker builder
+        uses: docker/setup-buildx-action@v3
+
       - name: Set up QEMU # Set up emulation for multi-arch builds
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: ${{ matrix.platform }}
+          platforms: linux/amd64,linux/arm64
 
-      - name: Set up Docker Buildx # Set up Docker builder
-        uses: docker/setup-buildx-action@v3
-        with:
-          platforms: ${{ matrix.platform }}
-
-      # Authentication
       - name: Login to GitHub Container Registry # Authenticate with registry
         uses: docker/login-action@v3
         with:
@@ -113,227 +111,91 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata for tagging
-      - name: Generate Docker metadata # Create tags and labels
+      # Extract metadata and prepare tags - always using "stable" tag
+      - name: Extract Docker metadata # Create tags and labels
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ needs.test.outputs.image_name }}
           tags: |
-            type=raw,value=${{ needs.test.outputs.branch_name }}-latest
-            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=long,prefix=${{ needs.test.outputs.branch_name }}-
+            type=raw,value=stable
+            type=sha,format=long
 
-      # Build and push per-architecture images
-      - name: Build and push ${{ matrix.platform }} image # Build and publish container image
+      # Build and push multi-arch image in a single step
+      - name: Build and push multi-arch image
+        id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
-          platforms: ${{ matrix.platform }}
-          push: true # Always push the images so we can create multi-arch manifest
-          tags: ${{ steps.meta.outputs.tags }}-${{ matrix.platform_tag }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.platform }} # Use GitHub Actions cache
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }} # Save to GitHub Actions cache
-          build-args: |
-            BUILDPLATFORM=${{ matrix.platform }}
-            TARGETPLATFORM=${{ matrix.platform }}
-            TARGETARCH=${{ matrix.platform_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
 
-      # Run Trivy vulnerability scanner
+      # Wait to ensure image is available for scanning
+      - name: Wait for image availability
+        run: sleep 10
+        
+      # Pull the image for scanning
+      - name: Pull image to ensure availability 
+        run: |
+          # Pull the specific image we want to scan
+          IMAGE="${{ needs.test.outputs.image_name }}:stable"
+          echo "Pulling $IMAGE for security scanning"
+          docker pull $IMAGE
+          docker images
+
+      # Security scanning with Trivy
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.test.outputs.branch_name }}-latest-${{ matrix.platform_tag }}
+          image-ref: ${{ needs.test.outputs.image_name }}:stable
           format: 'sarif'
-          output: trivy-results-${{ matrix.platform_tag }}.sarif
+          output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
+          timeout: '10m'
 
       # Upload security scan results to GitHub Security tab
-      - name: Upload Trivy scan results to GitHub Security tab
+      - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v2
         with:
-          sarif_file: trivy-results-${{ matrix.platform_tag }}.sarif
-          category: container-${{ matrix.platform_tag }}
-  
-  # Create multi-arch manifest and sign images
-  publish-manifest:
-    name: Create Multi-Arch Manifest and Sign
-    runs-on: ubuntu-24.04
-    needs: [test, build-images]
-    if: ${{ success() }}
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    
-    steps:
-      - name: Checkout repository # Get source code
-        uses: actions/checkout@v4
+          sarif_file: 'trivy-results.sarif'
+          category: 'container-security'
 
-      # Setup Docker CLI and tools
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Install cosign for signing
+      # Image signing with Cosign
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.4.0
         with:
           cosign-release: 'v2.2.3'
 
-      # Login to GHCR
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Create multi-arch manifest
-      - name: Create and push manifest
+      - name: Sign the container image
         run: |
-          # Define image names with each architecture
-          BRANCH_NAME="${{ needs.test.outputs.branch_name }}"
-          BASE_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          AMD64_IMAGE="${BASE_IMAGE}:${BRANCH_NAME}-latest-amd64"
-          ARM64_IMAGE="${BASE_IMAGE}:${BRANCH_NAME}-latest-arm64"
-          MANIFEST_TAG="${BRANCH_NAME}-latest"
-          
-          # Create and push the manifest list
-          docker manifest create ${BASE_IMAGE}:${MANIFEST_TAG} --amend ${AMD64_IMAGE} --amend ${ARM64_IMAGE}
-          docker manifest push ${BASE_IMAGE}:${MANIFEST_TAG}
-          
-          # If on main branch, also tag as stable
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            docker manifest create ${BASE_IMAGE}:stable --amend ${AMD64_IMAGE} --amend ${ARM64_IMAGE}
-            docker manifest push ${BASE_IMAGE}:stable
-            echo "Tagged and pushed stable multi-arch manifest"
-          fi
-          
-          # Output the created image information
-          echo "::group::Multi-Architecture Image Information"
-          echo "✅ Successfully created multi-architecture image:"
-          echo "   - Full image name: ${BASE_IMAGE}:${MANIFEST_TAG}"
-          echo "   - Architectures: linux/amd64, linux/arm64"
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "   - Also tagged as: ${BASE_IMAGE}:stable"
-          fi
-          echo "::endgroup::"
-
-      # Generate SBOM using syft
-      - name: Generate SBOM
-        run: |
-          BRANCH_NAME="${{ needs.test.outputs.branch_name }}"
-          IMAGE_URI="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH_NAME}-latest"
-          
-          # Install syft
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          
-          # Generate SBOM
-          syft ${IMAGE_URI} -o spdx-json=sbom.json
-
-      # Sign the container image
-      - name: Sign the container image with GitHub OIDC
-        run: |
-          BRANCH_NAME="${{ needs.test.outputs.branch_name }}"
-          IMAGE_URI="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH_NAME}-latest"
-          
-          # Sign the multi-arch image with keyless signing (OIDC)
+          IMAGE_URI="${{ needs.test.outputs.image_name }}:stable"
           cosign sign --yes ${IMAGE_URI}
-          
-          # Generate SBOM attestation
-          cosign attest --yes --predicate sbom.json --type spdx ${IMAGE_URI}
-          
-          echo "::group::Image Signing Information"
-          echo "✅ Container image signed using GitHub OIDC token"
-          echo "✅ SBOM attestation attached to the image"
-          echo "   - To verify: cosign verify ${IMAGE_URI} --certificate-identity-regexp=github.com/.*"
-          echo "::endgroup::"
+          echo "✅ Image signed: ${IMAGE_URI}"
 
-      # Generate and attach SLSA Provenance
-      - name: Generate SLSA provenance
-        run: |
-          BRANCH_NAME="${{ needs.test.outputs.branch_name }}"
-          IMAGE_URI="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH_NAME}-latest"
-          
-          # Create a simple SLSA provenance predicate
-          cat > slsa-predicate.json << EOF
-          {
-            "buildType": "https://github.com/actions/runner",
-            "builder": {
-              "id": "https://github.com/actions/runner"
-            },
-            "invocation": {
-              "configSource": {
-                "uri": "${{ github.server_url }}/${{ github.repository }}",
-                "digest": {
-                  "sha1": "${{ github.sha }}"
-                }
-              }
-            }
-          }
-          EOF
-          
-          # Attach SLSA provenance using cosign
-          cosign attest --yes \
-            --predicate slsa-predicate.json \
-            --type https://slsa.dev/provenance/v0.2 \
-            ${IMAGE_URI}
-
-          echo "✅ SLSA provenance attached to the image"
-
-      # Summary for humans
-      - name: Provide deployment instructions
+      # Output deployment instructions
+      - name: Print deployment information
         run: |
           echo "::group::📋 Deployment Information"
           echo "✅ Multi-architecture image build completed!"
           echo ""
           echo "🚀 Image Details:"
+          echo "   - Full Image Name: ${{ needs.test.outputs.image_name }}:stable"
           echo "   - Registry: ${{ env.REGISTRY }}"
-          echo "   - Repository: ${{ env.IMAGE_NAME }}"
-          echo "   - Branch Tag: ${{ needs.test.outputs.branch_name }}-latest"
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "   - Stable Tag: stable"
-          fi
+          echo "   - Repository: ${{ env.BASE_REPO }}-${{ needs.test.outputs.branch_name }}"
+          echo "   - Tag: stable"
           echo "   - Supported Architectures: linux/amd64, linux/arm64"
-          echo ""
-          echo "🔐 Security Features:"
-          echo "   - Signed with GitHub OIDC"
-          echo "   - SBOM attestation attached"
-          echo "   - SLSA provenance generated"
-          echo "   - Trivy vulnerability scanning completed (results in Security tab)"
+          echo "   - Image Digest: ${{ steps.docker_build.outputs.digest }}"
           echo ""
           echo "📦 To pull this image:"
-          echo "   docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.test.outputs.branch_name }}-latest"
+          echo "   docker pull ${{ needs.test.outputs.image_name }}:stable"
           echo ""
-          echo "🚀 To deploy this image:"
-          echo "   1. Use the Deploy workflow: Actions → Deploy to DigitalOcean"
-          echo "   2. Select the environment (production/staging)"
-          echo "   3. The workflow will automatically deploy this latest image"
+          echo "🚀 To deploy with docker-compose:"
+          echo "   Update your .env file with:"
+          echo "   BACKEND_IMAGE_NAME=${{ needs.test.outputs.image_name }}:stable"
+          echo "   Then run: docker-compose up -d"
           echo "::endgroup::"
-
-  # Additional job for runtime validation if wanted
-  validate-image:
-    name: Validate Container Image
-    runs-on: ubuntu-24.04
-    needs: [test, publish-manifest]
-    if: ${{ success() }}
-    permissions:
-      contents: read
-    
-    steps:
-      - name: Pull and validate image
-        run: |
-          # Pull the multi-arch image (will pull correct architecture for runner)
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.test.outputs.branch_name }}-latest
-          
-          # Basic validation - check if image exists and can be inspected
-          echo "Validating container image..."
-          docker inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.test.outputs.branch_name }}-latest
-          
-          # Try to run container with version/help flag (adjust based on your app)
-          echo "Testing container startup..."
-          timeout 10s docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.test.outputs.branch_name }}-latest --version || echo "Container validation complete (timeout expected)"
