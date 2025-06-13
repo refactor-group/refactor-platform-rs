@@ -149,78 +149,133 @@ jobs:
             set -e
             # Exit immediately if any command fails
 
-            echo '📦 Starting deployment from branch: ${{ github.ref_name }}...'
+            # Function to log errors
+            log_error() {
+              echo "ERROR: $1" >&2
+            }
+
+            # Function to log info
+            log_info() {
+              echo "INFO: $1"
+            }
+
+            log_info '📦 Starting deployment from branch: ${{ github.ref_name }}...'
             cd /home/deploy
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
             chmod 640 docker-compose.yaml
 
-            echo "🔧 Matching .env permissions to docker-compose.yaml..."
+            log_info "Creating nginx directories..."
+            if ! mkdir -p nginx/conf.d nginx/logs; then
+              log_error "Failed to create nginx directories"
+              exit 1
+            fi
+
+            log_info "Downloading nginx configuration files..."
+
+            # Download main nginx config
+            if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/nginx.conf" -o nginx/nginx.conf; then
+                log_error "Failed to download nginx.conf"
+                exit 1
+            fi
+
+            # Verify the main config file was downloaded and is not empty
+            if [ ! -s nginx/nginx.conf ]; then
+                log_error "Downloaded nginx.conf is empty or doesn't exist"
+                exit 1
+            fi
+
+            # Download refactor platform config
+            if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/conf.d/refactor-platform.conf" -o nginx/conf.d/refactor-platform.conf; then
+                log_error "Failed to download refactor-platform.conf"
+                exit 1
+            fi
+
+            # Verify the platform config file was downloaded and is not empty
+            if [ ! -s nginx/conf.d/refactor-platform.conf ]; then
+                log_error "Downloaded refactor-platform.conf is empty or doesn't exist"
+                exit 1
+            fi
+
+            # Check if docker-compose.yaml exists before using it as reference
+            if [ ! -f docker-compose.yaml ]; then
+                log_error "docker-compose.yaml not found - cannot set permissions"
+                exit 1
+            fi
+
+            # Set permissions after files are downloaded
+            log_info "Setting permissions..."
+            if ! chmod -R --reference=docker-compose.yaml nginx; then
+                log_error "Failed to set permissions on nginx directory"
+                exit 1
+            fi
+
+            log_info "Nginx setup completed successfully!"
+
+            log_info "🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
             # Copy permissions from compose file
             chmod --reference=docker-compose.yaml .env
             # Copy ownership from compose file
             chown --reference=docker-compose.yaml .env
 
-            echo "📋 Showing masked .env:"
+            log_info "📋 Showing masked .env:"
             # Display environment with sensitive data masked
             sed "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/g; s/TIPTAP_AUTH_KEY=.*/TIPTAP_AUTH_KEY=***/g; s/TIPTAP_JWT_SIGNING_KEY=.*/TIPTAP_JWT_SIGNING_KEY=***/g" .env
 
-            echo "📥 Logging into GHCR..."
+            log_info "📥 Logging into GHCR..."
             # Login to GitHub Container Registry
-            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
+            log_info ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
             # Docker login
 
-            echo "📥 Pulling images..."
+            log_info "📥 Pulling images..."
             # Pull Docker images
             if [ -n "${{ vars.BACKEND_IMAGE_NAME }}" ]; then
               # Check if backend image is set
-              echo "Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
+              log_info "Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
               # Announce image pull
               docker pull ${{ vars.BACKEND_IMAGE_NAME }}
               # Pull backend image
             fi
             if [ -n "${{ vars.FRONTEND_IMAGE_NAME }}" ]; then
               # Check if frontend image is set
-              echo "Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
+              log_info "Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
               # Announce image pull
               docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
               # Pull frontend image
             fi
 
-            echo "🔍 Validating config..."
+            log_info "🔍 Validating config..."
             # Verify docker-compose configuration
             docker compose config --quiet
             # Check config without output unless error
 
-            echo "🛑 Stopping Refactor Platform service..."
+            log_info "🛑 Stopping Refactor Platform service..."
             sudo systemctl stop refactor-platform.service
 
-            echo "🚀 Starting Refactor Platform service..."
+            log_info "🚀 Starting Refactor Platform service..."
             sudo systemctl start refactor-platform.service
 
-            echo "⏳ Waiting for startup..."
+            log_info "⏳ Waiting for startup..."
             # Wait for containers to reach steady state
             sleep 3
 
-            echo "🩺 Checking service and status..."
+            log_info "🩺 Checking service and status..."
             systemctl status refactor-platform.service
             # Check container status
             docker ps -a
             # List all containers
 
-            echo "🩺 Verifying app status..."
+            log_info "🩺 Verifying app status..."
             # Verify application health
-            echo "🩺 Checking rust-app status..."
+            log_info "🩺 Checking rust-app service status..."
             if docker ps | grep -q ${{ vars.BACKEND_CONTAINER_NAME }}; then
-              echo "✅ Deployment succeeded! ${{ vars.BACKEND_CONTAINER_NAME }} is running."
-              # Success message
+              log_info "✅ Deployment succeeded! ${{ vars.BACKEND_CONTAINER_NAME }} is running."
             else
-              echo "⚠️ Missing container for rust-app. Logs follow:"
-              # Error message
-              docker logs ${{ vars.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
+              log_error "⚠️ Missing container for rust-app. Logs follow:"
               # Show backend logs
+              docker logs ${{ vars.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
             fi
 
-            echo "🎉 Deployment complete."
+            log_info "🎉 Deployment complete."
             # Final deployment message
           '
