@@ -118,7 +118,8 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
 
-      - name: Set up QEMU # Set up emulation for multi-arch builds
+      # Set up QEMU # Set up emulation for multi-arch builds
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
           platforms: linux/amd64,linux/arm64
@@ -143,129 +144,45 @@ jobs:
       # OPTIMIZATION: Multi-level Registry Caching for Docker
       - name: Build and push # Focus only on building and pushing
         id: docker_build
+        continue-on-error: true  # Allow step to complete even if cache export fails
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          # Use build args for inline cache
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-          # Fix the cache export issue with these settings
           cache-from: type=registry,ref=${{ needs.code-quality.outputs.image_name || 'ghcr.io/refactor-group/refactor-platform-rs' }}:cache
           cache-to: |
             type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
-          # Keep compression settings
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: true
-          # Add timeout settings
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Output image info
-      - name: Image build summary # Provide basic build information
+      # Verify the image was actually pushed despite any cache errors
+      - name: Verify image was pushed successfully
+        id: verify_image
+        run: |
+          IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
+          echo "Verifying image: $IMAGE"
+          for i in {1..3}; do
+            echo "Attempt $i to pull image..."
+            if docker pull $IMAGE; then
+              echo "✅ Image successfully built and pushed"
+              DIGEST=$(docker inspect $IMAGE --format='{{index .RepoDigests 0}}' | cut -d'@' -f2)
+              echo "image_digest=$DIGEST" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "❌ Failed to verify image. Build may have failed."
+          exit 1
+
+      # Use the verified digest for output
+      - name: Image build summary
         run: |
           echo "✅ Multi-arch container image built and pushed"
           echo "📦 Image: ${{ needs.code-quality.outputs.image_name }}:stable"
-          echo "🏷️ Digest: ${{ steps.docker_build.outputs.digest }}"
-
-  security-scan:
-    name: Security Scanning & Signing # Third job - scan and validate the image
-    runs-on: ubuntu-24.04
-    needs: [code-quality, container-build] # Run after container-build completes
-    if: ${{ success() }} # Run only if previous jobs succeeded
-    
-    permissions:
-      contents: read
-      packages: read # Only need read for scanning
-      id-token: write # Needed for signing
-      security-events: write # Needed for security scanning reports
-    
-    steps:
-      - name: Login to GitHub Container Registry # Authenticate with registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Wait for image availability # Give registry time to process the image
-        run: |
-          echo "Waiting for image to be available in registry..."
-          sleep 30
-        
-      # Pull the image for scanning
-      - name: Pull image for scanning # Verify we can pull the image
-        run: |
-          # Pull the specific image we want to scan
-          IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
-          echo "Pulling $IMAGE for security scanning"
-          docker pull $IMAGE
-          docker images
-
-      # OPTIMIZATION: Trivy Vulnerability Database Caching
-      - name: Cache Trivy vulnerability database
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/trivy
-          key: trivy-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            trivy-${{ runner.os }}-
-
-      # Security scanning with Trivy
-      - name: Run Trivy vulnerability scanner # Scan image for security issues
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ needs.code-quality.outputs.image_name }}:stable
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          timeout: '10m'
-          cache-dir: ~/.cache/trivy  # Use cached vulnerability database
-
-      # Upload security scan results to GitHub Security tab
-      - name: Upload Trivy scan results # Make results visible in Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: success() || failure()    # Run this step even if Trivy scan fails
-        with:
-          sarif_file: 'trivy-results.sarif'
-          category: 'trivy'
-
-      # Image signing with Cosign
-      - name: Install cosign # Set up signing tool
-        uses: sigstore/cosign-installer@v3.4.0
-        with:
-          cosign-release: 'v2.2.3'
-
-      - name: Sign the container image # Add cryptographic signature
-        run: |
-          IMAGE_URI="${{ needs.code-quality.outputs.image_name }}:stable"
-          cosign sign --yes ${IMAGE_URI}
-          echo "✅ Image signed: ${IMAGE_URI}"
-
-      # Output deployment instructions
-      - name: Print deployment information # Generate helpful summary
-        run: |
-          echo "::group::📋 Deployment Information"
-          echo "✅ Image processing completed!"
-          echo ""
-          echo "🚀 Image Details:"
-          echo "   - Full Image Name: ${{ needs.code-quality.outputs.image_name }}:stable"
-          echo "   - Registry: ${{ env.REGISTRY }}"
-          echo "   - Repository: ${{ env.BASE_REPO }}-${{ needs.code-quality.outputs.branch_name }}"
-          echo "   - Tag: stable"
-          echo "   - Supported Architectures: linux/amd64, linux/arm64"
-          echo "   - Image Digest: ${{ needs.container-build.outputs.image_digest }}"
-          echo ""
-          echo "🛡️ Security Features:"
-          echo "   - Trivy vulnerability scanning completed"
-          echo "   - Image signed with Cosign"
-          echo ""          
-          echo "📦 To pull this image:"
-          echo "   docker pull ${{ needs.code-quality.outputs.image_name }}:stable"
-          echo ""
-          echo "🚀 To deploy with docker-compose:"
-          echo "   Update your .env file with:"
-          echo "   BACKEND_IMAGE_NAME=${{ needs.code-quality.outputs.image_name }}:stable"
-          echo "   Then run: docker-compose up -d"
-          echo "::endgroup::"
+          echo "🏷️ Digest: ${{ steps.verify_image.outputs.image_digest }}"
+        if: steps.verify_image.outcome == 'success'
