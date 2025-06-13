@@ -1,6 +1,6 @@
 name: Build and Push Non-Production Images
 
-# Set default permissions as restrictive as possible
+# Restrictive default permissions for security
 permissions:
   contents: read
 
@@ -9,130 +9,129 @@ on:
     branches:
       - main
     types: [opened, synchronize, reopened]
-  workflow_dispatch: # Allow manual triggering
+  workflow_dispatch:  # Allow manual trigger
 
 env:
-  CARGO_TERM_COLOR: always # Enable colored Cargo output
-  REGISTRY: ghcr.io # Container registry
-  BASE_REPO: ${{ github.repository }} # Base repository name
+  CARGO_TERM_COLOR: always  # Enable colored output in Cargo logs
+  REGISTRY: ghcr.io         # GitHub Container Registry domain
+  BASE_REPO: ${{ github.repository }}  # Full repository name (e.g., org/repo)
 
 jobs:
+  # ---------------------- CODE QUALITY JOB ----------------------
   code-quality:
-    name: Code Tests & Linting # First job - validate code quality
-    runs-on: ubuntu-latest # Use latest Ubuntu LTS
+    name: Code Tests & Linting
+    runs-on: ubuntu-latest
     outputs:
-      branch_name: ${{ steps.branch_info.outputs.branch_name }} # Export branch name for other jobs
-      image_name: ${{ steps.set-outputs.outputs.image_name }} # Export full image name
-      
-    steps:
-      - name: Checkout repository # Get source code
-        uses: actions/checkout@v4 # Use latest checkout action
-        with:
-          fetch-depth: 0 # Full history for better versioning
+      branch_name: ${{ steps.branch_info.outputs.branch_name }}
+      image_name: ${{ steps.set-outputs.outputs.image_name }}
 
-      - name: Extract branch info # Get branch name for image naming
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for full commit/branch history
+
+      - name: Extract branch info
         id: branch_info
         run: |
           BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
-          # Replace slashes with dashes for Docker compatibility
           BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
           echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
-          echo "Detected branch: ${BRANCH_NAME}"
-      
-      - name: Generate image name with branch # Create full image name with branch
+
+      - name: Generate image name with branch
         id: image_name
         run: |
-          # Append branch name to base repository name
           IMAGE_NAME="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-${{ steps.branch_info.outputs.branch_name }}"
           echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "Full image name: ${IMAGE_NAME}"
-      
-      - name: Set up Rust toolchain # Install Rust
+
+      - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt # Install components in one step
-          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu # For multi-arch
+          components: clippy, rustfmt
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
-      - name: Set OpenSSL paths # Configure OpenSSL for native builds
+      - name: Set OpenSSL paths
         run: |
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
 
-      # OPTIMIZATION: Enhanced Rust Caching
-      - name: Cache dependencies # Use Swatinem/rust-cache for efficient caching
+      - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: "v1-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}" # Hash-based cache key
+          key: "v1-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}"
           shared-key: "rust-cache-${{ runner.os }}"
-          save-if: true # Always save cache
-          cache-targets: true # Cache compiled artifacts
-          cache-on-failure: true # Cache even when builds fail
+          save-if: true
+          cache-targets: true
+          cache-on-failure: true
           cache-directories: |
             ~/.cargo/git
             ~/.cargo/registry
 
-      - name: Install seaORM CLI # Install database tools
-        uses: taiki-e/install-action@v2 # Faster installation than cargo install
+      - name: Install seaORM CLI
+        uses: taiki-e/install-action@v2
         with:
           tool: sea-orm-cli
 
-      - name: Build # Build all targets for testing
+      - name: Build all targets
         run: cargo build --all-targets
 
-      - name: Run tests # Run the test suite
+      - name: Run tests
         run: cargo test
 
-      - name: Run clippy # Static code analysis
+      - name: Lint with clippy
         run: cargo clippy -- -Dwarnings
 
-      - name: Verify formatting # Code style check
+      - name: Check code formatting
         run: cargo fmt --check
 
-      - name: Set outputs
+      - name: Set outputs for next jobs
         id: set-outputs
         run: echo "image_name=${{ steps.image_name.outputs.image_name }}" >> $GITHUB_OUTPUT
-        
+
+  # ---------------------- BUILD & PUSH JOB ----------------------
   container-build:
-    name: Build & Push Container # Second job - build and push container images
+    name: Build & Push Container
     runs-on: ubuntu-24.04
-    needs: code-quality # Only run if tests pass
-    if: ${{ success() }} # Always run when tests succeed
+    needs: code-quality
+    if: ${{ success() }}
     outputs:
-      image_uri: ${{ needs.code-quality.outputs.image_name }}:stable # Pass image URI to next job
-      image_digest: ${{ steps.docker_build.outputs.digest }} # Pass image digest to next job
-    
+      image_uri: ${{ needs.code-quality.outputs.image_name }}:stable
+      image_digest: ${{ steps.verify_image.outputs.image_digest }}
+
     permissions:
-      contents: read      # To check out code
-      packages: write     # To push to container registry (if using GitHub Packages)
-      id-token: write     # For registry authentication (if using OIDC)
-    
+      contents: read
+      packages: write
+      id-token: write
+
     steps:
-      - name: Checkout repository # Get source code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # OPTIMIZATION: BuildKit Optimization Options
-      - name: Set up Docker Buildx # Set up enhanced Docker builder
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-config-inline: |
-            [registry."docker.io"]
-              mirrors = ["mirror.gcr.io"]
 
-      # Set up QEMU # Set up emulation for multi-arch builds
-      - name: Set up QEMU
+      - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
         with:
           platforms: linux/amd64,linux/arm64
 
-      - name: Login to GitHub Container Registry # Authenticate with registry
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata and prepare tags - always using "stable" tag
-      - name: Extract Docker metadata # Create tags and labels
+      # Local cache fallback to improve cache reliability
+      - name: Cache Docker layers (local fallback)
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: docker-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            docker-${{ runner.os }}-
+
+      - name: Generate Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -141,10 +140,9 @@ jobs:
             type=raw,value=stable
             type=sha,format=long
 
-      # OPTIMIZATION: Multi-level Registry Caching for Docker
-      - name: Build and push # Focus only on building and pushing
+      - name: Build and push image with caching
         id: docker_build
-        continue-on-error: true  # Allow step to complete even if cache export fails
+        continue-on-error: true  # Prevent cache upload errors from breaking build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -153,23 +151,24 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-          cache-from: type=registry,ref=${{ needs.code-quality.outputs.image_name || 'ghcr.io/refactor-group/refactor-platform-rs' }}:cache
+          # Use branch-specific registry cache and local fallback
+          cache-from: |
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache
+            type=local,src=/tmp/.buildx-cache
+          # Export only metadata to registry to avoid EOF errors
           cache-to: |
-            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}-cache,mode=max,nocontent,image-manifest=true,oci-mediatypes=true,ignore-error=true
+            type=local,dest=/tmp/.buildx-cache
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Verify the image was actually pushed despite any cache errors
       - name: Verify image was pushed successfully
         id: verify_image
         run: |
           IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
-          echo "Verifying image: $IMAGE"
           for i in {1..3}; do
-            echo "Attempt $i to pull image..."
             if docker pull $IMAGE; then
-              echo "✅ Image successfully built and pushed"
               DIGEST=$(docker inspect $IMAGE --format='{{index .RepoDigests 0}}' | cut -d'@' -f2)
               echo "image_digest=$DIGEST" >> $GITHUB_OUTPUT
               exit 0
@@ -179,128 +178,101 @@ jobs:
           echo "❌ Failed to verify image. Build may have failed."
           exit 1
 
-      # Use the verified digest for output
-      - name: Image build summary
+      - name: Print image summary
         run: |
-          echo "✅ Multi-arch container image built and pushed"
-          echo "📦 Image: ${{ needs.code-quality.outputs.image_name }}:stable"
-          echo "🏷️ Digest: ${{ steps.verify_image.outputs.image_digest }}"
+          echo "✅ Image built and pushed"
+          echo "📦 ${{ needs.code-quality.outputs.image_name }}:stable"
+          echo "🔖 Digest: ${{ steps.verify_image.outputs.image_digest }}"
         if: steps.verify_image.outcome == 'success'
 
+  # ---------------------- SECURITY & SIGNING JOB ----------------------
   security-scan:
-      name: Security Scanning & Signing
-      runs-on: ubuntu-24.04
-      needs: [code-quality, container-build]
-      if: ${{ success() }}
-      
-      permissions:
-        contents: read
-        packages: read
-        id-token: write
-        security-events: write
-      
-      steps:
-        - name: Login to GitHub Container Registry
-          uses: docker/login-action@v3
-          with:
-            registry: ${{ env.REGISTRY }}
-            username: ${{ github.actor }}
-            password: ${{ secrets.GITHUB_TOKEN }}
+    name: Security Scanning & Signing
+    runs-on: ubuntu-24.04
+    needs: [code-quality, container-build]
+    if: ${{ success() }}
 
-        - name: Pull image with retry logic
-          id: pull_image
-          run: |
-            IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
-            echo "image=$IMAGE" >> $GITHUB_OUTPUT
-            
-            # Try pulling with retry logic instead of fixed sleep
-            for i in {1..5}; do
-              echo "Attempt $i to pull $IMAGE..."
-              if docker pull $IMAGE; then
-                echo "✅ Successfully pulled image on attempt $i"
-                docker images
-                exit 0
-              fi
-              echo "Pull failed, waiting before retry..."
-              sleep 20
-            done
-            
-            echo "::warning::Failed to pull image after multiple attempts, but continuing workflow"
-            exit 0  # Continue workflow even if pull fails
-          
-        # Security scanning with Trivy - unchanged but with explicit continue-on-error
-        - name: Cache Trivy vulnerability database
-          uses: actions/cache@v3
-          with:
-            path: ~/.cache/trivy
-            key: trivy-${{ runner.os }}-${{ github.run_id }}
-            restore-keys: |
-              trivy-${{ runner.os }}-
-              
-        - name: Run Trivy vulnerability scanner
-          continue-on-error: true  # Don't fail workflow on vulnerabilities
-          id: trivy_scan
-          uses: aquasecurity/trivy-action@master
-          with:
-            image-ref: ${{ steps.pull_image.outputs.image }}
-            format: 'sarif'
-            output: 'trivy-results.sarif'
-            severity: 'CRITICAL,HIGH'
-            timeout: '10m'
-            cache-dir: ~/.cache/trivy
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+      security-events: write
 
-        - name: Upload Trivy scan results
-          uses: github/codeql-action/upload-sarif@v3
-          if: always()  # Always try to upload results
-          continue-on-error: true  # Don't fail if upload fails
-          with:
-            sarif_file: 'trivy-results.sarif'
-            category: 'trivy'
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-        - name: Install cosign
-          uses: sigstore/cosign-installer@v3.4.0
-          with:
-            cosign-release: 'v2.2.3'
-
-        - name: Sign the container image
-          id: sign_image
-          continue-on-error: true  # Don't fail workflow if signing fails
-          run: |
-            IMAGE="${{ steps.pull_image.outputs.image }}"
-            if ! cosign sign --yes ${IMAGE}; then
-              echo "::warning::Image signing failed, but continuing workflow"
-              echo "signed=false" >> $GITHUB_OUTPUT
-            else
-              echo "✅ Image signed: ${IMAGE}"
-              echo "signed=true" >> $GITHUB_OUTPUT
+      - name: Pull image with retries
+        id: pull_image
+        run: |
+          IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          for i in {1..5}; do
+            if docker pull $IMAGE; then
+              exit 0
             fi
+            sleep 20
+          done
+          echo "::warning::Failed to pull image after retries"
+          exit 0
 
-        - name: Print deployment information
-          run: |
-            echo "::group::📋 Deployment Information"
-            echo "✅ Image processing completed!"
-            echo ""
-            echo "🚀 Image Details:"
-            echo "   - Full Image Name: ${{ needs.code-quality.outputs.image_name }}:stable"
-            echo "   - Registry: ${{ env.REGISTRY }}"
-            echo "   - Repository: ${{ env.BASE_REPO }}-${{ needs.code-quality.outputs.branch_name }}"
-            echo "   - Tag: stable"
-            echo "   - Supported Architectures: linux/amd64, linux/arm64"
-            echo "   - Image Digest: ${{ needs.container-build.outputs.image_digest }}"
-            echo ""
-            echo "🛡️ Security Features:"
-            echo "   - Trivy vulnerability scanning completed"
-            if [[ "${{ steps.sign_image.outputs.signed }}" == "true" ]]; then
-              echo "   - ✅ Image signed with Cosign"
-            else
-              echo "   - ⚠️ Image signing skipped or failed"
-            fi
-            echo ""          
-            echo "📦 To pull this image:"
-            echo "   docker pull ${{ needs.code-quality.outputs.image_name }}:stable"
-            echo ""
-            echo "🚀 To deploy with docker-compose:"
-            echo "   Update your .env file with:"
-            echo "   BACKEND_IMAGE_NAME=${{ needs.code-quality.outputs.image_name }}:stable"
-            echo "   Then run: docker-compose up -d"
-            echo "::endgroup::"
+      - name: Cache Trivy database
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/trivy
+          key: trivy-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-${{ runner.os }}-
+
+      - name: Run Trivy vulnerability scan
+        continue-on-error: true
+        id: trivy_scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.pull_image.outputs.image }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          timeout: '10m'
+          cache-dir: ~/.cache/trivy
+
+      - name: Upload scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy'
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.4.0
+        with:
+          cosign-release: 'v2.2.3'
+
+      - name: Sign container image
+        id: sign_image
+        continue-on-error: true
+        run: |
+          IMAGE="${{ steps.pull_image.outputs.image }}"
+          if ! cosign sign --yes ${IMAGE}; then
+            echo "::warning::Signing failed"
+            echo "signed=false" >> $GITHUB_OUTPUT
+          else
+            echo "signed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Print deployment summary
+        run: |
+          echo "::group::📦 Deployment Information"
+          echo "✅ Image: ${{ needs.code-quality.outputs.image_name }}:stable"
+          echo "🔖 Digest: ${{ needs.container-build.outputs.image_digest }}"
+          if [[ "${{ steps.sign_image.outputs.signed }}" == "true" ]]; then
+            echo "🔐 Cosign Signature: ✅"
+          else
+            echo "⚠️ Cosign Signature: Skipped/Failed"
+          fi
+          echo "::endgroup::"
