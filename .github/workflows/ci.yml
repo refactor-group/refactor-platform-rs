@@ -1,5 +1,9 @@
 name: Build and Push Non-Production Images
 
+# Set default permissions as restrictive as possible
+permissions:
+  contents: read
+
 on:
   pull_request:
     branches:
@@ -94,8 +98,9 @@ jobs:
       image_digest: ${{ steps.docker_build.outputs.digest }} # Pass image digest to next job
     
     permissions:
-      contents: read
-      packages: write # Needed for pushing to GHCR
+      contents: read      # To check out code
+      packages: write     # To push to container registry (if using GitHub Packages)
+      id-token: write     # For registry authentication (if using OIDC)
     
     steps:
       - name: Checkout repository # Get source code
@@ -105,10 +110,9 @@ jobs:
       - name: Set up Docker Buildx # Set up enhanced Docker builder
         uses: docker/setup-buildx-action@v3
         with:
-          buildkitd-flags: --debug
-          config-inline: |
-            [worker.oci]
-              max-parallelism = 4
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       - name: Set up QEMU # Set up emulation for multi-arch builds
         uses: docker/setup-qemu-action@v3
