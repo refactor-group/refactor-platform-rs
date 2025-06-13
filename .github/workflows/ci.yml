@@ -132,30 +132,30 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           push: true # Always push the images so we can create multi-arch manifest
-          tags: ${{ steps.meta.outputs.tags }}-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          tags: ${{ steps.meta.outputs.tags }}-${{ matrix.platform_tag }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.platform }} # Use GitHub Actions cache
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }} # Save to GitHub Actions cache
           build-args: |
             BUILDPLATFORM=${{ matrix.platform }}
             TARGETPLATFORM=${{ matrix.platform }}
-            TARGETARCH=${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+            TARGETARCH=${{ matrix.platform_tag }}
 
       # Run Trivy vulnerability scanner
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.test.outputs.branch_name }}-latest-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.test.outputs.branch_name }}-latest-${{ matrix.platform_tag }}
           format: 'sarif'
-          output: trivy-results-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}.sarif
+          output: trivy-results-${{ matrix.platform_tag }}.sarif
           severity: 'CRITICAL,HIGH'
 
       # Upload security scan results to GitHub Security tab
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v2
         with:
-          sarif_file: trivy-results-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}.sarif
-          category: container-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          sarif_file: trivy-results-${{ matrix.platform_tag }}.sarif
+          category: container-${{ matrix.platform_tag }}
   
   # Create multi-arch manifest and sign images
   publish-manifest:
