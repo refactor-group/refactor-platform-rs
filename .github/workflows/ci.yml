@@ -321,6 +321,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [test, publish-manifest]
     if: ${{ success() }}
+    permissions:
+      contents: read
     
     steps:
       - name: Pull and validate image
