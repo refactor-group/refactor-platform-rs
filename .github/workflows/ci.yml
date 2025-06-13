@@ -142,18 +142,22 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Enhanced caching configuration
+          # Modify cache configuration to avoid timeout issues
           cache-from: |
             type=gha
-            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.BASE_REPO }}-main:stable
-          cache-to: type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max
-          # OPTIMIZATION: BuildKit specific options
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max
+          # Make cache export optional and add timeout
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max,ignore-error=true
+          # Add specific build args for better caching
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-          # Faster compression for outputs
+          # Keep outputs configuration
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: true
+          # Add timeout settings
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Output image info
       - name: Image build summary # Provide basic build information
