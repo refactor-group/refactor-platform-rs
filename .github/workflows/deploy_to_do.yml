@@ -223,7 +223,7 @@ jobs:
 
             log_info "📥 Logging into GHCR..."
             # Login to GitHub Container Registry
-            log_info ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
             # Docker login
 
             log_info "📥 Pulling images..."
