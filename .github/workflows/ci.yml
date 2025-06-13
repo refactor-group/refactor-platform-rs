@@ -191,15 +191,18 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [code-quality, container-build]
     if: ${{ success() }}
-
+    
     permissions:
       contents: read
-      packages: read
+      packages: write  # Changed from 'read' to 'write' for signature uploads
       id-token: write
       security-events: write
-
+    
     steps:
-      - name: Login to GHCR
+      - name: Checkout repository  # Add this missing checkout step
+        uses: actions/checkout@v4
+      
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -253,15 +256,16 @@ jobs:
         with:
           cosign-release: 'v2.2.3'
 
-      - name: Sign container image
+      - name: Sign the container image
         id: sign_image
-        continue-on-error: true
+        continue-on-error: true  # Don't fail workflow if signing fails
         run: |
           IMAGE="${{ steps.pull_image.outputs.image }}"
           if ! cosign sign --yes ${IMAGE}; then
-            echo "::warning::Signing failed"
+            echo "::warning::Image signing failed, but continuing workflow"
             echo "signed=false" >> $GITHUB_OUTPUT
           else
+            echo "✅ Image signed: ${IMAGE}"
             echo "signed=true" >> $GITHUB_OUTPUT
           fi
 
