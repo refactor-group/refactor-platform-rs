@@ -19,10 +19,10 @@ env:
 jobs:
   code-quality:
     name: Code Tests & Linting # First job - validate code quality
-    runs-on: ubuntu-24.04 # Use latest Ubuntu LTS
+    runs-on: ubuntu-latest # Use latest Ubuntu LTS
     outputs:
       branch_name: ${{ steps.branch_info.outputs.branch_name }} # Export branch name for other jobs
-      image_name: ${{ steps.image_name.outputs.image_name }} # Export full image name
+      image_name: ${{ steps.set-outputs.outputs.image_name }} # Export full image name
       
     steps:
       - name: Checkout repository # Get source code
@@ -87,6 +87,10 @@ jobs:
 
       - name: Verify formatting # Code style check
         run: cargo fmt --check
+
+      - name: Set outputs
+        id: set-outputs
+        run: echo "image_name=${{ steps.image_name.outputs.image_name }}" >> $GITHUB_OUTPUT
         
   container-build:
     name: Build & Push Container # Second job - build and push container images
@@ -149,7 +153,7 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
           # Fix the cache export issue with these settings
-          cache-from: type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache
+          cache-from: type=registry,ref=${{ needs.code-quality.outputs.image_name || 'ghcr.io/refactor-group/refactor-platform-rs' }}:cache
           cache-to: |
             type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
           # Keep compression settings
@@ -221,10 +225,11 @@ jobs:
 
       # Upload security scan results to GitHub Security tab
       - name: Upload Trivy scan results # Make results visible in Security tab
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
+        if: success() || failure()    # Run this step even if Trivy scan fails
         with:
           sarif_file: 'trivy-results.sarif'
-          category: 'container-security'
+          category: 'trivy'
 
       # Image signing with Cosign
       - name: Install cosign # Set up signing tool
