@@ -1,4 +1,4 @@
-name: CI and Container Build
+name: Build and Push Non-Production Images
 
 on:
   pull_request:
@@ -133,7 +133,7 @@ jobs:
             type=sha,format=long
 
       # OPTIMIZATION: Multi-level Registry Caching for Docker
-      - name: Build and push multi-arch image # Focus only on building and pushing
+      - name: Build and push # Focus only on building and pushing
         id: docker_build
         uses: docker/build-push-action@v5
         with:
@@ -141,19 +141,14 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Modify cache configuration to avoid timeout issues
-          cache-from: |
-            type=gha
-            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max
-          # Make cache export optional and add timeout
-          cache-to: |
-            type=gha,mode=max
-            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max,ignore-error=true
-          # Add specific build args for better caching
+          # Use build args for inline cache
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-          # Keep outputs configuration
+          # Fix the cache export issue with these settings
+          cache-from: type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache
+          cache-to: |
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
+          # Keep compression settings
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: true
           # Add timeout settings
