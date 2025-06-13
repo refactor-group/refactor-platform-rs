@@ -16,8 +16,6 @@ jobs:
   test:
     name: Test and Lint # First job - validate code quality
     runs-on: ubuntu-24.04 # Use latest Ubuntu LTS
-    permissions:
-      contents: read
     outputs:
       branch_name: ${{ steps.branch_info.outputs.branch_name }} # Export branch name for other jobs
       image_name: ${{ steps.image_name.outputs.image_name }} # Export full image name
@@ -61,7 +59,7 @@ jobs:
         with:
           key: "v1-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}" # Hash-based cache key
           shared-key: "rust-cache-${{ runner.os }}"
-          save-if: true # Always save cache
+          save-if: true
 
       - name: Install seaORM CLI # Install database tools
         uses: taiki-e/install-action@v2 # Faster installation than cargo install
@@ -81,16 +79,17 @@ jobs:
         run: cargo fmt --check
         
   build-images:
-    name: Build Container Images
+    name: Build Multi-Arch Container Images # Build job focuses only on building and pushing
     runs-on: ubuntu-24.04
     needs: test # Only run if tests pass
     if: ${{ success() }}
+    outputs:
+      image_uri: ${{ needs.test.outputs.image_name }}:stable # Pass image URI to next job
+      image_digest: ${{ steps.docker_build.outputs.digest }} # Pass image digest to next job
     
     permissions:
       contents: read
       packages: write # Needed for pushing to GHCR
-      id-token: write # Needed for signing and attestations
-      security-events: write # Needed for security scanning reports
     
     steps:
       - name: Checkout repository # Get source code
@@ -122,7 +121,7 @@ jobs:
             type=sha,format=long
 
       # Build and push multi-arch image in a single step
-      - name: Build and push multi-arch image
+      - name: Build and push multi-arch image # Focus only on building and pushing
         id: docker_build
         uses: docker/build-push-action@v5
         with:
@@ -135,12 +134,33 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: true
 
-      # Wait to ensure image is available for scanning
-      - name: Wait for image availability
-        run: sleep 10
+      # Output image info
+      - name: Image build summary # Provide basic build information
+        run: |
+          echo "✅ Multi-arch container image built and pushed"
+          echo "📦 Image: ${{ needs.test.outputs.image_name }}:stable"
+          echo "🏷️ Digest: ${{ steps.docker_build.outputs.digest }}"
+
+  scan-and-verify:
+    name: Scan and Verify Image # Separate job for scanning and verification
+    runs-on: ubuntu-24.04
+    needs: [test, build-images] # Run after build-images completes
+    if: ${{ success() }} # Run only if previous jobs succeeded
+    
+    permissions:
+      contents: read
+      packages: read # Only need read for scanning
+      id-token: write # Needed for signing
+      security-events: write # Needed for security scanning reports
+    
+    steps:
+      - name: Wait for image availability # Give registry time to process the image
+        run: |
+          echo "Waiting for image to be available in registry..."
+          sleep 15
         
       # Pull the image for scanning
-      - name: Pull image to ensure availability 
+      - name: Pull image for scanning # Verify we can pull the image
         run: |
           # Pull the specific image we want to scan
           IMAGE="${{ needs.test.outputs.image_name }}:stable"
@@ -149,7 +169,7 @@ jobs:
           docker images
 
       # Security scanning with Trivy
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy vulnerability scanner # Scan image for security issues
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ needs.test.outputs.image_name }}:stable
@@ -159,29 +179,29 @@ jobs:
           timeout: '10m'
 
       # Upload security scan results to GitHub Security tab
-      - name: Upload Trivy scan results
+      - name: Upload Trivy scan results # Make results visible in Security tab
         uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-security'
 
       # Image signing with Cosign
-      - name: Install cosign
+      - name: Install cosign # Set up signing tool
         uses: sigstore/cosign-installer@v3.4.0
         with:
           cosign-release: 'v2.2.3'
 
-      - name: Sign the container image
+      - name: Sign the container image # Add cryptographic signature
         run: |
           IMAGE_URI="${{ needs.test.outputs.image_name }}:stable"
           cosign sign --yes ${IMAGE_URI}
           echo "✅ Image signed: ${IMAGE_URI}"
 
       # Output deployment instructions
-      - name: Print deployment information
+      - name: Print deployment information # Generate helpful summary
         run: |
           echo "::group::📋 Deployment Information"
-          echo "✅ Multi-architecture image build completed!"
+          echo "✅ Image processing completed!"
           echo ""
           echo "🚀 Image Details:"
           echo "   - Full Image Name: ${{ needs.test.outputs.image_name }}:stable"
@@ -189,8 +209,12 @@ jobs:
           echo "   - Repository: ${{ env.BASE_REPO }}-${{ needs.test.outputs.branch_name }}"
           echo "   - Tag: stable"
           echo "   - Supported Architectures: linux/amd64, linux/arm64"
-          echo "   - Image Digest: ${{ steps.docker_build.outputs.digest }}"
+          echo "   - Image Digest: ${{ needs.build-images.outputs.image_digest }}"
           echo ""
+          echo "🛡️ Security Features:"
+          echo "   - Trivy vulnerability scanning completed"
+          echo "   - Image signed with Cosign"
+          echo ""          
           echo "📦 To pull this image:"
           echo "   docker pull ${{ needs.test.outputs.image_name }}:stable"
           echo ""
