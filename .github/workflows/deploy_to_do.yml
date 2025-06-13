@@ -176,6 +176,7 @@ jobs:
               exit 1
             fi
 
+            log_info "Setting permissions..."
             # Set directory permissions
             find nginx -type d -exec chmod 770 {} \;
             # Set file permissions  
@@ -204,13 +205,6 @@ jobs:
             # Verify the platform config file was downloaded and is not empty
             if [ ! -s nginx/conf.d/refactor-platform.conf ]; then
                 log_error "Downloaded refactor-platform.conf is empty or doesn't exist"
-                exit 1
-            fi
-
-            # Set permissions after files are downloaded
-            log_info "Setting permissions..."
-            if ! chmod -R --reference=docker-compose.yaml nginx; then
-                log_error "Failed to set permissions on nginx directory"
                 exit 1
             fi
 
