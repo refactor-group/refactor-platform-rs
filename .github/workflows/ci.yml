@@ -20,6 +20,8 @@ jobs:
   test:
     name: Test and Lint # First job - validate code quality
     runs-on: ubuntu-24.04 # Use latest Ubuntu LTS
+    permissions:
+      contents: read
     outputs:
       branch_name: ${{ steps.branch_info.outputs.branch_name }} # Export branch name for other jobs
       
