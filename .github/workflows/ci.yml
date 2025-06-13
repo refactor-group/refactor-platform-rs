@@ -13,8 +13,8 @@ env:
   BASE_REPO: ${{ github.repository }} # Base repository name
 
 jobs:
-  test:
-    name: Test and Lint # First job - validate code quality
+  code-quality:
+    name: Code Tests & Linting # First job - validate code quality
     runs-on: ubuntu-24.04 # Use latest Ubuntu LTS
     outputs:
       branch_name: ${{ steps.branch_info.outputs.branch_name }} # Export branch name for other jobs
@@ -54,12 +54,18 @@ jobs:
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
 
+      # OPTIMIZATION: Enhanced Rust Caching
       - name: Cache dependencies # Use Swatinem/rust-cache for efficient caching
         uses: Swatinem/rust-cache@v2
         with:
           key: "v1-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}" # Hash-based cache key
           shared-key: "rust-cache-${{ runner.os }}"
-          save-if: true
+          save-if: true # Always save cache
+          cache-targets: true # Cache compiled artifacts
+          cache-on-failure: true # Cache even when builds fail
+          cache-directories: |
+            ~/.cargo/git
+            ~/.cargo/registry
 
       - name: Install seaORM CLI # Install database tools
         uses: taiki-e/install-action@v2 # Faster installation than cargo install
@@ -78,13 +84,13 @@ jobs:
       - name: Verify formatting # Code style check
         run: cargo fmt --check
         
-  build-images:
-    name: Build Multi-Arch Container Images # Build job focuses only on building and pushing
+  container-build:
+    name: Build & Push Container # Second job - build and push container images
     runs-on: ubuntu-24.04
-    needs: test # Only run if tests pass
-    if: ${{ success() }}
+    needs: code-quality # Only run if tests pass
+    if: ${{ success() }} # Always run when tests succeed
     outputs:
-      image_uri: ${{ needs.test.outputs.image_name }}:stable # Pass image URI to next job
+      image_uri: ${{ needs.code-quality.outputs.image_name }}:stable # Pass image URI to next job
       image_digest: ${{ steps.docker_build.outputs.digest }} # Pass image digest to next job
     
     permissions:
@@ -95,8 +101,14 @@ jobs:
       - name: Checkout repository # Get source code
         uses: actions/checkout@v4
 
+      # OPTIMIZATION: BuildKit Optimization Options
       - name: Set up Docker Buildx # Set up enhanced Docker builder
         uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: --debug
+          config-inline: |
+            [worker.oci]
+              max-parallelism = 4
 
       - name: Set up QEMU # Set up emulation for multi-arch builds
         uses: docker/setup-qemu-action@v3
@@ -115,12 +127,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ needs.test.outputs.image_name }}
+          images: ${{ needs.code-quality.outputs.image_name }}
           tags: |
             type=raw,value=stable
             type=sha,format=long
 
-      # Build and push multi-arch image in a single step
+      # OPTIMIZATION: Multi-level Registry Caching for Docker
       - name: Build and push multi-arch image # Focus only on building and pushing
         id: docker_build
         uses: docker/build-push-action@v5
@@ -130,21 +142,30 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Enhanced caching configuration
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.BASE_REPO }}-main:stable
+          cache-to: type=registry,ref=${{ needs.code-quality.outputs.image_name }}:cache,mode=max
+          # OPTIMIZATION: BuildKit specific options
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+          # Faster compression for outputs
+          outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: true
 
       # Output image info
       - name: Image build summary # Provide basic build information
         run: |
           echo "✅ Multi-arch container image built and pushed"
-          echo "📦 Image: ${{ needs.test.outputs.image_name }}:stable"
+          echo "📦 Image: ${{ needs.code-quality.outputs.image_name }}:stable"
           echo "🏷️ Digest: ${{ steps.docker_build.outputs.digest }}"
 
-  scan-and-verify:
-    name: Scan and Verify Image # Separate job for scanning and verification
+  security-scan:
+    name: Security Scanning & Signing # Third job - scan and validate the image
     runs-on: ubuntu-24.04
-    needs: [test, build-images] # Run after build-images completes
+    needs: [code-quality, container-build] # Run after container-build completes
     if: ${{ success() }} # Run only if previous jobs succeeded
     
     permissions:
@@ -154,29 +175,46 @@ jobs:
       security-events: write # Needed for security scanning reports
     
     steps:
+      - name: Login to GitHub Container Registry # Authenticate with registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Wait for image availability # Give registry time to process the image
         run: |
           echo "Waiting for image to be available in registry..."
-          sleep 15
+          sleep 30
         
       # Pull the image for scanning
       - name: Pull image for scanning # Verify we can pull the image
         run: |
           # Pull the specific image we want to scan
-          IMAGE="${{ needs.test.outputs.image_name }}:stable"
+          IMAGE="${{ needs.code-quality.outputs.image_name }}:stable"
           echo "Pulling $IMAGE for security scanning"
           docker pull $IMAGE
           docker images
+
+      # OPTIMIZATION: Trivy Vulnerability Database Caching
+      - name: Cache Trivy vulnerability database
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/trivy
+          key: trivy-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-${{ runner.os }}-
 
       # Security scanning with Trivy
       - name: Run Trivy vulnerability scanner # Scan image for security issues
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ needs.test.outputs.image_name }}:stable
+          image-ref: ${{ needs.code-quality.outputs.image_name }}:stable
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
+          cache-dir: ~/.cache/trivy  # Use cached vulnerability database
 
       # Upload security scan results to GitHub Security tab
       - name: Upload Trivy scan results # Make results visible in Security tab
@@ -193,7 +231,7 @@ jobs:
 
       - name: Sign the container image # Add cryptographic signature
         run: |
-          IMAGE_URI="${{ needs.test.outputs.image_name }}:stable"
+          IMAGE_URI="${{ needs.code-quality.outputs.image_name }}:stable"
           cosign sign --yes ${IMAGE_URI}
           echo "✅ Image signed: ${IMAGE_URI}"
 
@@ -204,22 +242,22 @@ jobs:
           echo "✅ Image processing completed!"
           echo ""
           echo "🚀 Image Details:"
-          echo "   - Full Image Name: ${{ needs.test.outputs.image_name }}:stable"
+          echo "   - Full Image Name: ${{ needs.code-quality.outputs.image_name }}:stable"
           echo "   - Registry: ${{ env.REGISTRY }}"
-          echo "   - Repository: ${{ env.BASE_REPO }}-${{ needs.test.outputs.branch_name }}"
+          echo "   - Repository: ${{ env.BASE_REPO }}-${{ needs.code-quality.outputs.branch_name }}"
           echo "   - Tag: stable"
           echo "   - Supported Architectures: linux/amd64, linux/arm64"
-          echo "   - Image Digest: ${{ needs.build-images.outputs.image_digest }}"
+          echo "   - Image Digest: ${{ needs.container-build.outputs.image_digest }}"
           echo ""
           echo "🛡️ Security Features:"
           echo "   - Trivy vulnerability scanning completed"
           echo "   - Image signed with Cosign"
           echo ""          
           echo "📦 To pull this image:"
-          echo "   docker pull ${{ needs.test.outputs.image_name }}:stable"
+          echo "   docker pull ${{ needs.code-quality.outputs.image_name }}:stable"
           echo ""
           echo "🚀 To deploy with docker-compose:"
           echo "   Update your .env file with:"
-          echo "   BACKEND_IMAGE_NAME=${{ needs.test.outputs.image_name }}:stable"
+          echo "   BACKEND_IMAGE_NAME=${{ needs.code-quality.outputs.image_name }}:stable"
           echo "   Then run: docker-compose up -d"
           echo "::endgroup::"
