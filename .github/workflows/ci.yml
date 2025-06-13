@@ -1,8 +1,15 @@
 name: Build and Push Non-Production Images
 
-# Set restrictive default permissions
+# Set comprehensive default permissions
 permissions:
+  actions: read
   contents: read
+  packages: none
+  id-token: none
+  security-events: none
+  pull-requests: none
+  issues: none
+  statuses: none
 
 on:
   pull_request:
