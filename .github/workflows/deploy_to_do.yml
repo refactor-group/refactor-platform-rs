@@ -10,6 +10,8 @@ on:
         required: false  # Not required to run the workflow
         default: false  # Disabled by default
         type: boolean  # Simple checkbox in the UI
+  repository_dispatch: # Tie in the frontend repo's deploy event used to source frontend env vars
+    types: [deploy-with-frontend-vars]
 
 permissions:
   contents: read  # Minimal permissions required for this workflow
