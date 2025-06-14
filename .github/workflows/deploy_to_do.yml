@@ -105,6 +105,8 @@ jobs:
           RUST_ENV=${{ vars.RUST_ENV }}
 
           # -------- TipTap Config
+          # TipTap account unique ID
+          TIPTAP_APP_ID=${{ secrets.TIPTAP_APP_ID }}
           # TipTap collaborative editor URL
           TIPTAP_URL=${{ secrets.TIPTAP_URL }}
           # TipTap authentication key
@@ -132,6 +134,9 @@ jobs:
           NEXT_PUBLIC_BACKEND_API_VERSION=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_API_VERSION || vars.BACKEND_SERVICE_API_VERSION }}
           NEXT_PUBLIC_APP_ENV=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_APP_ENV || vars.NEXT_PUBLIC_APP_ENV }}
           FRONTEND_BUILD_TARGET=${{ github.event.client_payload.frontend_vars.FRONTEND_BUILD_TARGET || vars.FRONTEND_BUILD_TARGET }}
+
+          # -------- Nginx Reverse Proxy Config
+          SSL_DHPARAMS_PATH=${{ vars.SSL_DHPARAMS_PATH }}
 
           # -------- Platform Config
           # Target platform for Docker containers
