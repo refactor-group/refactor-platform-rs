@@ -110,7 +110,7 @@ jobs:
           # JWT signing key for TipTap
           TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}
 
-          # Frontend Config
+          # -------- Frontend Config
           # Docker image for frontend
           FRONTEND_IMAGE_NAME=${{ vars.FRONTEND_IMAGE_NAME }}
           # Container name for frontend
@@ -122,7 +122,16 @@ jobs:
           # Frontend service port
           FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT }}
 
-          # Platform Config
+          # Frontend Environment Config sourced from frontend repo or locally as a fallback
+          NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL || vars.BACKEND_SERVICE_PROTOCOL }}
+          NEXT_PUBLIC_BACKEND_SERVICE_PORT=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_PORT || vars.BACKEND_SERVICE_PORT }}
+          NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_HOST || vars.BACKEND_SERVICE_HOST }}
+          NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_API_PATH || vars.BACKEND_SERVICE_API_PATH }}
+          NEXT_PUBLIC_BACKEND_API_VERSION=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_API_VERSION || vars.BACKEND_SERVICE_API_VERSION }}
+          NEXT_PUBLIC_APP_ENV=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_APP_ENV || vars.NEXT_PUBLIC_APP_ENV }}
+          FRONTEND_BUILD_TARGET=${{ github.event.client_payload.frontend_vars.FRONTEND_BUILD_TARGET || vars.FRONTEND_BUILD_TARGET }}
+
+          # -------- Platform Config
           # Target platform for Docker containers
           PLATFORM=${{ vars.PLATFORM }}
 
