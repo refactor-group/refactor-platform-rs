@@ -1,6 +1,6 @@
 use crate::error::{EntityApiErrorKind, Error};
 use sea_orm::{
-    ActiveModelBehavior, ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait,
+    ActiveModelBehavior, ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait,
     IntoActiveModel, Value,
 };
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ use std::collections::HashMap;
 ///
 /// Returns a Result containing either the updated Model or an Error
 pub async fn update<A, C>(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     mut active_model: A,
     update_map: UpdateMap,
 ) -> Result<<A::Entity as EntityTrait>::Model, Error>

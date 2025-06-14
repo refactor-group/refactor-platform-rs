@@ -546,6 +546,7 @@ mod organization_endpoints_tests {
                 github_profile_url: None,
                 created_at: now.into(),
                 updated_at: now.into(),
+                role: domain::users::Role::User,
             })
         }
     }
