@@ -1,4 +1,7 @@
-use super::error::{EntityApiErrorKind, Error};
+use super::{
+    error::{EntityApiErrorKind, Error},
+    organization,
+};
 use crate::user;
 use chrono::Utc;
 use entity::{
@@ -22,6 +25,30 @@ pub async fn create(
         "New Coaching Relationship Model to be inserted: {:?}",
         coaching_relationship_model
     );
+
+    let coach_organization_ids =
+        organization::find_by_user(db, coaching_relationship_model.coach_id)
+            .await?
+            .iter()
+            .map(|org| org.id)
+            .collect::<Vec<Id>>();
+    let coachee_organization_ids =
+        organization::find_by_user(db, coaching_relationship_model.coachee_id)
+            .await?
+            .iter()
+            .map(|org| org.id)
+            .collect::<Vec<Id>>();
+
+    // Check that the coach and coachee belong to the correct organization
+    if !coach_organization_ids.contains(&coaching_relationship_model.organization_id)
+        || !coachee_organization_ids.contains(&coaching_relationship_model.organization_id)
+    {
+        error!("Coach and coachee do not belong to the correct organization");
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError,
+        });
+    }
 
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
