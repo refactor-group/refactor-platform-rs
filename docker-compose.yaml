@@ -16,7 +16,7 @@ services:
       # Mount your letsencrypt SSL certs
       - /etc/letsencrypt/live/refactor.engineer/:/etc/letsencrypt/live/refactor.engineer/:ro
       - /etc/letsencrypt/archive/refactor.engineer/:/etc/letsencrypt/archive/refactor.engineer/:ro
-      - /usr/lib/python3/dist-packages/certbot/ssl-dhparams.pem:/etc/letsencrypt/ssl-dhparams.pem:ro
+      - ${SSL_DHPARAMS_PATH}:/etc/letsencrypt/ssl-dhparams.pem:ro
       # Optional: nginx logs for debugging
       - ./nginx/logs:/var/log/nginx
     depends_on:
@@ -89,22 +89,19 @@ services:
     image: ${FRONTEND_IMAGE_NAME}
     build:
       context: ${FRONTEND_BUILD_CONTEXT}
-      args:
-        NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
-        NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
-        NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_SERVICE_PORT:-443}
-        NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${BACKEND_SERVICE_API_PATH}
-        NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
-        FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
-        FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT}
     container_name: nextjs-app
     environment:
-      # Keep these for any server-side usage
+      # Next.js server configuration
+      HOSTNAME: ${FRONTEND_SERVICE_INTERFACE}
+      PORT: ${FRONTEND_SERVICE_PORT}
+      # Runtime environment variables for the application
       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
       NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
       NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_SERVICE_PORT:-443}
       NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${BACKEND_SERVICE_API_PATH}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
+      NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
       FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT}
       FRONTEND_IMAGE_NAME: ${FRONTEND_IMAGE_NAME}
       FRONTEND_CONTAINER_NAME: ${FRONTEND_CONTAINER_NAME}
