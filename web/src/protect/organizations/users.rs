@@ -1,15 +1,12 @@
+use crate::protect::{Predicate, UserInOrganization, UserIsAdmin, UserIsNotSelf};
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
-    body::Body,
     extract::{Path, Request, State},
-    http::StatusCode,
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
 };
 
-use domain::{user as UserApi, users, Id};
-
-use log::*;
+use domain::Id;
 
 /// Checks that the authenticated user is associated with the organization specified by `organization_id`
 /// Intended to be given to axum::middleware::from_fn_with_state in the router
@@ -20,14 +17,9 @@ pub(crate) async fn index(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    check_user_in_organization(
-        &app_state,
-        authenticated_user,
-        organization_id,
-        request,
-        next,
-    )
-    .await
+    let checks: Vec<Predicate> = vec![Predicate::new(UserInOrganization, vec![organization_id])];
+
+    crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
 }
 
 /// Checks that the authenticated user is associated with the organization specified by `organization_id`
@@ -39,14 +31,12 @@ pub(crate) async fn create(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    check_user_in_organization(
-        &app_state,
-        authenticated_user,
-        organization_id,
-        request,
-        next,
-    )
-    .await
+    let checks: Vec<Predicate> = vec![
+        Predicate::new(UserInOrganization, vec![organization_id]),
+        Predicate::new(UserIsAdmin, vec![]),
+    ];
+
+    crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
 
     // TODO: Check that the authenticated user is a coach
     // It's not immediately clear whether or not this endpoint will be only for coaches in the future until we work out some of the specifics
@@ -63,37 +53,11 @@ pub(crate) async fn delete(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    if authenticated_user.id == user_id {
-        return (StatusCode::FORBIDDEN, "FORBIDDEN").into_response();
-    }
-    check_user_in_organization(
-        &app_state,
-        authenticated_user,
-        organization_id,
-        request,
-        next,
-    )
-    .await
-}
+    let checks: Vec<Predicate> = vec![
+        Predicate::new(UserIsNotSelf, vec![user_id]),
+        Predicate::new(UserIsAdmin, vec![]),
+        Predicate::new(UserInOrganization, vec![organization_id]),
+    ];
 
-async fn check_user_in_organization(
-    app_state: &AppState,
-    authenticated_user: users::Model,
-    organization_id: Id,
-    request: Request,
-    next: Next,
-) -> Response<Body> {
-    match UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await {
-        Ok(users) => {
-            if users.iter().any(|user| user.id == authenticated_user.id) {
-                next.run(request).await
-            } else {
-                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
-            }
-        }
-        Err(_) => {
-            error!("Organization not found with ID {:?}", organization_id);
-            (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
-        }
-    }
+    crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
 }
