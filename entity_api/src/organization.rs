@@ -3,7 +3,7 @@ use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
 use entity::{organizations::*, organizations_users, prelude::Organizations, Id};
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Set, ActiveValue::Unchanged, DatabaseConnection, JoinType,
+    entity::prelude::*, ActiveValue::Set, ActiveValue::Unchanged, ConnectionTrait, JoinType,
     QuerySelect, TryIntoModel,
 };
 use slugify::slugify;
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use log::*;
 
-pub async fn create(db: &DatabaseConnection, organization_model: Model) -> Result<Model, Error> {
+pub async fn create(db: &impl ConnectionTrait, organization_model: Model) -> Result<Model, Error> {
     debug!(
         "New Organization Model to be inserted: {:?}",
         organization_model
@@ -32,7 +32,7 @@ pub async fn create(db: &DatabaseConnection, organization_model: Model) -> Resul
     Ok(organization_active_model.insert(db).await?)
 }
 
-pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
+pub async fn update(db: &impl ConnectionTrait, id: Id, model: Model) -> Result<Model, Error> {
     let organization = find_by_id(db, id).await?;
 
     let active_model: ActiveModel = ActiveModel {
@@ -46,13 +46,13 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
     Ok(active_model.update(db).await?.try_into_model()?)
 }
 
-pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
+pub async fn delete_by_id(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
     let organization_model = find_by_id(db, id).await?;
     organization_model.delete(db).await?;
     Ok(())
 }
 
-pub async fn find_all(db: &DatabaseConnection) -> Result<Vec<Model>, Error> {
+pub async fn find_all(db: &impl ConnectionTrait) -> Result<Vec<Model>, Error> {
     Ok(Entity::find().all(db).await?)
 }
 
@@ -64,7 +64,7 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
 }
 
 pub async fn find_by(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     params: HashMap<String, String>,
 ) -> Result<Vec<Model>, Error> {
     let mut query = Entity::find();
@@ -87,7 +87,7 @@ pub async fn find_by(
     Ok(query.distinct().all(db).await?)
 }
 
-pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Model>, Error> {
+pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
     let organizations = by_user(Entity::find(), user_id).await.all(db).await?;
 
     Ok(organizations)
