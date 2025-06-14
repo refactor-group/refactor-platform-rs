@@ -81,7 +81,7 @@ jobs:
           BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
           # We are not building locally so setting to empty string to quiet warning
           BACKEND_BUILD_CONTEXT=""
-          # Backend service port
+          # Backend daemon port used by the Rust backend to listen to connection on
           BACKEND_PORT=${{ vars.BACKEND_PORT }}
           # Network interface for backend to listen for incoming connections on
           BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
@@ -93,6 +93,8 @@ jobs:
           BACKEND_SERVICE_PROTOCOL=${{ vars.BACKEND_SERVICE_PROTOCOL }}
           # Hostname or IP address to reach the backend on
           BACKEND_SERVICE_HOST=${{ vars.BACKEND_SERVICE_HOST }}
+          # Backend service port used by the frontend / reverse proxy
+          BACKEND_SERVICE_PORT=${{ vars.BACKEND_SERVICE_PORT }}
           # The URL path to proxy the backend API on (e.g. "api" would resolve to https://backend/api/)
           BACKEND_SERVICE_API_PATH=${{ vars.BACKEND_SERVICE_API_PATH }}
           # API version to use between frontend and backend
