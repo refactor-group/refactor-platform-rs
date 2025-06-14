@@ -10,8 +10,6 @@ on:
         required: false  # Not required to run the workflow
         default: false  # Disabled by default
         type: boolean  # Simple checkbox in the UI
-  repository_dispatch: # Tie in the frontend repo's deploy event used to source frontend env vars
-    types: [deploy-with-frontend-vars]
 
 permissions:
   contents: read  # Minimal permissions required for this workflow
@@ -125,13 +123,6 @@ jobs:
           FRONTEND_SERVICE_INTERFACE=${{ vars.FRONTEND_SERVICE_INTERFACE }}
           # Frontend service port
           FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT }}
-
-          # Frontend Environment Config sourced from frontend repo or locally as a fallback
-          NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL || vars.BACKEND_SERVICE_PROTOCOL }}
-          NEXT_PUBLIC_BACKEND_SERVICE_PORT=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_PORT || vars.BACKEND_SERVICE_PORT }}
-          NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_HOST || vars.BACKEND_SERVICE_HOST }}
-          NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_SERVICE_API_PATH || vars.BACKEND_SERVICE_API_PATH }}
-          NEXT_PUBLIC_BACKEND_API_VERSION=${{ github.event.client_payload.frontend_vars.NEXT_PUBLIC_BACKEND_API_VERSION || vars.BACKEND_API_VERSION }}
 
           # -------- Nginx Reverse Proxy Config
           SSL_DHPARAMS_PATH=${{ vars.SSL_DHPARAMS_PATH }}
