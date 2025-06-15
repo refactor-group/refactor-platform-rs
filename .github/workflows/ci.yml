@@ -203,7 +203,7 @@ jobs:
           cargo test --release --all-targets
         env:
           # Disables incremental compilation
-          CARGO_INCREMENTAL: 0
+          CARGO_INCREMENTAL: 1
           # Optimizes the build for speed
           RUSTFLAGS: "-C debuginfo=0 -C opt-level=2"
           # Sets the number of retries for network operations
