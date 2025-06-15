@@ -335,9 +335,8 @@ jobs:
             image=moby/buildkit:v0.12.5
             network=host
           # Specifies the buildkitd flags, allows insecure entitlements and host network access because we are using a custom buildkitd image
-          buildkitd-flags: |
-            --allow-insecure-entitlement security.insecure
-            --allow-insecure-entitlement network.host
+          buildkitd-flags: >
+            --allow-insecure-entitlement security.insecure  --allow-insecure-entitlement network.host
 
       # Sets up QEMU
       - name: Set up QEMU
