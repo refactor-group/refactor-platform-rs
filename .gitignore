@@ -13,3 +13,4 @@ dbml-error.log
 
 # CA certificates
 *.crt
+.secrets
