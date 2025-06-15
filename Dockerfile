@@ -23,11 +23,10 @@ RUN cargo build --release -p refactor_platform_rs -p migration
 
 RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app  
 
-
 # Stage 2: Minimal runtime image
 FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
 
-# Install Bash to support entrypoint.sh
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with 1001 UID and /bin/bash shell
