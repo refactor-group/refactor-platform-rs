@@ -26,9 +26,8 @@ RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app
 # Stage 2: Minimal runtime image
 FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
 
-# Install Bash to support entrypoint.sh
-# TODO: remove everything but bash before final commit!
-RUN apt-get update && apt-get install -y bash vim-tiny  && rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with 1001 UID and /bin/bash shell
 RUN useradd -m -u 1001 -s /bin/bash appuser
