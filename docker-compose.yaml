@@ -20,12 +20,13 @@ services:
       # Optional: nginx logs for debugging
       - ./nginx/logs:/var/log/nginx
     depends_on:
-      - nextjs-app
-      - rust-app
+      rust-app:
+        condition: service_healthy
+      nextjs-app:
+        condition: service_started
     networks:
       - backend_network
     restart: unless-stopped
-    # Remove health check temporarily to simplify startup
 
   migrator:                                 # db migration service
     image: ${BACKEND_IMAGE_NAME}            # reuse backend image
@@ -76,7 +77,12 @@ services:
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
       PLATFORM: ${PLATFORM}
-    # Note: No longer exposing ports directly - nginx handles external access
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${BACKEND_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     depends_on:
       - migrator
     volumes:
