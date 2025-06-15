@@ -274,12 +274,12 @@ jobs:
             log_info "🩺 Verifying app status..."
             # Verify application health
             log_info "🩺 Checking rust-app service status..."
-            if docker ps | grep -q ${{ vars.BACKEND_CONTAINER_NAME }}; then
-              log_info "✅ Deployment succeeded! ${{ vars.BACKEND_CONTAINER_NAME }} is running."
+            if docker ps | grep -q rust-app; then
+              log_info "✅ Deployment succeeded! rust-app is running."
             else
               log_error "⚠️ Missing container for rust-app. Logs follow:"
               # Show backend logs
-              docker logs ${{ vars.BACKEND_CONTAINER_NAME }} --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
+              docker logs rust-app --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
             fi
 
             log_info "🎉 Deployment complete."
