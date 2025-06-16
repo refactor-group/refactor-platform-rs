@@ -100,6 +100,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
             "X-Forwarded-For".parse::<HeaderName>().unwrap(),
             "X-Forwarded-Proto".parse::<HeaderName>().unwrap(),
             "X-Real-IP".parse::<HeaderName>().unwrap(),
+            "X-Request-ID".parse::<HeaderName>().unwrap(),
         ])
         .expose_headers([ApiVersion::field_name().parse::<HeaderName>().unwrap()])
         .allow_private_network(true)
