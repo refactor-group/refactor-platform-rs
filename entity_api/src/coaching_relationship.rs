@@ -364,26 +364,76 @@ mod tests {
     #[tokio::test]
     async fn create_returns_validation_error_for_duplicate_relationship() -> Result<(), Error> {
         use entity::coaching_relationships::Model;
-        use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+        use sea_orm::{DatabaseBackend, MockDatabase};
 
         let organization_id = Id::new_v4();
         let coach_id = Id::new_v4();
         let coachee_id = Id::new_v4();
+        let coach_organization_id = Id::new_v4();
+        let coachee_organization_id = Id::new_v4();
+
+        let coach_user = entity::users::Model {
+            id: coach_id.clone(),
+            first_name: "Coach".to_string(),
+            last_name: "User".to_string(),
+            email: "coach@example.com".to_string(),
+            password: "hash".to_string(),
+            display_name: Some("Coach User".to_string()),
+            github_username: Some("coach_user".to_string()),
+            role: entity::users::Role::User,
+            github_profile_url: Some("https://github.com/coach_user".to_string()),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
+
+        let coachee_user = entity::users::Model {
+            id: coachee_id.clone(),
+            first_name: "Coachee".to_string(),
+            last_name: "User".to_string(),
+            email: "coachee@example.com".to_string(),
+            password: "hash".to_string(),
+            display_name: Some("Coachee User".to_string()),
+            github_username: Some("coachee_user".to_string()),
+            role: entity::users::Role::User,
+            github_profile_url: Some("https://github.com/coachee_user".to_string()),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
+
+        let coaching_relationships = vec![Model {
+            id: Id::new_v4(),
+            organization_id: organization_id.clone(),
+            coach_id: coach_id.clone(),
+            coachee_id: coachee_id.clone(),
+            slug: "coach-coachee".to_string(),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        }];
+
+        let coach_organization = entity::organizations::Model {
+            id: coach_organization_id,
+            name: "Organization".to_string(),
+            slug: "organization".to_string(),
+            logo: None,
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
+
+        let coachee_organization = entity::organizations::Model {
+            id: coachee_organization_id,
+            name: "Organization".to_string(),
+            slug: "organization".to_string(),
+            logo: None,
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![Model {
-                id: Id::new_v4(),
-                organization_id: organization_id.clone(),
-                coach_id: coach_id.clone(),
-                coachee_id: coachee_id.clone(),
-                slug: "coach-coachee".to_string(),
-                created_at: chrono::Utc::now().into(),
-                updated_at: chrono::Utc::now().into(),
-            }]])
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }])
+            .append_query_results(vec![vec![coach_organization]])
+            .append_query_results(vec![vec![coachee_organization]])
+            .append_query_results(vec![coaching_relationships])
+            .append_query_results(vec![vec![coach_user]])
+            .append_query_results(vec![vec![coachee_user]])
             .into_connection();
 
         let model = Model {
@@ -397,6 +447,7 @@ mod tests {
         };
 
         let result = create(&db, model).await;
+        println!("Result: {:?}", result);
         assert!(
             result
                 == Err(Error {
