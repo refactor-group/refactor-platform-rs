@@ -44,7 +44,7 @@ pub async fn create(
     if !coach_organization_ids.contains(&coaching_relationship_model.organization_id)
         || !coachee_organization_ids.contains(&coaching_relationship_model.organization_id)
     {
-        error!("Coach and coachee do not belong to the correct organization");
+        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, coaching_relationship_model.organization_id);
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError,
