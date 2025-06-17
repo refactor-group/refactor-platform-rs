@@ -187,6 +187,11 @@ impl Config {
     pub fn runtime_env(&self) -> RustEnv {
         self.runtime_env.clone()
     }
+
+    pub fn is_production(&self) -> bool {
+        // This could check an environment variable, or a config field
+        self.runtime_env() == RustEnv::Production
+    }
 }
 
 impl ApiVersion {

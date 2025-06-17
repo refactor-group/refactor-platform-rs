@@ -48,7 +48,9 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     );
 
     let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false)
+        // Get non-secure cookies for local testing, while production automatically gets secure cookies
+        .with_secure(app_state.config.is_production())
+        .with_same_site(tower_sessions::cookie::SameSite::Lax) // Assists in CSRF protection
         .with_expiry(Expiry::OnInactivity(Duration::days(1)));
 
     // Auth service
@@ -58,7 +60,13 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     // These will probably come from app_state.config (command line)
     let host = app_state.config.interface.as_ref().unwrap();
     let port = app_state.config.port;
-    info!("Server starting... listening for connections on http://{host}:{port}");
+
+    if app_state.config.is_production() {
+        info!("Server starting... listening for internal connections on http://{host}:{port}");
+        info!("External access available via HTTPS proxy at https://refactor.engineer");
+    } else {
+        info!("Server starting... listening for connections on http://{host}:{port}");
+    }
 
     let server_url = format!("{host}:{port}");
     let listen_addr = SocketAddr::from_str(&server_url).unwrap();
@@ -81,12 +89,18 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
             Method::PUT,
             Method::PATCH,
         ])
+        // Essential to allow credentials through a reverse proxy like nginx
         .allow_credentials(true)
         // Allow and expose the X-Version header across origins
         .allow_headers([
             ApiVersion::field_name().parse::<HeaderName>().unwrap(),
             AUTHORIZATION,
             CONTENT_TYPE,
+            // Headers that nginx reverse proxy might forward
+            "X-Forwarded-For".parse::<HeaderName>().unwrap(),
+            "X-Forwarded-Proto".parse::<HeaderName>().unwrap(),
+            "X-Real-IP".parse::<HeaderName>().unwrap(),
+            "X-Request-ID".parse::<HeaderName>().unwrap(),
         ])
         .expose_headers([ApiVersion::field_name().parse::<HeaderName>().unwrap()])
         .allow_private_network(true)
