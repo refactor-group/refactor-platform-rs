@@ -26,18 +26,19 @@ pub async fn create(
         coaching_relationship_model
     );
 
-    let coach_organization_ids =
-        organization::find_by_user(db, coaching_relationship_model.coach_id)
-            .await?
-            .iter()
-            .map(|org| org.id)
-            .collect::<Vec<Id>>();
-    let coachee_organization_ids =
-        organization::find_by_user(db, coaching_relationship_model.coachee_id)
-            .await?
-            .iter()
-            .map(|org| org.id)
-            .collect::<Vec<Id>>();
+    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
+    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
+
+    let coach_organization_ids = organization::find_by_user(db, coach.id)
+        .await?
+        .iter()
+        .map(|org| org.id)
+        .collect::<Vec<Id>>();
+    let coachee_organization_ids = organization::find_by_user(db, coachee.id)
+        .await?
+        .iter()
+        .map(|org| org.id)
+        .collect::<Vec<Id>>();
 
     // Check that the coach and coachee belong to the correct organization
     if !coach_organization_ids.contains(&coaching_relationship_model.organization_id)
@@ -429,11 +430,11 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_user]])
+            .append_query_results(vec![vec![coachee_user]])
             .append_query_results(vec![vec![coach_organization]])
             .append_query_results(vec![vec![coachee_organization]])
             .append_query_results(vec![coaching_relationships])
-            .append_query_results(vec![vec![coach_user]])
-            .append_query_results(vec![vec![coachee_user]])
             .into_connection();
 
         let model = Model {
