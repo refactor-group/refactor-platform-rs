@@ -6,7 +6,7 @@ use crate::{
 use chrono::Utc;
 pub use entity_api::user::{
     create, create_by_organization, find_by_email, find_by_id, find_by_organization, generate_hash,
-    verify_password, AuthSession, Backend, Credentials,
+    verify_password, AuthSession, Backend, Credentials, Role,
 };
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
