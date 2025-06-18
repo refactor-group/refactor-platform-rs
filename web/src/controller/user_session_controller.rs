@@ -1,4 +1,5 @@
 use crate::controller::ApiResponse;
+use crate::error::{Error as WebError, Result as WebResult};
 use axum::{http::StatusCode, response::IntoResponse, Form, Json};
 use domain::user::{AuthSession, Credentials};
 use log::*;
@@ -36,17 +37,44 @@ pub struct NextUrl {
 pub async fn login(
     mut auth_session: AuthSession,
     Form(creds): Form<Credentials>,
-) -> impl IntoResponse {
+) -> WebResult<impl IntoResponse> {
     debug!("UserSessionController::login()");
 
     let user = match auth_session.authenticate(creds.clone()).await {
         Ok(Some(user)) => user,
-        Ok(None) => return Err(StatusCode::UNAUTHORIZED.into_response()),
-        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Ok(None) => {
+            // No user found - this should also be treated as an authentication error
+            return Err(WebError::from(domain::error::Error {
+                source: None,
+                error_kind: domain::error::DomainErrorKind::Internal(
+                    domain::error::InternalErrorKind::Entity(
+                        domain::error::EntityErrorKind::Unauthenticated
+                    )
+                ),
+            }));
+        },
+        Err(auth_error) => {
+            // axum_login errors contain our entity_api::Error in the error field
+            warn!("Authentication failed: {:?}", auth_error);
+            return Err(WebError::from(domain::error::Error {
+                source: Some(Box::new(auth_error)),
+                error_kind: domain::error::DomainErrorKind::Internal(
+                    domain::error::InternalErrorKind::Entity(
+                        domain::error::EntityErrorKind::Unauthenticated
+                    )
+                ),
+            }));
+        },
     };
 
-    if auth_session.login(&user).await.is_err() {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    if let Err(login_error) = auth_session.login(&user).await {
+        warn!("Session login failed: {:?}", login_error);
+        return Err(WebError::from(domain::error::Error {
+            source: Some(Box::new(login_error)),
+            error_kind: domain::error::DomainErrorKind::Internal(
+                domain::error::InternalErrorKind::Other("Session login failed".to_string())
+            ),
+        }));
     }
 
     let user_session_json = json!({
