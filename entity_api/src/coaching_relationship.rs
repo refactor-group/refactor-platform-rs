@@ -19,8 +19,9 @@ use slugify::slugify;
 
 pub async fn create(
     db: &impl ConnectionTrait,
+    organization_id: Id,
     coaching_relationship_model: Model,
-) -> Result<Model, Error> {
+) -> Result<CoachingRelationshipWithUserNames, Error> {
     debug!(
         "New Coaching Relationship Model to be inserted: {:?}",
         coaching_relationship_model
@@ -41,10 +42,10 @@ pub async fn create(
         .collect::<Vec<Id>>();
 
     // Check that the coach and coachee belong to the correct organization
-    if !coach_organization_ids.contains(&coaching_relationship_model.organization_id)
-        || !coachee_organization_ids.contains(&coaching_relationship_model.organization_id)
+    if !coach_organization_ids.contains(&organization_id)
+        || !coachee_organization_ids.contains(&organization_id)
     {
-        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, coaching_relationship_model.organization_id);
+        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, organization_id);
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError,
@@ -53,8 +54,7 @@ pub async fn create(
 
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
-    let existing_coaching_relationships =
-        find_by_organization(db, coaching_relationship_model.organization_id).await?;
+    let existing_coaching_relationships = find_by_organization(db, organization_id).await?;
     let existing_coaching_relationship = existing_coaching_relationships.iter().find(|cr| {
         cr.coach_id == coaching_relationship_model.coach_id
             && cr.coachee_id == coaching_relationship_model.coachee_id
@@ -74,7 +74,7 @@ pub async fn create(
     let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
-        organization_id: Set(coaching_relationship_model.organization_id),
+        organization_id: Set(organization_id),
         coach_id: Set(coaching_relationship_model.coach_id),
         coachee_id: Set(coaching_relationship_model.coachee_id),
         slug: Set(slug),
@@ -82,7 +82,19 @@ pub async fn create(
         updated_at: Set(now.into()),
         ..Default::default()
     };
-    Ok(coaching_relationship_active_model.insert(db).await?)
+    let inserted: Model = coaching_relationship_active_model.insert(db).await?;
+
+    Ok(CoachingRelationshipWithUserNames {
+        id: inserted.id,
+        coach_id: inserted.coach_id,
+        coachee_id: inserted.coachee_id,
+        coach_first_name: coach.first_name,
+        coach_last_name: coach.last_name,
+        coachee_first_name: coachee.first_name,
+        coachee_last_name: coachee.last_name,
+        created_at: inserted.created_at,
+        updated_at: inserted.updated_at,
+    })
 }
 
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
@@ -234,7 +246,7 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
 
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids. This should be used as an implementation detail only.
-#[derive(FromQueryResult, Debug)]
+#[derive(FromQueryResult, Debug, PartialEq)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
@@ -447,7 +459,7 @@ mod tests {
             updated_at: chrono::Utc::now().into(),
         };
 
-        let result = create(&db, model).await;
+        let result = create(&db, organization_id, model).await;
         println!("Result: {:?}", result);
         assert!(
             result
