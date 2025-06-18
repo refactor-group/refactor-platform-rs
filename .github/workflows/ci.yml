@@ -320,7 +320,7 @@ jobs:
           SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
 
       - name: Run Trivy
-        uses: aquasecurity/trivy-action@v0.34.0
+        uses: aquasecurity/trivy-action@0.17.0
         with:
           image-ref: ${{ needs.setup-cache-strategy.outputs.image_name }}:stable
           format: sarif
@@ -336,7 +336,6 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy
-
   cache-maintenance:
     name: Cache Maintenance
     runs-on: ubuntu-24.04
