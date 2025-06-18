@@ -48,11 +48,11 @@ pub async fn login(
                 source: None,
                 error_kind: domain::error::DomainErrorKind::Internal(
                     domain::error::InternalErrorKind::Entity(
-                        domain::error::EntityErrorKind::Unauthenticated
-                    )
+                        domain::error::EntityErrorKind::Unauthenticated,
+                    ),
                 ),
             }));
-        },
+        }
         Err(auth_error) => {
             // axum_login errors contain our entity_api::Error in the error field
             warn!("Authentication failed: {:?}", auth_error);
@@ -60,11 +60,11 @@ pub async fn login(
                 source: Some(Box::new(auth_error)),
                 error_kind: domain::error::DomainErrorKind::Internal(
                     domain::error::InternalErrorKind::Entity(
-                        domain::error::EntityErrorKind::Unauthenticated
-                    )
+                        domain::error::EntityErrorKind::Unauthenticated,
+                    ),
                 ),
             }));
-        },
+        }
     };
 
     if let Err(login_error) = auth_session.login(&user).await {
@@ -72,7 +72,7 @@ pub async fn login(
         return Err(WebError::from(domain::error::Error {
             source: Some(Box::new(login_error)),
             error_kind: domain::error::DomainErrorKind::Internal(
-                domain::error::InternalErrorKind::Other("Session login failed".to_string())
+                domain::error::InternalErrorKind::Other("Session login failed".to_string()),
             ),
         }));
     }
