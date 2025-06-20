@@ -63,12 +63,14 @@ main() {
             log_info "Running in MIGRATOR mode"
             validate_binary "migrationctl"
             validate_env "DATABASE_URL"
+            validate_env "DATABASE_SCHEMA"
             validate_env "RUST_ENV"
 
             log_info "Running in $RUST_ENV environment"
+            log_info "Using schema $DATABASE_SCHEMA to apply the migrations in"
 
             log_success "Running SeaORM migrations..."
-            exec /app/migrationctl up
+            exec /app/migrationctl up -s $DATABASE_SCHEMA
             ;;
             
         app)
