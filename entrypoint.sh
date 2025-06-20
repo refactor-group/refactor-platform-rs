@@ -67,6 +67,7 @@ main() {
             validate_env "RUST_ENV"
 
             log_info "Running in $RUST_ENV environment"
+            log_info "Using schema $DATABASE_SCHEMA to apply the migrations in"
 
             log_success "Running SeaORM migrations..."
             exec /app/migrationctl up
