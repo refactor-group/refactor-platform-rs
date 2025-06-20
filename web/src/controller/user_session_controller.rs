@@ -38,12 +38,12 @@ pub async fn login(
     mut auth_session: AuthSession,
     Form(creds): Form<Credentials>,
 ) -> WebResult<impl IntoResponse> {
-    debug!("UserSessionController::login()");
-
     let user = match auth_session.authenticate(creds.clone()).await {
         Ok(Some(user)) => user,
         Ok(None) => {
             // No user found - this should also be treated as an authentication error
+            warn!("Authentication failed, invalid user: {:?}", creds.email);
+            // TODO: replace this with a more idiomatic Rust 1-liner using from/into
             return Err(WebError::from(domain::error::Error {
                 source: None,
                 error_kind: domain::error::DomainErrorKind::Internal(
@@ -54,8 +54,10 @@ pub async fn login(
             }));
         }
         Err(auth_error) => {
-            // axum_login errors contain our entity_api::Error in the error field
-            warn!("Authentication failed: {:?}", auth_error);
+            // Convert axum_login error to WebError by creating domain error manually.
+            // This maps EntityApiErrorKind::RecordUnauthenticated to a 401 through the web layer.
+            error!("Authentication failed with error: {:?}", auth_error);
+            // TODO: replace this with a more idiomatic Rust 1-liner using from/into
             return Err(WebError::from(domain::error::Error {
                 source: Some(Box::new(auth_error)),
                 error_kind: domain::error::DomainErrorKind::Internal(
