@@ -40,6 +40,7 @@ pub enum InternalErrorKind {
 pub enum EntityErrorKind {
     NotFound,
     Invalid,
+    Unauthenticated,
     DbTransaction,
     Other(String),
 }
@@ -71,6 +72,7 @@ impl From<EntityApiError> for Error {
         let entity_error_kind = match err.error_kind {
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
+            EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
 
