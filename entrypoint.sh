@@ -70,7 +70,7 @@ main() {
             log_info "Using schema $DATABASE_SCHEMA to apply the migrations in"
 
             log_success "Running SeaORM migrations..."
-            exec /app/migrationctl up
+            exec /app/migrationctl up -s $DATABASE_SCHEMA
             ;;
             
         app)
