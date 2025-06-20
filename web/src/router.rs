@@ -242,6 +242,10 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships",
             post(coaching_relationship_controller::create),
         )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::organizations::coaching_relationships::create,
+        ))
         .merge(
             // GET /organizations/:organization_id/coaching_relationships
             Router::new()

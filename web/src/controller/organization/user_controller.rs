@@ -63,17 +63,13 @@ pub async fn index(
 pub(crate) async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    AuthenticatedUser(_authenticated_user): AuthenticatedUser,
     Path(organization_id): Path<Id>,
     Json(user_model): Json<users::Model>,
 ) -> Result<impl IntoResponse, Error> {
-    let user = UserApi::create_user_and_coaching_relationship(
-        app_state.db_conn_ref(),
-        organization_id,
-        authenticated_user.id,
-        user_model,
-    )
-    .await?;
+    let user =
+        UserApi::create_by_organization(app_state.db_conn_ref(), organization_id, user_model)
+            .await?;
     info!("User created: {:?}", user);
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
