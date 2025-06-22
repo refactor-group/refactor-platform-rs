@@ -12,15 +12,14 @@ permissions:
 
 on:
   pull_request:
-    branches: [ main ]
-    types: [ opened, synchronize, reopened ]
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
   BASE_REPO: ${{ github.repository }}
-  # Global Rust build optimizations
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 3
   CARGO_NET_GIT_FETCH_WITH_CLI: true
@@ -31,67 +30,82 @@ jobs:
     name: Setup Cache Strategy
     runs-on: ubuntu-24.04
     outputs:
-      rust_cache_key:    ${{ steps.cache_keys.outputs.rust_cache_key }}
+      rust_cache_key: ${{ steps.cache_keys.outputs.rust_cache_key }}
       rust_restore_keys: ${{ steps.cache_keys.outputs.rust_restore_keys }}
-      docker_cache_key:    ${{ steps.cache_keys.outputs.docker_cache_key }}
+      docker_cache_key: ${{ steps.cache_keys.outputs.docker_cache_key }}
       docker_restore_keys: ${{ steps.cache_keys.outputs.docker_restore_keys }}
-      branch_name:       ${{ steps.branch_info.outputs.branch_name }}
-      image_name:        ${{ steps.branch_info.outputs.image_name }}
-      cache_scope:       ${{ steps.cache_keys.outputs.cache_scope }}
-
+      branch_name: ${{ steps.branch_info.outputs.branch_name }}
+      image_name: ${{ steps.branch_info.outputs.image_name }}
+      cache_scope: ${{ steps.cache_keys.outputs.cache_scope }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        name: Checkout repository
         with:
           fetch-depth: 1
 
-      - name: Extract branch information
-        id: branch_info
+      - id: branch_info
+        name: Extract branch information
         run: |
           BRANCH=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
           SAFE=${BRANCH//\//-}
           IMAGE="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-${SAFE}"
-          echo "branch_name=$SAFE"       >> $GITHUB_OUTPUT
-          echo "image_name=$IMAGE"       >> $GITHUB_OUTPUT
+          echo "branch_name=$SAFE" >> $GITHUB_OUTPUT
+          echo "image_name=$IMAGE" >> $GITHUB_OUTPUT
 
-      - name: Generate optimized cache keys
-        id: cache_keys
+      - id: cache_keys
+        name: Generate optimized cache keys
         run: |
           CARGO_HASH="${{ hashFiles('**/Cargo.lock','**/Cargo.toml') }}"
           DOCKER_HASH="${{ hashFiles('Dockerfile','.dockerignore') }}"
-
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             SCOPE="pr-${{ github.event.number }}"
           else
             SCOPE="branch-${{ steps.branch_info.outputs.branch_name }}"
           fi
 
-          echo "rust_cache_key=rust-v4-${SCOPE}-${CARGO_HASH}"           >> $GITHUB_OUTPUT
-          echo "rust_restore_keys=rust-v4-${SCOPE}-|rust-v4-branch-main-|rust-v4-" >> $GITHUB_OUTPUT
+          echo "rust_cache_key=rust-v4-${SCOPE}-${CARGO_HASH}" >> $GITHUB_OUTPUT
+          echo "rust_restore_keys<<EOF"                     >> $GITHUB_OUTPUT
+          echo "rust-v4-${SCOPE}-"                           >> $GITHUB_OUTPUT
+          echo "rust-v4-branch-main-"                        >> $GITHUB_OUTPUT
+          echo "rust-v4-"                                    >> $GITHUB_OUTPUT
+          echo "EOF"                                         >> $GITHUB_OUTPUT
 
-          echo "docker_cache_key=docker-v4-${SCOPE}-${DOCKER_HASH}"           >> $GITHUB_OUTPUT
-          echo "docker_restore_keys=docker-v4-${SCOPE}-|docker-v4-branch-main-|docker-v4-" >> $GITHUB_OUTPUT
+          echo "docker_cache_key=docker-v4-${SCOPE}-${DOCKER_HASH}" >> $GITHUB_OUTPUT
+          echo "docker_restore_keys<<EOF"                            >> $GITHUB_OUTPUT
+          echo "docker-v4-${SCOPE}-"                                 >> $GITHUB_OUTPUT
+          echo "docker-v4-branch-main-"                              >> $GITHUB_OUTPUT
+          echo "docker-v4-"                                          >> $GITHUB_OUTPUT
+          echo "EOF"                                                >> $GITHUB_OUTPUT
 
-          echo "cache_scope=$SCOPE"                                        >> $GITHUB_OUTPUT
+          echo "cache_scope=$SCOPE" >> $GITHUB_OUTPUT
 
   rust-tests:
     name: Rust Tests
     runs-on: ubuntu-24.04
     needs: setup-cache-strategy
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        name: Checkout repository
         with:
           fetch-depth: 1
 
-      - name: Install Rust toolchain (with rustfmt)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+        name: Install Rust toolchain (with rustfmt)
         with:
           components: rustfmt
 
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
+      - name: Install sccache
+        run: cargo install sccache
+
+      - uses: actions/cache@v4
+        name: Cache sccache
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: sccache-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        name: Cache Rust dependencies
         with:
           path: |
             ~/.cargo/bin/
@@ -104,17 +118,18 @@ jobs:
         env:
           SEGMENT_DOWNLOAD_TIMEOUT_MINS: 3
 
-      - name: Install seaORM CLI
-        uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2
+        name: Install seaORM CLI
         with:
           tool: sea-orm-cli
 
-      - name: Run tests (optimized)
+      - name: Run tests (optimized, via sccache)
+        env:
+          RUSTC_WRAPPER: sccache
+          RUSTFLAGS: "-C debuginfo=0 -C opt-level=2 -C codegen-units=1"
         run: |
           rm -rf target/debug/incremental 2>/dev/null || true
           cargo test --release --all-targets --jobs $(nproc)
-        env:
-          RUSTFLAGS: "-C debuginfo=0 -C opt-level=2 -C codegen-units=1"
 
       - name: Check formatting
         run: cargo fmt --check
@@ -130,20 +145,29 @@ jobs:
     name: Rust Lint
     runs-on: ubuntu-24.04
     needs: setup-cache-strategy
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        name: Checkout repository
         with:
           fetch-depth: 1
 
-      - name: Install Rust toolchain (with Clippy)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+        name: Install Rust toolchain (with Clippy)
         with:
           components: clippy
 
-      - name: Cache Rust dependencies (shared)
-        uses: actions/cache@v4
+      - name: Install sccache
+        run: cargo install sccache
+
+      - uses: actions/cache@v4
+        name: Cache sccache
+        with:
+          path: ~/.cache/sccache
+          key: lint-sccache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: lint-sccache-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        name: Cache Rust dependencies (shared)
         with:
           path: |
             ~/.cargo/bin/
@@ -158,35 +182,48 @@ jobs:
         env:
           SEGMENT_DOWNLOAD_TIMEOUT_MINS: 3
 
-      - name: Lint with Clippy (optimized)
+      - name: Lint with Clippy (optimized, via sccache)
+        env:
+          RUSTC_WRAPPER: sccache
+          RUSTFLAGS: "-C debuginfo=0 -C codegen-units=1"
         run: |
           rm -rf target/debug/incremental 2>/dev/null || true
           cargo clippy --all-targets --all-features --jobs $(nproc) -- -D warnings
-        env:
-          RUSTFLAGS: "-C debuginfo=0 -C codegen-units=1"
 
   container-build:
     name: Build & Push Container
     runs-on: ubuntu-24.04
-    needs: [ setup-cache-strategy, rust-tests, rust-lint ]
+    needs: [setup-cache-strategy, rust-tests, rust-lint]
     if: ${{ success() }}
     permissions:
       contents: read
       packages: write
       id-token: write
 
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            base_image: ghcr.io/rust-cross/rust-musl-cross:x86_64-musl
+            target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            platform: linux/arm64
+            base_image: ghcr.io/rust-cross/rust-musl-cross:aarch64-musl
+            target: aarch64-unknown-linux-musl
+
     outputs:
-      image_uri:    ${{ needs.setup-cache-strategy.outputs.image_name }}:stable
-      image_digest: ${{ steps.build.outputs.digest }}
+      image_name: ${{ needs.setup-cache-strategy.outputs.image_name }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        name: Checkout repository
         with:
           fetch-depth: 1
 
-      - name: Set up Docker Buildx
+      - id: buildx
         uses: docker/setup-buildx-action@v3
+        name: Set up Docker Buildx
         with:
           driver-opts: |
             image=moby/buildkit:v0.12.5
@@ -200,64 +237,41 @@ jobs:
             [worker.containerd]
               max-parallelism = 4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
+        name: Login to GitHub Container Registry
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Docker layer cache dir
-        run: |
-          mkdir -p /tmp/.buildx-cache-new
-          chmod 755 /tmp/.buildx-cache-new
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ needs.setup-cache-strategy.outputs.docker_cache_key }}
-          restore-keys: ${{ needs.setup-cache-strategy.outputs.docker_restore_keys }}
-        env:
-          SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
-
-      - name: Generate Docker metadata
-        id: meta
+      - id: meta
         uses: docker/metadata-action@v5
+        name: Generate arch-specific Docker metadata
         with:
           images: ${{ needs.setup-cache-strategy.outputs.image_name }}
           tags: |
-            type=raw,value=stable
-            type=raw,value=latest
-            type=sha,format=short
-          annotations: |
-            org.opencontainers.image.description=Refactor Platform – Branch: ${{ needs.setup-cache-strategy.outputs.branch_name }}
+            type=raw,value=stable-${{ matrix.arch }}
 
-      - name: Build and push (cargo-chef optimized)
-        id: build
+      - id: build
         uses: docker/build-push-action@v5
+        name: Build and push (cargo-chef optimized)
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
+            BASE_IMAGE=${{ matrix.base_image }}
+            TARGET_TRIPLE=${{ matrix.target }}
             BUILDKIT_INLINE_CACHE=1
             CARGO_INCREMENTAL=0
             RUSTFLAGS=-C target-cpu=generic -C opt-level=3 -C codegen-units=1
           cache-from: |
-            type=local,src=/tmp/.buildx-cache
-            type=gha,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}
-            type=gha,scope=main
-            type=registry,ref=${{ needs.setup-cache-strategy.outputs.image_name }}:cache
+            type=gha,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
+            type=gha,scope=main-${{ matrix.arch }}
           cache-to: |
-            type=local,dest=/tmp/.buildx-cache-new,mode=max
-            type=gha,mode=max,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}
+            type=gha,mode=max,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
           outputs: type=image,compression=zstd,compression-level=9,force-compression=true
           provenance: false
           sbom: true
@@ -265,62 +279,71 @@ jobs:
           BUILDKIT_PROGRESS: plain
           DOCKER_BUILDKIT: 1
 
-      - name: Rotate cache
-        run: |
-          rm -rf /tmp/.buildx-cache || true
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
-
-      - name: Registry cache export (background)
-        continue-on-error: true
-        run: |
-          timeout 180 docker buildx build \
-            --cache-from=type=local,src=/tmp/.buildx-cache \
-            --cache-to=type=registry,ref=${{ needs.setup-cache-strategy.outputs.image_name }}:cache,mode=max \
-            --platform linux/amd64,linux/arm64 \
-            --output=type=cacheonly \
-            . &
-
-      - name: Verify build success
-        run: |
-          echo "✅ Build completed"
-          echo "📦 ${{ steps.meta.outputs.tags }}"
-          echo "🔖 Digest: ${{ steps.build.outputs.digest }}"
-          echo "💾 Scope: ${{ needs.setup-cache-strategy.outputs.cache_scope }}"
-
-  security-scan:
-    name: Security Scan
+  create-manifest:
+    name: Create multi-arch manifest
     runs-on: ubuntu-24.04
-    needs: [ setup-cache-strategy, container-build ]
+    needs: [setup-cache-strategy, container-build]
     if: ${{ success() }}
     permissions:
       contents: read
       packages: write
-      security-events: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
+        name: Login to GHCR for manifest step
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
+      - id: buildx
+        uses: docker/setup-buildx-action@v3
+        name: Set up Buildx for manifest
+        with:
+          driver-opts: |
+            image=moby/buildkit:v0.12.5
+            network=host
+
+      - name: Create & push multi-arch stable tag
+        run: |
+          docker buildx imagetools create \
+            --tag ${{ needs.setup-cache-strategy.outputs.image_name }}:stable \
+            ${{ needs.setup-cache-strategy.outputs.image_name }}:stable-x86_64 \
+            ${{ needs.setup-cache-strategy.outputs.image_name }}:stable-aarch64
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-24.04
+    needs: [setup-cache-strategy, container-build, create-manifest]
+    if: ${{ success() }}
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout repository
+        with:
+          fetch-depth: 1
+
+      - uses: docker/login-action@v3
+        name: Login to GHCR
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/cache@v4
+        name: Cache Trivy DB
         with:
           path: ~/.cache/trivy
-          key: trivy-db-${{ github.run_number }}
-          restore-keys: trivy-db-
+          key: trivy-db-v1
+          restore-keys: |
+            trivy-db-v1-
         env:
           SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
 
-      - name: Run Trivy
-        uses: aquasecurity/trivy-action@0.17.0
+      - uses: aquasecurity/trivy-action@0.17.0
+        name: Run Trivy
         with:
           image-ref: ${{ needs.setup-cache-strategy.outputs.image_name }}:stable
           format: sarif
@@ -330,28 +353,29 @@ jobs:
           cache-dir: ~/.cache/trivy
           scanners: vuln
 
-      - name: Upload Trivy SARIF
+      - uses: github/codeql-action/upload-sarif@v3
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        name: Upload Trivy SARIF
         with:
           sarif_file: trivy-results.sarif
           category: trivy
+
   cache-maintenance:
     name: Cache Maintenance
     runs-on: ubuntu-24.04
-    needs: [ setup-cache-strategy, container-build ]
+    needs: [setup-cache-strategy, container-build, create-manifest]
     if: always()
     steps:
       - name: Cache health report
         run: |
           echo "🔍 Cache Scope: ${{ needs.setup-cache-strategy.outputs.cache_scope }}"
-          echo "✅ Build: ${{ needs.container-build.result }}"
+          echo "✅ Build & Manifest: ${{ needs.create-manifest.result }}"
           echo "🕒 $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
   deployment-summary:
     name: Deployment Summary
     runs-on: ubuntu-24.04
-    needs: [ setup-cache-strategy, container-build ]
+    needs: [setup-cache-strategy, container-build, create-manifest]
     if: always()
     steps:
       - name: Generate summary
@@ -359,19 +383,20 @@ jobs:
           mkdir -p ./artifacts
           {
             echo "# 🚀 Deployment Summary"
-            echo "| Metric | Value |"
-            echo "|---|---|"
-            echo "| **Branch** | ${{ needs.setup-cache-strategy.outputs.branch_name }} |"
-            echo "| **Image**  | ${{ needs.setup-cache-strategy.outputs.image_name }}:stable |"
-            echo "| **Platforms** | linux/amd64, linux/arm64 |"
-            echo "| **Cache**  | inline & multi-tier |"
-            echo "| **Build**  | ${{ needs.container-build.result }} |"
-            echo "| **Commit** | ${{ github.sha }} |"
-            echo "| **Time**   | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |"
+            echo "| Metric      | Value                                                    |"
+            echo "|---          |---                                                       |"
+            echo "| **Branch**  | ${{ needs.setup-cache-strategy.outputs.branch_name }}    |"
+            echo "| **Image**   | ${{ needs.setup-cache-strategy.outputs.image_name }}:stable |"
+            echo "| **Platforms** | linux/amd64, linux/arm64                                |"
+            echo "| **Cache**   | inline & multi-tier                                      |"
+            echo "| **Build**   | ${{ needs.container-build.result }}                     |"
+            echo "| **Manifest**| ${{ needs.create-manifest.result }}                     |"
+            echo "| **Commit**  | ${{ github.sha }}                                         |"
+            echo "| **Time**    | $(date -u '+%Y-%m-%d %H:%M:%S UTC')                      |"
           } > ./artifacts/deployment-summary.md
 
-      - name: Upload summary
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        name: Upload summary
         with:
           name: deployment-summary-${{ needs.setup-cache-strategy.outputs.cache_scope }}
           path: ./artifacts/deployment-summary.md
