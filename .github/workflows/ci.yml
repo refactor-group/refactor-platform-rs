@@ -233,9 +233,9 @@ jobs:
             --allow-insecure-entitlement network.host
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = 4
+              max-parallelism = 2
             [worker.containerd]
-              max-parallelism = 4
+              max-parallelism = 2
 
       - uses: docker/login-action@v3
         name: Login to GitHub Container Registry
