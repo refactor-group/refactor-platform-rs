@@ -1,97 +1,128 @@
 # syntax=docker/dockerfile:1.4
 
-# ┌───────────────────────────────────────────┐
-# │ 0) Plan & cache your workspace with Chef │
-# └───────────────────────────────────────────┘
+# Build-args for your cross toolchain image & Rust target
+ARG BASE_IMAGE=ghcr.io/rust-cross/rust-musl-cross:x86_64-musl
+ARG TARGET_TRIPLE=x86_64-unknown-linux-musl
 
-# Stage "chef-plan": generate a recipe.json of all your crates + versions
-FROM ghcr.io/lukemathwalker/cargo-chef:latest AS chef-plan
+############################################################
+# 0) Base: musl cross toolchain + pkg-config & OpenSSL dev #
+#           + cargo-chef for dependency caching            #
+############################################################
+
+FROM ${BASE_IMAGE} AS chef-base
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-chef
+
 WORKDIR /usr/src/app
 
-# copy only manifests first, to leverage layer caching
-COPY Cargo.toml Cargo.lock ./
-COPY ./entity/Cargo.toml ./entity/Cargo.toml
-COPY ./entity_api/Cargo.toml ./entity_api/Cargo.toml
-COPY ./migration/Cargo.toml ./migration/Cargo.toml
-COPY ./service/Cargo.toml ./service/Cargo.toml
-COPY ./web/Cargo.toml ./web/Cargo.toml
+############################################################
+# 1) Planner: generate recipe.json of your workspace deps  #
+############################################################
 
-# create recipe.json
+FROM chef-base AS chef-plan
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+COPY entity/Cargo.toml     entity/Cargo.toml
+COPY entity/src            entity/src
+COPY entity_api/Cargo.toml entity_api/Cargo.toml
+COPY entity_api/src        entity_api/src
+COPY migration/Cargo.toml  migration/Cargo.toml
+COPY migration/src         migration/src
+COPY service/Cargo.toml    service/Cargo.toml
+COPY service/src           service/src
+COPY web/Cargo.toml        web/Cargo.toml
+COPY web/src               web/src
+COPY domain/Cargo.toml     domain/Cargo.toml
+COPY domain/src            domain/src
+
 RUN cargo chef prepare --recipe-path recipe.json
 
-# Stage "chef-cook": fetch & compile all your deps (no sources yet)
-FROM ghcr.io/lukemathwalker/cargo-chef:latest AS chef-cook
-WORKDIR /usr/src/app
+############################################################
+# 2) Cooker: compile all dependencies for musl target      #
+############################################################
+
+FROM chef-base AS chef-cook
+ARG TARGET_TRIPLE
+
 COPY --from=chef-plan /usr/src/app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY entity/Cargo.toml     entity/Cargo.toml
+COPY entity_api/Cargo.toml entity_api/Cargo.toml
+COPY migration/Cargo.toml  migration/Cargo.toml
+COPY service/Cargo.toml    service/Cargo.toml
+COPY web/Cargo.toml        web/Cargo.toml
+COPY domain/Cargo.toml     domain/Cargo.toml
 
-# ┌───────────────────────────────────────────┐
-# │ 1) Builder on Tonistiigi's multi-arch rs │
-# └───────────────────────────────────────────┘
+RUN cargo chef cook --release \
+    --target ${TARGET_TRIPLE} \
+    --recipe-path recipe.json
 
-FROM --platform=${BUILDPLATFORM} tonistiigi/rs:debian AS builder
+############################################################
+# 3) Builder: compile only your binaries                   #
+############################################################
 
-# Declare the GitHub Actions build-args so they're no longer "unknown"
+FROM chef-base AS builder
+ARG TARGET_TRIPLE
 ARG BUILDKIT_INLINE_CACHE
 ARG CARGO_INCREMENTAL
 ARG RUSTFLAGS
 
-# (Optional) Expose the buildkit platform vars, if you want to use them
-ARG TARGETPLATFORM
-ARG BUILDPLATFORM
-
-# Export into the container environment for any RUN/cargo commands
 ENV CARGO_INCREMENTAL=${CARGO_INCREMENTAL} \
-    RUSTFLAGS=${RUSTFLAGS} \
-    TARGETPLATFORM=${TARGETPLATFORM} \
-    BUILDPLATFORM=${BUILDPLATFORM}
-
-
-# install libs for Sea-ORM, etc.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-    build-essential bash pkg-config libssl-dev libpq-dev curl git \
-    && rm -rf /var/lib/apt/lists/*
+    RUSTFLAGS=${RUSTFLAGS}
 
 WORKDIR /usr/src/app
-
-# reuse compiled deps from chef-cook
 COPY --from=chef-cook /usr/src/app/target target
-# bring in recipe in case you need cargo-chef metadata
 COPY --from=chef-plan /usr/src/app/recipe.json recipe.json
 
-# copy all your source
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY src        ./src
+COPY entity     ./entity
+COPY entity_api ./entity_api
+COPY migration  ./migration
+COPY service    ./service
+COPY web        ./web
+COPY domain     ./domain
 
-# final build (only your code, deps are cached!)
-RUN cargo build --release -p refactor_platform_rs -p migration
+RUN cargo build --release \
+    --target ${TARGET_TRIPLE} \
+    -p refactor_platform_rs \
+    -p migration
 
-# debug listing (optional)
-RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app
-# ┌───────────────────────────────────────────┐
-# │ 2) Runtime — your existing Debian slim   │
-# └───────────────────────────────────────────┘
+############################################################
+# 4) Runtime: minimal Debian-slim with bash & non-root     #
+############################################################
 
-FROM --platform=${BUILDPLATFORM} debian:bullseye-slim AS runtime
+FROM debian:bullseye-slim AS runtime
+ARG TARGET_TRIPLE
 
-# Install Bash to support entrypoint.sh
-RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
+LABEL \
+    org.opencontainers.image.title="Refactor Platform RS" \
+    org.opencontainers.image.description="A Sea-ORM-powered Rust workspace (multi-arch, cached builds)" \
+    org.opencontainers.image.source="https://github.com/refactor-group/refactor-platform-rs" \
+    org.opencontainers.image.licenses="GPL-3.0-only" \
+    org.opencontainers.image.authors="Levi McDonough <levimcdonough@gmail.com>"
 
-# non-root user ensuring user/group IDs match the host
-# (this is important for file permissions, e.g. when using volumes)
-RUN useradd -m -u 1001 -s /bin/bash appuser
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1001 -s /bin/bash appuser
+
 WORKDIR /app
 RUN chown appuser:appuser /app
 
-# binaries
-COPY --from=builder /usr/src/app/target/release/refactor_platform_rs .
-COPY --from=builder /usr/src/app/target/release/migration ./migrationctl
+COPY --from=builder /usr/src/app/target/${TARGET_TRIPLE}/release/refactor_platform_rs .
+COPY --from=builder /usr/src/app/target/${TARGET_TRIPLE}/release/migration ./migrationctl
 
-# migrations SQL
 RUN mkdir -p /app/migration/src
 COPY --from=builder /usr/src/app/migration/src/refactor_platform_rs.sql /app/migration/src/
 
-# entrypoint
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
     && chown -R appuser:appuser /app /entrypoint.sh
@@ -99,3 +130,6 @@ RUN chmod +x /entrypoint.sh \
 USER appuser
 EXPOSE 4000
 ENTRYPOINT ["/entrypoint.sh"]
+
+
+
