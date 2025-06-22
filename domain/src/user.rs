@@ -6,7 +6,7 @@ use crate::{
 use chrono::Utc;
 pub use entity_api::user::{
     create, create_by_organization, find_by_email, find_by_id, find_by_organization, generate_hash,
-    verify_password, AuthSession, Backend, Credentials,
+    verify_password, AuthSession, Backend, Credentials, Role,
 };
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
@@ -106,14 +106,19 @@ pub async fn create_user_and_coaching_relationship(
     let new_coaching_relationship_model = entity_api::coaching_relationships::Model {
         coachee_id: new_user.id,
         coach_id,
-        organization_id,
         // These will be overridden
+        organization_id: Default::default(),
         id: Default::default(),
         slug: "".to_string(),
         created_at: Utc::now().into(),
         updated_at: Utc::now().into(),
     };
-    entity_api::coaching_relationship::create(&txn, new_coaching_relationship_model).await?;
+    entity_api::coaching_relationship::create(
+        &txn,
+        organization_id,
+        new_coaching_relationship_model,
+    )
+    .await?;
     // This is not probably the type of error we'll ultimately be exposing. Again just temporary (hopfully
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),

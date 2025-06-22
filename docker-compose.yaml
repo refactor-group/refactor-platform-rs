@@ -1,7 +1,33 @@
 ######################################################
 # Docker compose base file for production environment
 ######################################################
+
 services:
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-reverse-proxy  # Match the name from your error message
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Mount your custom nginx configuration
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # Mount your letsencrypt SSL certs
+      - /etc/letsencrypt/live/refactor.engineer/:/etc/letsencrypt/live/refactor.engineer/:ro
+      - /etc/letsencrypt/archive/refactor.engineer/:/etc/letsencrypt/archive/refactor.engineer/:ro
+      - ${SSL_DHPARAMS_PATH}:/etc/letsencrypt/ssl-dhparams.pem:ro
+      # Optional: nginx logs for debugging
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      rust-app:
+        condition: service_started
+      nextjs-app:
+        condition: service_started
+    networks:
+      - backend_network
+    restart: unless-stopped
+
   migrator:                                 # db migration service
     image: ${BACKEND_IMAGE_NAME}            # reuse backend image
     build:
@@ -12,6 +38,7 @@ services:
       ROLE: migrator                        # entrypoint knows to migrate
       RUST_ENV: ${RUST_ENV}                 # development, staging, production
       POSTGRES_SSL_ROOT_CERT: ${POSTGRES_SSL_ROOT_CERT}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-public}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
       PLATFORM: ${PLATFORM}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
@@ -28,14 +55,14 @@ services:
     build:
       context: ${BACKEND_BUILD_CONTEXT}
     platform: ${PLATFORM}
-    container_name: ${BACKEND_CONTAINER_NAME}
+    container_name: rust-app  # Explicitly set the name nginx expects
     environment:
       ROLE: app
       RUST_ENV: ${RUST_ENV}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA:-public}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_SSL_ROOT_CERT: ${POSTGRES_SSL_ROOT_CERT}
@@ -51,8 +78,6 @@ services:
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
       PLATFORM: ${PLATFORM}
-    ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
     depends_on:
       - migrator
     volumes:
@@ -65,17 +90,22 @@ services:
     image: ${FRONTEND_IMAGE_NAME}
     build:
       context: ${FRONTEND_BUILD_CONTEXT}
-    container_name: ${FRONTEND_CONTAINER_NAME}
+    container_name: nextjs-app
     environment:
+      # Next.js server configuration
+      HOSTNAME: ${FRONTEND_SERVICE_INTERFACE}
+      PORT: ${FRONTEND_SERVICE_PORT}
+      # Runtime environment variables for the application
       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${BACKEND_SERVICE_PROTOCOL}
-      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_PORT}
       NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
-      NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION}
-      FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT}
+      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_SERVICE_PORT:-443}
+      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${BACKEND_SERVICE_API_PATH:-api}
+      NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION:-1.0.0-beta1}
+      NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
+      FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT:-3000}
       FRONTEND_IMAGE_NAME: ${FRONTEND_IMAGE_NAME}
       FRONTEND_CONTAINER_NAME: ${FRONTEND_CONTAINER_NAME}
-    ports:
-      - "${FRONTEND_SERVICE_PORT}:${FRONTEND_SERVICE_PORT}"
     depends_on:
       - rust-app
     networks:

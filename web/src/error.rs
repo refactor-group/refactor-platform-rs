@@ -88,6 +88,13 @@ impl Error {
                 );
                 (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
             }
+            EntityErrorKind::Unauthenticated => {
+                warn!(
+                    "EntityErrorKind::Unauthenticated: Responding with 401 Unauthorized. Error: {:?}",
+                    self
+                );
+                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+            }
             EntityErrorKind::DbTransaction => {
                 warn!(
                     "EntityErrorKind::DbTransaction: Responding with 500 Internal Server Error. Error: {:?}",

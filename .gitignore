@@ -13,4 +13,6 @@ dbml-error.log
 
 # CA certificates
 *.crt
-.secrets
+
+# nginx log files
+nginx/logs/

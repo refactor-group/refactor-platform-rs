@@ -68,17 +68,14 @@ RUN cargo build --release -p refactor_platform_rs -p migration
 
 # debug listing (optional)
 RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app
-
 # ┌───────────────────────────────────────────┐
 # │ 2) Runtime — your existing Debian slim   │
 # └───────────────────────────────────────────┘
 
 FROM --platform=${BUILDPLATFORM} debian:bullseye-slim AS runtime
 
-# install Bash for entrypoint.sh
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash \
-    && rm -rf /var/lib/apt/lists/*
+# Install Bash to support entrypoint.sh
+RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
 
 # non-root user ensuring user/group IDs match the host
 # (this is important for file permissions, e.g. when using volumes)

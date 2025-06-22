@@ -1,4 +1,4 @@
-use crate::{params, protect, AppState};
+use crate::{controller::health_check_controller, params, protect, AppState};
 use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
@@ -115,6 +115,7 @@ pub fn define_routes(app_state: AppState) -> Router {
     Router::new()
         .merge(action_routes(app_state.clone()))
         .merge(agreement_routes(app_state.clone()))
+        .merge(health_routes())
         .merge(organization_routes(app_state.clone()))
         .merge(note_routes(app_state.clone()))
         .merge(organization_coaching_relationship_routes(app_state.clone()))
@@ -216,6 +217,10 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+fn health_routes() -> Router {
+    Router::new().route("/health", get(health_check_controller::health_check))
+}
+
 fn note_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/notes", post(note_controller::create))
@@ -237,6 +242,10 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships",
             post(coaching_relationship_controller::create),
         )
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::organizations::coaching_relationships::create,
+        ))
         .merge(
             // GET /organizations/:organization_id/coaching_relationships
             Router::new()
@@ -546,6 +555,7 @@ mod organization_endpoints_tests {
                 github_profile_url: None,
                 created_at: now.into(),
                 updated_at: now.into(),
+                role: domain::users::Role::User,
             })
         }
     }

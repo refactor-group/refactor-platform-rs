@@ -63,12 +63,14 @@ main() {
             log_info "Running in MIGRATOR mode"
             validate_binary "migrationctl"
             validate_env "DATABASE_URL"
+            validate_env "DATABASE_SCHEMA"
             validate_env "RUST_ENV"
 
             log_info "Running in $RUST_ENV environment"
+            log_info "Using schema $DATABASE_SCHEMA to apply the migrations in"
 
             log_success "Running SeaORM migrations..."
-            exec /app/migrationctl up
+            exec /app/migrationctl up -s $DATABASE_SCHEMA
             ;;
             
         app)
@@ -80,6 +82,7 @@ main() {
             log_info "Running in $RUST_ENV environment"
             
             # Set application defaults
+            local rust_env="${RUST_ENV:-development}"
             local log_level="${BACKEND_LOG_FILTER_LEVEL:-INFO}"
             local interface="${BACKEND_INTERFACE:-0.0.0.0}"
             local port="${BACKEND_PORT:-4000}"
@@ -89,6 +92,7 @@ main() {
             log_debug "Log level: $log_level, Interface: $interface, Port: $port"
             
             exec /app/refactor_platform_rs \
+                -r "$rust_env" \
                 -l "$log_level" \
                 -i "$interface" \
                 -p "$port" \

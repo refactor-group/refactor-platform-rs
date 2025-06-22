@@ -33,6 +33,8 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
+    Path(organization_id): Path<Id>,
+    AuthenticatedUser(_user): AuthenticatedUser,
     Json(coaching_relationship_model): Json<coaching_relationships::Model>,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
@@ -40,9 +42,12 @@ pub async fn create(
         coaching_relationship_model
     );
 
-    let coaching_relationship: coaching_relationships::Model =
-        CoachingRelationshipApi::create(app_state.db_conn_ref(), coaching_relationship_model)
-            .await?;
+    let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
+        app_state.db_conn_ref(),
+        organization_id,
+        coaching_relationship_model,
+    )
+    .await?;
 
     debug!(
         "Newly created Coaching Relationship: {:?}",

@@ -15,6 +15,7 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[sea_orm(primary_key)]
     pub id: Id,
+    #[serde(skip_deserializing)]
     #[sea_orm(unique)]
     pub organization_id: Id,
     pub coach_id: Id,

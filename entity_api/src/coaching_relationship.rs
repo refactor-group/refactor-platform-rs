@@ -1,4 +1,7 @@
-use super::error::{EntityApiErrorKind, Error};
+use super::{
+    error::{EntityApiErrorKind, Error},
+    organization,
+};
 use crate::user;
 use chrono::Utc;
 use entity::{
@@ -16,17 +19,42 @@ use slugify::slugify;
 
 pub async fn create(
     db: &impl ConnectionTrait,
+    organization_id: Id,
     coaching_relationship_model: Model,
-) -> Result<Model, Error> {
+) -> Result<CoachingRelationshipWithUserNames, Error> {
     debug!(
         "New Coaching Relationship Model to be inserted: {:?}",
         coaching_relationship_model
     );
 
+    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
+    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
+
+    let coach_organization_ids = organization::find_by_user(db, coach.id)
+        .await?
+        .iter()
+        .map(|org| org.id)
+        .collect::<Vec<Id>>();
+    let coachee_organization_ids = organization::find_by_user(db, coachee.id)
+        .await?
+        .iter()
+        .map(|org| org.id)
+        .collect::<Vec<Id>>();
+
+    // Check that the coach and coachee belong to the correct organization
+    if !coach_organization_ids.contains(&organization_id)
+        || !coachee_organization_ids.contains(&organization_id)
+    {
+        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, organization_id);
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError,
+        });
+    }
+
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
-    let existing_coaching_relationships =
-        find_by_organization(db, coaching_relationship_model.organization_id).await?;
+    let existing_coaching_relationships = find_by_organization(db, organization_id).await?;
     let existing_coaching_relationship = existing_coaching_relationships.iter().find(|cr| {
         cr.coach_id == coaching_relationship_model.coach_id
             && cr.coachee_id == coaching_relationship_model.coachee_id
@@ -46,7 +74,7 @@ pub async fn create(
     let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
-        organization_id: Set(coaching_relationship_model.organization_id),
+        organization_id: Set(organization_id),
         coach_id: Set(coaching_relationship_model.coach_id),
         coachee_id: Set(coaching_relationship_model.coachee_id),
         slug: Set(slug),
@@ -54,7 +82,19 @@ pub async fn create(
         updated_at: Set(now.into()),
         ..Default::default()
     };
-    Ok(coaching_relationship_active_model.insert(db).await?)
+    let inserted: Model = coaching_relationship_active_model.insert(db).await?;
+
+    Ok(CoachingRelationshipWithUserNames {
+        id: inserted.id,
+        coach_id: inserted.coach_id,
+        coachee_id: inserted.coachee_id,
+        coach_first_name: coach.first_name,
+        coach_last_name: coach.last_name,
+        coachee_first_name: coachee.first_name,
+        coachee_last_name: coachee.last_name,
+        created_at: inserted.created_at,
+        updated_at: inserted.updated_at,
+    })
 }
 
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
@@ -206,7 +246,7 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
 
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids. This should be used as an implementation detail only.
-#[derive(FromQueryResult, Debug)]
+#[derive(FromQueryResult, Debug, PartialEq)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
@@ -337,26 +377,76 @@ mod tests {
     #[tokio::test]
     async fn create_returns_validation_error_for_duplicate_relationship() -> Result<(), Error> {
         use entity::coaching_relationships::Model;
-        use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+        use sea_orm::{DatabaseBackend, MockDatabase};
 
         let organization_id = Id::new_v4();
         let coach_id = Id::new_v4();
         let coachee_id = Id::new_v4();
+        let coach_organization_id = Id::new_v4();
+        let coachee_organization_id = Id::new_v4();
+
+        let coach_user = entity::users::Model {
+            id: coach_id.clone(),
+            first_name: "Coach".to_string(),
+            last_name: "User".to_string(),
+            email: "coach@example.com".to_string(),
+            password: "hash".to_string(),
+            display_name: Some("Coach User".to_string()),
+            github_username: Some("coach_user".to_string()),
+            role: entity::users::Role::User,
+            github_profile_url: Some("https://github.com/coach_user".to_string()),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
+
+        let coachee_user = entity::users::Model {
+            id: coachee_id.clone(),
+            first_name: "Coachee".to_string(),
+            last_name: "User".to_string(),
+            email: "coachee@example.com".to_string(),
+            password: "hash".to_string(),
+            display_name: Some("Coachee User".to_string()),
+            github_username: Some("coachee_user".to_string()),
+            role: entity::users::Role::User,
+            github_profile_url: Some("https://github.com/coachee_user".to_string()),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
+
+        let coaching_relationships = vec![Model {
+            id: Id::new_v4(),
+            organization_id: organization_id.clone(),
+            coach_id: coach_id.clone(),
+            coachee_id: coachee_id.clone(),
+            slug: "coach-coachee".to_string(),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        }];
+
+        let coach_organization = entity::organizations::Model {
+            id: coach_organization_id,
+            name: "Organization".to_string(),
+            slug: "organization".to_string(),
+            logo: None,
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
+
+        let coachee_organization = entity::organizations::Model {
+            id: coachee_organization_id,
+            name: "Organization".to_string(),
+            slug: "organization".to_string(),
+            logo: None,
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![Model {
-                id: Id::new_v4(),
-                organization_id: organization_id.clone(),
-                coach_id: coach_id.clone(),
-                coachee_id: coachee_id.clone(),
-                slug: "coach-coachee".to_string(),
-                created_at: chrono::Utc::now().into(),
-                updated_at: chrono::Utc::now().into(),
-            }]])
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }])
+            .append_query_results(vec![vec![coach_user]])
+            .append_query_results(vec![vec![coachee_user]])
+            .append_query_results(vec![vec![coach_organization]])
+            .append_query_results(vec![vec![coachee_organization]])
+            .append_query_results(vec![coaching_relationships])
             .into_connection();
 
         let model = Model {
@@ -369,7 +459,8 @@ mod tests {
             updated_at: chrono::Utc::now().into(),
         };
 
-        let result = create(&db, model).await;
+        let result = create(&db, organization_id, model).await;
+        println!("Result: {:?}", result);
         assert!(
             result
                 == Err(Error {
