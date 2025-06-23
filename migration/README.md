@@ -35,6 +35,36 @@ Before running migrations, ensure you have a proper environment configuration:
    export DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform
    ```
 
+### Manual Schema Creation (Production)
+
+For production environments the `refactor_platform` schema is **not** created automatically by SeaORM migrations.  
+Create it once in your production database before running any migrations:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS refactor_platform;
+```
+
+After the schema exists, run the normal migration commands (all examples below continue to use `-s refactor_platform`).
+
+### Schema Privileges (Production)
+
+After the schema exists, ensure the `refactor` role (used in the `DATABASE_URL`) has the proper rights; otherwise the migrator will error with `permission denied for table seaql_migrations`.
+
+```sql
+-- Allow the role to create and use objects in the schema
+GRANT USAGE, CREATE ON SCHEMA refactor_platform TO refactor;
+
+-- Transfer ownership of the SeaORM migrations tracking table
+ALTER TABLE refactor_platform.seaql_migrations OWNER TO refactor;
+
+-- Grant DML privileges on all existing tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA refactor_platform TO refactor;
+
+-- Ensure future tables inherit these privileges
+ALTER DEFAULT PRIVILEGES IN SCHEMA refactor_platform
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO refactor;
+```
+
 ## Running Migrations
 
 ### Important: Schema Specification
