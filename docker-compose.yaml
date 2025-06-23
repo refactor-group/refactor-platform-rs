@@ -5,7 +5,7 @@
 services:
   nginx:
     image: nginx:1.25-alpine
-    container_name: nginx-reverse-proxy  # Match the name from your error message
+    container_name: nginx-reverse-proxy # Match the name from your error message
     ports:
       - "80:80"
       - "443:443"
@@ -28,22 +28,22 @@ services:
       - backend_network
     restart: unless-stopped
 
-  migrator:                                 # db migration service
-    image: ${BACKEND_IMAGE_NAME}            # reuse backend image
+  migrator: # db migration service
+    image: ${BACKEND_IMAGE_NAME} # reuse backend image
     build:
       context: ${BACKEND_BUILD_CONTEXT}
     container_name: db-migrator
     platform: ${PLATFORM}
     environment:
-      ROLE: migrator                        # entrypoint knows to migrate
-      RUST_ENV: ${RUST_ENV}                 # development, staging, production
+      ROLE: migrator # entrypoint knows to migrate
+      RUST_ENV: ${RUST_ENV} # development, staging, production
       POSTGRES_SSL_ROOT_CERT: ${POSTGRES_SSL_ROOT_CERT}
       DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-public}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
       PLATFORM: ${PLATFORM}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
-    restart: "no"                           # run once, then exit
-    command: []                             # keep original ENTRYPOINT
+    restart: "no" # run once, then exit
+    command: [] # keep original ENTRYPOINT
     volumes:
       # Read-only bind mount of our production DB CA certificate
       - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
@@ -55,7 +55,7 @@ services:
     build:
       context: ${BACKEND_BUILD_CONTEXT}
     platform: ${PLATFORM}
-    container_name: rust-app  # Explicitly set the name nginx expects
+    container_name: rust-app # Explicitly set the name nginx expects
     environment:
       ROLE: app
       RUST_ENV: ${RUST_ENV}
@@ -74,6 +74,7 @@ services:
       BACKEND_API_VERSION: ${BACKEND_API_VERSION}
       BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}
       BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}
+      TIPTAP_APP_ID: ${TIPTAP_APP_ID}
       TIPTAP_URL: ${TIPTAP_URL}
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
