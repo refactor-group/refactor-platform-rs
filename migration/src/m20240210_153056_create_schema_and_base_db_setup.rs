@@ -14,7 +14,7 @@ impl MigrationTrait for Migration {
 
         manager
             .get_connection()
-            .execute_unprepared("SET search_path TO refactor_platform, public;")
+            .execute_unprepared("SET search_path TO refactor_platform;")
             .await?;
 
         // Create the base DB user that will execute all platform queries
@@ -30,6 +30,12 @@ impl MigrationTrait for Migration {
                     ALTER DEFAULT PRIVILEGES IN SCHEMA refactor_platform GRANT ALL ON FUNCTIONS TO refactor;
                 END $$;
             "#)
+            .await?;
+
+        // Revoke all public CREATE privileges to the public schema, which plugs a significant security concern
+        manager
+            .get_connection()
+            .execute_unprepared("REVOKE CREATE ON SCHEMA public FROM PUBLIC;")
             .await?;
 
         Ok(())
