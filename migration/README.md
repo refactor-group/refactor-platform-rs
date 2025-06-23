@@ -54,7 +54,7 @@ After the schema exists, ensure the `refactor` role (used in the `DATABASE_URL`)
 -- Allow the role to create and use objects in the schema
 GRANT USAGE, CREATE ON SCHEMA refactor_platform TO refactor;
 
--- Transfer ownership of the SeaORM migrations tracking table
+-- Transfer ownership of the SeaORM migrations tracking table (required if it was created by another role such as `doadmin`)
 ALTER TABLE refactor_platform.seaql_migrations OWNER TO refactor;
 
 -- Grant DML privileges on all existing tables
@@ -63,6 +63,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA refactor_platform T
 -- Ensure future tables inherit these privileges
 ALTER DEFAULT PRIVILEGES IN SCHEMA refactor_platform
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO refactor;
+
+-- Ensure the application role searches the refactor_platform schema first
+ALTER ROLE refactor SET search_path = refactor_platform, public;
 ```
 
 ## Running Migrations
