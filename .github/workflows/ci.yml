@@ -51,7 +51,6 @@ jobs:
           IMAGE="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-${SAFE}"
           echo "branch_name=$SAFE" >> $GITHUB_OUTPUT
           echo "image_name=$IMAGE" >> $GITHUB_OUTPUT
-
       - id: cache_keys
         name: Generate optimized cache keys
         run: |
@@ -62,23 +61,19 @@ jobs:
           else
             SCOPE="branch-${{ steps.branch_info.outputs.branch_name }}"
           fi
-
           echo "rust_cache_key=rust-v4-${SCOPE}-${CARGO_HASH}" >> $GITHUB_OUTPUT
           echo "rust_restore_keys<<EOF"                     >> $GITHUB_OUTPUT
           echo "rust-v4-${SCOPE}-"                           >> $GITHUB_OUTPUT
           echo "rust-v4-branch-main-"                        >> $GITHUB_OUTPUT
           echo "rust-v4-"                                    >> $GITHUB_OUTPUT
           echo "EOF"                                         >> $GITHUB_OUTPUT
-
           echo "docker_cache_key=docker-v4-${SCOPE}-${DOCKER_HASH}" >> $GITHUB_OUTPUT
           echo "docker_restore_keys<<EOF"                            >> $GITHUB_OUTPUT
           echo "docker-v4-${SCOPE}-"                                 >> $GITHUB_OUTPUT
           echo "docker-v4-branch-main-"                              >> $GITHUB_OUTPUT
           echo "docker-v4-"                                          >> $GITHUB_OUTPUT
           echo "EOF"                                                >> $GITHUB_OUTPUT
-
           echo "cache_scope=$SCOPE" >> $GITHUB_OUTPUT
-
   rust-tests:
     name: Rust Tests
     runs-on: ubuntu-24.04
@@ -130,7 +125,6 @@ jobs:
         run: |
           rm -rf target/debug/incremental 2>/dev/null || true
           cargo test --release --all-targets --jobs $(nproc)
-
       - name: Check formatting
         run: cargo fmt --check
 
@@ -140,7 +134,6 @@ jobs:
           find target -name "*.dSYM"  -type d -exec rm -rf {} + 2>/dev/null || true
           find target -name "*.rmeta" -mtime +1 -delete 2>/dev/null || true
           find target -name "*.rlib"  -mtime +3 -delete 2>/dev/null || true
-
   rust-lint:
     name: Rust Lint
     runs-on: ubuntu-24.04
@@ -189,7 +182,6 @@ jobs:
         run: |
           rm -rf target/debug/incremental 2>/dev/null || true
           cargo clippy --all-targets --all-features --jobs $(nproc) -- -D warnings
-
   container-build:
     name: Build & Push Container
     runs-on: ubuntu-24.04
@@ -233,9 +225,9 @@ jobs:
             --allow-insecure-entitlement network.host
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = 2
+              max-parallelism = 1
             [worker.containerd]
-              max-parallelism = 2
+              max-parallelism = 1
 
       - uses: docker/login-action@v3
         name: Login to GitHub Container Registry
@@ -271,8 +263,8 @@ jobs:
             type=gha,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
             type=gha,scope=main-${{ matrix.arch }}
           cache-to: |
-            type=gha,mode=max,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
-          outputs: type=image,compression=zstd,compression-level=9,force-compression=true
+            type=gha,mode=min,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
+          outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: false
           sbom: true
         env:
@@ -302,14 +294,12 @@ jobs:
           driver-opts: |
             image=moby/buildkit:v0.12.5
             network=host
-
       - name: Create & push multi-arch stable tag
         run: |
           docker buildx imagetools create \
             --tag ${{ needs.setup-cache-strategy.outputs.image_name }}:stable \
             ${{ needs.setup-cache-strategy.outputs.image_name }}:stable-x86_64 \
             ${{ needs.setup-cache-strategy.outputs.image_name }}:stable-aarch64
-
   security-scan:
     name: Security Scan
     runs-on: ubuntu-24.04
@@ -371,7 +361,6 @@ jobs:
           echo "🔍 Cache Scope: ${{ needs.setup-cache-strategy.outputs.cache_scope }}"
           echo "✅ Build & Manifest: ${{ needs.create-manifest.result }}"
           echo "🕒 $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-
   deployment-summary:
     name: Deployment Summary
     runs-on: ubuntu-24.04
@@ -394,7 +383,6 @@ jobs:
             echo "| **Commit**  | ${{ github.sha }}                                         |"
             echo "| **Time**    | $(date -u '+%Y-%m-%d %H:%M:%S UTC')                      |"
           } > ./artifacts/deployment-summary.md
-
       - uses: actions/upload-artifact@v4
         name: Upload summary
         with:
