@@ -90,7 +90,9 @@ jobs:
           components: rustfmt
 
       - name: Install sccache
-        run: cargo install sccache
+        uses: taiki-e/install-action@v2
+        with:
+          tool: sccache
 
       - uses: actions/cache@v4
         name: Cache sccache
@@ -150,7 +152,9 @@ jobs:
           components: clippy
 
       - name: Install sccache
-        run: cargo install sccache
+        uses: taiki-e/install-action@v2
+        with:
+          tool: sccache
 
       - uses: actions/cache@v4
         name: Cache sccache
@@ -228,7 +232,6 @@ jobs:
               max-parallelism = 1
             [worker.containerd]
               max-parallelism = 1
-
       - uses: docker/login-action@v3
         name: Login to GitHub Container Registry
         with:
@@ -243,7 +246,6 @@ jobs:
           images: ${{ needs.setup-cache-strategy.outputs.image_name }}
           tags: |
             type=raw,value=stable-${{ matrix.arch }}
-
       - id: build
         uses: docker/build-push-action@v5
         name: Build and push (cargo-chef optimized)
