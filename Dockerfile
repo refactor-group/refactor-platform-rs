@@ -11,12 +11,20 @@ ARG TARGET_TRIPLE=x86_64-unknown-linux-musl
 
 FROM ${BASE_IMAGE} AS chef-base
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# Install system dependencies with retry logic
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && cargo install cargo-chef
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-chef with memory-conscious settings
+ENV CARGO_NET_RETRY=10 \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    CARGO_HTTP_TIMEOUT=300
+
+RUN cargo install cargo-chef --locked
 
 WORKDIR /usr/src/app
 
@@ -51,6 +59,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef-base AS chef-cook
 ARG TARGET_TRIPLE
 
+# Memory-conscious environment settings
+ENV CARGO_BUILD_JOBS=1 \
+    CARGO_NET_RETRY=10
+
 COPY --from=chef-plan /usr/src/app/recipe.json recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY entity/Cargo.toml     entity/Cargo.toml
@@ -74,7 +86,8 @@ ARG BUILDKIT_INLINE_CACHE
 ARG CARGO_INCREMENTAL
 ARG RUSTFLAGS
 
-ENV CARGO_INCREMENTAL=${CARGO_INCREMENTAL} \
+ENV CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-0} \
+    CARGO_BUILD_JOBS=1 \
     RUSTFLAGS=${RUSTFLAGS}
 
 WORKDIR /usr/src/app
@@ -130,6 +143,3 @@ RUN chmod +x /entrypoint.sh \
 USER appuser
 EXPOSE 4000
 ENTRYPOINT ["/entrypoint.sh"]
-
-
-

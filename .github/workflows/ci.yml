@@ -203,10 +203,12 @@ jobs:
             platform: linux/amd64
             base_image: ghcr.io/rust-cross/rust-musl-cross:x86_64-musl
             target: x86_64-unknown-linux-musl
+            rustflags: "-C target-cpu=generic -C opt-level=3 -C codegen-units=1"
           - arch: aarch64
             platform: linux/arm64
             base_image: ghcr.io/rust-cross/rust-musl-cross:aarch64-musl
             target: aarch64-unknown-linux-musl
+            rustflags: "-C target-cpu=generic -C opt-level=2 -C codegen-units=4 -C link-arg=-Wl,--no-keep-memory"
 
     outputs:
       image_name: ${{ needs.setup-cache-strategy.outputs.image_name }}
@@ -232,6 +234,7 @@ jobs:
               max-parallelism = 1
             [worker.containerd]
               max-parallelism = 1
+
       - uses: docker/login-action@v3
         name: Login to GitHub Container Registry
         with:
@@ -246,6 +249,7 @@ jobs:
           images: ${{ needs.setup-cache-strategy.outputs.image_name }}
           tags: |
             type=raw,value=stable-${{ matrix.arch }}
+
       - id: build
         uses: docker/build-push-action@v5
         name: Build and push (cargo-chef optimized)
@@ -260,7 +264,7 @@ jobs:
             TARGET_TRIPLE=${{ matrix.target }}
             BUILDKIT_INLINE_CACHE=1
             CARGO_INCREMENTAL=0
-            RUSTFLAGS=-C target-cpu=generic -C opt-level=3 -C codegen-units=1
+            RUSTFLAGS=${{ matrix.rustflags }}
           cache-from: |
             type=gha,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
             type=gha,scope=main-${{ matrix.arch }}
