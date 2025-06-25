@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.4
 
-# Build-args for your cross toolchain image & Rust target
+# Build-time args for your cross toolchain image & Rust target
 ARG BASE_IMAGE=ghcr.io/rust-cross/rust-musl-cross:x86_64-musl
 ARG TARGET_TRIPLE=x86_64-unknown-linux-musl
 
@@ -9,9 +9,9 @@ ARG TARGET_TRIPLE=x86_64-unknown-linux-musl
 #           + cargo-chef for dependency caching            #
 ############################################################
 
-FROM ${BASE_IMAGE} AS chef-base
+FROM --platform=${BUILDPLATFORM} ${BASE_IMAGE} AS chef-base
 
-# Install system dependencies with retry logic
+# Install system dependencies
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     pkg-config \
@@ -19,7 +19,7 @@ RUN apt-get update && \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cargo-chef with memory-conscious settings
+# Install cargo-chef
 ENV CARGO_NET_RETRY=10 \
     CARGO_NET_GIT_FETCH_WITH_CLI=true \
     CARGO_HTTP_TIMEOUT=300
@@ -59,7 +59,6 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef-base AS chef-cook
 ARG TARGET_TRIPLE
 
-# Memory-conscious environment settings
 ENV CARGO_BUILD_JOBS=1 \
     CARGO_NET_RETRY=10
 
@@ -91,6 +90,7 @@ ENV CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-0} \
     RUSTFLAGS=${RUSTFLAGS}
 
 WORKDIR /usr/src/app
+
 COPY --from=chef-cook /usr/src/app/target target
 COPY --from=chef-plan /usr/src/app/recipe.json recipe.json
 
