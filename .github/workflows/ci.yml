@@ -291,10 +291,8 @@ jobs:
             BUILDKIT_INLINE_CACHE=1
             CARGO_INCREMENTAL=0
             RUSTFLAGS=${{ matrix.rustflags }}
-          cache-from: |
-            ${{ needs.setup-cache-strategy.outputs.registry_cache_from }}
-          cache-to: |
-            ${{ needs.setup-cache-strategy.outputs.registry_cache_to }}
+          cache-from: ${{ needs.setup-cache-strategy.outputs.registry_cache_from }}
+          cache-to: ${{ needs.setup-cache-strategy.outputs.registry_cache_to }}
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: false
           sbom: true
