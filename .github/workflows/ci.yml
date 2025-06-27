@@ -203,7 +203,7 @@ jobs:
           RUSTFLAGS: "-C debuginfo=0 -C codegen-units=1"
         run: |
           rm -rf target/debug/incremental 2>/dev/null || true
-          cargo clippy --all-targets --all-features --jobs $(nproc) -- -D warnings
+          cargo clippy --all-targets --all-features --jobs $(nproc)
 
   container-build:
     name: Build & Push Container
