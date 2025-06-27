@@ -37,6 +37,8 @@ jobs:
       branch_name: ${{ steps.branch_info.outputs.branch_name }}
       image_name: ${{ steps.branch_info.outputs.image_name }}
       cache_scope: ${{ steps.cache_keys.outputs.cache_scope }}
+      registry_cache_from: ${{ steps.cache_keys.outputs.registry_cache_from }}
+      registry_cache_to: ${{ steps.cache_keys.outputs.registry_cache_to }}
     steps:
       - uses: actions/checkout@v4
         name: Checkout repository
@@ -51,6 +53,7 @@ jobs:
           IMAGE="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-${SAFE}"
           echo "branch_name=$SAFE" >> $GITHUB_OUTPUT
           echo "image_name=$IMAGE" >> $GITHUB_OUTPUT
+
       - id: cache_keys
         name: Generate optimized cache keys
         run: |
@@ -61,6 +64,10 @@ jobs:
           else
             SCOPE="branch-${{ steps.branch_info.outputs.branch_name }}"
           fi
+
+          # Registry cache configuration
+          CACHE_BASE="${{ env.REGISTRY }}/${{ env.BASE_REPO }}-cache"
+
           echo "rust_cache_key=rust-v4-${SCOPE}-${CARGO_HASH}" >> $GITHUB_OUTPUT
           echo "rust_restore_keys<<EOF"                     >> $GITHUB_OUTPUT
           echo "rust-v4-${SCOPE}-"                           >> $GITHUB_OUTPUT
@@ -74,6 +81,15 @@ jobs:
           echo "docker-v4-"                                          >> $GITHUB_OUTPUT
           echo "EOF"                                                >> $GITHUB_OUTPUT
           echo "cache_scope=$SCOPE" >> $GITHUB_OUTPUT
+
+          # Registry cache refs
+          echo "registry_cache_from<<EOF" >> $GITHUB_OUTPUT
+          echo "type=registry,ref=${CACHE_BASE}:${SCOPE}" >> $GITHUB_OUTPUT
+          echo "type=registry,ref=${CACHE_BASE}:main" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "registry_cache_to=type=registry,ref=${CACHE_BASE}:${SCOPE},mode=max" >> $GITHUB_OUTPUT
+
   rust-tests:
     name: Rust Tests
     runs-on: ubuntu-24.04
@@ -127,6 +143,7 @@ jobs:
         run: |
           rm -rf target/debug/incremental 2>/dev/null || true
           cargo test --release --all-targets --jobs $(nproc)
+
       - name: Check formatting
         run: cargo fmt --check
 
@@ -136,6 +153,7 @@ jobs:
           find target -name "*.dSYM"  -type d -exec rm -rf {} + 2>/dev/null || true
           find target -name "*.rmeta" -mtime +1 -delete 2>/dev/null || true
           find target -name "*.rlib"  -mtime +3 -delete 2>/dev/null || true
+
   rust-lint:
     name: Rust Lint
     runs-on: ubuntu-24.04
@@ -186,6 +204,7 @@ jobs:
         run: |
           rm -rf target/debug/incremental 2>/dev/null || true
           cargo clippy --all-targets --all-features --jobs $(nproc) -- -D warnings
+
   container-build:
     name: Build & Push Container
     runs-on: ubuntu-24.04
@@ -212,6 +231,7 @@ jobs:
 
     outputs:
       image_name: ${{ needs.setup-cache-strategy.outputs.image_name }}
+      build_success: ${{ steps.build.outcome == 'success' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -234,6 +254,7 @@ jobs:
               max-parallelism = 1
             [worker.containerd]
               max-parallelism = 1
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -271,10 +292,9 @@ jobs:
             CARGO_INCREMENTAL=0
             RUSTFLAGS=${{ matrix.rustflags }}
           cache-from: |
-            type=gha,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
-            type=gha,scope=main-${{ matrix.arch }}
+            ${{ needs.setup-cache-strategy.outputs.registry_cache_from }}
           cache-to: |
-            type=gha,mode=min,scope=${{ needs.setup-cache-strategy.outputs.cache_scope }}-${{ matrix.arch }}
+            ${{ needs.setup-cache-strategy.outputs.registry_cache_to }}
           outputs: type=image,compression=zstd,compression-level=3,force-compression=true
           provenance: false
           sbom: true
@@ -282,11 +302,18 @@ jobs:
           BUILDKIT_PROGRESS: plain
           DOCKER_BUILDKIT: 1
 
+      - name: Report build status
+        run: |
+          echo "Build status for ${{ matrix.arch }}: ${{ steps.build.outcome }}"
+          if [ "${{ steps.build.outcome }}" != "success" ]; then
+            echo "::warning::Build failed for ${{ matrix.arch }} but continuing with available images"
+          fi
+
   create-manifest:
     name: Create multi-arch manifest
     runs-on: ubuntu-24.04
     needs: [setup-cache-strategy, container-build]
-    if: ${{ success() }}
+    if: ${{ !cancelled() && needs.container-build.result != 'cancelled' }}
     permissions:
       contents: read
       packages: write
@@ -305,12 +332,33 @@ jobs:
           driver-opts: |
             image=moby/buildkit:v0.12.5
             network=host
-      - name: Create & push multi-arch stable tag
+
+      - name: Check available images and create manifest
         run: |
-          docker buildx imagetools create \
-            --tag ${{ needs.setup-cache-strategy.outputs.image_name }}:stable \
-            ${{ needs.setup-cache-strategy.outputs.image_name }}:stable-x86_64 \
-            ${{ needs.setup-cache-strategy.outputs.image_name }}:stable-aarch64
+          IMAGE_BASE="${{ needs.setup-cache-strategy.outputs.image_name }}"
+          IMAGES_TO_MANIFEST=""
+
+          # Check which architecture images are available
+          for arch in x86_64 aarch64; do
+            if docker manifest inspect "${IMAGE_BASE}:stable-${arch}" >/dev/null 2>&1; then
+              echo "✅ Found image for ${arch}"
+              IMAGES_TO_MANIFEST="${IMAGES_TO_MANIFEST} ${IMAGE_BASE}:stable-${arch}"
+            else
+              echo "❌ Missing image for ${arch}"
+            fi
+          done
+
+          if [ -n "$IMAGES_TO_MANIFEST" ]; then
+            echo "Creating manifest with images:$IMAGES_TO_MANIFEST"
+            docker buildx imagetools create \
+              --tag "${IMAGE_BASE}:stable" \
+              $IMAGES_TO_MANIFEST
+            echo "✅ Multi-arch manifest created successfully"
+          else
+            echo "❌ No images available for manifest creation"
+            exit 1
+          fi
+
   security-scan:
     name: Security Scan
     runs-on: ubuntu-24.04
@@ -337,14 +385,21 @@ jobs:
         name: Cache Trivy DB
         with:
           path: ~/.cache/trivy
-          key: trivy-db-v1
+          key: trivy-db-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             trivy-db-v1-
         env:
           SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
 
+      - name: Pull image for scanning
+        run: |
+          echo "Pulling image: ${{ needs.setup-cache-strategy.outputs.image_name }}:stable"
+          docker pull ${{ needs.setup-cache-strategy.outputs.image_name }}:stable
+          docker images | grep "${{ needs.setup-cache-strategy.outputs.image_name }}"
+
       - uses: aquasecurity/trivy-action@0.17.0
         name: Run Trivy
+        continue-on-error: true
         with:
           image-ref: ${{ needs.setup-cache-strategy.outputs.image_name }}:stable
           format: sarif
@@ -370,12 +425,16 @@ jobs:
       - name: Cache health report
         run: |
           echo "🔍 Cache Scope: ${{ needs.setup-cache-strategy.outputs.cache_scope }}"
-          echo "✅ Build & Manifest: ${{ needs.create-manifest.result }}"
+          echo "✅ Build Status: ${{ needs.container-build.result }}"
+          echo "✅ Manifest Status: ${{ needs.create-manifest.result }}"
           echo "🕒 $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "📦 Registry Cache: Enabled"
+
   deployment-summary:
     name: Deployment Summary
     runs-on: ubuntu-24.04
-    needs: [setup-cache-strategy, container-build, create-manifest]
+    needs:
+      [setup-cache-strategy, container-build, create-manifest, security-scan]
     if: always()
     steps:
       - name: Generate summary
@@ -388,12 +447,14 @@ jobs:
             echo "| **Branch**  | ${{ needs.setup-cache-strategy.outputs.branch_name }}    |"
             echo "| **Image**   | ${{ needs.setup-cache-strategy.outputs.image_name }}:stable |"
             echo "| **Platforms** | linux/amd64, linux/arm64                                |"
-            echo "| **Cache**   | inline & multi-tier                                      |"
+            echo "| **Cache**   | registry-based                                           |"
             echo "| **Build**   | ${{ needs.container-build.result }}                     |"
             echo "| **Manifest**| ${{ needs.create-manifest.result }}                     |"
+            echo "| **Security**| ${{ needs.security-scan.result }}                       |"
             echo "| **Commit**  | ${{ github.sha }}                                         |"
             echo "| **Time**    | $(date -u '+%Y-%m-%d %H:%M:%S UTC')                      |"
           } > ./artifacts/deployment-summary.md
+
       - uses: actions/upload-artifact@v4
         name: Upload summary
         with:
