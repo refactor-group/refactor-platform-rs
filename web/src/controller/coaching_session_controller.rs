@@ -39,7 +39,8 @@ pub async fn read(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Coaching Session by ID: {}", coaching_session_id);
 
-    let coaching_session = CoachingSessionApi::find_by_id(app_state.db_conn_ref(), coaching_session_id).await?;
+    let coaching_session =
+        CoachingSessionApi::find_by_id(app_state.db_conn_ref(), coaching_session_id).await?;
 
     debug!("Found Coaching Session: {:?}", coaching_session);
 
