@@ -13,6 +13,42 @@ use service::config::ApiVersion;
 
 use log::*;
 
+/// GET a Coaching Session by ID
+#[utoipa::path(
+    get,
+    path = "/coaching_sessions/{id}",
+    params(
+        ApiVersion,
+        ("id" = Id, Path, description = "Coaching Session ID to retrieve")
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved a Coaching Session", body = coaching_sessions::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Coaching Session not found"),
+        (status = 405, description = "Method not allowed")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn read(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path(coaching_session_id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("GET Coaching Session by ID: {}", coaching_session_id);
+
+    let coaching_session = CoachingSessionApi::find_by_id(app_state.db_conn_ref(), coaching_session_id).await?;
+
+    debug!("Found Coaching Session: {:?}", coaching_session);
+
+    Ok(Json(ApiResponse::new(
+        StatusCode::OK.into(),
+        coaching_session,
+    )))
+}
+
 #[utoipa::path(
     get,
     path = "/coaching_sessions",
