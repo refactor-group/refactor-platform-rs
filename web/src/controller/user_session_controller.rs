@@ -56,7 +56,7 @@ pub async fn login(
         Err(auth_error) => {
             // Convert axum_login error to WebError by creating domain error manually.
             // This maps EntityApiErrorKind::RecordUnauthenticated to a 401 through the web layer.
-            error!("Authentication failed with error: {:?}", auth_error);
+            error!("Authentication failed with error: {auth_error:?}");
             // TODO: replace this with a more idiomatic Rust 1-liner using from/into
             return Err(WebError::from(domain::error::Error {
                 source: Some(Box::new(auth_error)),
@@ -70,7 +70,7 @@ pub async fn login(
     };
 
     if let Err(login_error) = auth_session.login(&user).await {
-        warn!("Session login failed: {:?}", login_error);
+        warn!("Session login failed: {login_error:?}");
         return Err(WebError::from(domain::error::Error {
             source: Some(Box::new(login_error)),
             error_kind: domain::error::DomainErrorKind::Internal(
@@ -88,7 +88,7 @@ pub async fn login(
             "role": user.role,
     });
 
-    debug!("user_session_json: {}", user_session_json);
+    debug!("user_session_json: {user_session_json}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),

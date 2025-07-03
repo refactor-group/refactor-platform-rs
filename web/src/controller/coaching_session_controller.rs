@@ -37,12 +37,12 @@ pub async fn read(
     State(app_state): State<AppState>,
     Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Coaching Session by ID: {}", coaching_session_id);
+    debug!("GET Coaching Session by ID: {coaching_session_id}");
 
     let coaching_session =
         CoachingSessionApi::find_by_id(app_state.db_conn_ref(), coaching_session_id).await?;
 
-    debug!("Found Coaching Session: {:?}", coaching_session);
+    debug!("Found Coaching Session: {coaching_session:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
@@ -77,11 +77,11 @@ pub async fn index(
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Coaching Sessions");
-    debug!("Filter Params: {:?}", params);
+    debug!("Filter Params: {params:?}");
 
     let coaching_sessions = CoachingSessionApi::find_by(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Coaching Sessions: {:?}", coaching_sessions);
+    debug!("Found Coaching Sessions: {coaching_sessions:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
@@ -113,10 +113,7 @@ pub async fn create(
     State(app_state): State<AppState>,
     Json(coaching_sessions_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!(
-        "POST Create a new Coaching Session from: {:?}",
-        coaching_sessions_model
-    );
+    debug!("POST Create a new Coaching Session from: {coaching_sessions_model:?}");
 
     let coaching_session = CoachingSessionApi::create(
         app_state.db_conn_ref(),
@@ -125,7 +122,7 @@ pub async fn create(
     )
     .await?;
 
-    debug!("New Coaching Session: {:?}", coaching_session);
+    debug!("New Coaching Session: {coaching_session:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),

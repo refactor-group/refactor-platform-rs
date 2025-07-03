@@ -59,7 +59,7 @@ pub(crate) async fn read(
         match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
             Ok(session) => session,
             Err(e) => {
-                error!("Authorization error finding coaching session: {:?}", e);
+                error!("Authorization error finding coaching session: {e:?}");
                 return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
             }
         };
@@ -72,7 +72,7 @@ pub(crate) async fn read(
     {
         Ok(relationship) => relationship,
         Err(e) => {
-            error!("Authorization error finding coaching relationship: {:?}", e);
+            error!("Authorization error finding coaching relationship: {e:?}");
             return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
         }
     };
@@ -100,7 +100,7 @@ pub(crate) async fn update(
         match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
             Ok(session) => session,
             Err(e) => {
-                error!("Authorization error finding coaching session: {:?}", e);
+                error!("Authorization error finding coaching session: {e:?}");
                 return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
             }
         };
@@ -113,7 +113,7 @@ pub(crate) async fn update(
     {
         Ok(relationship) => relationship,
         Err(e) => {
-            error!("Authorization error finding coaching relationship: {:?}", e);
+            error!("Authorization error finding coaching relationship: {e:?}");
             return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
         }
     };
@@ -141,7 +141,7 @@ pub(crate) async fn delete(
         match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
             Ok(session) => session,
             Err(e) => {
-                error!("Authorization error finding coaching session: {:?}", e);
+                error!("Authorization error finding coaching session: {e:?}");
                 return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
             }
         };
@@ -154,7 +154,7 @@ pub(crate) async fn delete(
     {
         Ok(relationship) => relationship,
         Err(e) => {
-            error!("Authorization error finding coaching relationship: {:?}", e);
+            error!("Authorization error finding coaching relationship: {e:?}");
             return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
         }
     };

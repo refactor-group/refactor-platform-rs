@@ -24,7 +24,7 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
     })?;
     let mut headers = reqwest::header::HeaderMap::new();
     let mut auth_value = reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| {
-        warn!("Failed to create auth header value: {:?}", err);
+        warn!("Failed to create auth header value: {err:?}");
         Error {
             source: Some(Box::new(err)),
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
@@ -64,7 +64,7 @@ impl TiptapDocument {
             .send()
             .await
             .map_err(|e| {
-                warn!("Failed to send request: {:?}", e);
+                warn!("Failed to send request: {e:?}");
                 Error {
                     source: Some(Box::new(e)),
                     error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
@@ -75,7 +75,7 @@ impl TiptapDocument {
             Ok(())
         } else {
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Failed to create Tiptap document: {}", error_text);
+            warn!("Failed to create Tiptap document: {error_text}");
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
@@ -86,7 +86,7 @@ impl TiptapDocument {
     pub async fn delete(&self, document_name: &str) -> Result<(), Error> {
         let url = self.format_url(document_name);
         let response = self.client.delete(url).send().await.map_err(|e| {
-            warn!("Failed to send request: {:?}", e);
+            warn!("Failed to send request: {e:?}");
             Error {
                 source: Some(Box::new(e)),
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
@@ -97,10 +97,7 @@ impl TiptapDocument {
         if status.is_success() || status.as_u16() == 404 {
             Ok(())
         } else {
-            warn!(
-                "Failed to delete Tiptap document: {}, with status: {}",
-                document_name, status
-            );
+            warn!("Failed to delete Tiptap document: {document_name}, with status: {status}");
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Network),

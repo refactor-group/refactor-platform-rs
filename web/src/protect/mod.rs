@@ -129,7 +129,7 @@ impl Check for UserInOrganization {
         match UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await {
             Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
             Err(_) => {
-                error!("Organization not found with ID {:?}", organization_id);
+                error!("Organization not found with ID {organization_id:?}");
                 false
             }
         }

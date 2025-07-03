@@ -14,7 +14,7 @@ pub async fn create(
     agreement_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    debug!("New Agreement Model to be inserted: {:?}", agreement_model);
+    debug!("New Agreement Model to be inserted: {agreement_model:?}");
 
     let now = chrono::Utc::now();
 
@@ -35,7 +35,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 
     match result {
         Some(agreement) => {
-            debug!("Existing Agreement model to be Updated: {:?}", agreement);
+            debug!("Existing Agreement model to be Updated: {agreement:?}");
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(agreement.id),
@@ -49,7 +49,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             Ok(active_model.update(db).await?.try_into_model()?)
         }
         None => {
-            debug!("Agreement with id {} not found", id);
+            debug!("Agreement with id {id} not found");
 
             Err(Error {
                 source: None,
