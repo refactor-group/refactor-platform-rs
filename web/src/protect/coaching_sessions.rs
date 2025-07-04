@@ -1,3 +1,4 @@
+use crate::protect::{Predicate, UserCanAccessCoachingSession};
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
     extract::{Path, Query, Request, State},
@@ -8,6 +9,7 @@ use axum::{
 use serde::Deserialize;
 
 use domain::{coaching_relationship, coaching_session, Id};
+
 use log::error;
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueryParams {
@@ -50,38 +52,16 @@ pub(crate) async fn index(
 ///  Intended to be given to axum::middleware::from_fn_with_state in the router
 pub(crate) async fn read(
     State(app_state): State<AppState>,
-    AuthenticatedUser(user): AuthenticatedUser,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
     Path(coaching_session_id): Path<Id>,
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let coaching_session =
-        match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
-            Ok(session) => session,
-            Err(e) => {
-                error!("Authorization error finding coaching session: {e:?}");
-                return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
-            }
-        };
+    let checks: Vec<Predicate> = vec![
+        Predicate::new(UserCanAccessCoachingSession, vec![coaching_session_id]),
+    ];
 
-    let coaching_relationship = match coaching_relationship::find_by_id(
-        app_state.db_conn_ref(),
-        coaching_session.coaching_relationship_id,
-    )
-    .await
-    {
-        Ok(relationship) => relationship,
-        Err(e) => {
-            error!("Authorization error finding coaching relationship: {e:?}");
-            return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
-        }
-    };
-
-    if coaching_relationship.coach_id == user.id || coaching_relationship.coachee_id == user.id {
-        next.run(request).await
-    } else {
-        (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
-    }
+    crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
 }
 
 /// Checks that coaching session record referenced by `coaching_session_id`
