@@ -14,7 +14,7 @@ pub async fn create(
     action_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    debug!("New Action Model to be inserted: {:?}", action_model);
+    debug!("New Action Model to be inserted: {action_model:?}");
 
     let now = chrono::Utc::now();
 
@@ -38,7 +38,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 
     match result {
         Some(action) => {
-            debug!("Existing Action model to be Updated: {:?}", action);
+            debug!("Existing Action model to be Updated: {action:?}");
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(action.id),
@@ -55,7 +55,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             Ok(active_model.update(db).await?.try_into_model()?)
         }
         None => {
-            error!("Action with id {} not found", id);
+            error!("Action with id {id} not found");
 
             Err(Error {
                 source: None,
@@ -74,7 +74,7 @@ pub async fn update_status(
 
     match result {
         Some(action) => {
-            debug!("Existing Action model to be Updated: {:?}", action);
+            debug!("Existing Action model to be Updated: {action:?}");
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(action.id),
@@ -91,7 +91,7 @@ pub async fn update_status(
             Ok(active_model.update(db).await?.try_into_model()?)
         }
         None => {
-            error!("Action with id {} not found", id);
+            error!("Action with id {id} not found");
 
             Err(Error {
                 source: None,

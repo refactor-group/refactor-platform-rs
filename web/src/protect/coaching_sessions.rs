@@ -1,3 +1,4 @@
+use crate::protect::{Predicate, UserCanAccessCoachingSession};
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
     extract::{Path, Query, Request, State},
@@ -8,6 +9,7 @@ use axum::{
 use serde::Deserialize;
 
 use domain::{coaching_relationship, coaching_session, Id};
+
 use log::error;
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueryParams {
@@ -46,6 +48,25 @@ pub(crate) async fn index(
 
 /// Checks that coaching session record referenced by `coaching_session_id`
 ///     * exists
+///     * that the authenticated user is associated with it (coach or coachee)
+///  Intended to be given to axum::middleware::from_fn_with_state in the router
+pub(crate) async fn read(
+    State(app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path(coaching_session_id): Path<Id>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    let checks: Vec<Predicate> = vec![Predicate::new(
+        UserCanAccessCoachingSession,
+        vec![coaching_session_id],
+    )];
+
+    crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
+}
+
+/// Checks that coaching session record referenced by `coaching_session_id`
+///     * exists
 ///     * that the authenticated user is associated with it.
 ///     * that the authenticated user is the coach
 ///  Intended to be given to axum::middleware::from_fn_with_state in the router
@@ -60,7 +81,7 @@ pub(crate) async fn update(
         match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
             Ok(session) => session,
             Err(e) => {
-                error!("Authorization error finding coaching session: {:?}", e);
+                error!("Authorization error finding coaching session: {e:?}");
                 return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
             }
         };
@@ -73,7 +94,7 @@ pub(crate) async fn update(
     {
         Ok(relationship) => relationship,
         Err(e) => {
-            error!("Authorization error finding coaching relationship: {:?}", e);
+            error!("Authorization error finding coaching relationship: {e:?}");
             return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
         }
     };
@@ -101,7 +122,7 @@ pub(crate) async fn delete(
         match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
             Ok(session) => session,
             Err(e) => {
-                error!("Authorization error finding coaching session: {:?}", e);
+                error!("Authorization error finding coaching session: {e:?}");
                 return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
             }
         };
@@ -114,7 +135,7 @@ pub(crate) async fn delete(
     {
         Ok(relationship) => relationship,
         Err(e) => {
-            error!("Authorization error finding coaching relationship: {:?}", e);
+            error!("Authorization error finding coaching relationship: {e:?}");
             return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
         }
     };

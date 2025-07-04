@@ -79,7 +79,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         .iter()
         .filter_map(|origin| origin.parse().ok())
         .collect::<Vec<HeaderValue>>();
-    info!("allowed_origins: {:#?}", allowed_origins);
+    info!("allowed_origins: {allowed_origins:#?}");
 
     let cors_layer = CorsLayer::new()
         .allow_methods([

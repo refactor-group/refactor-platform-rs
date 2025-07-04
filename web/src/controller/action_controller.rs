@@ -39,7 +39,7 @@ pub async fn create(
     State(app_state): State<AppState>,
     Json(action_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("POST Create a New Action from: {:?}", action_model);
+    debug!("POST Create a New Action from: {action_model:?}");
 
     let action = ActionApi::create(app_state.db_conn_ref(), action_model, user.id).await?;
 
@@ -69,7 +69,7 @@ pub async fn read(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Action by id: {}", id);
+    debug!("GET Action by id: {id}");
 
     let action = ActionApi::find_by_id(app_state.db_conn_ref(), id).await?;
 
@@ -102,11 +102,11 @@ pub async fn update(
     Path(id): Path<Id>,
     Json(action_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("PUT Update Action with id: {}", id);
+    debug!("PUT Update Action with id: {id}");
 
     let action = ActionApi::update(app_state.db_conn_ref(), id, action_model).await?;
 
-    debug!("Updated Action: {:?}", action);
+    debug!("Updated Action: {action:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
@@ -136,12 +136,12 @@ pub async fn update_status(
     Path(id): Path<Id>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("PUT Update Action Status with id: {}", id);
+    debug!("PUT Update Action Status with id: {id}");
 
     let action =
         ActionApi::update_status(app_state.db_conn_ref(), id, status.as_str().into()).await?;
 
-    debug!("Updated Action: {:?}", action);
+    debug!("Updated Action: {action:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
@@ -171,11 +171,11 @@ pub async fn index(
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Actions");
-    debug!("Filter Params: {:?}", params);
+    debug!("Filter Params: {params:?}");
 
     let actions = ActionApi::find_by(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Actions: {:?}", actions);
+    debug!("Found Actions: {actions:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
@@ -203,7 +203,7 @@ pub async fn delete(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("DELETE Action by id: {}", id);
+    debug!("DELETE Action by id: {id}");
 
     ActionApi::delete_by_id(app_state.db_conn_ref(), id).await?;
     Ok(Json(json!({"id": id})))

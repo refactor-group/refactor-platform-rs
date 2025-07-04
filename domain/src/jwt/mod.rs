@@ -48,8 +48,7 @@ pub async fn generate_collab_token(
 
     let collab_document_name = coaching_session.collab_document_name.ok_or_else(|| {
         warn!(
-            "Failed to get collab document name from coaching session with ID: {}",
-            coaching_session_id
+            "Failed to get collab document name from coaching session with ID: {coaching_session_id}"
         );
         Error {
             source: None,

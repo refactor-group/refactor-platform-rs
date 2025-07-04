@@ -38,11 +38,11 @@ pub async fn create(
     State(app_state): State<AppState>,
     Json(note_model): Json<notes::Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("POST Create a New Note from: {:?}", note_model);
+    debug!("POST Create a New Note from: {note_model:?}");
 
     let note = NoteApi::create(app_state.db_conn_ref(), note_model, user.id).await?;
 
-    debug!("New Note: {:?}", note);
+    debug!("New Note: {note:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), note)))
 }
@@ -73,11 +73,11 @@ pub async fn update(
     Path(id): Path<Id>,
     Json(note_model): Json<notes::Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("PUT Update Note with id: {}", id);
+    debug!("PUT Update Note with id: {id}");
 
     let note = NoteApi::update(app_state.db_conn_ref(), id, note_model).await?;
 
-    debug!("Updated Note: {:?}", note);
+    debug!("Updated Note: {note:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), note)))
 }
@@ -107,11 +107,11 @@ pub async fn index(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Notes");
-    debug!("Filter Params: {:?}", params);
+    debug!("Filter Params: {params:?}");
 
     let notes = NoteApi::find_by(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Notes: {:?}", notes);
+    debug!("Found Notes: {notes:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), notes)))
 }
@@ -139,7 +139,7 @@ pub async fn read(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Organization by id: {}", id);
+    debug!("GET Organization by id: {id}");
 
     let note: Option<notes::Model> = NoteApi::find_by_id(app_state.db_conn_ref(), id).await?;
 

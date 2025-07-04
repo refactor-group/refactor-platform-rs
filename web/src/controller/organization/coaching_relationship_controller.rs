@@ -37,10 +37,7 @@ pub async fn create(
     AuthenticatedUser(_user): AuthenticatedUser,
     Json(coaching_relationship_model): Json<coaching_relationships::Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!(
-        "CREATE new Coaching Relationship from: {:?}",
-        coaching_relationship_model
-    );
+    debug!("CREATE new Coaching Relationship from: {coaching_relationship_model:?}");
 
     let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
         app_state.db_conn_ref(),
@@ -87,7 +84,7 @@ pub async fn read(
     State(app_state): State<AppState>,
     Path((_organization_id, relationship_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET CoachingRelationship by id: {}", relationship_id);
+    debug!("GET CoachingRelationship by id: {relationship_id}");
 
     let relationship: Option<CoachingRelationshipWithUserNames> =
         CoachingRelationshipApi::get_relationship_with_user_names(
@@ -132,7 +129,7 @@ pub async fn index(
     )
     .await?;
 
-    debug!("Found CoachingRelationships: {:?}", coaching_relationships);
+    debug!("Found CoachingRelationships: {coaching_relationships:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),

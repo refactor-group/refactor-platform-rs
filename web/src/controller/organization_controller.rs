@@ -46,7 +46,7 @@ pub async fn index(
 
     let organizations = OrganizationApi::find_by(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Organizations: {:?}", organizations);
+    debug!("Found Organizations: {organizations:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), organizations)))
 }
@@ -74,7 +74,7 @@ pub async fn read(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Organization by id: {}", id);
+    debug!("GET Organization by id: {id}");
 
     let organization = OrganizationApi::find_by_id(app_state.db_conn_ref(), id).await?;
 
@@ -178,7 +178,7 @@ pub async fn delete(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("DELETE Organization by id: {}", id);
+    debug!("DELETE Organization by id: {id}");
 
     OrganizationApi::delete_by_id(app_state.db_conn_ref(), id).await?;
     Ok(Json(json!({"id": id})))

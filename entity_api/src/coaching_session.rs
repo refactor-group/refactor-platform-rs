@@ -11,10 +11,7 @@ pub async fn create(
     db: &DatabaseConnection,
     coaching_session_model: Model,
 ) -> Result<Model, Error> {
-    debug!(
-        "New Coaching Session Model to be inserted: {:?}",
-        coaching_session_model
-    );
+    debug!("New Coaching Session Model to be inserted: {coaching_session_model:?}");
 
     let now = chrono::Utc::now();
 

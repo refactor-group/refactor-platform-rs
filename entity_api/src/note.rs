@@ -16,7 +16,7 @@ pub async fn create(
     note_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    debug!("New Note Model to be inserted: {:?}", note_model);
+    debug!("New Note Model to be inserted: {note_model:?}");
 
     let now = chrono::Utc::now();
 
@@ -37,7 +37,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 
     match result {
         Some(note) => {
-            debug!("Existing Note model to be Updated: {:?}", note);
+            debug!("Existing Note model to be Updated: {note:?}");
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(note.id),
@@ -51,7 +51,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             Ok(active_model.update(db).await?.try_into_model()?)
         }
         None => {
-            error!("Note with id {} not found", id);
+            error!("Note with id {id} not found");
 
             Err(Error {
                 source: None,
@@ -64,12 +64,12 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
     match Entity::find_by_id(id).one(db).await {
         Ok(Some(note)) => {
-            debug!("Note found: {:?}", note);
+            debug!("Note found: {note:?}");
 
             Ok(Some(note))
         }
         Ok(None) => {
-            error!("Note with id {} not found", id);
+            error!("Note with id {id} not found");
 
             Err(Error {
                 source: None,
@@ -77,7 +77,7 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
             })
         }
         Err(err) => {
-            error!("Note with id {} not found and returned error {}", id, err);
+            error!("Note with id {id} not found and returned error {err}");
             Err(Error {
                 source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,

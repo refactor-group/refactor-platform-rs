@@ -42,6 +42,7 @@ use self::organization::coaching_relationship_controller;
             agreement_controller::read,
             agreement_controller::delete,
             coaching_session_controller::index,
+            coaching_session_controller::read,
             coaching_session_controller::create,
             coaching_session_controller::update,
             coaching_session_controller::delete,
@@ -190,7 +191,19 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                 )),
         )
         .merge(
-            // Put /coaching_sessions
+            // GET /coaching_sessions/:id
+            Router::new()
+                .route(
+                    "/coaching_sessions/:id",
+                    get(coaching_session_controller::read),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_sessions::read,
+                )),
+        )
+        .merge(
+            // PUT /coaching_sessions/:id
             Router::new()
                 .route(
                     "/coaching_sessions/:id",

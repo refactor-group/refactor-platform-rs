@@ -70,7 +70,7 @@ pub(crate) async fn create(
     let user =
         UserApi::create_by_organization(app_state.db_conn_ref(), organization_id, user_model)
             .await?;
-    info!("User created: {:?}", user);
+    info!("User created: {user:?}");
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
 
@@ -98,7 +98,7 @@ pub async fn delete(
     AuthenticatedUser(_authenticated_user): AuthenticatedUser,
     Path((_organization_id, user_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
-    info!("Deleting user: {:?}", user_id);
+    info!("Deleting user: {user_id:?}");
     UserApi::delete(app_state.db_conn_ref(), user_id).await?;
     Ok(Json(ApiResponse::<()>::no_content(
         StatusCode::NO_CONTENT.into(),
