@@ -57,9 +57,10 @@ pub(crate) async fn read(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let checks: Vec<Predicate> = vec![
-        Predicate::new(UserCanAccessCoachingSession, vec![coaching_session_id]),
-    ];
+    let checks: Vec<Predicate> = vec![Predicate::new(
+        UserCanAccessCoachingSession,
+        vec![coaching_session_id],
+    )];
 
     crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
 }

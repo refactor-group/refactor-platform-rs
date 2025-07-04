@@ -176,9 +176,14 @@ impl Check for UserCanAccessCoachingSession {
         args: Vec<Id>,
     ) -> bool {
         let coaching_session_id = args[0];
-        
+
         // Get the coaching session
-        let coaching_session = match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
+        let coaching_session = match coaching_session::find_by_id(
+            app_state.db_conn_ref(),
+            coaching_session_id,
+        )
+        .await
+        {
             Ok(session) => session,
             Err(e) => {
                 error!("Error finding coaching session {coaching_session_id}: {e:?}");
@@ -190,15 +195,21 @@ impl Check for UserCanAccessCoachingSession {
         let coaching_relationship = match coaching_relationship::find_by_id(
             app_state.db_conn_ref(),
             coaching_session.coaching_relationship_id,
-        ).await {
+        )
+        .await
+        {
             Ok(relationship) => relationship,
             Err(e) => {
-                error!("Error finding coaching relationship {}: {e:?}", coaching_session.coaching_relationship_id);
+                error!(
+                    "Error finding coaching relationship {}: {e:?}",
+                    coaching_session.coaching_relationship_id
+                );
                 return false;
             }
         };
 
         // Check if user is coach or coachee
-        coaching_relationship.coach_id == authenticated_user.id || coaching_relationship.coachee_id == authenticated_user.id
+        coaching_relationship.coach_id == authenticated_user.id
+            || coaching_relationship.coachee_id == authenticated_user.id
     }
 }
