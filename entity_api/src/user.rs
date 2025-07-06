@@ -33,6 +33,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         password: Set(generate_hash(user_model.password)),
         github_username: Set(user_model.github_username),
         github_profile_url: Set(user_model.github_profile_url),
+        timezone: Set(user_model.timezone),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()

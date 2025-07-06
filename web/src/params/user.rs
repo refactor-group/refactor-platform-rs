@@ -9,6 +9,7 @@ pub struct UpdateParams {
     pub last_name: Option<String>,
     pub display_name: Option<String>,
     pub github_profile_url: Option<String>,
+    pub timezone: Option<String>,
 }
 impl IntoUpdateMap for UpdateParams {
     fn into_update_map(self) -> UpdateMap {
@@ -41,6 +42,12 @@ impl IntoUpdateMap for UpdateParams {
             update_map.insert(
                 "github_profile_url".to_string(),
                 Some(Value::String(Some(Box::new(github_profile_url)))),
+            );
+        }
+        if let Some(timezone) = self.timezone {
+            update_map.insert(
+                "timezone".to_string(),
+                Some(Value::String(Some(Box::new(timezone)))),
             );
         }
         update_map

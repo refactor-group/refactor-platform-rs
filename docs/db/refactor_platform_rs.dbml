@@ -33,6 +33,7 @@ Table refactor_platform.users {
   last_name varchar
   display_name varchar [note: 'If a user wants to go by something other than first & last names']
   password varchar [not null]
+  timezone varchar(50) [not null, default: 'UTC', note: 'User timezone for displaying dates/times in their local timezone']
   github_username varchar // Specifically GH for now, can generalize later
   github_profile_url varchar
   created_at timestamptz [not null, default: `now()`]
