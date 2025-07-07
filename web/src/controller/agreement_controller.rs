@@ -40,11 +40,11 @@ pub async fn create(
     State(app_state): State<AppState>,
     Json(agreement_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("POST Create a New Agreement from: {:?}", agreement_model);
+    debug!("POST Create a New Agreement from: {agreement_model:?}");
 
     let agreement = AgreementApi::create(app_state.db_conn_ref(), agreement_model, user.id).await?;
 
-    debug!("New Agreement: {:?}", agreement);
+    debug!("New Agreement: {agreement:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
@@ -75,7 +75,7 @@ pub async fn read(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Agreement by id: {}", id);
+    debug!("GET Agreement by id: {id}");
 
     let agreement = AgreementApi::find_by_id(app_state.db_conn_ref(), id).await?;
 
@@ -108,11 +108,11 @@ pub async fn update(
     Path(id): Path<Id>,
     Json(agreement_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("PUT Update Agreement with id: {}", id);
+    debug!("PUT Update Agreement with id: {id}");
 
     let agreement = AgreementApi::update(app_state.db_conn_ref(), id, agreement_model).await?;
 
-    debug!("Updated Agreement: {:?}", agreement);
+    debug!("Updated Agreement: {agreement:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), agreement)))
 }
@@ -142,11 +142,11 @@ pub async fn index(
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Agreements");
-    debug!("Filter Params: {:?}", params);
+    debug!("Filter Params: {params:?}");
 
     let agreements = AgreementApi::find_by(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Agreements: {:?}", agreements);
+    debug!("Found Agreements: {agreements:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), agreements)))
 }
@@ -174,7 +174,7 @@ pub async fn delete(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("DELETE Agreement by id: {}", id);
+    debug!("DELETE Agreement by id: {id}");
 
     AgreementApi::delete_by_id(app_state.db_conn_ref(), id).await?;
     Ok(Json(json!({"id": id})))

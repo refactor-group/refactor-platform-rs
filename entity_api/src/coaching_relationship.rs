@@ -22,10 +22,7 @@ pub async fn create(
     organization_id: Id,
     coaching_relationship_model: Model,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
-    debug!(
-        "New Coaching Relationship Model to be inserted: {:?}",
-        coaching_relationship_model
-    );
+    debug!("New Coaching Relationship Model to be inserted: {coaching_relationship_model:?}");
 
     let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
     let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;

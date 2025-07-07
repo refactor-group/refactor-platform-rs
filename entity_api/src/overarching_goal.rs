@@ -16,10 +16,7 @@ pub async fn create(
     overarching_goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    debug!(
-        "New Overarching Goal Model to be inserted: {:?}",
-        overarching_goal_model
-    );
+    debug!("New Overarching Goal Model to be inserted: {overarching_goal_model:?}");
 
     let now = chrono::Utc::now();
 
@@ -47,10 +44,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 
     match result {
         Some(overarching_goal) => {
-            debug!(
-                "Existing Overarching Goal model to be Updated: {:?}",
-                overarching_goal
-            );
+            debug!("Existing Overarching Goal model to be Updated: {overarching_goal:?}");
 
             // Automatically update status_changed_at if the last status and new status differ:
             let av_status_changed_at: ActiveValue<Option<DateTimeWithTimeZone>> =
@@ -77,7 +71,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             Ok(active_model.update(db).await?.try_into_model()?)
         }
         None => {
-            error!("Overarching Goal with id {} not found", id);
+            error!("Overarching Goal with id {id} not found");
 
             Err(Error {
                 source: None,
@@ -96,10 +90,7 @@ pub async fn update_status(
 
     match result {
         Some(overarching_goal) => {
-            debug!(
-                "Existing Overarching Goal model to be Updated: {:?}",
-                overarching_goal
-            );
+            debug!("Existing Overarching Goal model to be Updated: {overarching_goal:?}");
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(overarching_goal.id),
@@ -117,7 +108,7 @@ pub async fn update_status(
             Ok(active_model.update(db).await?.try_into_model()?)
         }
         None => {
-            error!("Overarching Goal with id {} not found", id);
+            error!("Overarching Goal with id {id} not found");
 
             Err(Error {
                 source: None,
