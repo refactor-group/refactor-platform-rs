@@ -553,6 +553,7 @@ mod organization_endpoints_tests {
                 password: generate_hash("password2").to_owned(),
                 github_username: None,
                 github_profile_url: None,
+                timezone: "UTC".to_string(),
                 created_at: now.into(),
                 updated_at: now.into(),
                 role: domain::users::Role::User,

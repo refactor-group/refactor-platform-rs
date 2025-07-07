@@ -395,6 +395,7 @@ mod tests {
             github_username: Some("coach_user".to_string()),
             role: entity::users::Role::User,
             github_profile_url: Some("https://github.com/coach_user".to_string()),
+            timezone: "UTC".to_string(),
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
         };
@@ -409,6 +410,7 @@ mod tests {
             github_username: Some("coachee_user".to_string()),
             role: entity::users::Role::User,
             github_profile_url: Some("https://github.com/coachee_user".to_string()),
+            timezone: "UTC".to_string(),
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
         };
