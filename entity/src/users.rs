@@ -24,6 +24,8 @@ pub struct Model {
     pub password: String,
     pub github_username: Option<String>,
     pub github_profile_url: Option<String>,
+    #[sea_orm(default = "UTC")]
+    pub timezone: String,
     #[sea_orm(default = "user")]
     #[serde(skip_deserializing)]
     pub role: Role,
