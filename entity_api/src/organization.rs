@@ -12,10 +12,7 @@ use std::collections::HashMap;
 use log::*;
 
 pub async fn create(db: &impl ConnectionTrait, organization_model: Model) -> Result<Model, Error> {
-    debug!(
-        "New Organization Model to be inserted: {:?}",
-        organization_model
-    );
+    debug!("New Organization Model to be inserted: {organization_model:?}");
 
     let now = Utc::now();
     let name = organization_model.name;

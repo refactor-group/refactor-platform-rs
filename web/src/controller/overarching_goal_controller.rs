@@ -38,16 +38,13 @@ pub async fn create(
     State(app_state): State<AppState>,
     Json(overarching_goals_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!(
-        "POST Create a New Overarching Goal from: {:?}",
-        overarching_goals_model
-    );
+    debug!("POST Create a New Overarching Goal from: {overarching_goals_model:?}");
 
     let overarching_goals =
         OverarchingGoalApi::create(app_state.db_conn_ref(), overarching_goals_model, user.id)
             .await?;
 
-    debug!("New Overarching Goal: {:?}", overarching_goals);
+    debug!("New Overarching Goal: {overarching_goals:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
@@ -78,7 +75,7 @@ pub async fn read(
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Overarching Goal by id: {}", id);
+    debug!("GET Overarching Goal by id: {id}");
 
     let overarching_goal = OverarchingGoalApi::find_by_id(app_state.db_conn_ref(), id).await?;
 
@@ -114,12 +111,12 @@ pub async fn update(
     Path(id): Path<Id>,
     Json(overarching_goals_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("PUT Update Overarching Goal with id: {}", id);
+    debug!("PUT Update Overarching Goal with id: {id}");
 
     let overarching_goals =
         OverarchingGoalApi::update(app_state.db_conn_ref(), id, overarching_goals_model).await?;
 
-    debug!("Updated Overarching Goal: {:?}", overarching_goals);
+    debug!("Updated Overarching Goal: {overarching_goals:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
@@ -152,13 +149,13 @@ pub async fn update_status(
     Path(id): Path<Id>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("PUT Update Overarching Goal Status with id: {}", id);
+    debug!("PUT Update Overarching Goal Status with id: {id}");
 
     let overarching_goal =
         OverarchingGoalApi::update_status(app_state.db_conn_ref(), id, status.as_str().into())
             .await?;
 
-    debug!("Updated Overarching Goal: {:?}", overarching_goal);
+    debug!("Updated Overarching Goal: {overarching_goal:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
@@ -191,11 +188,11 @@ pub async fn index(
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Overarching Goals");
-    debug!("Filter Params: {:?}", params);
+    debug!("Filter Params: {params:?}");
 
     let overarching_goals = OverarchingGoalApi::find_by(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Overarching Goals: {:?}", overarching_goals);
+    debug!("Found Overarching Goals: {overarching_goals:?}");
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),

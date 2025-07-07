@@ -19,7 +19,7 @@ struct SessionDate(NaiveDateTime);
 impl SessionDate {
     fn new(date: NaiveDateTime) -> Result<Self, Error> {
         let truncated = date.duration_trunc(TimeDelta::minutes(1)).map_err(|err| {
-            warn!("Failed to truncate date_time: {:?}", err);
+            warn!("Failed to truncate date_time: {err:?}");
             Error {
                 source: Some(Box::new(err)),
                 error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
@@ -48,10 +48,7 @@ pub async fn create(
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
 
     let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
-    info!(
-        "Attempting to create Tiptap document with name: {}",
-        document_name
-    );
+    info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
 
     let tiptap = TiptapDocument::new(config).await?;

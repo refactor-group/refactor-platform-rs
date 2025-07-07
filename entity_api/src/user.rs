@@ -18,10 +18,7 @@ use utoipa::{IntoParams, ToSchema};
 pub use entity::users::Role;
 
 pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Model, Error> {
-    debug!(
-        "New User Relationship Model to be inserted: {:?}",
-        user_model
-    );
+    debug!("New User Relationship Model to be inserted: {user_model:?}");
 
     let now = Utc::now();
 
@@ -73,7 +70,7 @@ pub async fn find_by_email(db: &impl ConnectionTrait, email: &str) -> Result<Opt
         .one(db)
         .await?;
 
-    debug!("User find_by_email result: {:?}", user);
+    debug!("User find_by_email result: {user:?}");
 
     Ok(user)
 }
