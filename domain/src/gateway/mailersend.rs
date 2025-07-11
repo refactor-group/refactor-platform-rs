@@ -24,6 +24,15 @@ pub struct EmailSender {
     pub name: Option<String>,
 }
 
+impl Default for EmailSender {
+    fn default() -> Self {
+        EmailSender {
+            email: "hello@myrefactor.com".to_string(),
+            name: None,
+        }
+    }
+}
+
 /// Request payload for sending an email via MailerSend
 #[derive(Debug, Serialize)]
 pub struct SendEmailRequest {

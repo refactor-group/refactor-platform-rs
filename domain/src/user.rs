@@ -6,10 +6,9 @@ use crate::{
 };
 use chrono::Utc;
 pub use entity_api::user::{
-    create, find_by_email, find_by_id, find_by_organization, generate_hash,
-    verify_password, AuthSession, Backend, Credentials, Role,
+    create, find_by_email, find_by_id, find_by_organization, generate_hash, verify_password,
+    AuthSession, Backend, Credentials, Role,
 };
-use service::config::Config;
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query,
     query::{IntoQueryFilterMap, QuerySort},
@@ -18,6 +17,7 @@ use entity_api::{
 use log::*;
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait, Value};
+use service::config::Config;
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<users::Model>, Error>
 where
@@ -103,7 +103,8 @@ pub async fn create_user_and_coaching_relationship(
     })?;
 
     // Create the user within the organization
-    let new_user = entity_api::user::create_by_organization(&txn, organization_id, user_model).await?;
+    let new_user =
+        entity_api::user::create_by_organization(&txn, organization_id, user_model).await?;
     // Create the coaching relationship using the new user's ID as the coachee_id
     let new_coaching_relationship_model = entity_api::coaching_relationships::Model {
         coachee_id: new_user.id,
@@ -160,8 +161,9 @@ pub async fn create_by_organization(
     user_model: users::Model,
 ) -> Result<users::Model, Error> {
     // Create the user first using the entity_api function
-    let new_user = entity_api::user::create_by_organization(db, organization_id, user_model).await?;
-    
+    let new_user =
+        entity_api::user::create_by_organization(db, organization_id, user_model).await?;
+
     // Attempt to send welcome email
     match send_welcome_email(config, &new_user).await {
         Ok(_) => {
@@ -169,36 +171,36 @@ pub async fn create_by_organization(
         }
         Err(e) => {
             // Log the error but don't fail the user creation
-            warn!("Failed to send welcome email to {}: {:?}", new_user.email, e);
+            warn!(
+                "Failed to send welcome email to {}: {:?}",
+                new_user.email, e
+            );
         }
     }
-    
+
     Ok(new_user)
 }
 
 /// Send a welcome email to a newly created user
 async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
     let mailersend_client = MailerSendClient::new(config).await?;
-    
+
     let email_request = SendEmailRequest {
-        from: EmailSender {
-            email: "welcome@refactorcoach.com".to_string(),
-            name: Some("Refactor Coach".to_string()),
-        },
+        from: EmailSender::default(),
         to: vec![EmailRecipient {
             email: user.email.clone(),
             name: Some(format!("{} {}", user.first_name, user.last_name)),
         }],
-        subject: "Welcome to Refactor Coach!".to_string(),
+        subject: "Welcome to Refactor!".to_string(),
         text: Some(format!(
-            "Hi {},\n\nWelcome to Refactor Coach! We're excited to have you join our platform.\n\nYour account has been successfully created and you can now start your coaching journey.\n\nBest regards,\nThe Refactor Coach Team",
+            "Hi {},\n\nWelcome to Refactor! We're excited to have you join our platform.\n\nYour account has been successfully created and you can now start your coaching journey.\n\nBest regards,\nThe Refactor Team",
             user.first_name
         )),
         html: None,
         cc: None,
         bcc: None,
     };
-    
+
     mailersend_client.send_email(email_request).await?;
     Ok(())
 }
