@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 chrono = { version = "0.4.38", features = ["serde"] }
+email_address = "0.2"
 entity_api = { path = "../entity_api" }
 jsonwebtoken = "9"
 service = { path = "../service" }
@@ -16,4 +17,7 @@ serde = {version = "1.0.210", features = ["derive"] }
 [dependencies.sea-orm]
 version = "1.1.0"                                                       # sea-orm version
 features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
 
