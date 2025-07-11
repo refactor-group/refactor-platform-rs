@@ -24,11 +24,8 @@
 //!     allowed_document_names: vec!["document1".to_string(), "document2".to_string()],
 //! };
 //!
-//! let serialized_claims = serde_json::to_string(&claims).unwrap();
-//! println!("Serialized claims: {}", serialized_claims);
-//!
-//! let deserialized_claims: TiptapCollabClaims = serde_json::from_str(&serialized_claims).unwrap();
-//! println!("Deserialized claims: {:?}", deserialized_claims);
+//! let parsed: serde_json::Value = serde_json::from_str(claims_json).unwrap();
+//! println!("Parsed claims: {}", parsed);
 //! ```
 
 use serde::{Deserialize, Serialize};

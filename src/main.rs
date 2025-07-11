@@ -71,34 +71,13 @@ mod all_tests {
 
         let mut exit_codes = Vec::new();
 
-        for crate_name in crates_to_test().iter() {
-            let mut command = Command::new("cargo");
+        // Run tests with mocking
+        let mock_exit_codes = run_tests(crates_to_test_with_mocking(), &["--features", "mock"]);
+        exit_codes.extend(mock_exit_codes);
 
-            info!("<b>Running tests for {:?} crate</b>\r\n", crate_name);
-
-            // It may be that we need to map each crate with specific commands at some point
-            // for now calling "--features mock" for each crate.
-            command
-                .args(["test", "--features", "mock"])
-                .args(["-p", crate_name]);
-
-            let output = command.output().unwrap();
-
-            match output.status.success() {
-                true => {
-                    info!("<b>All {:?} tests completed successfully.\r\n", crate_name)
-                }
-                false => error!(
-                    "<b>{:?} tests completed with errors ({})</b>\r\n",
-                    crate_name, output.status
-                ),
-            }
-
-            info!("{}", String::from_utf8_lossy(output.stdout.as_slice()));
-            info!("{}", String::from_utf8_lossy(output.stderr.as_slice()));
-
-            exit_codes.push(output.status.code().unwrap());
-        }
+        // Run regular tests
+        let test_exit_codes = run_tests(crates_to_test(), &[]);
+        exit_codes.extend(test_exit_codes);
         if exit_codes.iter().any(|code| *code != 0i32) {
             error!("** One or more crate tests failed.");
             // Will fail CI
@@ -107,8 +86,48 @@ mod all_tests {
         // Will pass CI
         std::process::exit(0);
 
+        fn crates_to_test_with_mocking() -> Vec<String> {
+            vec!["entity_api".to_string(), "web".to_string()]
+        }
+
         fn crates_to_test() -> Vec<String> {
-            vec!["entity_api".to_string(), "web".to_string(), "domain".to_string()]
+            vec!["domain".to_string()]
+        }
+
+        fn run_tests(crates: Vec<String>, args: &[&str]) -> Vec<i32> {
+            let mut exit_codes = Vec::new();
+
+            for crate_name in crates.iter() {
+                let mut command = Command::new("cargo");
+
+                info!("<b>Running tests for {:?} crate</b>\\r\\n", crate_name);
+
+                command.args(["test"]);
+                command.args(args);
+                command.args(["-p", crate_name]);
+
+                let output = command.output().unwrap();
+
+                match output.status.success() {
+                    true => {
+                        info!(
+                            "<b>All {:?} tests completed successfully.\\r\\n",
+                            crate_name
+                        )
+                    }
+                    false => error!(
+                        "<b>{:?} tests completed with errors ({})</b>\\r\\n",
+                        crate_name, output.status
+                    ),
+                }
+
+                info!("{}", String::from_utf8_lossy(output.stdout.as_slice()));
+                info!("{}", String::from_utf8_lossy(output.stderr.as_slice()));
+
+                exit_codes.push(output.status.code().unwrap());
+            }
+
+            exit_codes
         }
     }
 }
