@@ -46,6 +46,21 @@ pub struct SendEmailResponse {
     pub message_id: Option<String>,
 }
 
+/// Validate email address and return error if invalid
+fn validate_email(email: &str) -> Result<(), Error> {
+    if !EmailAddress::is_valid(email) {
+        warn!("Invalid email: {}", email);
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+                "Invalid email address: {}",
+                email
+            ))),
+        });
+    }
+    Ok(())
+}
+
 impl MailerSendClient {
     /// Create a new MailerSend client with authentication
     pub async fn new(config: &Config) -> Result<Self, Error> {
@@ -58,33 +73,15 @@ impl MailerSendClient {
     /// Send an email using MailerSend API
     pub async fn send_email(&self, request: SendEmailRequest) -> Result<SendEmailResponse, Error> {
         // Validate email addresses before sending
-        if !is_valid_email(&request.from.email) {
-            warn!("Invalid sender email: {}", request.from.email);
-            return Err(Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                    "Invalid sender email address".to_string(),
-                )),
-            });
-        }
+        validate_email(&request.from.email)?;
 
         for recipient in &request.to {
-            if !is_valid_email(&recipient.email) {
-                warn!("Invalid recipient email: {}", recipient.email);
-                return Err(Error {
-                    source: None,
-                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
-                        "Invalid recipient email address: {}",
-                        recipient.email
-                    ))),
-                });
-            }
+            validate_email(&recipient.email)?;
         }
 
         let url = format!("{}/email", self.base_url);
 
         info!("Sending email to {} recipients", request.to.len());
-        debug!("Email subject: {}", request.subject);
 
         let response = self
             .client
@@ -162,11 +159,6 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
     );
 
     Ok(headers)
-}
-
-/// Validate email address format using email_address crate
-pub fn is_valid_email(email: &str) -> bool {
-    EmailAddress::is_valid(email)
 }
 
 #[cfg(test)]
