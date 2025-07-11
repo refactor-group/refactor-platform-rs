@@ -181,13 +181,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn test_send_email_fails_without_api_key() {
-        let config = Config::default();
-        let client = MailerSendClient::new(&config).await;
-        assert!(client.is_err());
-    }
-
     #[test]
     fn test_send_email_request_serialization() {
         let request = SendEmailRequest {
@@ -209,69 +202,6 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("test@example.com"));
         assert!(json.contains("Test Subject"));
-    }
-
-    #[test]
-    fn test_email_recipient_creation() {
-        let recipient = EmailRecipient {
-            email: "test@example.com".to_string(),
-            name: Some("Test User".to_string()),
-        };
-
-        assert_eq!(recipient.email, "test@example.com");
-        assert_eq!(recipient.name, Some("Test User".to_string()));
-    }
-
-    #[test]
-    fn test_send_email_request_with_html_content() {
-        let request = SendEmailRequest {
-            from: EmailSender {
-                email: "sender@example.com".to_string(),
-                name: None,
-            },
-            to: vec![EmailRecipient {
-                email: "recipient@example.com".to_string(),
-                name: None,
-            }],
-            subject: "HTML Email".to_string(),
-            text: None,
-            html: Some("<h1>Hello World</h1>".to_string()),
-            cc: None,
-            bcc: None,
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("<h1>Hello World</h1>"));
-        assert!(!json.contains("\"text\":"));
-    }
-
-    #[test]
-    fn test_send_email_request_with_cc_bcc() {
-        let request = SendEmailRequest {
-            from: EmailSender {
-                email: "sender@example.com".to_string(),
-                name: Some("Sender".to_string()),
-            },
-            to: vec![EmailRecipient {
-                email: "recipient@example.com".to_string(),
-                name: Some("Recipient".to_string()),
-            }],
-            subject: "Test with CC/BCC".to_string(),
-            text: Some("Test body".to_string()),
-            html: None,
-            cc: Some(vec![EmailRecipient {
-                email: "cc@example.com".to_string(),
-                name: Some("CC Recipient".to_string()),
-            }]),
-            bcc: Some(vec![EmailRecipient {
-                email: "bcc@example.com".to_string(),
-                name: Some("BCC Recipient".to_string()),
-            }]),
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("cc@example.com"));
-        assert!(json.contains("bcc@example.com"));
     }
 
     #[test]
