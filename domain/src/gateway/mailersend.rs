@@ -51,7 +51,7 @@ impl MailerSendClient {
     pub async fn new(config: &Config) -> Result<Self, Error> {
         let client = build_client(config).await?;
         let base_url = "https://api.mailersend.com/v1".to_string();
-        
+
         Ok(Self { client, base_url })
     }
 
@@ -67,24 +67,25 @@ impl MailerSendClient {
                 )),
             });
         }
-        
+
         for recipient in &request.to {
             if !is_valid_email(&recipient.email) {
                 warn!("Invalid recipient email: {}", recipient.email);
                 return Err(Error {
                     source: None,
-                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                        format!("Invalid recipient email address: {}", recipient.email),
-                    )),
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+                        "Invalid recipient email address: {}",
+                        recipient.email
+                    ))),
                 });
             }
         }
-        
+
         let url = format!("{}/email", self.base_url);
-        
+
         info!("Sending email to {} recipients", request.to.len());
         debug!("Email subject: {}", request.subject);
-        
+
         let response = self
             .client
             .post(&url)
@@ -106,9 +107,9 @@ impl MailerSendClient {
                 .get("x-message-id")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            
+
             info!("Email sent successfully, message_id: {:?}", message_id);
-            
+
             Ok(SendEmailResponse { message_id })
         } else {
             let error_text = response.text().await.unwrap_or_default();
@@ -140,7 +141,7 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
-    
+
     let mut headers = reqwest::header::HeaderMap::new();
     let auth_value = format!("Bearer {}", api_key);
     let mut auth_header = reqwest::header::HeaderValue::from_str(&auth_value).map_err(|err| {
@@ -154,12 +155,12 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
     })?;
     auth_header.set_sensitive(true);
     headers.insert(reqwest::header::AUTHORIZATION, auth_header);
-    
+
     headers.insert(
         reqwest::header::CONTENT_TYPE,
         reqwest::header::HeaderValue::from_static("application/json"),
     );
-    
+
     Ok(headers)
 }
 
@@ -291,7 +292,7 @@ mod tests {
                 email
             );
         }
-        
+
         // Test valid emails
         assert!(is_valid_email("test@example.com"));
         assert!(is_valid_email("user.name@domain.co.uk"));
