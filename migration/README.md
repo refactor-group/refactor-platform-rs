@@ -4,7 +4,7 @@
 
 This project uses a two-phase approach to database migrations:
 
-1. **Initial Schema Setup**: The initial database schema is defined in `docs/db/refactor_platform_rs.dbml` using DBML (Database Markup Language). During the first stages of development, we used the `scripts/rebuild_db.sh` script to set up the entire schema at once. This script:
+1. **Initial Schema Setup**: The initial database schema is defined in `docs/db/base_refactor_platform_rs.dbml` using DBML (Database Markup Language). During the first stages of development, we used the `scripts/rebuild_db.sh` script to set up the entire schema at once. This script:
    - Converts the DBML to SQL
    - Creates necessary database objects (user, database, schema)
    - Applies the generated SQL as the first migration
@@ -12,6 +12,20 @@ This project uses a two-phase approach to database migrations:
 2. **Incremental Migrations**: As we move into production, we utilize SeaORM's built-in migration mechanisms for all subsequent schema changes. However, the `scripts/rebuild_db.sh` script remains available for:
    - First-time local environment setup
    - Rebuilding your local database from scratch
+
+### Important
+
+When updating or seeding records in migrations, always use raw SQL queries instead of SeaORM's ActiveModel or entity methods. This is critical for several reasons:
+
+1. **Schema Evolution**: Entity definitions in your codebase represent the current state of your database schema. When migrations are replayed (e.g., during database rebuilds), older migrations may reference entity fields that no longer exist or have changed type, causing compilation failures.
+
+2. **Type Safety vs. Migration Stability**: Rust's type system enforces that SeaORM entities match the current schema. However, migrations need to work with the schema as it existed at the time the migration was written, not the current schema state.
+
+3. **Deterministic Behavior**: Raw SQL ensures migrations behave identically regardless of when they're executed, preventing subtle bugs that can occur when entity-based code changes behavior due to schema evolution.
+
+4. **Compilation Independence**: Raw SQL migrations can be compiled and executed even when the current entity definitions don't match the historical schema state that the migration was designed to work with.
+
+
 
 ## Setting Up Migrations
 

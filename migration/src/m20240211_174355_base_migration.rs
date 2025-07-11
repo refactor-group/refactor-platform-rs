@@ -15,7 +15,7 @@ impl MigrationTrait for Migration {
             DbErr::Migration(string)
         };
         let mut file =
-            File::open("migration/src/refactor_platform_rs.sql").map_err(stringify_err)?;
+            File::open("migration/src/base_refactor_platform_rs.sql").map_err(stringify_err)?;
 
         let mut sql = String::new();
 

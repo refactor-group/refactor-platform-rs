@@ -63,11 +63,11 @@ fi
 
 # Generating SQL for the migrations using dbml2sql
 echo "Generating SQL for the migrations..."
-dbml2sql docs/db/refactor_platform_rs.dbml -o migration/src/refactor_platform_rs.sql || { echo "Error generating SQL file"; exit 1; }
+dbml2sql docs/db/base_refactor_platform_rs.dbml -o migration/src/base_refactor_platform_rs.sql || { echo "Error generating SQL file"; exit 1; }
 
 # Remove the line to create a schema from the generated SQL file
 echo "Modifying the generated SQL file..."
-sed -i '' '/CREATE SCHEMA/d' migration/src/refactor_platform_rs.sql
+sed -i '' '/CREATE SCHEMA/d' migration/src/base_refactor_platform_rs.sql
 
 echo "Running the migrations..."
 DATABASE_URL=postgres://$DB_USER:password@localhost:5432/$DB_NAME sea-orm-cli migrate up -s $SCHEMA_NAME || { echo "Failed to run migrations"; exit 1; }
