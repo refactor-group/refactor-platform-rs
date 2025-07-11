@@ -1,50 +1,46 @@
-use entity::roles::Role;
-use entity::users;
-use entity_api::{mutate, mutate::UpdateMap, user};
-use sea_orm::{IntoActiveModel, Value};
 use sea_orm_migration::prelude::*;
+
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let email = "admin@refactorcoach.com";
         let db = manager.get_connection();
 
-        let user = user::find_by_email(db, email).await.unwrap();
+        // Use raw SQL to avoid dependency on entity models
+        let sql = r#"
+            UPDATE refactor_platform.users 
+            SET role = 'admin' 
+            WHERE email = 'admin@refactorcoach.com'
+        "#;
 
-        if let Some(user) = user {
-            let active_model = user.into_active_model();
-            let mut update_map = UpdateMap::new();
-            update_map.insert(
-                "role".to_string(),
-                Some(Value::String(Some(Box::new(Role::Admin.to_string())))),
-            );
-            mutate::update::<users::ActiveModel, users::Column>(db, active_model, update_map)
-                .await
-                .unwrap();
-        }
+        db.execute(sea_orm::Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            sql,
+            vec![],
+        ))
+        .await?;
 
         Ok(())
     }
+
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let email = "admin@refactorcoach.com";
         let db = manager.get_connection();
 
-        let user = user::find_by_email(db, email).await.unwrap();
+        // Use raw SQL for rollback as well
+        let sql = r#"
+            UPDATE refactor_platform.users 
+            SET role = 'user' 
+            WHERE email = 'admin@refactorcoach.com'
+        "#;
 
-        if let Some(user) = user {
-            let active_model = user.into_active_model();
-            let mut update_map = UpdateMap::new();
-            update_map.insert(
-                "role".to_string(),
-                Some(Value::String(Some(Box::new(Role::User.to_string())))),
-            );
-            mutate::update::<users::ActiveModel, users::Column>(db, active_model, update_map)
-                .await
-                .unwrap();
-        }
+        db.execute(sea_orm::Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            sql,
+            vec![],
+        ))
+        .await?;
 
         Ok(())
     }
