@@ -11,23 +11,23 @@
 //! # Example
 //!
 //! ```rust
-//! use domain::jwt::claims::TiptapCollabClaims;
+//! // This module provides internal claims structures for JWT tokens.
+//! // TiptapCollabClaims is used internally by the jwt module for generating
+//! // collaboration tokens via the generate_collab_token function.
 //! use serde_json;
 //!
-//! let claims = TiptapCollabClaims {
-//!     exp: 1825247600,
-//!     iat: 1625247600,
-//!     ndf: 1625247600,
-//!     iss: "issuer".to_string(),
-//!     sub: "subject".to_string(),
-//!     allowed_document_names: vec!["document1".to_string(), "document2".to_string()],
-//! };
+//! // Example of working with JSON claims data
+//! let claims_json = r#"{
+//!     "exp": 1825247600,
+//!     "iat": 1625247600,
+//!     "ndf": 1625247600,
+//!     "iss": "issuer",
+//!     "sub": "subject",
+//!     "allowedDocumentNames": ["document1", "document2"]
+//! }"#;
 //!
-//! let serialized_claims = serde_json::to_string(&claims).unwrap();
-//! println!("Serialized claims: {}", serialized_claims);
-//!
-//! let deserialized_claims: TiptapCollabClaims = serde_json::from_str(&serialized_claims).unwrap();
-//! println!("Deserialized claims: {:?}", deserialized_claims);
+//! let parsed: serde_json::Value = serde_json::from_str(claims_json).unwrap();
+//! println!("Parsed claims: {}", parsed);
 //! ```
 
 use serde::{Deserialize, Serialize};

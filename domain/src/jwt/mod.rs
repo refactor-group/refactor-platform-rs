@@ -13,7 +13,7 @@
 //! use domain::jwt::generate_collab_token;
 //! use sea_orm::DatabaseConnection;
 //! use service::config::Config;
-//! use crate::Id;
+//! use domain::Id;
 //!
 //! async fn example(db: &DatabaseConnection, config: &Config, coaching_session_id: Id) {
 //!     match generate_collab_token(db, config, coaching_session_id).await {
