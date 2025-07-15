@@ -41,7 +41,7 @@ COPY --from=builder /usr/src/app/target/release/migration ./migrationctl
 # In order to run our initial migration which applies a SQL file directly, we need to
 # make sure the directory exists on the container and copy the SQL file into it.
 RUN mkdir -p /app/migration/src
-COPY --from=builder /usr/src/app/migration/src/refactor_platform_rs.sql /app/migration/src/
+COPY --from=builder /usr/src/app/migration/src/base_refactor_platform_rs.sql /app/migration/src/
 
 # Copy entrypoint script and make it executable
 COPY entrypoint.sh /entrypoint.sh
