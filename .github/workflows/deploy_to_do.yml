@@ -178,11 +178,11 @@ jobs:
               exit 1
             fi
 
-            log_info "Setting permissions..."
-            # Set directory permissions
-            find nginx -type d -exec chmod 770 {} \;
-            # Set file permissions (only if they exist and are writable)
-            find nginx -type f -exec chmod 660 {} \; 2>/dev/null || true
+            log_info "Setting initial directory permissions..."
+            # Ensure current user owns the nginx directory tree
+            chown -R $(whoami):$(whoami) nginx/ 2>/dev/null || true
+            # Set restrictive directory permissions initially
+            find nginx -type d -exec chmod 755 {} \;
 
             log_info "Downloading nginx configuration files..."
 
@@ -222,6 +222,14 @@ jobs:
                 exit 1
             fi
 
+            chmod 770 nginx/scripts/renew-certs.sh
+
+            log_info "Setting final directory permissions..."
+            # Set final directory permissions to allow group write access
+            find nginx -type d -exec chmod 770 {} \;
+            # Set file permissions for downloaded files
+            find nginx -type f -exec chmod 660 {} \; 2>/dev/null || true
+            # Make the renewal script executable
             chmod 770 nginx/scripts/renew-certs.sh
 
             log_info "Nginx setup completed successfully!"
