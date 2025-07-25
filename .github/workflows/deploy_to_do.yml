@@ -156,11 +156,6 @@ jobs:
             set -e
             # Exit immediately if any command fails
 
-            # Function to log errors
-            log_error() {
-              echo "ERROR: $1"
-            }
-
             # Function to log info
             log_info() {
               echo "INFO: $1"
@@ -173,57 +168,57 @@ jobs:
 
             # Check if docker-compose.yaml exists before using it as reference
             if [ ! -f docker-compose.yaml ]; then
-                log_error "docker-compose.yaml not found - cannot set permissions"
+                echo "ERROR: docker-compose.yaml not found - cannot set permissions"
                 exit 1
             fi
 
             log_info "Creating nginx directories..."
-            if ! mkdir -p nginx/conf.d nginx/logs; then
-              log_error "Failed to create nginx directories"
+            if ! mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge; then
+              echo "ERROR: Failed to create nginx directories"
               exit 1
             fi
 
             log_info "Setting permissions..."
             # Set directory permissions
             find nginx -type d -exec chmod 770 {} \;
-            # Set file permissions  
-            find nginx -type f -exec chmod 660 {} \;
+            # Set file permissions (only if they exist and are writable)
+            find nginx -type f -exec chmod 660 {} \; 2>/dev/null || true
 
             log_info "Downloading nginx configuration files..."
 
             # Download main nginx config
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/nginx.conf" -o nginx/nginx.conf; then
-                log_error "Failed to download nginx.conf"
+                echo "ERROR: Failed to download nginx.conf"
                 exit 1
             fi
 
             # Verify the main nginx config file was downloaded and is not empty
             if [ ! -s nginx/nginx.conf ]; then
-                log_error "Downloaded nginx.conf is empty or could not be created"
+                echo "ERROR: Downloaded nginx.conf is empty or could not be created"
                 exit 1
             fi
 
             # Download refactor platform nginx reverse proxy config
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/conf.d/refactor-platform.conf" -o nginx/conf.d/refactor-platform.conf; then
-                log_error "Failed to download refactor-platform.conf"
+                echo "ERROR: Failed to download refactor-platform.conf"
                 exit 1
             fi
 
             # Verify the platform config file was downloaded and is not empty
             if [ ! -s nginx/conf.d/refactor-platform.conf ]; then
-                log_error "Downloaded refactor-platform.conf is empty or could not be created"
+                echo "ERROR: Downloaded refactor-platform.conf is empty or could not be created"
                 exit 1
             fi
 
             # Download refactor platform nginx let's encrypt ssl cert renewal script
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
-                log_error "Failed to download renew-certs.sh"
+                echo "ERROR: Failed to download renew-certs.sh"
                 exit 1
             fi
 
             # Verify the renew certs script file was downloaded and is not empty
             if [ ! -s nginx/scripts/renew-certs.sh ]; then
-                log_error "Downloaded renew-certs.sh script is empty or could not be created"
+                echo "ERROR: Downloaded renew-certs.sh script is empty or could not be created"
                 exit 1
             fi
 
@@ -287,7 +282,7 @@ jobs:
             if docker ps | grep -q rust-app; then
               log_info "✅ Deployment succeeded! rust-app is running."
             else
-              log_error "⚠️ Missing container for rust-app. Logs follow:"
+              echo "ERROR: ⚠️ Missing container for rust-app. Logs follow:"
               # Show backend logs
               docker logs rust-app --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
             fi
