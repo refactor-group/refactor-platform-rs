@@ -1,39 +1,39 @@
-name: Deploy to DigitalOcean via Tailscale  # Workflow name displayed in GitHub UI
+name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub UI
 # Deploys the latest stable tagged container images to production servers.
 
 # Manual trigger with debug ssh option
 on:
-  workflow_dispatch:  # Manual trigger via GitHub UI
+  workflow_dispatch: # Manual trigger via GitHub UI
     inputs:
-      enable_ssh_debugging:  # Optional debugging parameter useful to debug the ssh connection to the server
-        description: 'Enable verbose SSH debugging'  # Help text shown in UI
-        required: false  # Not required to run the workflow
-        default: false  # Disabled by default
-        type: boolean  # Simple checkbox in the UI
+      enable_ssh_debugging: # Optional debugging parameter useful to debug the ssh connection to the server
+        description: "Enable verbose SSH debugging" # Help text shown in UI
+        required: false # Not required to run the workflow
+        default: false # Disabled by default
+        type: boolean # Simple checkbox in the UI
 
 permissions:
-  contents: read  # Minimal permissions required for this workflow
+  contents: read # Minimal permissions required for this workflow
 
 jobs:
   deploy:
-    name: Manual Deploy Over Tailscale  # Display name for this job
+    name: Manual Deploy Over Tailscale # Display name for this job
     runs-on: ubuntu-24.04
-    environment: production             # Use the production environment settings
+    environment: production # Use the production environment settings
 
     steps:
       # Step 1: Setup Tailscale on the GitHub Actions runner
-      - name: Set up Tailscale  # Connect to the Tailscale network
-        uses: tailscale/github-action@v3  # Official Tailscale GitHub Action
+      - name: Set up Tailscale # Connect to the Tailscale network
+        uses: tailscale/github-action@v3 # Official Tailscale GitHub Action
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}  # OAuth client ID for Tailscale
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}  # OAuth client secret for Tailscale
-          tags: tag:github-actions  # Tag to identify this connection in Tailscale
-          version: latest  # Use the latest version of Tailscale
-          use-cache: 'true'  # Cache Tailscale binary for faster startup
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }} # OAuth client ID for Tailscale
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }} # OAuth client secret for Tailscale
+          tags: tag:github-actions # Tag to identify this connection in Tailscale
+          version: latest # Use the latest version of Tailscale
+          use-cache: "true" # Cache Tailscale binary for faster startup
 
       # Step 2: (Debug only) Verifies SSH ED25519 SSH key
-      - name: Debug ED25519 Key  # SSH key debugging step
-        if: ${{ inputs.enable_ssh_debugging == true }}  # Only run when debugging is enabled
+      - name: Debug ED25519 Key # SSH key debugging step
+        if: ${{ inputs.enable_ssh_debugging == true }} # Only run when debugging is enabled
         run: |
           mkdir -p ~/.ssh
           # Create SSH directory if it doesn't exist
@@ -51,7 +51,7 @@ jobs:
           # Test connection with verbose output
 
       # Step 3: Create .env File Locally
-      - name: Create .env File on Server  # Create environment file for deployment
+      - name: Create .env File on Server # Create environment file for deployment
         run: |
           cat > envfile <<EOF
           # Start heredoc to create env file
@@ -199,7 +199,7 @@ jobs:
 
             # Verify the main nginx config file was downloaded and is not empty
             if [ ! -s nginx/nginx.conf ]; then
-                log_error "Downloaded nginx.conf is empty or doesn't exist"
+                log_error "Downloaded nginx.conf is empty or could not be created"
                 exit 1
             fi
 
@@ -211,9 +211,23 @@ jobs:
 
             # Verify the platform config file was downloaded and is not empty
             if [ ! -s nginx/conf.d/refactor-platform.conf ]; then
-                log_error "Downloaded refactor-platform.conf is empty or doesn't exist"
+                log_error "Downloaded refactor-platform.conf is empty or could not be created"
                 exit 1
             fi
+
+            # Download refactor platform nginx let's encrypt ssl cert renewal script
+            if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
+                log_error "Failed to download renew-certs.sh"
+                exit 1
+            fi
+
+            # Verify the renew certs script file was downloaded and is not empty
+            if [ ! -s nginx/scripts/renew-certs.sh ]; then
+                log_error "Downloaded renew-certs.sh script is empty or could not be created"
+                exit 1
+            fi
+
+            chmod 770 nginx/scripts/renew-certs.sh
 
             log_info "Nginx setup completed successfully!"
 
