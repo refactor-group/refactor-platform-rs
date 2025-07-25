@@ -238,10 +238,6 @@ jobs:
             # Copy ownership from compose file
             chown --reference=docker-compose.yaml .env
 
-            log_info "📋 Showing masked .env:"
-            # Display environment with sensitive data masked
-            sed "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/g; s/TIPTAP_AUTH_KEY=.*/TIPTAP_AUTH_KEY=***/g; s/TIPTAP_JWT_SIGNING_KEY=.*/TIPTAP_JWT_SIGNING_KEY=***/g" .env
-
             log_info "📥 Logging into GHCR..."
             # Login to GitHub Container Registry
             echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
