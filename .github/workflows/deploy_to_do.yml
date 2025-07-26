@@ -314,14 +314,19 @@ jobs:
             echo "INFO: Nginx setup completed successfully!"
 
             # Now set trap to ensure service restart on any subsequent failure
-            trap cleanup EXIT
+            # trap cleanup EXIT
 
             echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
             # Copy permissions from compose file
-            chmod --reference=docker-compose.yaml .env
-            # Copy ownership from compose file
-            chown --reference=docker-compose.yaml .env
+            if [ -f docker-compose.yaml ]; then
+                chmod --reference=docker-compose.yaml .env
+                # Copy ownership from compose file
+                chown --reference=docker-compose.yaml .env
+            else
+                echo "WARNING: docker-compose.yaml not found, setting default .env permissions"
+                chmod 640 .env
+            fi
 
             echo "INFO: 📥 Logging into GHCR..."
             # Login to GitHub Container Registry
