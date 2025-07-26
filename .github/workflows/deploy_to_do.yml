@@ -161,6 +161,15 @@ jobs:
               echo "INFO: $1"
             }
 
+            # Cleanup function to ensure service gets restarted even on failure
+            cleanup() {
+              echo "INFO: 🔄 Ensuring Refactor Platform service is running..."
+              sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"
+            }
+
+            # Set trap to run cleanup on any exit (success or failure)
+            trap cleanup EXIT
+
             log_info '📦 Starting deployment from branch: ${{ github.ref_name }}...'
             cd /home/deploy
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
@@ -172,6 +181,9 @@ jobs:
                 exit 1
             fi
 
+            log_info "🛑 Stopping Refactor Platform service before nginx setup..."
+            sudo systemctl stop refactor-platform.service
+            
             log_info "Creating nginx directories..."
             if ! mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge; then
               echo "ERROR: Failed to create nginx directories"
@@ -315,9 +327,6 @@ jobs:
             # Verify docker-compose configuration
             docker compose config --quiet
             # Check config without output unless error
-
-            log_info "🛑 Stopping Refactor Platform service..."
-            sudo systemctl stop refactor-platform.service
 
             log_info "🚀 Starting Refactor Platform service..."
             sudo systemctl start refactor-platform.service
