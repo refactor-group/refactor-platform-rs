@@ -160,11 +160,42 @@ jobs:
             # Cleanup function to ensure service gets restarted even on failure
             cleanup() {
               echo "INFO: 🔄 Ensuring Refactor Platform service is running..."
-              sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"
+              if systemctl list-unit-files | grep -q "refactor-platform.service"; then
+                sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"
+              else
+                echo "WARNING: refactor-platform.service not found during cleanup"
+              fi
             }
 
+            # CRITICAL: Verify we're running on the target server, not GitHub Actions runner
+            echo "===== SSH CONNECTION DIAGNOSTICS ====="
+            echo "DEBUG: Hostname: $(hostname)"
+            echo "DEBUG: Current user: $(whoami)"
+            echo "DEBUG: Home directory: $HOME"
+            echo "DEBUG: Current working directory: $(pwd)"
+            echo "DEBUG: Available disk space:"
+            df -h / | head -2
+            echo "DEBUG: Network interfaces:"
+            ip addr show | grep -E "inet|UP" | head -5
+            echo "========================================="
+
+            # Verify we're on the target server (not GitHub Actions runner)
+            if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+                echo "FATAL ERROR: Script is running on GitHub Actions runner instead of target server!"
+                echo "SSH connection failed - aborting deployment"
+                exit 1
+            fi
+
             echo 'INFO: 📦 Starting deployment from branch: ${{ github.ref_name }}...'
-            cd /home/deploy
+            
+            # Ensure we're in the correct directory
+            cd /home/deploy || { 
+                echo "FATAL ERROR: Cannot change to /home/deploy directory"
+                echo "Current directory: $(pwd)"
+                echo "Directory contents:"
+                ls -la
+                exit 1
+            }
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
             if [ -f docker-compose.yaml ]; then
                 chmod 640 docker-compose.yaml
@@ -331,7 +362,7 @@ jobs:
             echo "INFO: Nginx setup completed successfully!"
 
             # Now set trap to ensure service restart on any subsequent failure  
-            trap 'echo "INFO: 🔄 Ensuring Refactor Platform service is running..."; sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"' EXIT
+            trap 'echo "INFO: 🔄 Ensuring Refactor Platform service is running..."; if systemctl list-unit-files | grep -q "refactor-platform.service"; then sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"; else echo "WARNING: refactor-platform.service not found during cleanup"; fi' EXIT
 
             echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
@@ -382,7 +413,19 @@ jobs:
             # Check config without output unless error
 
             echo "INFO: 🚀 Starting Refactor Platform service..."
-            sudo systemctl start refactor-platform.service
+            
+            # Verify systemd service exists before attempting to start
+            if systemctl list-unit-files | grep -q "refactor-platform.service"; then
+                echo "DEBUG: refactor-platform.service found"
+                sudo systemctl start refactor-platform.service
+            else
+                echo "ERROR: refactor-platform.service not found"
+                echo "DEBUG: Available services matching 'refactor':"
+                systemctl list-unit-files | grep -i refactor || echo "No refactor services found"
+                echo "DEBUG: All systemd service files:"
+                systemctl list-unit-files | head -10
+                exit 1
+            fi
 
             echo "INFO: ⏳ Waiting for startup..."
             # Wait for containers to reach steady state
