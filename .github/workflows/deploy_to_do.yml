@@ -167,9 +167,6 @@ jobs:
               sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"
             }
 
-            # Set trap to run cleanup on any exit (success or failure)
-            trap cleanup EXIT
-
             log_info '📦 Starting deployment from branch: ${{ github.ref_name }}...'
             cd /home/deploy
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
@@ -293,6 +290,9 @@ jobs:
             chmod 770 nginx/scripts/renew-certs.sh
 
             log_info "Nginx setup completed successfully!"
+
+            # Now set trap to ensure service restart on any subsequent failure
+            trap cleanup EXIT
 
             log_info "🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
