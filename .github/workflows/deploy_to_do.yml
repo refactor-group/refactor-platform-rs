@@ -178,6 +178,12 @@ jobs:
               exit 1
             fi
 
+            # Debug: Verify all directories were created
+            echo "DEBUG: Checking created directories:"
+            ls -la nginx/
+            echo "DEBUG: Checking scripts directory specifically:"
+            ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing"
+
             log_info "Setting initial directory permissions..."
             # Ensure current user owns the nginx directory tree
             chown -R $(whoami):$(whoami) nginx/ 2>/dev/null || true
