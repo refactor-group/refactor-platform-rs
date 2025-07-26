@@ -213,8 +213,15 @@ jobs:
             # Download refactor platform nginx let's encrypt ssl cert renewal script
             # Remove existing file first to avoid permission issues
             rm -f nginx/scripts/renew-certs.sh 2>/dev/null || true
+            # Debug: Check directory state before download
+            echo "DEBUG: Directory state before download:"
+            ls -la nginx/scripts/
+            # Test if directory is writable
+            touch nginx/scripts/test.tmp && rm nginx/scripts/test.tmp || echo "DEBUG: Directory not writable"
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
                 echo "ERROR: Failed to download renew-certs.sh"
+                echo "DEBUG: Directory state after failed download:"
+                ls -la nginx/scripts/
                 exit 1
             fi
 
