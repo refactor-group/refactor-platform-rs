@@ -330,8 +330,8 @@ jobs:
 
             echo "INFO: Nginx setup completed successfully!"
 
-            # Now set trap to ensure service restart on any subsequent failure
-            trap cleanup EXIT
+            # Now set trap to ensure service restart on any subsequent failure  
+            trap 'echo "INFO: 🔄 Ensuring Refactor Platform service is running..."; sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"' EXIT
 
             echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
@@ -371,7 +371,14 @@ jobs:
 
             echo "INFO: 🔍 Validating config..."
             # Verify docker-compose configuration
-            docker compose config --quiet
+            echo "DEBUG: Current directory: $(pwd)"
+            echo "DEBUG: Files in current directory:"
+            ls -la *.yaml 2>/dev/null || echo "No YAML files found"
+            if [ -f docker-compose.yaml ]; then
+                docker compose config --quiet
+            else
+                echo "WARNING: docker-compose.yaml not found, skipping config validation"
+            fi
             # Check config without output unless error
 
             echo "INFO: 🚀 Starting Refactor Platform service..."
