@@ -166,7 +166,7 @@ jobs:
 
           # SSH and deploy
           echo "Starting main deployment script..."
-          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
+          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s' << 'DEPLOY_SCRIPT_EOF'
             set -e
             # Exit immediately if any command fails
 
@@ -464,4 +464,4 @@ jobs:
 
             echo "INFO: 🎉 Deployment complete."
             # Final deployment message
-          '
+          DEPLOY_SCRIPT_EOF
