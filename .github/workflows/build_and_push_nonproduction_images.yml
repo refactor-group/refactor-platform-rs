@@ -23,11 +23,11 @@ jobs:
       # Checkout code
       - uses: actions/checkout@v4
 
-      # Enable QEMU for multi-arch builds (arm64 on x86)
+      # Enable QEMU for multi-arch builds (arm64 on x86) - TEMPORARILY DISABLED FOR SPEED
       - name: Set up Rust + QEMU
         uses: docker/setup-qemu-action@v2
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
 
       # Install Rust and cache artifacts
       - name: Set up Rust
@@ -95,7 +95,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64  # ✅ Key multi-arch setting
+          platforms: linux/amd64  # TEMPORARILY DISABLED ARM64 FOR SPEED
           push: true
           provenance: true
           tags: ${{ steps.tags.outputs.backend_tags }}

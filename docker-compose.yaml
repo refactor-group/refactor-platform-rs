@@ -17,7 +17,9 @@ services:
       - /etc/letsencrypt/live/refactor.engineer/:/etc/letsencrypt/live/refactor.engineer/:ro
       - /etc/letsencrypt/archive/refactor.engineer/:/etc/letsencrypt/archive/refactor.engineer/:ro
       - ${SSL_DHPARAMS_PATH}:/etc/letsencrypt/ssl-dhparams.pem:ro
-      # Optional: nginx logs for debugging
+      # For SSL certbot renewal
+      - ./nginx/html:/var/www/html:ro
+      # nginx logs (access/error) for debugging
       - ./nginx/logs:/var/log/nginx
     depends_on:
       rust-app:
