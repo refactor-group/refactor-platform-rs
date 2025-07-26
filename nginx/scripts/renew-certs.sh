@@ -22,8 +22,8 @@
 
   log "Starting certificate renewal process"
 
-  # Attempt to renew certificates
-  if certbot renew --webroot -w "${WEBROOT_PATH}" --quiet; then
+  # Attempt to renew certificates (requires sudo for system directories)
+  if sudo certbot renew --webroot -w "${WEBROOT_PATH}" --quiet; then
       log "Certificate renewal successful"
 
       # Reload nginx configuration
