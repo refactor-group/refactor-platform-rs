@@ -166,7 +166,12 @@ jobs:
             echo 'INFO: 📦 Starting deployment from branch: ${{ github.ref_name }}...'
             cd /home/deploy
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
-            chmod 640 docker-compose.yaml
+            if [ -f docker-compose.yaml ]; then
+                chmod 640 docker-compose.yaml
+            else
+                echo "ERROR: Failed to download docker-compose.yaml"
+                exit 1
+            fi
 
             # Check if docker-compose.yaml exists before using it as reference
             if [ ! -f docker-compose.yaml ]; then
@@ -301,31 +306,45 @@ jobs:
                 exit 1
             fi
 
-            chmod 770 nginx/scripts/renew-certs.sh
+            if [ -f nginx/scripts/renew-certs.sh ]; then
+                chmod 770 nginx/scripts/renew-certs.sh
+            else
+                echo "WARNING: renew-certs.sh not found for initial chmod"
+            fi
 
             echo "INFO: Setting final directory permissions..."
             # Set final directory permissions to allow group write access
-            find nginx -type d -exec chmod 770 {} \;
-            # Set file permissions for downloaded files
-            find nginx -type f -exec chmod 660 {} \; 2>/dev/null || true
-            # Make the renewal script executable
-            chmod 770 nginx/scripts/renew-certs.sh
+            if [ -d nginx ]; then
+                find nginx -type d -exec chmod 770 {} \;
+                # Set file permissions for downloaded files
+                find nginx -type f -exec chmod 660 {} \; 2>/dev/null || true
+                # Make the renewal script executable
+                if [ -f nginx/scripts/renew-certs.sh ]; then
+                    chmod 770 nginx/scripts/renew-certs.sh
+                else
+                    echo "WARNING: renew-certs.sh not found for final chmod"
+                fi
+            else
+                echo "WARNING: nginx directory not found for final permissions"
+            fi
 
             echo "INFO: Nginx setup completed successfully!"
 
             # Now set trap to ensure service restart on any subsequent failure
-            # trap cleanup EXIT
+            trap cleanup EXIT
 
             echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
             # Copy permissions from compose file
-            if [ -f docker-compose.yaml ]; then
+            if [ -f docker-compose.yaml ] && [ -f .env ]; then
                 chmod --reference=docker-compose.yaml .env
                 # Copy ownership from compose file
                 chown --reference=docker-compose.yaml .env
-            else
+            elif [ -f .env ]; then
                 echo "WARNING: docker-compose.yaml not found, setting default .env permissions"
                 chmod 640 .env
+            else
+                echo "WARNING: .env file not found, skipping permission setting"
             fi
 
             echo "INFO: 📥 Logging into GHCR..."
