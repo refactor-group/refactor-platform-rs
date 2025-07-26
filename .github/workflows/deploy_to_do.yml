@@ -187,8 +187,12 @@ jobs:
             log_info "Setting initial directory permissions..."
             # Ensure current user owns the nginx directory tree
             chown -R $(whoami):$(whoami) nginx/ 2>/dev/null || true
+            echo "DEBUG: Before chmod - checking scripts directory:"
+            ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing before chmod"
             # Set restrictive directory permissions initially
             find nginx -type d -exec chmod 755 {} \;
+            echo "DEBUG: After chmod - checking scripts directory:"
+            ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing after chmod"
 
             log_info "Downloading nginx configuration files..."
 
