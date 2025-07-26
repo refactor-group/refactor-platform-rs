@@ -295,14 +295,14 @@ jobs:
             fi
 
             echo "INFO: Setting final directory permissions..."
-            # Set final directory permissions to allow group write access
+            # Set final directory permissions to allow nginx to serve ACME challenges
             if [ -d nginx ]; then
-                find nginx -type d -exec chmod 770 {} \;
+                find nginx -type d -exec chmod 755 {} \;
                 # Set file permissions for downloaded files
-                find nginx -type f -exec chmod 660 {} \; 2>/dev/null || true
+                find nginx -type f -exec chmod 644 {} \; 2>/dev/null || true
                 # Make the renewal script executable
                 if [ -f nginx/scripts/renew-certs.sh ]; then
-                    chmod 770 nginx/scripts/renew-certs.sh
+                    chmod 755 nginx/scripts/renew-certs.sh
                 else
                     echo "WARNING: renew-certs.sh not found for final chmod"
                 fi
