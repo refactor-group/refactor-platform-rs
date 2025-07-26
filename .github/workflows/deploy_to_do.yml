@@ -196,6 +196,35 @@ jobs:
 
             log_info "Downloading nginx configuration files..."
 
+            # COMPREHENSIVE DEBUGGING - Remove after issue is resolved
+            echo "=================== COMPREHENSIVE DEBUG START ==================="
+            echo "DEBUG: Current working directory: $(pwd)"
+            echo "DEBUG: Current user: $(whoami)"
+            echo "DEBUG: Current groups: $(groups)"
+            echo "DEBUG: Available disk space:"
+            df -h . | head -2
+            echo "DEBUG: Complete nginx structure before downloads:"
+            find nginx -ls 2>/dev/null || echo "DEBUG: find command failed"
+            echo "DEBUG: Running processes that might interfere:"
+            ps aux | grep -E "(nginx|docker|systemd)" | head -10
+            echo "DEBUG: Docker container status:"
+            docker ps -a 2>/dev/null | head -5 || echo "DEBUG: Docker not accessible"
+            echo "DEBUG: Mount points that could affect nginx directory:"
+            mount | grep -E "(nginx|/home)" || echo "DEBUG: No relevant mounts found"
+            echo "DEBUG: File system type:"
+            df -T . | tail -1
+            echo "DEBUG: Testing directory stability with delay:"
+            ls -la nginx/scripts/ || echo "DEBUG: scripts missing at checkpoint 1"
+            sleep 1
+            ls -la nginx/scripts/ || echo "DEBUG: scripts missing at checkpoint 2"  
+            echo "DEBUG: Attempting to recreate scripts directory:"
+            mkdir -p nginx/scripts
+            ls -la nginx/scripts/ || echo "DEBUG: Failed to recreate scripts directory"
+            echo "DEBUG: Testing file creation in scripts:"
+            touch nginx/scripts/debug-test.txt 2>/dev/null && echo "DEBUG: File creation successful" || echo "DEBUG: File creation failed"
+            ls -la nginx/scripts/
+            echo "=================== COMPREHENSIVE DEBUG END ==================="
+
             # Download main nginx config
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/nginx.conf" -o nginx/nginx.conf; then
                 echo "ERROR: Failed to download nginx.conf"
