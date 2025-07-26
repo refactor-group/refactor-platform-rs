@@ -156,10 +156,6 @@ jobs:
             set -e
             # Exit immediately if any command fails
 
-            # Function to log info
-            log_info() {
-              echo "INFO: $1"
-            }
 
             # Cleanup function to ensure service gets restarted even on failure
             cleanup() {
@@ -167,7 +163,7 @@ jobs:
               sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"
             }
 
-            log_info '📦 Starting deployment from branch: ${{ github.ref_name }}...'
+            echo 'INFO: 📦 Starting deployment from branch: ${{ github.ref_name }}...'
             cd /home/deploy
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
             chmod 640 docker-compose.yaml
@@ -178,10 +174,10 @@ jobs:
                 exit 1
             fi
 
-            log_info "🛑 Stopping Refactor Platform service before nginx setup..."
+            echo "INFO: 🛑 Stopping Refactor Platform service before nginx setup..."
             sudo systemctl stop refactor-platform.service
             
-            log_info "Creating nginx directories..."
+            echo "INFO: Creating nginx directories..."
             if ! mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge; then
               echo "ERROR: Failed to create nginx directories"
               exit 1
@@ -193,7 +189,7 @@ jobs:
             echo "DEBUG: Checking scripts directory specifically:"
             ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing"
 
-            log_info "Setting initial directory permissions..."
+            echo "INFO: Setting initial directory permissions..."
             # Ensure current user owns the nginx directory tree
             chown -R $(whoami):$(whoami) nginx/ 2>/dev/null || true
             echo "DEBUG: Before chmod - checking scripts directory:"
@@ -203,7 +199,7 @@ jobs:
             echo "DEBUG: After chmod - checking scripts directory:"
             ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing after chmod"
 
-            log_info "Downloading nginx configuration files..."
+            echo "INFO: Downloading nginx configuration files..."
 
             # COMPREHENSIVE DEBUGGING - Remove after issue is resolved
             echo "=================== COMPREHENSIVE DEBUG START ==================="
@@ -307,7 +303,7 @@ jobs:
 
             chmod 770 nginx/scripts/renew-certs.sh
 
-            log_info "Setting final directory permissions..."
+            echo "INFO: Setting final directory permissions..."
             # Set final directory permissions to allow group write access
             find nginx -type d -exec chmod 770 {} \;
             # Set file permissions for downloaded files
@@ -315,69 +311,69 @@ jobs:
             # Make the renewal script executable
             chmod 770 nginx/scripts/renew-certs.sh
 
-            log_info "Nginx setup completed successfully!"
+            echo "INFO: Nginx setup completed successfully!"
 
             # Now set trap to ensure service restart on any subsequent failure
             trap cleanup EXIT
 
-            log_info "🔧 Matching .env permissions to docker-compose.yaml..."
+            echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
             # Copy permissions from compose file
             chmod --reference=docker-compose.yaml .env
             # Copy ownership from compose file
             chown --reference=docker-compose.yaml .env
 
-            log_info "📥 Logging into GHCR..."
+            echo "INFO: 📥 Logging into GHCR..."
             # Login to GitHub Container Registry
             echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
             # Docker login
 
-            log_info "📥 Pulling images..."
+            echo "INFO: 📥 Pulling images..."
             # Pull Docker images
             if [ -n "${{ vars.BACKEND_IMAGE_NAME }}" ]; then
               # Check if backend image is set
-              log_info "Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
+              echo "INFO: Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
               # Announce image pull
               docker pull ${{ vars.BACKEND_IMAGE_NAME }}
               # Pull backend image
             fi
             if [ -n "${{ vars.FRONTEND_IMAGE_NAME }}" ]; then
               # Check if frontend image is set
-              log_info "Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
+              echo "INFO: Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
               # Announce image pull
               docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
               # Pull frontend image
             fi
 
-            log_info "🔍 Validating config..."
+            echo "INFO: 🔍 Validating config..."
             # Verify docker-compose configuration
             docker compose config --quiet
             # Check config without output unless error
 
-            log_info "🚀 Starting Refactor Platform service..."
+            echo "INFO: 🚀 Starting Refactor Platform service..."
             sudo systemctl start refactor-platform.service
 
-            log_info "⏳ Waiting for startup..."
+            echo "INFO: ⏳ Waiting for startup..."
             # Wait for containers to reach steady state
             sleep 3
 
-            log_info "🩺 Checking service and status..."
+            echo "INFO: 🩺 Checking service and status..."
             systemctl status refactor-platform.service
             # Check container status
             docker ps -a
             # List all containers
 
-            log_info "🩺 Verifying app status..."
+            echo "INFO: 🩺 Verifying app status..."
             # Verify application health
-            log_info "🩺 Checking rust-app service status..."
+            echo "INFO: 🩺 Checking rust-app service status..."
             if docker ps | grep -q rust-app; then
-              log_info "✅ Deployment succeeded! rust-app is running."
+              echo "INFO: ✅ Deployment succeeded! rust-app is running."
             else
               echo "ERROR: ⚠️ Missing container for rust-app. Logs follow:"
               # Show backend logs
               docker logs rust-app --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
             fi
 
-            log_info "🎉 Deployment complete."
+            echo "INFO: 🎉 Deployment complete."
             # Final deployment message
           '
