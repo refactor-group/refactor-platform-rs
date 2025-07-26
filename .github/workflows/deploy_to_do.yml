@@ -181,24 +181,14 @@ jobs:
               fi
             }
 
-            # CRITICAL: Verify we're running on the target server, not GitHub Actions runner
-            echo "===== SSH CONNECTION DIAGNOSTICS ====="
-            echo "DEBUG: Hostname: $(hostname)"
-            echo "DEBUG: Current user: $(whoami)"
-            echo "DEBUG: Home directory: $HOME"
-            echo "DEBUG: Current working directory: $(pwd)"
-            echo "DEBUG: Available disk space:"
-            df -h / | head -2
-            echo "DEBUG: Network interfaces:"
-            ip addr show | grep -E "inet|UP" | head -5
-            echo "========================================="
-
-            # Verify we're on the target server (not GitHub Actions runner)
+            # Verify SSH execution is working correctly
             if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
                 echo "FATAL ERROR: Script is running on GitHub Actions runner instead of target server!"
                 echo "SSH connection failed - aborting deployment"
                 exit 1
             fi
+            
+            echo "INFO: Connected to deployment target successfully"
 
             echo 'INFO: 📦 Starting deployment from branch: ${{ github.ref_name }}...'
             
@@ -227,76 +217,23 @@ jobs:
             echo "INFO: 🛑 Stopping Refactor Platform service before nginx setup..."
             sudo systemctl stop refactor-platform.service
             
+            # Set trap early to ensure service restart on any failure during nginx setup
+            trap 'echo "INFO: 🔄 Ensuring Refactor Platform service is running..."; if systemctl list-unit-files | grep -q "refactor-platform.service"; then sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"; else echo "WARNING: refactor-platform.service not found during cleanup"; fi' EXIT
+            
             echo "INFO: Creating nginx directories..."
             if ! mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge; then
               echo "ERROR: Failed to create nginx directories"
               exit 1
             fi
 
-            # Debug: Verify all directories were created
-            echo "DEBUG: Checking created directories:"
-            ls -la nginx/
-            echo "DEBUG: Checking scripts directory specifically:"
-            ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing"
-
             echo "INFO: Setting initial directory permissions..."
             # Ensure current user owns the nginx directory tree
             chown -R $(whoami):$(whoami) nginx/ 2>/dev/null || true
-            echo "DEBUG: Before chmod - checking scripts directory:"
-            ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing before chmod"
             # Set restrictive directory permissions initially
             find nginx -type d -exec chmod 755 {} \;
-            echo "DEBUG: After chmod - checking scripts directory:"
-            ls -la nginx/scripts/ || echo "DEBUG: scripts directory missing after chmod"
 
             echo "INFO: Downloading nginx configuration files..."
 
-            # COMPREHENSIVE DEBUGGING - Remove after issue is resolved
-            echo "=================== COMPREHENSIVE DEBUG START ==================="
-            echo "DEBUG: Current working directory: $(pwd)"
-            echo "DEBUG: Current user: $(whoami)"
-            echo "DEBUG: Current groups: $(groups)"
-            echo "DEBUG: Available disk space:"
-            df -h . | head -2
-            echo "DEBUG: Complete nginx structure before downloads:"
-            find nginx -ls 2>/dev/null || echo "DEBUG: find command failed"
-            echo "DEBUG: Running processes that might interfere:"
-            ps aux | grep -E "(nginx|docker|systemd)" | head -10
-            echo "DEBUG: Docker container status:"
-            docker ps -a 2>/dev/null | head -5 || echo "DEBUG: Docker not accessible"
-            echo "DEBUG: Mount points that could affect nginx directory:"
-            mount | grep -E "(nginx|/home)" || echo "DEBUG: No relevant mounts found"
-            echo "DEBUG: File system type:"
-            df -T . | tail -1
-            echo "DEBUG: Testing directory stability with delay:"
-            ls -la nginx/scripts/ || echo "DEBUG: scripts missing at checkpoint 1"
-            sleep 1
-            ls -la nginx/scripts/ || echo "DEBUG: scripts missing at checkpoint 2"  
-            echo "DEBUG: Attempting to recreate scripts directory:"
-            mkdir -p nginx/scripts
-            ls -la nginx/scripts/ || echo "DEBUG: Failed to recreate scripts directory"
-            echo "DEBUG: Testing file creation in scripts:"
-            touch nginx/scripts/debug-test.txt 2>/dev/null && echo "DEBUG: File creation successful" || echo "DEBUG: File creation failed"
-            ls -la nginx/scripts/
-            echo "=================== COMPREHENSIVE DEBUG END ==================="
-
-            # FINAL DEBUG: Monitor what happens in the critical moment
-            echo "DEBUG: Starting critical monitoring..."
-            ls -la nginx/scripts/ || echo "DEBUG: scripts missing before monitoring"
-            
-            # Monitor background processes during this critical window
-            (ps aux | grep -E "(logrotate|cron|systemd)" | head -5) &
-            
-            # Check for any systemd timers or services that might interfere
-            echo "DEBUG: Active systemd timers:"
-            systemctl list-timers --all 2>/dev/null | grep -E "(nginx|log|clean)" | head -3 || echo "DEBUG: No relevant timers"
-            
-            echo "DEBUG: Checking for file watchers or background processes:"
-            lsof /home/deploy/nginx 2>/dev/null | head -5 || echo "DEBUG: No processes have nginx directory open"
-            
-            # One final check right before download
-            echo "DEBUG: Final directory check:"
-            ls -la nginx/scripts/ || echo "DEBUG: scripts missing at final check"
 
             # Download main nginx config
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/nginx.conf" -o nginx/nginx.conf; then
@@ -375,9 +312,6 @@ jobs:
 
             echo "INFO: Nginx setup completed successfully!"
 
-            # Now set trap to ensure service restart on any subsequent failure  
-            trap 'echo "INFO: 🔄 Ensuring Refactor Platform service is running..."; if systemctl list-unit-files | grep -q "refactor-platform.service"; then sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"; else echo "WARNING: refactor-platform.service not found during cleanup"; fi' EXIT
-
             echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
             # Copy permissions from compose file
@@ -416,28 +350,21 @@ jobs:
 
             echo "INFO: 🔍 Validating config..."
             # Verify docker-compose configuration
-            echo "DEBUG: Current directory: $(pwd)"
-            echo "DEBUG: Files in current directory:"
-            ls -la *.yaml 2>/dev/null || echo "No YAML files found"
             if [ -f docker-compose.yaml ]; then
                 docker compose config --quiet
             else
                 echo "WARNING: docker-compose.yaml not found, skipping config validation"
             fi
-            # Check config without output unless error
 
             echo "INFO: 🚀 Starting Refactor Platform service..."
             
             # Verify systemd service exists before attempting to start
             if systemctl list-unit-files | grep -q "refactor-platform.service"; then
-                echo "DEBUG: refactor-platform.service found"
                 sudo systemctl start refactor-platform.service
             else
                 echo "ERROR: refactor-platform.service not found"
-                echo "DEBUG: Available services matching 'refactor':"
+                echo "Available services matching 'refactor':"
                 systemctl list-unit-files | grep -i refactor || echo "No refactor services found"
-                echo "DEBUG: All systemd service files:"
-                systemctl list-unit-files | head -10
                 exit 1
             fi
 
