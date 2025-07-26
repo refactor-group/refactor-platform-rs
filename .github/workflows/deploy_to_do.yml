@@ -147,12 +147,26 @@ jobs:
           ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts
           # Add dynamic host key
 
+          # Test SSH connection first
+          echo "Testing SSH connection to ${{ secrets.DO_TAILSCALE_NAME }}..."
+          if ! ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "SSH connection successful"'; then
+            echo "ERROR: SSH connection failed to ${{ secrets.DO_TAILSCALE_NAME }}"
+            echo "Checking SSH configuration..."
+            ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "test"' || true
+            exit 1
+          fi
+
           # Copy .env to server
-          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 envfile ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }}:/home/deploy/.env
+          echo "Copying .env file to server..."
+          if ! scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -i ~/.ssh/id_ed25519 envfile ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }}:/home/deploy/.env; then
+            echo "ERROR: Failed to copy .env file"
+            exit 1
+          fi
           # Upload env file
 
           # SSH and deploy
-          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
+          echo "Starting main deployment script..."
+          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
             set -e
             # Exit immediately if any command fails
 
