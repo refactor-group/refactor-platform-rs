@@ -261,11 +261,11 @@ jobs:
 
             # Download refactor platform nginx let's encrypt ssl cert renewal script
             # Handle potential directory issues with robust retry logic
-            echo "DEBUG: Preparing to download renew-certs.sh..."
+            echo "INFO: Preparing to download renew-certs.sh..."
             
             # Ensure scripts directory exists (recreate if needed)
             if [ ! -d nginx/scripts ]; then
-                echo "DEBUG: Scripts directory missing, recreating..."
+                echo "INFO: Scripts directory missing, recreating..."
                 mkdir -p nginx/scripts
             fi
             
@@ -274,7 +274,7 @@ jobs:
             
             # Download with retry if directory disappears
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
-                echo "DEBUG: First download attempt failed, recreating directory and retrying..."
+                echo "INFO: First download attempt failed, recreating directory and retrying..."
                 mkdir -p nginx/scripts
                 if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
                     echo "ERROR: Failed to download renew-certs.sh after retry"
