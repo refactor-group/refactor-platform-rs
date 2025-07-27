@@ -353,7 +353,8 @@ jobs:
             if [ -f docker-compose.yaml ]; then
                 docker compose config --quiet
             else
-                echo "WARNING: docker-compose.yaml not found, skipping config validation"
+                echo "ERROR: docker-compose.yaml not found - cannot validate configuration"
+                exit 1
             fi
 
             echo "INFO: 🚀 Starting Refactor Platform service..."
