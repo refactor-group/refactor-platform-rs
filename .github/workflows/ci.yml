@@ -31,9 +31,23 @@ jobs:
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
 
+      - name: Get month identifier
+        id: date
+        run: echo "month=$(date +%Y-%m)" >> $GITHUB_OUTPUT
+
+      - name: Cache sea-orm-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sea-orm-cli
+          key: sea-orm-cli-${{ runner.os }}-${{ steps.date.outputs.month }}
+
       - name: Install seaORM CLI
         run: |
-          cargo install sea-orm-cli
+          if ! command -v sea-orm-cli &> /dev/null; then
+            cargo install sea-orm-cli
+          else
+            echo "sea-orm-cli already installed ($(sea-orm-cli --version))"
+          fi
 
       - name: Build
         run: cargo build --all-targets
