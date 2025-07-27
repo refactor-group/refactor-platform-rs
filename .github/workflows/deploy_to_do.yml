@@ -272,15 +272,20 @@ jobs:
             # Remove existing file first to avoid permission issues
             rm -f nginx/scripts/renew-certs.sh 2>/dev/null || true
             
-            # Download with retry if directory disappears
-            if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
-                echo "INFO: First download attempt failed, recreating directory and retrying..."
-                mkdir -p nginx/scripts
-                if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
-                    echo "ERROR: Failed to download renew-certs.sh after retry"
+            # Download with exponential backoff retry logic
+            for attempt in {1..3}; do
+                if curl -fsSL --retry 2 "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
+                    echo "INFO: Successfully downloaded renew-certs.sh on attempt $attempt"
+                    break
+                elif [ $attempt -eq 3 ]; then
+                    echo "ERROR: Failed to download renew-certs.sh after 3 attempts"
                     exit 1
+                else
+                    echo "INFO: Download attempt $attempt failed, recreating directory and retrying in $((attempt * 2)) seconds..."
+                    mkdir -p nginx/scripts
+                    sleep $((attempt * 2))
                 fi
-            fi
+            done
 
             # Verify the renew certs script file was downloaded and is not empty
             if [ ! -s nginx/scripts/renew-certs.sh ]; then

@@ -8,11 +8,25 @@
   # Define paths
   WEBROOT_PATH="./nginx/html"
   CONTAINER_NAME="nginx-reverse-proxy"
+  CERTBOT_TIMEOUT="300"
 
   # Function to log messages
   log() {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
   }
+
+  # Validate sudo access before proceeding
+  log "Validating sudo access..."
+  if ! sudo -n true 2>/dev/null; then
+      log "ERROR: sudo access required for certbot operations"
+      exit 1
+  fi
+
+  # Check if timeout command is available
+  if ! command -v timeout &> /dev/null; then
+      log "WARNING: timeout command not available, proceeding without timeout protection"
+      CERTBOT_TIMEOUT=""
+  fi
 
   # Check if container is running
   if ! docker ps --filter "name=${CONTAINER_NAME}" --filter "status=running" --quiet | grep -q .; then
@@ -22,8 +36,14 @@
 
   log "Starting certificate renewal process"
 
-  # Attempt to renew certificates (requires sudo for system directories)
-  if sudo certbot renew --webroot -w "${WEBROOT_PATH}" --quiet; then
+  # Attempt to renew certificates with timeout protection (if available)
+  if [ -n "${CERTBOT_TIMEOUT}" ]; then
+      CERTBOT_CMD="timeout ${CERTBOT_TIMEOUT} sudo certbot renew --webroot -w ${WEBROOT_PATH} --quiet"
+  else
+      CERTBOT_CMD="sudo certbot renew --webroot -w ${WEBROOT_PATH} --quiet"
+  fi
+
+  if eval "${CERTBOT_CMD}"; then
       log "Certificate renewal successful"
 
       # Reload nginx configuration
