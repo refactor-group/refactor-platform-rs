@@ -1,24 +1,27 @@
 # syntax=docker/dockerfile:1.4
 
-# Stage 1: Build Rust app on platform-specific image
-FROM --platform=${BUILDPLATFORM} rust:bullseye AS builder
+# Stage 1: Prepare dependency recipe
+FROM lukemathwalker/cargo-chef:latest-rust-1.75 AS chef
+WORKDIR /usr/src/app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 2: Build dependencies (cached layer)
+FROM chef AS builder
 
 # Install required build tools
 RUN apt-get update && apt-get install -y \
     build-essential bash pkg-config libssl-dev libpq-dev curl git \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /usr/src/app
+# Build dependencies - this is the caching Docker layer!
+COPY --from=planner /usr/src/app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
-# Copy workspace and packages
-COPY Cargo.toml Cargo.lock ./
-COPY ./entity/Cargo.toml ./entity/Cargo.toml
-COPY ./entity_api/Cargo.toml ./entity_api/Cargo.toml
-COPY ./migration/Cargo.toml ./migration/Cargo.toml
-COPY ./service/Cargo.toml ./service/Cargo.toml
-COPY ./web/Cargo.toml ./web/Cargo.toml
+# Build application
 COPY . .
-
 RUN cargo build --release -p refactor_platform_rs -p migration
 
 RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app  
