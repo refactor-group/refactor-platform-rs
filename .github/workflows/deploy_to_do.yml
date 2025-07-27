@@ -218,7 +218,7 @@ jobs:
             sudo systemctl stop refactor-platform.service
             
             # Set trap early to ensure service restart on any failure during nginx setup
-            trap 'echo "INFO: 🔄 Ensuring Refactor Platform service is running..."; if systemctl list-unit-files | grep -q "refactor-platform.service"; then sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"; else echo "WARNING: refactor-platform.service not found during cleanup"; fi' EXIT
+            trap cleanup EXIT
             
             echo "INFO: Creating nginx directories..."
             if ! mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge; then
