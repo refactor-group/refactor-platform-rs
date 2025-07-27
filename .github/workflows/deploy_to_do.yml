@@ -1,39 +1,39 @@
-name: Deploy to DigitalOcean via Tailscale  # Workflow name displayed in GitHub UI
+name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub UI
 # Deploys the latest stable tagged container images to production servers.
 
 # Manual trigger with debug ssh option
 on:
-  workflow_dispatch:  # Manual trigger via GitHub UI
+  workflow_dispatch: # Manual trigger via GitHub UI
     inputs:
-      enable_ssh_debugging:  # Optional debugging parameter useful to debug the ssh connection to the server
-        description: 'Enable verbose SSH debugging'  # Help text shown in UI
-        required: false  # Not required to run the workflow
-        default: false  # Disabled by default
-        type: boolean  # Simple checkbox in the UI
+      enable_ssh_debugging: # Optional debugging parameter useful to debug the ssh connection to the server
+        description: "Enable verbose SSH debugging" # Help text shown in UI
+        required: false # Not required to run the workflow
+        default: false # Disabled by default
+        type: boolean # Simple checkbox in the UI
 
 permissions:
-  contents: read  # Minimal permissions required for this workflow
+  contents: read # Minimal permissions required for this workflow
 
 jobs:
   deploy:
-    name: Manual Deploy Over Tailscale  # Display name for this job
+    name: Manual Deploy Over Tailscale # Display name for this job
     runs-on: ubuntu-24.04
-    environment: production             # Use the production environment settings
+    environment: production # Use the production environment settings
 
     steps:
       # Step 1: Setup Tailscale on the GitHub Actions runner
-      - name: Set up Tailscale  # Connect to the Tailscale network
-        uses: tailscale/github-action@v3  # Official Tailscale GitHub Action
+      - name: Set up Tailscale # Connect to the Tailscale network
+        uses: tailscale/github-action@v3 # Official Tailscale GitHub Action
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}  # OAuth client ID for Tailscale
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}  # OAuth client secret for Tailscale
-          tags: tag:github-actions  # Tag to identify this connection in Tailscale
-          version: latest  # Use the latest version of Tailscale
-          use-cache: 'true'  # Cache Tailscale binary for faster startup
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }} # OAuth client ID for Tailscale
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }} # OAuth client secret for Tailscale
+          tags: tag:github-actions # Tag to identify this connection in Tailscale
+          version: latest # Use the latest version of Tailscale
+          use-cache: "true" # Cache Tailscale binary for faster startup
 
       # Step 2: (Debug only) Verifies SSH ED25519 SSH key
-      - name: Debug ED25519 Key  # SSH key debugging step
-        if: ${{ inputs.enable_ssh_debugging == true }}  # Only run when debugging is enabled
+      - name: Debug ED25519 Key # SSH key debugging step
+        if: ${{ inputs.enable_ssh_debugging == true }} # Only run when debugging is enabled
         run: |
           mkdir -p ~/.ssh
           # Create SSH directory if it doesn't exist
@@ -51,7 +51,7 @@ jobs:
           # Test connection with verbose output
 
       # Step 3: Create .env File Locally
-      - name: Create .env File on Server  # Create environment file for deployment
+      - name: Create .env File on Server # Create environment file for deployment
         run: |
           cat > envfile <<EOF
           # Start heredoc to create env file
@@ -147,141 +147,254 @@ jobs:
           ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts
           # Add dynamic host key
 
+          # Test SSH connection first
+          echo "Testing SSH connection to ${{ secrets.DO_TAILSCALE_NAME }}..."
+          if ! ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "SSH connection successful"'; then
+            echo "ERROR: SSH connection failed to ${{ secrets.DO_TAILSCALE_NAME }}"
+            echo "Checking SSH configuration..."
+            ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'echo "test"' || true
+            exit 1
+          fi
+
           # Copy .env to server
-          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 envfile ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }}:/home/deploy/.env
+          echo "Copying .env file to server..."
+          if ! scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -i ~/.ssh/id_ed25519 envfile ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }}:/home/deploy/.env; then
+            echo "ERROR: Failed to copy .env file"
+            exit 1
+          fi
           # Upload env file
 
           # SSH and deploy
-          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} '
+          echo "Starting main deployment script..."
+          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s' << 'DEPLOY_SCRIPT_EOF'
             set -e
             # Exit immediately if any command fails
 
-            # Function to log errors
-            log_error() {
-              echo "ERROR: $1" >&2
+
+            # Cleanup function to ensure service gets restarted even on failure
+            cleanup() {
+              echo "INFO: 🔄 Ensuring Refactor Platform service is running..."
+              if systemctl list-unit-files | grep -q "refactor-platform.service"; then
+                sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"
+              else
+                echo "WARNING: refactor-platform.service not found during cleanup"
+              fi
             }
 
-            # Function to log info
-            log_info() {
-              echo "INFO: $1"
-            }
+            # Verify SSH execution is working correctly
+            if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+                echo "FATAL ERROR: Script is running on GitHub Actions runner instead of target server!"
+                echo "SSH connection failed - aborting deployment"
+                exit 1
+            fi
+            
+            echo "INFO: Connected to deployment target successfully"
 
-            log_info '📦 Starting deployment from branch: ${{ github.ref_name }}...'
-            cd /home/deploy
+            echo 'INFO: 📦 Starting deployment from branch: ${{ github.ref_name }}...'
+            
+            # Ensure we're in the correct directory
+            cd /home/deploy || { 
+                echo "FATAL ERROR: Cannot change to /home/deploy directory"
+                echo "Current directory: $(pwd)"
+                echo "Directory contents:"
+                ls -la
+                exit 1
+            }
             curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
-            chmod 640 docker-compose.yaml
-
-            # Check if docker-compose.yaml exists before using it as reference
-            if [ ! -f docker-compose.yaml ]; then
-                log_error "docker-compose.yaml not found - cannot set permissions"
+            if [ -f docker-compose.yaml ]; then
+                chmod 640 docker-compose.yaml
+            else
+                echo "ERROR: Failed to download docker-compose.yaml"
                 exit 1
             fi
 
-            log_info "Creating nginx directories..."
-            if ! mkdir -p nginx/conf.d nginx/logs; then
-              log_error "Failed to create nginx directories"
+            # Check if docker-compose.yaml exists before using it as reference
+            if [ ! -f docker-compose.yaml ]; then
+                echo "ERROR: docker-compose.yaml not found - cannot set permissions"
+                exit 1
+            fi
+
+            echo "INFO: 🛑 Stopping Refactor Platform service before nginx setup..."
+            sudo systemctl stop refactor-platform.service
+            
+            # Set trap early to ensure service restart on any failure during nginx setup
+            trap cleanup EXIT
+            
+            echo "INFO: Creating nginx directories..."
+            if ! mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge; then
+              echo "ERROR: Failed to create nginx directories"
               exit 1
             fi
 
-            log_info "Setting permissions..."
-            # Set directory permissions
-            find nginx -type d -exec chmod 770 {} \;
-            # Set file permissions  
-            find nginx -type f -exec chmod 660 {} \;
+            echo "INFO: Setting initial directory permissions..."
+            # Ensure current user owns the nginx directory tree
+            chown -R $(whoami):$(whoami) nginx/ 2>/dev/null || true
+            # Set restrictive directory permissions initially
+            find nginx -type d -exec chmod 755 {} \;
 
-            log_info "Downloading nginx configuration files..."
+            echo "INFO: Downloading nginx configuration files..."
+
 
             # Download main nginx config
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/nginx.conf" -o nginx/nginx.conf; then
-                log_error "Failed to download nginx.conf"
+                echo "ERROR: Failed to download nginx.conf"
                 exit 1
             fi
 
             # Verify the main nginx config file was downloaded and is not empty
             if [ ! -s nginx/nginx.conf ]; then
-                log_error "Downloaded nginx.conf is empty or doesn't exist"
+                echo "ERROR: Downloaded nginx.conf is empty or could not be created"
                 exit 1
             fi
 
             # Download refactor platform nginx reverse proxy config
             if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/conf.d/refactor-platform.conf" -o nginx/conf.d/refactor-platform.conf; then
-                log_error "Failed to download refactor-platform.conf"
+                echo "ERROR: Failed to download refactor-platform.conf"
                 exit 1
             fi
 
             # Verify the platform config file was downloaded and is not empty
             if [ ! -s nginx/conf.d/refactor-platform.conf ]; then
-                log_error "Downloaded refactor-platform.conf is empty or doesn't exist"
+                echo "ERROR: Downloaded refactor-platform.conf is empty or could not be created"
                 exit 1
             fi
 
-            log_info "Nginx setup completed successfully!"
+            # Download refactor platform nginx let's encrypt ssl cert renewal script
+            # Handle potential directory issues with robust retry logic
+            echo "INFO: Preparing to download renew-certs.sh..."
+            
+            # Ensure scripts directory exists (recreate if needed)
+            if [ ! -d nginx/scripts ]; then
+                echo "INFO: Scripts directory missing, recreating..."
+                mkdir -p nginx/scripts
+            fi
+            
+            # Remove existing file first to avoid permission issues
+            rm -f nginx/scripts/renew-certs.sh 2>/dev/null || true
+            
+            # Download with exponential backoff retry logic
+            for attempt in {1..3}; do
+                if curl -fsSL --retry 2 "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
+                    echo "INFO: Successfully downloaded renew-certs.sh on attempt $attempt"
+                    break
+                elif [ $attempt -eq 3 ]; then
+                    echo "ERROR: Failed to download renew-certs.sh after 3 attempts"
+                    exit 1
+                else
+                    echo "INFO: Download attempt $attempt failed, recreating directory and retrying in $((attempt * 2)) seconds..."
+                    mkdir -p nginx/scripts
+                    sleep $((attempt * 2))
+                fi
+            done
 
-            log_info "🔧 Matching .env permissions to docker-compose.yaml..."
+            # Verify the renew certs script file was downloaded and is not empty
+            if [ ! -s nginx/scripts/renew-certs.sh ]; then
+                echo "ERROR: Downloaded renew-certs.sh script is empty or could not be created"
+                exit 1
+            fi
+
+            if [ -f nginx/scripts/renew-certs.sh ]; then
+                chmod 770 nginx/scripts/renew-certs.sh
+            else
+                echo "WARNING: renew-certs.sh not found for initial chmod"
+            fi
+
+            echo "INFO: Setting final directory permissions..."
+            # Set final directory permissions to allow nginx to serve ACME challenges
+            if [ -d nginx ]; then
+                find nginx -type d -exec chmod 755 {} \;
+                # Set file permissions for downloaded files
+                find nginx -type f -exec chmod 644 {} \; 2>/dev/null || true
+                # Make the renewal script executable
+                if [ -f nginx/scripts/renew-certs.sh ]; then
+                    chmod 755 nginx/scripts/renew-certs.sh
+                else
+                    echo "WARNING: renew-certs.sh not found for final chmod"
+                fi
+            else
+                echo "WARNING: nginx directory not found for final permissions"
+            fi
+
+            echo "INFO: Nginx setup completed successfully!"
+
+            echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
             # Update env file permissions
             # Copy permissions from compose file
-            chmod --reference=docker-compose.yaml .env
-            # Copy ownership from compose file
-            chown --reference=docker-compose.yaml .env
+            if [ -f docker-compose.yaml ] && [ -f .env ]; then
+                chmod --reference=docker-compose.yaml .env
+                # Copy ownership from compose file
+                chown --reference=docker-compose.yaml .env
+            elif [ -f .env ]; then
+                echo "WARNING: docker-compose.yaml not found, setting default .env permissions"
+                chmod 640 .env
+            else
+                echo "WARNING: .env file not found, skipping permission setting"
+            fi
 
-            log_info "📋 Showing masked .env:"
-            # Display environment with sensitive data masked
-            sed "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/g; s/TIPTAP_AUTH_KEY=.*/TIPTAP_AUTH_KEY=***/g; s/TIPTAP_JWT_SIGNING_KEY=.*/TIPTAP_JWT_SIGNING_KEY=***/g" .env
-
-            log_info "📥 Logging into GHCR..."
+            echo "INFO: 📥 Logging into GHCR..."
             # Login to GitHub Container Registry
             echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
             # Docker login
 
-            log_info "📥 Pulling images..."
+            echo "INFO: 📥 Pulling images..."
             # Pull Docker images
             if [ -n "${{ vars.BACKEND_IMAGE_NAME }}" ]; then
               # Check if backend image is set
-              log_info "Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
+              echo "INFO: Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
               # Announce image pull
               docker pull ${{ vars.BACKEND_IMAGE_NAME }}
               # Pull backend image
             fi
             if [ -n "${{ vars.FRONTEND_IMAGE_NAME }}" ]; then
               # Check if frontend image is set
-              log_info "Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
+              echo "INFO: Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
               # Announce image pull
               docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
               # Pull frontend image
             fi
 
-            log_info "🔍 Validating config..."
+            echo "INFO: 🔍 Validating config..."
             # Verify docker-compose configuration
-            docker compose config --quiet
-            # Check config without output unless error
+            if [ -f docker-compose.yaml ]; then
+                docker compose config --quiet
+            else
+                echo "ERROR: docker-compose.yaml not found - cannot validate configuration"
+                exit 1
+            fi
 
-            log_info "🛑 Stopping Refactor Platform service..."
-            sudo systemctl stop refactor-platform.service
+            echo "INFO: 🚀 Starting Refactor Platform service..."
+            
+            # Verify systemd service exists before attempting to start
+            if systemctl list-unit-files | grep -q "refactor-platform.service"; then
+                sudo systemctl start refactor-platform.service
+            else
+                echo "ERROR: refactor-platform.service not found"
+                echo "Available services matching 'refactor':"
+                systemctl list-unit-files | grep -i refactor || echo "No refactor services found"
+                exit 1
+            fi
 
-            log_info "🚀 Starting Refactor Platform service..."
-            sudo systemctl start refactor-platform.service
-
-            log_info "⏳ Waiting for startup..."
+            echo "INFO: ⏳ Waiting for startup..."
             # Wait for containers to reach steady state
             sleep 3
 
-            log_info "🩺 Checking service and status..."
+            echo "INFO: 🩺 Checking service and status..."
             systemctl status refactor-platform.service
             # Check container status
             docker ps -a
             # List all containers
 
-            log_info "🩺 Verifying app status..."
+            echo "INFO: 🩺 Verifying app status..."
             # Verify application health
-            log_info "🩺 Checking rust-app service status..."
+            echo "INFO: 🩺 Checking rust-app service status..."
             if docker ps | grep -q rust-app; then
-              log_info "✅ Deployment succeeded! rust-app is running."
+              echo "INFO: ✅ Deployment succeeded! rust-app is running."
             else
-              log_error "⚠️ Missing container for rust-app. Logs follow:"
+              echo "ERROR: ⚠️ Missing container for rust-app. Logs follow:"
               # Show backend logs
               docker logs rust-app --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
             fi
 
-            log_info "🎉 Deployment complete."
+            echo "INFO: 🎉 Deployment complete."
             # Final deployment message
-          '
+          DEPLOY_SCRIPT_EOF
