@@ -25,7 +25,7 @@ where
         let session: domain::user::AuthSession = AuthSession::from_request_parts(parts, state)
             .await
             .map_err(|(status, msg)| (status, msg.to_string()))?;
-        
+
         // Touch the session to update activity timestamp for session renewal
         if let Ok(tower_session) = Session::from_request_parts(parts, state).await {
             if let Err(e) = tower_session.save().await {
@@ -35,7 +35,7 @@ where
                 trace!("Session touched successfully for activity renewal");
             }
         }
-        
+
         match session.user {
             Some(user) => Ok(AuthenticatedUser(user)),
             None => Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string())),
@@ -53,7 +53,7 @@ mod tests {
         // This test verifies the AuthenticatedUser wrapper structure
         use chrono::Utc;
         use domain::{users, Id};
-        
+
         let test_user = users::Model {
             id: Id::new_v4(),
             email: "test@example.com".to_string(),

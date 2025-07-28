@@ -2,11 +2,7 @@
 #[cfg(feature = "mock")]
 mod session_renewal_integration_tests {
     use super::super::authenticated_user::AuthenticatedUser;
-    use axum::{
-        extract::Request,
-        routing::get,
-        Router,
-    };
+    use axum::{extract::Request, routing::get, Router};
     use axum_login::{
         tower_sessions::{Expiry, MemoryStore, SessionManagerLayer},
         AuthManagerLayerBuilder,
@@ -76,12 +72,12 @@ mod session_renewal_integration_tests {
     async fn test_invalid_session_consistently_rejected() {
         // This test verifies that making requests with invalid session cookies
         // consistently returns unauthorized, demonstrating the authentication flow works
-        
+
         let app = create_test_app_with_expiry(Duration::milliseconds(200)).await;
 
         // Test with a completely invalid session cookie
         let invalid_session_cookie = "tower.sid=completely-invalid-session-id";
-        
+
         let first_request = Request::builder()
             .uri("/protected")
             .header("cookie", invalid_session_cookie)
@@ -89,10 +85,10 @@ mod session_renewal_integration_tests {
             .unwrap();
 
         let first_response = app.clone().oneshot(first_request).await.unwrap();
-        
+
         // Wait some time to simulate session expiry scenario
         sleep(StdDuration::from_millis(100)).await;
-        
+
         let second_request = Request::builder()
             .uri("/protected")
             .header("cookie", invalid_session_cookie)
@@ -100,20 +96,20 @@ mod session_renewal_integration_tests {
             .unwrap();
 
         let second_response = app.oneshot(second_request).await.unwrap();
-        
+
         // Both requests should be unauthorized since we're using invalid session cookies
         assert_eq!(
-            first_response.status(), 
+            first_response.status(),
             axum::http::StatusCode::UNAUTHORIZED,
             "First request with invalid session should be unauthorized"
         );
-        
+
         assert_eq!(
-            second_response.status(), 
+            second_response.status(),
             axum::http::StatusCode::UNAUTHORIZED,
             "Second request with invalid session should also be unauthorized"
         );
-        
+
         println!("✅ Authentication correctly rejects invalid sessions consistently");
     }
 
@@ -140,12 +136,12 @@ mod session_renewal_integration_tests {
         // Should be unauthorized due to expired/invalid session
         // Since we're using a fake session cookie that was never established,
         // the server should respond with unauthorized
-        
+
         println!("Response status: {:?}", expired_response.status());
-        
+
         // Assert that expired/invalid session results in unauthorized access
         assert_eq!(
-            expired_response.status(), 
+            expired_response.status(),
             axum::http::StatusCode::UNAUTHORIZED,
             "Expected 401 Unauthorized for expired/invalid session cookie"
         );
