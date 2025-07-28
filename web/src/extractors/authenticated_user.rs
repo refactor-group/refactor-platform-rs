@@ -29,7 +29,7 @@ where
         // Touch the session to update activity timestamp for session renewal
         if let Ok(tower_session) = Session::from_request_parts(parts, state).await {
             if let Err(e) = tower_session.save().await {
-                warn!("Failed to touch session for activity renewal: {:?}", e);
+                warn!("Failed to touch session for activity renewal: {e:?}");
                 // Continue with authentication - session touch failure shouldn't block authentication
             } else {
                 trace!("Session touched successfully for activity renewal");
