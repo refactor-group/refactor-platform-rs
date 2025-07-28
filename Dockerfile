@@ -29,8 +29,8 @@ RUN mkdir -p src entity/src entity_api/src migration/src service/src web/src dom
     echo "// dummy" > web/src/lib.rs && \
     echo "// dummy" > domain/src/lib.rs
 
-# Build dependencies (cached layer)
-RUN cargo build --release --workspace && rm -rf src entity/src entity_api/src migration/src service/src web/src domain/src
+# Build dependencies (cached layer) 
+RUN cargo build --release && rm -rf src entity/src entity_api/src migration/src service/src web/src domain/src
 
 # Copy actual source code
 COPY . .
