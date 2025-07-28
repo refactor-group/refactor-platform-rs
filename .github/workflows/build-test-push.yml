@@ -35,9 +35,8 @@ jobs:
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "ubuntu-24.04-${{ hashFiles('**/Cargo.lock') }}"
-          cache-all-crates: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: "."
+          key: "lint"
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -67,9 +66,8 @@ jobs:
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "ubuntu-24.04-${{ hashFiles('**/Cargo.lock') }}"
-          cache-all-crates: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: "."
+          key: "test"
 
       - name: Get month identifier
         id: date
