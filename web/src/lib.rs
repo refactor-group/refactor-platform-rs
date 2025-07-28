@@ -7,7 +7,7 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 use domain::user::Backend;
-use tower_sessions::session_store::ExpiredDeletion;
+use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
 
 pub use self::error::{Error, Result};
