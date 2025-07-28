@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
-# Stage 1: Build Rust app
-FROM rust:1.83-bookworm AS builder
+# Stage 1: Build Rust app on platform-specific image
+FROM --platform=${BUILDPLATFORM} rust:bullseye AS builder
 
 # Install required build tools
 RUN apt-get update && apt-get install -y \
@@ -10,32 +10,15 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /usr/src/app
 
-# Copy dependency manifests for better caching
+# Copy workspace and packages
 COPY Cargo.toml Cargo.lock ./
 COPY ./entity/Cargo.toml ./entity/Cargo.toml
 COPY ./entity_api/Cargo.toml ./entity_api/Cargo.toml
-COPY ./migration/Cargo.toml ./migration/Cargo.toml  
+COPY ./migration/Cargo.toml ./migration/Cargo.toml
 COPY ./service/Cargo.toml ./service/Cargo.toml
 COPY ./web/Cargo.toml ./web/Cargo.toml
-COPY ./domain/Cargo.toml ./domain/Cargo.toml
-
-# Create dummy source files to cache dependencies
-RUN mkdir -p src entity/src entity_api/src migration/src service/src web/src domain/src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "// dummy" > entity/src/lib.rs && \
-    echo "// dummy" > entity_api/src/lib.rs && \
-    echo "// dummy" > migration/src/lib.rs && \
-    echo "// dummy" > service/src/lib.rs && \
-    echo "// dummy" > web/src/lib.rs && \
-    echo "// dummy" > domain/src/lib.rs
-
-# Build dependencies (cached layer) 
-RUN cargo build --release && rm -rf src entity/src entity_api/src migration/src service/src web/src domain/src
-
-# Copy actual source code
 COPY . .
 
-# Build application
 RUN cargo build --release -p refactor_platform_rs -p migration
 
 RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app  
