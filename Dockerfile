@@ -1,27 +1,41 @@
 # syntax=docker/dockerfile:1.4
 
-# Stage 1: Prepare dependency recipe  
-FROM lukemathwalker/cargo-chef:latest-rust-1.83 AS chef
-WORKDIR /usr/src/app
-
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-# Stage 2: Build dependencies (cached layer)
-FROM chef AS builder
+# Stage 1: Build Rust app
+FROM rust:1.83-bookworm AS builder
 
 # Install required build tools
 RUN apt-get update && apt-get install -y \
     build-essential bash pkg-config libssl-dev libpq-dev curl git \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# Build dependencies - this is the caching Docker layer!
-COPY --from=planner /usr/src/app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+WORKDIR /usr/src/app
+
+# Copy dependency manifests for better caching
+COPY Cargo.toml Cargo.lock ./
+COPY ./entity/Cargo.toml ./entity/Cargo.toml
+COPY ./entity_api/Cargo.toml ./entity_api/Cargo.toml
+COPY ./migration/Cargo.toml ./migration/Cargo.toml  
+COPY ./service/Cargo.toml ./service/Cargo.toml
+COPY ./web/Cargo.toml ./web/Cargo.toml
+COPY ./domain/Cargo.toml ./domain/Cargo.toml
+
+# Create dummy source files to cache dependencies
+RUN mkdir -p src entity/src entity_api/src migration/src service/src web/src domain/src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "// dummy" > entity/src/lib.rs && \
+    echo "// dummy" > entity_api/src/lib.rs && \
+    echo "// dummy" > migration/src/lib.rs && \
+    echo "// dummy" > service/src/lib.rs && \
+    echo "// dummy" > web/src/lib.rs && \
+    echo "// dummy" > domain/src/lib.rs
+
+# Build dependencies (cached layer)
+RUN cargo build --release --workspace && rm -rf src entity/src entity_api/src migration/src service/src web/src domain/src
+
+# Copy actual source code
+COPY . .
 
 # Build application
-COPY . .
 RUN cargo build --release -p refactor_platform_rs -p migration
 
 RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app  
