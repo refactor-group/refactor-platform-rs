@@ -10,8 +10,8 @@
 //!
 //! # Example
 //!
-//! ```rust
-//! use domain::jwt::claims::TiptapCollabClaims;
+//! ```rust,ignore
+//! // This is an internal module example - not accessible from outside the crate
 //! use serde_json;
 //!
 //! let claims = TiptapCollabClaims {
@@ -20,6 +20,7 @@
 //!     ndf: 1625247600,
 //!     iss: "issuer".to_string(),
 //!     sub: "subject".to_string(),
+//!     aud: "app123".to_string(),
 //!     allowed_document_names: vec!["document1".to_string(), "document2".to_string()],
 //! };
 //!

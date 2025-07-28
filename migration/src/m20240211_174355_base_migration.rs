@@ -11,7 +11,7 @@ impl MigrationTrait for Migration {
         let db = manager.get_connection();
 
         let stringify_err = |err| -> DbErr {
-            let string = format!("Migration error: {:?}", err);
+            let string = format!("Migration error: {err:?}");
             DbErr::Migration(string)
         };
         let mut file =

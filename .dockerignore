@@ -1,25 +1,63 @@
-**/.classpath
-**/.dockerignore
-**/.env
-**/.git
-**/.gitignore
-**/.project
-**/.settings
-**/.toolstarget
-**/.vs
-**/.vscode
-**/*.*proj.user
-**/*.dbmdl
-**/*.jfm
-**/bin
-**/charts
-**/docker-compose*
-**/compose*
-**/Dockerfile*
-**/node_modules
-**/npm-debug.log
-**/obj
-**/secrets.dev.yaml
-**/values.dev.yaml
-LICENSE
+# Build artifacts
+target/
+**/target/
+
+# Development files
+.git/
+.github/
+.gitignore
+.env*
+*.log
+.DS_Store
+
+# Documentation
 README.md
+LICENSE.md
+docs/
+*.md
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node.js (if any frontend assets)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Test files
+coverage/
+
+# Temporary files
+.tmp/
+*.tmp
+*.temp
+
+# OS files
+Thumbs.db
+
+# Local development
+docker-compose*.yml
+
+# Scripts (not needed in container)
+scripts/
+build_and_run.sh
+network-test.sh
+
+# Database files that aren't needed in build
+*.db
+*.sqlite
+dbml-error.log
+
+# Development containers
+.devcontainer/
+
+# Nginx (not needed for backend build)
+nginx/
+
+# Cache directories
+.cache/
+EOF < /dev/null
