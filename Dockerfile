@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
-# Stage 1: Prepare dependency recipe
-FROM lukemathwalker/cargo-chef:latest-rust-1.82 AS chef
+# Stage 1: Prepare dependency recipe  
+FROM lukemathwalker/cargo-chef:latest-rust-1.83 AS chef
 WORKDIR /usr/src/app
 
 FROM chef AS planner
