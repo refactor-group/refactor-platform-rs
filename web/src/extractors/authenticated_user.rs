@@ -42,3 +42,35 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_authenticated_user_structure() {
+        // This test verifies the AuthenticatedUser wrapper structure
+        use chrono::Utc;
+        use domain::{users, Id};
+        
+        let test_user = users::Model {
+            id: Id::new_v4(),
+            email: "test@example.com".to_string(),
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+            display_name: Some("Test User".to_string()),
+            password: "hashed_password".to_string(),
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            role: users::Role::User,
+            created_at: Utc::now().into(),
+            updated_at: Utc::now().into(),
+        };
+
+        let authenticated_user = AuthenticatedUser(test_user.clone());
+        assert_eq!(authenticated_user.0.email, test_user.email);
+        assert_eq!(authenticated_user.0.id, test_user.id);
+    }
+}
