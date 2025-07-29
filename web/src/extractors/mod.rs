@@ -5,10 +5,6 @@ pub(crate) mod compare_api_version;
 #[cfg(feature = "mock")]
 mod session_renewal_tests;
 
-#[cfg(test)]
-#[cfg(feature = "mock")]
-mod session_touch_unit_test;
-
 use axum::http::StatusCode;
 
 type RejectionType = (StatusCode, String);
