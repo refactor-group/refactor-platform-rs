@@ -1,7 +1,7 @@
 use crate::{
     error::Error,
     error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
-    gateway::mailersend::{EmailRecipient, EmailSender, MailerSendClient, SendEmailRequest},
+    gateway::mailersend::{EmailRecipient, MailerSendClient, SendEmailRequest},
     users, Id,
 };
 use chrono::Utc;
@@ -18,6 +18,7 @@ use log::*;
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait, Value};
 use service::config::Config;
+use tokio;
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<users::Model>, Error>
 where
@@ -164,43 +165,53 @@ pub async fn create_by_organization(
     let new_user =
         entity_api::user::create_by_organization(db, organization_id, user_model).await?;
 
-    // Attempt to send welcome email
-    match send_welcome_email(config, &new_user).await {
-        Ok(_) => {
-            info!("Welcome email sent successfully to {}", new_user.email);
-        }
-        Err(e) => {
-            // Log the error but don't fail the user creation
-            warn!(
-                "Failed to send welcome email to {}: {:?}",
-                new_user.email, e
-            );
-        }
-    }
+    // Send welcome email in the background
+    send_welcome_email(config, &new_user).await;
 
     Ok(new_user)
 }
 
 /// Send a welcome email to a newly created user
-async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
-    let mailersend_client = MailerSendClient::new(config).await?;
+async fn send_welcome_email(config: &Config, user: &users::Model) {
+    // Clone values we need for the async task
+    let config = config.clone();
+    let user = user.clone();
 
-    let email_request = SendEmailRequest {
-        from: EmailSender::default(),
-        to: vec![EmailRecipient {
-            email: user.email.clone(),
-            name: Some(format!("{} {}", user.first_name, user.last_name)),
-        }],
-        subject: "Welcome to Refactor!".to_string(),
-        text: Some(format!(
-            "Hi {},\n\nWelcome to Refactor! We're excited to have you join our platform.\n\nYour account has been successfully created and you can now start your coaching journey.\n\nBest regards,\nThe Refactor Team",
-            user.first_name
-        )),
-        html: None,
-        cc: None,
-        bcc: None,
-    };
+    // Spawn the email sending as a background task so it doesn't block user creation
+    tokio::spawn(async move {
+        let result = async {
+            let mailersend_client = MailerSendClient::new(&config).await?;
 
-    mailersend_client.send_email(email_request).await?;
-    Ok(())
+            let template_id = config.welcome_email_template_id().ok_or_else(|| Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            })?;
+
+            let mut personalization_data = std::collections::HashMap::new();
+            personalization_data.insert("first_name".to_string(), user.first_name.clone());
+            personalization_data.insert("last_name".to_string(), user.last_name.clone());
+
+            let email_request = SendEmailRequest::new(
+                template_id,
+                vec![EmailRecipient {
+                    email: user.email.clone(),
+                    name: Some(format!("{} {}", user.first_name, user.last_name)),
+                }],
+                personalization_data,
+            )
+            .await?;
+
+            mailersend_client.send_email(email_request).await
+        }
+        .await;
+
+        match result {
+            Ok(response) => log::info!(
+                "Welcome email sent successfully to {}, message_id : {:?}",
+                user.email,
+                response.message_id
+            ),
+            Err(e) => log::error!("Failed to send welcome email to {}: {:?}", user.email, e),
+        }
+    });
 }

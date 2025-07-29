@@ -3,6 +3,7 @@ use email_address::EmailAddress;
 use log::*;
 use serde::{Deserialize, Serialize};
 use service::config::Config;
+use std::collections::HashMap;
 
 /// MailerSend API client for sending transactional emails
 pub struct MailerSendClient {
@@ -17,36 +18,18 @@ pub struct EmailRecipient {
     pub name: Option<String>,
 }
 
-/// Email sender with name and email address
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmailSender {
+pub struct Personalization {
     pub email: String,
-    pub name: Option<String>,
-}
-
-impl Default for EmailSender {
-    fn default() -> Self {
-        EmailSender {
-            email: "hello@myrefactor.com".to_string(),
-            name: None,
-        }
-    }
+    pub data: HashMap<String, String>,
 }
 
 /// Request payload for sending an email via MailerSend
 #[derive(Debug, Serialize)]
 pub struct SendEmailRequest {
-    pub from: EmailSender,
+    pub template_id: String,
     pub to: Vec<EmailRecipient>,
-    pub subject: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub html: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cc: Option<Vec<EmailRecipient>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bcc: Option<Vec<EmailRecipient>>,
+    pub personalization: Personalization,
 }
 
 /// Response from MailerSend API
@@ -55,19 +38,52 @@ pub struct SendEmailResponse {
     pub message_id: Option<String>,
 }
 
-/// Validate email address and return error if invalid
-fn validate_email(email: &str) -> Result<(), Error> {
-    if !EmailAddress::is_valid(email) {
-        warn!("Invalid email: {}", email);
-        return Err(Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
-                "Invalid email address: {}",
-                email
-            ))),
-        });
+impl SendEmailRequest {
+    pub async fn new(
+        template_id: String,
+        to: Vec<EmailRecipient>,
+        personalization_data: HashMap<String, String>,
+    ) -> Result<Self, Error> {
+        for recipient in &to {
+            Self::validate_email(&recipient.email)?;
+        }
+
+        // Get the first recipient's email for personalization
+        let email = to
+            .first()
+            .ok_or_else(|| Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                    "At least one recipient is required".to_string(),
+                )),
+            })?
+            .email
+            .clone();
+
+        Ok(SendEmailRequest {
+            template_id,
+            to,
+            personalization: Personalization {
+                email,
+                data: personalization_data,
+            },
+        })
     }
-    Ok(())
+
+    /// Validate email address and return error if invalid
+    fn validate_email(email: &str) -> Result<(), Error> {
+        if !EmailAddress::is_valid(email) {
+            warn!("Invalid email: {}", email);
+            return Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+                    "Invalid email address: {}",
+                    email
+                ))),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl MailerSendClient {
@@ -81,13 +97,6 @@ impl MailerSendClient {
 
     /// Send an email using MailerSend API
     pub async fn send_email(&self, request: SendEmailRequest) -> Result<SendEmailResponse, Error> {
-        // Validate email addresses before sending
-        validate_email(&request.from.email)?;
-
-        for recipient in &request.to {
-            validate_email(&recipient.email)?;
-        }
-
         let url = format!("{}/email", self.base_url);
 
         info!("Sending email to {} recipients", request.to.len());
@@ -182,27 +191,67 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_send_email_request_serialization() {
-        let request = SendEmailRequest {
-            from: EmailSender {
-                email: "test@example.com".to_string(),
-                name: Some("Test Sender".to_string()),
-            },
-            to: vec![EmailRecipient {
+    #[tokio::test]
+    async fn test_send_email_request_serialization() {
+        let mut personalization_data = HashMap::new();
+        personalization_data.insert("name".to_string(), "Test User".to_string());
+
+        let request = SendEmailRequest::new(
+            "x8emy5o5world01w".to_string(),
+            vec![EmailRecipient {
                 email: "recipient@example.com".to_string(),
                 name: Some("Test Recipient".to_string()),
             }],
-            subject: "Test Subject".to_string(),
-            text: Some("Test email body".to_string()),
-            html: None,
-            cc: None,
-            bcc: None,
-        };
+            personalization_data,
+        )
+        .await
+        .unwrap();
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("test@example.com"));
-        assert!(json.contains("Test Subject"));
+        assert!(json.contains("recipient@example.com"));
+        assert!(json.contains("x8emy5o5world01w"));
+    }
+
+    #[tokio::test]
+    async fn test_send_email_request_with_personalization() {
+        let mut personalization_data = HashMap::new();
+        personalization_data.insert("first_name".to_string(), "John".to_string());
+        personalization_data.insert("last_name".to_string(), "Doe".to_string());
+        personalization_data.insert("company".to_string(), "Acme Corp".to_string());
+
+        let recipients = vec![
+            EmailRecipient {
+                email: "john.doe@example.com".to_string(),
+                name: Some("John Doe".to_string()),
+            },
+            EmailRecipient {
+                email: "jane.smith@example.com".to_string(),
+                name: Some("Jane Smith".to_string()),
+            },
+        ];
+
+        let request = SendEmailRequest::new(
+            "template123".to_string(),
+            recipients,
+            personalization_data.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Verify personalization uses the first recipient's email
+        assert_eq!(request.personalization.email, "john.doe@example.com");
+        assert_eq!(request.personalization.data, personalization_data);
+        assert_eq!(request.to.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_send_email_request_empty_recipients_fails() {
+        let personalization_data = HashMap::new();
+
+        let result =
+            SendEmailRequest::new("template123".to_string(), vec![], personalization_data).await;
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -218,14 +267,14 @@ mod tests {
 
         for email in invalid_emails {
             assert!(
-                !is_valid_email(email),
+                SendEmailRequest::validate_email(email).is_err(),
                 "Email '{}' should be invalid",
                 email
             );
         }
 
         // Test valid emails
-        assert!(is_valid_email("test@example.com"));
-        assert!(is_valid_email("user.name@domain.co.uk"));
+        assert!(SendEmailRequest::validate_email("test@example.com").is_ok());
+        assert!(SendEmailRequest::validate_email("user.name@domain.co.uk").is_ok());
     }
 }
