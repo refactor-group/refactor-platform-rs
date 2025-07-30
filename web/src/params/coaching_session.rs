@@ -1,8 +1,8 @@
 use chrono::{NaiveDate, NaiveDateTime};
-use domain::Id;
-use domain::{IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, UpdateMap};
 use domain::coaching_session::CoachingSessionSortParams;
 use domain::coaching_sessions;
+use domain::Id;
+use domain::{IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, UpdateMap};
 use sea_orm::{Order, Value};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -77,7 +77,7 @@ impl CoachingSessionSortParams for IndexParams {
             CoachingSessionSortField::UpdatedAt => coaching_sessions::Column::UpdatedAt,
         })
     }
-    
+
     fn get_sort_order(&self) -> Option<Order> {
         self.sort_order.as_ref().map(|order| match order {
             SortOrder::Asc => Order::Asc,

@@ -81,7 +81,8 @@ pub async fn index(
     debug!("GET all Coaching Sessions");
     debug!("Filter Params: {params:?}");
 
-    let coaching_sessions = CoachingSessionApi::find_by_with_sort(app_state.db_conn_ref(), params).await?;
+    let coaching_sessions =
+        CoachingSessionApi::find_by_with_sort(app_state.db_conn_ref(), params).await?;
 
     debug!("Found Coaching Sessions: {coaching_sessions:?}");
 

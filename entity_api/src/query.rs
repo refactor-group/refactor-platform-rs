@@ -1,6 +1,8 @@
 use crate::error::Error;
 use sea_orm::strum::IntoEnumIterator;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder, Value};
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder, Value,
+};
 use std::collections::HashMap;
 
 /// `QueryFilterMap` is a data structure that serves as a bridge for translating filter parameters
