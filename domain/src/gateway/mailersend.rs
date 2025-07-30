@@ -27,9 +27,11 @@ pub struct Personalization {
 /// Request payload for sending an email via MailerSend
 #[derive(Debug, Serialize)]
 pub struct SendEmailRequest {
-    pub template_id: String,
+    pub from: EmailRecipient,
     pub to: Vec<EmailRecipient>,
-    pub personalization: Personalization,
+    pub subject: String,
+    pub template_id: String,
+    pub personalization: Vec<Personalization>,
 }
 
 /// Response from MailerSend API
@@ -40,10 +42,16 @@ pub struct SendEmailResponse {
 
 impl SendEmailRequest {
     pub async fn new(
-        template_id: String,
+        from: EmailRecipient,
         to: Vec<EmailRecipient>,
+        subject: String,
+        template_id: String,
         personalization_data: HashMap<String, String>,
     ) -> Result<Self, Error> {
+        // Validate from email
+        Self::validate_email(&from.email)?;
+
+        // Validate recipient emails
         for recipient in &to {
             Self::validate_email(&recipient.email)?;
         }
@@ -61,12 +69,14 @@ impl SendEmailRequest {
             .clone();
 
         Ok(SendEmailRequest {
+            from,
+            to: to.clone(),
+            subject,
             template_id,
-            to,
-            personalization: Personalization {
+            personalization: vec![Personalization {
                 email,
                 data: personalization_data,
-            },
+            }],
         })
     }
 
@@ -197,11 +207,16 @@ mod tests {
         personalization_data.insert("name".to_string(), "Test User".to_string());
 
         let request = SendEmailRequest::new(
-            "x8emy5o5world01w".to_string(),
+            EmailRecipient {
+                email: "sender@example.com".to_string(),
+                name: Some("Test Sender".to_string()),
+            },
             vec![EmailRecipient {
                 email: "recipient@example.com".to_string(),
                 name: Some("Test Recipient".to_string()),
             }],
+            "Test Subject".to_string(),
+            "x8emy5o5world01w".to_string(),
             personalization_data,
         )
         .await
@@ -231,16 +246,22 @@ mod tests {
         ];
 
         let request = SendEmailRequest::new(
-            "template123".to_string(),
+            EmailRecipient {
+                email: "sender@example.com".to_string(),
+                name: Some("Test Sender".to_string()),
+            },
             recipients,
+            "Test Subject".to_string(),
+            "template123".to_string(),
             personalization_data.clone(),
         )
         .await
         .unwrap();
 
         // Verify personalization uses the first recipient's email
-        assert_eq!(request.personalization.email, "john.doe@example.com");
-        assert_eq!(request.personalization.data, personalization_data);
+        assert_eq!(request.personalization.len(), 1);
+        assert_eq!(request.personalization[0].email, "john.doe@example.com");
+        assert_eq!(request.personalization[0].data, personalization_data);
         assert_eq!(request.to.len(), 2);
     }
 
@@ -248,8 +269,17 @@ mod tests {
     async fn test_send_email_request_empty_recipients_fails() {
         let personalization_data = HashMap::new();
 
-        let result =
-            SendEmailRequest::new("template123".to_string(), vec![], personalization_data).await;
+        let result = SendEmailRequest::new(
+            EmailRecipient {
+                email: "sender@example.com".to_string(),
+                name: Some("Test Sender".to_string()),
+            },
+            vec![],
+            "Test Subject".to_string(),
+            "template123".to_string(),
+            personalization_data,
+        )
+        .await;
 
         assert!(result.is_err());
     }
