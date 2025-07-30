@@ -59,6 +59,13 @@ Table refactor_platform.coaching_sessions {
   collab_document_name varchar
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
+
+  Indexes {
+    (coaching_relationship_id, date) [name: "coaching_sessions_relationship_date", note: "Optimizes queries filtering by relationship and sorting by date"]
+    date [name: "coaching_sessions_date", note: "Supports sorting by session date"]
+    created_at [name: "coaching_sessions_created_at", note: "Supports sorting by creation time"]  
+    updated_at [name: "coaching_sessions_updated_at", note: "Supports sorting by update time"]
+  }
 }
 
 Table refactor_platform.overarching_goals {

@@ -6,6 +6,7 @@ mod m20250509_164646_add_initial_user;
 mod m20250610_104530_add_role_to_users;
 mod m20250611_115337_promote_admin_user_to_admin_role;
 mod m20250705_200000_add_timezone_to_users;
+mod m20250730_000000_add_coaching_sessions_sorting_indexes;
 
 pub struct Migrator;
 
@@ -19,6 +20,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20250610_104530_add_role_to_users::Migration),
             Box::new(m20250611_115337_promote_admin_user_to_admin_role::Migration),
             Box::new(m20250705_200000_add_timezone_to_users::Migration),
+            Box::new(m20250730_000000_add_coaching_sessions_sorting_indexes::Migration),
         ]
     }
 }

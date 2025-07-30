@@ -58,8 +58,8 @@ pub async fn read(
         ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching_relationship_id"),
         ("from_date" = Option<NaiveDate>, Query, description = "Filter by from_date"),
         ("to_date" = Option<NaiveDate>, Query, description = "Filter by to_date"),
-        ("sort_by" = Option<crate::params::coaching_session::CoachingSessionSortField>, Query, description = "Sort by field (date, created_at, updated_at)"),
-        ("sort_order" = Option<crate::params::coaching_session::SortOrder>, Query, description = "Sort order (asc, desc)")
+        ("sort_by" = Option<crate::params::coaching_session::CoachingSessionSortField>, Query, description = "Sort by field. Valid values: 'date', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "date"),
+        ("sort_order" = Option<crate::params::coaching_session::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [coaching_sessions::Model]),
@@ -80,6 +80,9 @@ pub async fn index(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Coaching Sessions");
     debug!("Filter Params: {params:?}");
+
+    // Validate sorting parameters
+    params.validate_sort_params()?;
 
     let coaching_sessions =
         CoachingSessionApi::find_by_with_sort(app_state.db_conn_ref(), params).await?;

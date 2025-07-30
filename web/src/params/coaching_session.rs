@@ -7,17 +7,19 @@ use sea_orm::{Order, Value};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(example = "date")]
 pub(crate) enum CoachingSessionSortField {
     #[serde(rename = "date")]
     Date,
-    #[serde(rename = "created_at")]
+    #[serde(rename = "created_at")]  
     CreatedAt,
     #[serde(rename = "updated_at")]
     UpdatedAt,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(example = "desc")]
 pub(crate) enum SortOrder {
     #[serde(rename = "asc")]
     Asc,
@@ -32,6 +34,31 @@ pub(crate) struct IndexParams {
     pub(crate) to_date: NaiveDate,
     pub(crate) sort_by: Option<CoachingSessionSortField>,
     pub(crate) sort_order: Option<SortOrder>,
+}
+
+impl IndexParams {
+    /// Validates that sorting parameters are provided together or not at all
+    pub fn validate_sort_params(&self) -> Result<(), domain::error::Error> {
+        match (&self.sort_by, &self.sort_order) {
+            (Some(_), None) => Err(domain::error::Error {
+                source: None,
+                error_kind: domain::error::DomainErrorKind::Internal(
+                    domain::error::InternalErrorKind::Entity(
+                        domain::error::EntityErrorKind::Invalid
+                    )
+                ),
+            }),
+            (None, Some(_)) => Err(domain::error::Error {
+                source: None,
+                error_kind: domain::error::DomainErrorKind::Internal(
+                    domain::error::InternalErrorKind::Entity(
+                        domain::error::EntityErrorKind::Invalid
+                    )
+                ),
+            }),
+            _ => Ok(())
+        }
+    }
 }
 
 impl IntoQueryFilterMap for IndexParams {
