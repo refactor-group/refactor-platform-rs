@@ -11,7 +11,10 @@ impl MigrationTrait for Migration {
             .create_index(
                 Index::create()
                     .name("coaching_sessions_relationship_date")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .col(Alias::new("coaching_relationship_id"))
                     .col(Alias::new("date"))
                     .to_owned(),
@@ -23,7 +26,10 @@ impl MigrationTrait for Migration {
             .create_index(
                 Index::create()
                     .name("coaching_sessions_date")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .col(Alias::new("date"))
                     .to_owned(),
             )
@@ -33,7 +39,10 @@ impl MigrationTrait for Migration {
             .create_index(
                 Index::create()
                     .name("coaching_sessions_created_at")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .col(Alias::new("created_at"))
                     .to_owned(),
             )
@@ -43,7 +52,10 @@ impl MigrationTrait for Migration {
             .create_index(
                 Index::create()
                     .name("coaching_sessions_updated_at")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .col(Alias::new("updated_at"))
                     .to_owned(),
             )
@@ -58,7 +70,10 @@ impl MigrationTrait for Migration {
             .drop_index(
                 Index::drop()
                     .name("coaching_sessions_updated_at")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .to_owned(),
             )
             .await?;
@@ -67,7 +82,10 @@ impl MigrationTrait for Migration {
             .drop_index(
                 Index::drop()
                     .name("coaching_sessions_created_at")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .to_owned(),
             )
             .await?;
@@ -76,7 +94,10 @@ impl MigrationTrait for Migration {
             .drop_index(
                 Index::drop()
                     .name("coaching_sessions_date")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .to_owned(),
             )
             .await?;
@@ -85,7 +106,10 @@ impl MigrationTrait for Migration {
             .drop_index(
                 Index::drop()
                     .name("coaching_sessions_relationship_date")
-                    .table((Alias::new("refactor_platform"), Alias::new("coaching_sessions")))
+                    .table((
+                        Alias::new("refactor_platform"),
+                        Alias::new("coaching_sessions"),
+                    ))
                     .to_owned(),
             )
             .await?;

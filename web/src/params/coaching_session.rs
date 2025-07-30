@@ -12,7 +12,7 @@ use utoipa::{IntoParams, ToSchema};
 pub(crate) enum CoachingSessionSortField {
     #[serde(rename = "date")]
     Date,
-    #[serde(rename = "created_at")]  
+    #[serde(rename = "created_at")]
     CreatedAt,
     #[serde(rename = "updated_at")]
     UpdatedAt,
@@ -44,19 +44,19 @@ impl IndexParams {
                 source: None,
                 error_kind: domain::error::DomainErrorKind::Internal(
                     domain::error::InternalErrorKind::Entity(
-                        domain::error::EntityErrorKind::Invalid
-                    )
+                        domain::error::EntityErrorKind::Invalid,
+                    ),
                 ),
             }),
             (None, Some(_)) => Err(domain::error::Error {
                 source: None,
                 error_kind: domain::error::DomainErrorKind::Internal(
                     domain::error::InternalErrorKind::Entity(
-                        domain::error::EntityErrorKind::Invalid
-                    )
+                        domain::error::EntityErrorKind::Invalid,
+                    ),
                 ),
             }),
-            _ => Ok(())
+            _ => Ok(()),
         }
     }
 }
