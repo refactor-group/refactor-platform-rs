@@ -1,6 +1,6 @@
 use crate::error::Error;
 use sea_orm::strum::IntoEnumIterator;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Value};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder, Value};
 use std::collections::HashMap;
 
 /// `QueryFilterMap` is a data structure that serves as a bridge for translating filter parameters
@@ -101,6 +101,35 @@ where
         if let Some(value) = query_filter_map.get(&column.to_string()) {
             query = query.filter(column.eq(value));
         }
+    }
+
+    Ok(query.all(db).await?)
+}
+
+/// Find all records of an entity by the given query filter map with optional sorting.
+pub async fn find_by_with_sort<E, C>(
+    db: &DatabaseConnection,
+    query_filter_map: QueryFilterMap,
+    sort_column: Option<C>,
+    sort_order: Option<Order>,
+) -> Result<Vec<E::Model>, Error>
+where
+    E: EntityTrait,
+    C: ColumnTrait + IntoEnumIterator,
+{
+    let mut query = E::find();
+
+    // We iterate through the entity's defined columns so that we only attempt
+    // to filter by columns that exist.
+    for column in C::iter() {
+        if let Some(value) = query_filter_map.get(&column.to_string()) {
+            query = query.filter(column.eq(value));
+        }
+    }
+
+    // Apply sorting if both column and order are provided
+    if let (Some(column), Some(order)) = (sort_column, sort_order) {
+        query = query.order_by(column, order);
     }
 
     Ok(query.all(db).await?)

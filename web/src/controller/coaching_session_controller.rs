@@ -57,7 +57,9 @@ pub async fn read(
         ApiVersion,
         ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching_relationship_id"),
         ("from_date" = Option<NaiveDate>, Query, description = "Filter by from_date"),
-        ("to_date" = Option<NaiveDate>, Query, description = "Filter by to_date")
+        ("to_date" = Option<NaiveDate>, Query, description = "Filter by to_date"),
+        ("sort_by" = Option<crate::params::coaching_session::CoachingSessionSortField>, Query, description = "Sort by field (date, created_at, updated_at)"),
+        ("sort_order" = Option<crate::params::coaching_session::SortOrder>, Query, description = "Sort order (asc, desc)")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [coaching_sessions::Model]),
@@ -79,7 +81,7 @@ pub async fn index(
     debug!("GET all Coaching Sessions");
     debug!("Filter Params: {params:?}");
 
-    let coaching_sessions = CoachingSessionApi::find_by(app_state.db_conn_ref(), params).await?;
+    let coaching_sessions = CoachingSessionApi::find_by_with_sort(app_state.db_conn_ref(), params).await?;
 
     debug!("Found Coaching Sessions: {coaching_sessions:?}");
 

@@ -7,6 +7,7 @@ use entity_api::{
     coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
     query::IntoQueryFilterMap,
 };
+use sea_orm::Order;
 use log::*;
 use sea_orm::{DatabaseConnection, IntoActiveModel};
 use service::config::Config;
@@ -68,6 +69,34 @@ pub async fn find_by(
     .await?;
 
     Ok(coaching_sessions)
+}
+
+pub async fn find_by_with_sort<P>(
+    db: &DatabaseConnection,
+    params: P,
+) -> Result<Vec<Model>, Error>
+where
+    P: IntoQueryFilterMap + CoachingSessionSortParams,
+{
+    // Extract sort parameters before consuming params
+    let sort_column = params.get_sort_column();
+    let sort_order = params.get_sort_order();
+    let query_filter_map = params.into_query_filter_map();
+
+    let coaching_sessions = query::find_by_with_sort::<coaching_sessions::Entity, coaching_sessions::Column>(
+        db,
+        query_filter_map,
+        sort_column,
+        sort_order,
+    )
+    .await?;
+
+    Ok(coaching_sessions)
+}
+
+pub trait CoachingSessionSortParams {
+    fn get_sort_column(&self) -> Option<coaching_sessions::Column>;
+    fn get_sort_order(&self) -> Option<Order>;
 }
 
 pub async fn update(
