@@ -60,6 +60,12 @@ FRONTEND_SERVICE_PORT=3000                   # Port for the front-end service
 PLATFORM="linux/arm64/v8"                    # Or linux/amd64
 
 # ==============================
+#   Email Service Configuration
+# ==============================
+MAILERSEND_API_KEY=""                        # MailerSend API key for sending emails
+WELCOME_EMAIL_TEMPLATE_ID=""                 # Template ID for welcome emails
+
+# ==============================
 #   TipTap Service Configuration
 # ==============================
 TIPTAP_URL=""                                # URL for the TipTap service
