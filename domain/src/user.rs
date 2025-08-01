@@ -1,12 +1,13 @@
 use crate::{
     error::Error,
     error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
+    gateway::mailersend::{EmailRecipient, MailerSendClient, SendEmailRequest},
     users, Id,
 };
 use chrono::Utc;
 pub use entity_api::user::{
-    create, create_by_organization, find_by_email, find_by_id, find_by_organization, generate_hash,
-    verify_password, AuthSession, Backend, Credentials, Role,
+    create, find_by_email, find_by_id, find_by_organization, generate_hash, verify_password,
+    AuthSession, Backend, Credentials, Role,
 };
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
@@ -14,6 +15,7 @@ use entity_api::{
 use log::*;
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait, Value};
+use service::config::Config;
 
 pub async fn find_by(
     db: &DatabaseConnection,
@@ -101,7 +103,8 @@ pub async fn create_user_and_coaching_relationship(
     })?;
 
     // Create the user within the organization
-    let new_user = create_by_organization(&txn, organization_id, user_model).await?;
+    let new_user =
+        entity_api::user::create_by_organization(&txn, organization_id, user_model).await?;
     // Create the coaching relationship using the new user's ID as the coachee_id
     let new_coaching_relationship_model = entity_api::coaching_relationships::Model {
         coachee_id: new_user.id,
@@ -149,4 +152,76 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     })?;
 
     Ok(())
+}
+
+pub async fn create_by_organization(
+    db: &DatabaseConnection,
+    config: &Config,
+    organization_id: Id,
+    user_model: users::Model,
+) -> Result<users::Model, Error> {
+    // Create the user first using the entity_api function
+    let new_user =
+        entity_api::user::create_by_organization(db, organization_id, user_model).await?;
+
+    // Send welcome email in the background
+    send_welcome_email(config, &new_user).await;
+
+    Ok(new_user)
+}
+
+/// Send a welcome email to a newly created user
+async fn send_welcome_email(config: &Config, user: &users::Model) {
+    log::info!(
+        "Initiating welcome email for user: {} ({})",
+        user.email,
+        user.id
+    );
+
+    // Create email request and send it
+    let result = async {
+        log::debug!("Creating MailerSend client for welcome email");
+        let mailersend_client = MailerSendClient::new(config).await?;
+
+        let template_id = config.welcome_email_template_id().ok_or_else(|| {
+            log::error!("Welcome email template ID not configured");
+            Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            }
+        })?;
+        log::debug!("Using template ID: {template_id}");
+
+        let mut personalization_data = std::collections::HashMap::new();
+        personalization_data.insert("first_name".to_string(), user.first_name.clone());
+        personalization_data.insert("last_name".to_string(), user.last_name.clone());
+        log::debug!("Prepared personalization data for {}", user.email);
+
+        let email_request = SendEmailRequest::new(
+            EmailRecipient {
+                email: "hello@refactor.engineer".to_string(),
+                name: Some("Refactor Platform".to_string()),
+            },
+            vec![EmailRecipient {
+                email: user.email.clone(),
+                name: Some(format!("{} {}", user.first_name, user.last_name)),
+            }],
+            "Welcome to Refactor Platform".to_string(),
+            template_id,
+            personalization_data,
+        )
+        .await?;
+        log::debug!("Email request created for {}", user.email);
+
+        // send_email now handles the async spawning internally
+        mailersend_client.send_email(email_request).await
+    }
+    .await;
+
+    // Log any errors but don't fail user creation
+    if let Err(e) = result {
+        log::error!("Failed to queue welcome email for {}: {:?}", user.email, e);
+    } else {
+        log::info!("Welcome email queued successfully for {}", user.email);
+    }
 }

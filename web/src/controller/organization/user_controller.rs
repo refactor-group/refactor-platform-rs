@@ -67,9 +67,13 @@ pub(crate) async fn create(
     Path(organization_id): Path<Id>,
     Json(user_model): Json<users::Model>,
 ) -> Result<impl IntoResponse, Error> {
-    let user =
-        UserApi::create_by_organization(app_state.db_conn_ref(), organization_id, user_model)
-            .await?;
+    let user = UserApi::create_by_organization(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        organization_id,
+        user_model,
+    )
+    .await?;
     info!("User created: {user:?}");
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
