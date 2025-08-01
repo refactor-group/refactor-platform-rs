@@ -6,6 +6,10 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // NOTE: SeaORM wraps migrations in transactions, preventing CONCURRENT index creation
+        // For production deployments, consider creating these indexes manually:
+        // CREATE INDEX CONCURRENTLY coaching_sessions_relationship_date ON refactor_platform.coaching_sessions (coaching_relationship_id, date);
+
         // Create composite index for coaching_relationship_id + date (most common query pattern)
         manager
             .create_index(
