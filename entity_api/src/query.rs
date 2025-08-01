@@ -86,43 +86,165 @@ pub trait IntoQueryFilterMap {
     fn into_query_filter_map(self) -> QueryFilterMap;
 }
 
-/// Find all records of an entity by the given query filter map.
-pub async fn find_by<E, C>(
-    db: &DatabaseConnection,
-    query_filter_map: QueryFilterMap,
-) -> Result<Vec<E::Model>, Error>
-where
-    E: EntityTrait,
-    C: ColumnTrait + IntoEnumIterator,
-{
-    let mut query = E::find();
+/// `QuerySort` is a trait that provides optional sorting capabilities for query parameters.
+/// This trait works alongside `IntoQueryFilterMap` to provide a unified interface for both
+/// filtering and sorting in database queries.
+///
+/// The default implementation returns `None` for both methods, making sorting optional.
+/// Structs that need sorting functionality can implement this trait to specify their
+/// sort column and order.
+///
+/// # Example
+///
+/// ```
+/// use entity_api::query::QuerySort;
+/// use sea_orm::Order;
+/// use entity::actions::Column as ActionColumn;
+///
+/// #[derive(Debug)]
+/// struct ActionParams {
+///     sort_by: Option<ActionColumn>,
+///     sort_order: Option<Order>,
+/// }
+///
+/// impl QuerySort<ActionColumn> for ActionParams {
+///     fn get_sort_column(&self) -> Option<ActionColumn> {
+///         self.sort_by
+///     }
+///
+///     fn get_sort_order(&self) -> Option<Order> {
+///         self.sort_order.clone()
+///     }
+/// }
+/// ```
+pub trait QuerySort<C: ColumnTrait> {
+    /// Returns the column to sort by, if any
+    fn get_sort_column(&self) -> Option<C>;
 
-    // We iterate through the entity's defined columns so that we only attempt
-    // to filter by columns that exist.
-    for column in C::iter() {
-        if let Some(value) = query_filter_map.get(&column.to_string()) {
-            query = query.filter(column.eq(value));
-        }
-    }
-
-    Ok(query.all(db).await?)
+    /// Returns the sort order, if any
+    fn get_sort_order(&self) -> Option<Order>;
 }
 
-/// Find all records of an entity by the given query filter map with optional sorting.
-pub async fn find_by_with_sort<E, C>(
-    db: &DatabaseConnection,
-    query_filter_map: QueryFilterMap,
-    sort_column: Option<C>,
-    sort_order: Option<Order>,
-) -> Result<Vec<E::Model>, Error>
+/// Wrapper struct that provides default QuerySort implementation for types that only need filtering
+pub struct FilterOnly<T>(pub T);
+
+impl<T, C> QuerySort<C> for FilterOnly<T>
+where
+    C: ColumnTrait,
+{
+    fn get_sort_column(&self) -> Option<C> {
+        None
+    }
+
+    fn get_sort_order(&self) -> Option<Order> {
+        None
+    }
+}
+
+impl<T> IntoQueryFilterMap for FilterOnly<T>
+where
+    T: IntoQueryFilterMap,
+{
+    fn into_query_filter_map(self) -> QueryFilterMap {
+        self.0.into_query_filter_map()
+    }
+}
+
+/// Find all records of an entity by the given parameters.
+///
+/// This function handles both filtering (via IntoQueryFilterMap) and optional sorting
+/// (via QuerySort) in a single unified interface. If the parameters don't implement
+/// QuerySort or return None for sorting fields, no sorting is applied.
+///
+/// # Example with just filtering
+/// ```no_run
+/// # use entity_api::query::{find_by, FilterOnly, IntoQueryFilterMap, QueryFilterMap};
+/// # use entity::actions::{Entity as ActionEntity, Column as ActionColumn};
+/// # use sea_orm::{DatabaseConnection, Value};
+/// #
+/// # #[derive(Debug)]
+/// # struct MyFilterParams {
+/// #     coaching_session_id: String,
+/// # }
+/// #
+/// # impl IntoQueryFilterMap for MyFilterParams {
+/// #     fn into_query_filter_map(self) -> QueryFilterMap {
+/// #         let mut map = QueryFilterMap::new();
+/// #         map.insert(
+/// #             "coaching_session_id".to_string(),
+/// #             Some(Value::String(Some(Box::new(self.coaching_session_id)))),
+/// #         );
+/// #         map
+/// #     }
+/// # }
+/// #
+/// # async fn example(db: &DatabaseConnection) -> Result<(), Box<dyn std::error::Error>> {
+/// let params = FilterOnly(MyFilterParams {
+///     coaching_session_id: "550e8400-e29b-41d4-a716-446655440000".to_string()
+/// });
+/// let results = find_by::<ActionEntity, ActionColumn, _>(db, params).await?;
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// # Example with filtering and sorting  
+/// ```no_run
+/// # use entity_api::query::{find_by, IntoQueryFilterMap, QueryFilterMap, QuerySort};
+/// # use entity::actions::{Entity as ActionEntity, Column as ActionColumn};
+/// # use sea_orm::{DatabaseConnection, Order, Value};
+/// #
+/// # #[derive(Debug)]
+/// # struct MyParams {
+/// #     coaching_session_id: String,
+/// #     sort_by: Option<ActionColumn>,
+/// #     sort_order: Option<Order>,
+/// # }
+/// #
+/// # impl IntoQueryFilterMap for MyParams {
+/// #     fn into_query_filter_map(self) -> QueryFilterMap {
+/// #         let mut map = QueryFilterMap::new();
+/// #         map.insert(
+/// #             "coaching_session_id".to_string(),
+/// #             Some(Value::String(Some(Box::new(self.coaching_session_id)))),
+/// #         );
+/// #         map
+/// #     }
+/// # }
+/// #
+/// # impl QuerySort<ActionColumn> for MyParams {
+/// #     fn get_sort_column(&self) -> Option<ActionColumn> {
+/// #         self.sort_by.clone()
+/// #     }
+/// #     
+/// #     fn get_sort_order(&self) -> Option<Order> {
+/// #         self.sort_order.clone()
+/// #     }
+/// # }
+/// #
+/// # async fn example(db: &DatabaseConnection) -> Result<(), Box<dyn std::error::Error>> {
+/// let params = MyParams {
+///     coaching_session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+///     sort_by: Some(ActionColumn::CreatedAt),
+///     sort_order: Some(Order::Desc)
+/// };
+/// let results = find_by::<ActionEntity, ActionColumn, _>(db, params).await?;
+/// #     Ok(())
+/// # }
+/// ```
+pub async fn find_by<E, C, P>(db: &DatabaseConnection, params: P) -> Result<Vec<E::Model>, Error>
 where
     E: EntityTrait,
     C: ColumnTrait + IntoEnumIterator,
+    P: IntoQueryFilterMap + QuerySort<C>,
 {
+    // Extract sorting parameters before consuming params
+    let sort_column = params.get_sort_column();
+    let sort_order = params.get_sort_order();
+    let query_filter_map = params.into_query_filter_map();
+
     let mut query = E::find();
 
-    // We iterate through the entity's defined columns so that we only attempt
-    // to filter by columns that exist.
+    // Apply filters by iterating through the entity's defined columns
     for column in C::iter() {
         if let Some(value) = query_filter_map.get(&column.to_string()) {
             query = query.filter(column.eq(value));

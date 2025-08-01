@@ -1,13 +1,16 @@
 use chrono::{NaiveDate, NaiveDateTime};
-use domain::coaching_session::CoachingSessionSortParams;
-use domain::coaching_sessions;
-use domain::Id;
-use domain::{IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, UpdateMap};
 use sea_orm::{Order, Value};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+use super::sort::SortOrder;
+use super::WithSortDefaults;
+use domain::{
+    coaching_sessions, Id, IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, QuerySort, UpdateMap,
+};
+
+/// Sortable fields for coaching sessions
+#[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "date")]
 pub(crate) enum CoachingSessionSortField {
     #[serde(rename = "date")]
@@ -18,15 +21,6 @@ pub(crate) enum CoachingSessionSortField {
     UpdatedAt,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[schema(example = "desc")]
-pub(crate) enum SortOrder {
-    #[serde(rename = "asc")]
-    Asc,
-    #[serde(rename = "desc")]
-    Desc,
-}
-
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     pub(crate) coaching_relationship_id: Id,
@@ -34,31 +28,6 @@ pub(crate) struct IndexParams {
     pub(crate) to_date: NaiveDate,
     pub(crate) sort_by: Option<CoachingSessionSortField>,
     pub(crate) sort_order: Option<SortOrder>,
-}
-
-impl IndexParams {
-    /// Validates that sorting parameters are provided together or not at all
-    pub fn validate_sort_params(&self) -> Result<(), domain::error::Error> {
-        match (&self.sort_by, &self.sort_order) {
-            (Some(_), None) => Err(domain::error::Error {
-                source: None,
-                error_kind: domain::error::DomainErrorKind::Internal(
-                    domain::error::InternalErrorKind::Entity(
-                        domain::error::EntityErrorKind::Invalid,
-                    ),
-                ),
-            }),
-            (None, Some(_)) => Err(domain::error::Error {
-                source: None,
-                error_kind: domain::error::DomainErrorKind::Internal(
-                    domain::error::InternalErrorKind::Entity(
-                        domain::error::EntityErrorKind::Invalid,
-                    ),
-                ),
-            }),
-            _ => Ok(()),
-        }
-    }
 }
 
 impl IntoQueryFilterMap for IndexParams {
@@ -96,7 +65,7 @@ impl IntoUpdateMap for UpdateParams {
     }
 }
 
-impl CoachingSessionSortParams for IndexParams {
+impl QuerySort<coaching_sessions::Column> for IndexParams {
     fn get_sort_column(&self) -> Option<coaching_sessions::Column> {
         self.sort_by.as_ref().map(|field| match field {
             CoachingSessionSortField::Date => coaching_sessions::Column::Date,
@@ -111,4 +80,8 @@ impl CoachingSessionSortParams for IndexParams {
             SortOrder::Desc => Order::Desc,
         })
     }
+}
+
+impl WithSortDefaults for IndexParams {
+    type SortField = CoachingSessionSortField;
 }

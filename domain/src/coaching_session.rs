@@ -5,10 +5,9 @@ use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
     coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
-    query::IntoQueryFilterMap,
+    query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
-use sea_orm::Order;
 use sea_orm::{DatabaseConnection, IntoActiveModel};
 use service::config::Config;
 
@@ -58,40 +57,14 @@ pub async fn create(
     Ok(coaching_session::create(db, coaching_session_model).await?)
 }
 
-pub async fn find_by(
-    db: &DatabaseConnection,
-    params: impl IntoQueryFilterMap,
-) -> Result<Vec<Model>, Error> {
-    let coaching_sessions = query::find_by::<coaching_sessions::Entity, coaching_sessions::Column>(
-        db,
-        params.into_query_filter_map(),
-    )
-    .await?;
-
-    Ok(coaching_sessions)
-}
-
-pub async fn find_by_with_sort<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
+pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where
-    P: IntoQueryFilterMap + CoachingSessionSortParams,
+    P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
 {
-    // Extract sort parameters before consuming params
-    let sort_column = params.get_sort_column();
-    let sort_order = params.get_sort_order();
-    let query_filter_map = params.into_query_filter_map();
-
-    let coaching_sessions = query::find_by_with_sort::<
-        coaching_sessions::Entity,
-        coaching_sessions::Column,
-    >(db, query_filter_map, sort_column, sort_order)
-    .await?;
-
+    let coaching_sessions =
+        query::find_by::<coaching_sessions::Entity, coaching_sessions::Column, P>(db, params)
+            .await?;
     Ok(coaching_sessions)
-}
-
-pub trait CoachingSessionSortParams {
-    fn get_sort_column(&self) -> Option<coaching_sessions::Column>;
-    fn get_sort_order(&self) -> Option<Order>;
 }
 
 pub async fn update(
