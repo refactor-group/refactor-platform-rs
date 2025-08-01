@@ -83,12 +83,11 @@ impl SendEmailRequest {
     /// Validate email address and return error if invalid
     fn validate_email(email: &str) -> Result<(), Error> {
         if !EmailAddress::is_valid(email) {
-            warn!("Invalid email: {}", email);
+            warn!("Invalid email: {email}");
             return Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
-                    "Invalid email address: {}",
-                    email
+                    "Invalid email address: {email}"
                 ))),
             });
         }
@@ -117,13 +116,13 @@ impl MailerSendClient {
         let to_count = request.to.len();
         let to_emails: Vec<String> = request.to.iter().map(|r| r.email.clone()).collect();
 
-        info!("Queuing email for {} recipients", to_count);
+        info!("Queuing email for {to_count} recipients");
 
         // Spawn the email sending as a background task
         tokio::spawn(async move {
-            let url = format!("{}/email", base_url);
+            let url = format!("{base_url}/email");
 
-            info!("Sending email to {} recipients: {:?}", to_count, to_emails);
+            info!("Sending email to {to_count} recipients: {to_emails:?}");
 
             let result = async {
                 let response = client.post(&url).json(&request).send().await.map_err(|e| {
@@ -142,18 +141,12 @@ impl MailerSendClient {
                         .and_then(|v| v.to_str().ok())
                         .map(|s| s.to_string());
 
-                    info!(
-                        "Email sent successfully to {:?}, message_id: {:?}",
-                        to_emails, message_id
-                    );
+                    info!("Email sent successfully to {to_emails:?}, message_id: {message_id:?}");
 
                     Ok::<SendEmailResponse, Error>(SendEmailResponse { message_id })
                 } else {
                     let error_text = response.text().await.unwrap_or_default();
-                    warn!(
-                        "Failed to send email to {:?}: {} - {}",
-                        to_emails, status, error_text
-                    );
+                    warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
                     Err(Error {
                         source: None,
                         error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
@@ -170,7 +163,7 @@ impl MailerSendClient {
                     );
                 }
                 Err(e) => {
-                    error!("Background email sending failed: {:?}", e);
+                    error!("Background email sending failed: {e:?}");
                 }
             }
         });
@@ -200,7 +193,7 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
     })?;
 
     let mut headers = reqwest::header::HeaderMap::new();
-    let auth_value = format!("Bearer {}", api_key);
+    let auth_value = format!("Bearer {api_key}");
     let mut auth_header = reqwest::header::HeaderValue::from_str(&auth_value).map_err(|err| {
         warn!("Failed to create authorization header value: {err:?}");
         Error {

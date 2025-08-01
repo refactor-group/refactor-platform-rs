@@ -190,7 +190,7 @@ async fn send_welcome_email(config: &Config, user: &users::Model) {
                 error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
             }
         })?;
-        log::debug!("Using template ID: {}", template_id);
+        log::debug!("Using template ID: {template_id}");
 
         let mut personalization_data = std::collections::HashMap::new();
         personalization_data.insert("first_name".to_string(), user.first_name.clone());
