@@ -1,4 +1,4 @@
-use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use email_address::EmailAddress;
 use log::*;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,7 @@ pub struct SendEmailRequest {
 
 /// Response from MailerSend API
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct SendEmailResponse {
     pub message_id: Option<String>,
 }
@@ -109,7 +110,7 @@ impl MailerSendClient {
     /// This method spawns the email sending operation in a background task,
     /// allowing the caller to continue without waiting for the email to be sent.
     /// The result of the email sending is logged but not returned to the caller.
-    pub async fn send_email(&self, request: SendEmailRequest) -> Result<(), Error> {
+    pub async fn send_email(&self, request: SendEmailRequest) {
         // Clone values needed for the async task
         let client = self.client.clone();
         let base_url = self.base_url.clone();
@@ -124,51 +125,28 @@ impl MailerSendClient {
 
             info!("Sending email to {to_count} recipients: {to_emails:?}");
 
-            let result = async {
-                let response = client.post(&url).json(&request).send().await.map_err(|e| {
-                    warn!("Failed to send email request: {e:?}");
-                    Error {
-                        source: Some(Box::new(e)),
-                        error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-                    }
-                })?;
-
-                let status = response.status();
-                if status.is_success() {
-                    let message_id = response
-                        .headers()
-                        .get("x-message-id")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
-
-                    info!("Email sent successfully to {to_emails:?}, message_id: {message_id:?}");
-
-                    Ok::<SendEmailResponse, Error>(SendEmailResponse { message_id })
-                } else {
-                    let error_text = response.text().await.unwrap_or_default();
-                    warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
-                    Err(Error {
-                        source: None,
-                        error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-                    })
-                }
-            }
-            .await;
-
-            match result {
-                Ok(response) => {
-                    debug!(
-                        "Background email sent successfully, message_id: {:?}",
-                        response.message_id
-                    );
-                }
+            let response = match client.post(&url).json(&request).send().await {
+                Ok(resp) => resp,
                 Err(e) => {
-                    error!("Background email sending failed: {e:?}");
+                    warn!("Failed to send email request: {e:?}");
+                    return;
                 }
+            };
+
+            let status = response.status();
+            if status.is_success() {
+                let message_id = response
+                    .headers()
+                    .get("x-message-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+
+                info!("Email sent successfully to {to_emails:?}, message_id: {message_id:?}");
+            } else {
+                let error_text = response.text().await.unwrap_or_default();
+                warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
             }
         });
-
-        Ok(())
     }
 }
 

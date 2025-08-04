@@ -165,63 +165,52 @@ pub async fn create_by_organization(
         entity_api::user::create_by_organization(db, organization_id, user_model).await?;
 
     // Send welcome email in the background
-    send_welcome_email(config, &new_user).await;
+    send_welcome_email(config, &new_user).await?;
 
     Ok(new_user)
 }
 
 /// Send a welcome email to a newly created user
-async fn send_welcome_email(config: &Config, user: &users::Model) {
+async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
     log::info!(
         "Initiating welcome email for user: {} ({})",
         user.email,
         user.id
     );
 
-    // Create email request and send it
-    let result = async {
-        log::debug!("Creating MailerSend client for welcome email");
-        let mailersend_client = MailerSendClient::new(config).await?;
+    let mailersend_client = MailerSendClient::new(config).await?;
 
-        let template_id = config.welcome_email_template_id().ok_or_else(|| {
-            log::error!("Welcome email template ID not configured");
-            Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-            }
-        })?;
-        log::debug!("Using template ID: {template_id}");
+    let template_id = config.welcome_email_template_id().ok_or_else(|| {
+        log::error!("Welcome email template ID not configured");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+        }
+    })?;
+    log::info!("Using template ID: {template_id}");
 
-        let mut personalization_data = std::collections::HashMap::new();
-        personalization_data.insert("first_name".to_string(), user.first_name.clone());
-        personalization_data.insert("last_name".to_string(), user.last_name.clone());
-        log::debug!("Prepared personalization data for {}", user.email);
+    let mut personalization_data = std::collections::HashMap::new();
+    personalization_data.insert("first_name".to_string(), user.first_name.clone());
+    personalization_data.insert("last_name".to_string(), user.last_name.clone());
+    log::debug!("Prepared personalization data for {}", user.email);
 
-        let email_request = SendEmailRequest::new(
-            EmailRecipient {
-                email: "hello@refactor.engineer".to_string(),
-                name: Some("Refactor Platform".to_string()),
-            },
-            vec![EmailRecipient {
-                email: user.email.clone(),
-                name: Some(format!("{} {}", user.first_name, user.last_name)),
-            }],
-            "Welcome to Refactor Platform".to_string(),
-            template_id,
-            personalization_data,
-        )
-        .await?;
-        log::debug!("Email request created for {}", user.email);
+    let email_request = SendEmailRequest::new(
+        EmailRecipient {
+            email: "hello@refactor.engineer".to_string(),
+            name: Some("Refactor Platform".to_string()),
+        },
+        vec![EmailRecipient {
+            email: user.email.clone(),
+            name: Some(format!("{} {}", user.first_name, user.last_name)),
+        }],
+        "Welcome to Refactor Platform".to_string(),
+        template_id,
+        personalization_data,
+    )
+    .await?;
+    log::debug!("Email request created for {}", user.email);
 
-        // send_email now handles the async spawning internally
-        mailersend_client.send_email(email_request).await
-    }
-    .await;
-
-    // Log any errors but don't fail user creation
-    if let Err(e) = result {
-        log::error!("Failed to queue welcome email for {}: {:?}", user.email, e);
-    } else {
-        log::info!("Welcome email queued successfully for {}", user.email);
-    }
+    // send_email now handles the async spawning internally
+    mailersend_client.send_email(email_request).await;
+    Ok(())
 }
