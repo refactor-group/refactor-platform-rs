@@ -2,7 +2,7 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::agreement::{AgreementSortField, IndexParams};
+use crate::params::agreement::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
@@ -124,7 +124,7 @@ pub async fn update(
     params(
         ApiVersion,
         ("coaching_session_id" = Id, Query, description = "Filter by coaching_session_id"),
-        ("sort_by" = Option<crate::params::agreement::AgreementSortField>, Query, description = "Sort by field. Valid values: 'body', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "body"),
+        ("sort_by" = Option<crate::params::agreement::SortField>, Query, description = "Sort by field. Valid values: 'body', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "body"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
@@ -149,11 +149,7 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
-    IndexParams::apply_sort_defaults(
-        &mut params.sort_by,
-        &mut params.sort_order,
-        AgreementSortField::Body,
-    );
+    IndexParams::apply_sort_defaults(&mut params.sort_by, &mut params.sort_order, SortField::Body);
 
     let agreements = AgreementApi::find_by(app_state.db_conn_ref(), params).await?;
 

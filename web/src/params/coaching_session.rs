@@ -12,7 +12,7 @@ use domain::{
 /// Sortable fields for coaching sessions
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "date")]
-pub(crate) enum CoachingSessionSortField {
+pub(crate) enum SortField {
     #[serde(rename = "date")]
     Date,
     #[serde(rename = "created_at")]
@@ -26,7 +26,7 @@ pub(crate) struct IndexParams {
     pub(crate) coaching_relationship_id: Id,
     pub(crate) from_date: NaiveDate,
     pub(crate) to_date: NaiveDate,
-    pub(crate) sort_by: Option<CoachingSessionSortField>,
+    pub(crate) sort_by: Option<SortField>,
     pub(crate) sort_order: Option<SortOrder>,
 }
 
@@ -68,9 +68,9 @@ impl IntoUpdateMap for UpdateParams {
 impl QuerySort<coaching_sessions::Column> for IndexParams {
     fn get_sort_column(&self) -> Option<coaching_sessions::Column> {
         self.sort_by.as_ref().map(|field| match field {
-            CoachingSessionSortField::Date => coaching_sessions::Column::Date,
-            CoachingSessionSortField::CreatedAt => coaching_sessions::Column::CreatedAt,
-            CoachingSessionSortField::UpdatedAt => coaching_sessions::Column::UpdatedAt,
+            SortField::Date => coaching_sessions::Column::Date,
+            SortField::CreatedAt => coaching_sessions::Column::CreatedAt,
+            SortField::UpdatedAt => coaching_sessions::Column::UpdatedAt,
         })
     }
 
@@ -83,5 +83,5 @@ impl QuerySort<coaching_sessions::Column> for IndexParams {
 }
 
 impl WithSortDefaults for IndexParams {
-    type SortField = CoachingSessionSortField;
+    type SortField = SortField;
 }

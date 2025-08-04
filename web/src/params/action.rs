@@ -9,7 +9,7 @@ use domain::{actions, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 /// Sortable fields for actions
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "due_by")]
-pub(crate) enum ActionSortField {
+pub(crate) enum SortField {
     #[serde(rename = "due_by")]
     DueBy,
     #[serde(rename = "created_at")]
@@ -21,7 +21,7 @@ pub(crate) enum ActionSortField {
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     pub(crate) coaching_session_id: Id,
-    pub(crate) sort_by: Option<ActionSortField>,
+    pub(crate) sort_by: Option<SortField>,
     pub(crate) sort_order: Option<SortOrder>,
 }
 
@@ -40,9 +40,9 @@ impl IntoQueryFilterMap for IndexParams {
 impl QuerySort<actions::Column> for IndexParams {
     fn get_sort_column(&self) -> Option<actions::Column> {
         self.sort_by.as_ref().map(|field| match field {
-            ActionSortField::DueBy => actions::Column::DueBy,
-            ActionSortField::CreatedAt => actions::Column::CreatedAt,
-            ActionSortField::UpdatedAt => actions::Column::UpdatedAt,
+            SortField::DueBy => actions::Column::DueBy,
+            SortField::CreatedAt => actions::Column::CreatedAt,
+            SortField::UpdatedAt => actions::Column::UpdatedAt,
         })
     }
 
@@ -55,5 +55,5 @@ impl QuerySort<actions::Column> for IndexParams {
 }
 
 impl WithSortDefaults for IndexParams {
-    type SortField = ActionSortField;
+    type SortField = SortField;
 }

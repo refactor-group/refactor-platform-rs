@@ -9,7 +9,7 @@ use domain::{overarching_goals, Id, IntoQueryFilterMap, QueryFilterMap, QuerySor
 /// Sortable fields for overarching goals
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "title")]
-pub(crate) enum OverarchingGoalSortField {
+pub(crate) enum SortField {
     #[serde(rename = "title")]
     Title,
     #[serde(rename = "created_at")]
@@ -21,7 +21,7 @@ pub(crate) enum OverarchingGoalSortField {
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     pub(crate) coaching_session_id: Id,
-    pub(crate) sort_by: Option<OverarchingGoalSortField>,
+    pub(crate) sort_by: Option<SortField>,
     pub(crate) sort_order: Option<SortOrder>,
 }
 
@@ -40,9 +40,9 @@ impl IntoQueryFilterMap for IndexParams {
 impl QuerySort<overarching_goals::Column> for IndexParams {
     fn get_sort_column(&self) -> Option<overarching_goals::Column> {
         self.sort_by.as_ref().map(|field| match field {
-            OverarchingGoalSortField::Title => overarching_goals::Column::Title,
-            OverarchingGoalSortField::CreatedAt => overarching_goals::Column::CreatedAt,
-            OverarchingGoalSortField::UpdatedAt => overarching_goals::Column::UpdatedAt,
+            SortField::Title => overarching_goals::Column::Title,
+            SortField::CreatedAt => overarching_goals::Column::CreatedAt,
+            SortField::UpdatedAt => overarching_goals::Column::UpdatedAt,
         })
     }
 
@@ -55,5 +55,5 @@ impl QuerySort<overarching_goals::Column> for IndexParams {
 }
 
 impl WithSortDefaults for IndexParams {
-    type SortField = OverarchingGoalSortField;
+    type SortField = SortField;
 }

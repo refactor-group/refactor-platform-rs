@@ -9,7 +9,7 @@ use domain::{agreements, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 /// Sortable fields for agreements
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "body")]
-pub(crate) enum AgreementSortField {
+pub(crate) enum SortField {
     #[serde(rename = "body")]
     Body,
     #[serde(rename = "created_at")]
@@ -21,7 +21,7 @@ pub(crate) enum AgreementSortField {
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     pub(crate) coaching_session_id: Id,
-    pub(crate) sort_by: Option<AgreementSortField>,
+    pub(crate) sort_by: Option<SortField>,
     pub(crate) sort_order: Option<SortOrder>,
 }
 
@@ -40,9 +40,9 @@ impl IntoQueryFilterMap for IndexParams {
 impl QuerySort<agreements::Column> for IndexParams {
     fn get_sort_column(&self) -> Option<agreements::Column> {
         self.sort_by.as_ref().map(|field| match field {
-            AgreementSortField::Body => agreements::Column::Body,
-            AgreementSortField::CreatedAt => agreements::Column::CreatedAt,
-            AgreementSortField::UpdatedAt => agreements::Column::UpdatedAt,
+            SortField::Body => agreements::Column::Body,
+            SortField::CreatedAt => agreements::Column::CreatedAt,
+            SortField::UpdatedAt => agreements::Column::UpdatedAt,
         })
     }
 
@@ -55,5 +55,5 @@ impl QuerySort<agreements::Column> for IndexParams {
 }
 
 impl WithSortDefaults for IndexParams {
-    type SortField = AgreementSortField;
+    type SortField = SortField;
 }
