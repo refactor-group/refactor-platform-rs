@@ -5,7 +5,7 @@ use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
     coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
-    query::IntoQueryFilterMap,
+    query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
 use sea_orm::{DatabaseConnection, IntoActiveModel};
@@ -57,16 +57,13 @@ pub async fn create(
     Ok(coaching_session::create(db, coaching_session_model).await?)
 }
 
-pub async fn find_by(
-    db: &DatabaseConnection,
-    params: impl IntoQueryFilterMap,
-) -> Result<Vec<Model>, Error> {
-    let coaching_sessions = query::find_by::<coaching_sessions::Entity, coaching_sessions::Column>(
-        db,
-        params.into_query_filter_map(),
-    )
-    .await?;
-
+pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
+{
+    let coaching_sessions =
+        query::find_by::<coaching_sessions::Entity, coaching_sessions::Column, P>(db, params)
+            .await?;
     Ok(coaching_sessions)
 }
 

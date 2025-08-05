@@ -2,7 +2,8 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::overarching_goal::IndexParams;
+use crate::params::overarching_goal::{IndexParams, SortField};
+use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -168,7 +169,9 @@ pub async fn update_status(
     path = "/overarching_goals",
     params(
         ApiVersion,
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id")
+        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id"),
+        ("sort_by" = Option<crate::params::overarching_goal::SortField>, Query, description = "Sort by field. Valid values: 'title', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "title"),
+        ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Overarching Goals", body = [entity::overarching_goals::Model]),
@@ -189,6 +192,14 @@ pub async fn index(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Overarching Goals");
     debug!("Filter Params: {params:?}");
+
+    // Apply default sorting parameters
+    let mut params = params;
+    IndexParams::apply_sort_defaults(
+        &mut params.sort_by,
+        &mut params.sort_order,
+        SortField::Title,
+    );
 
     let overarching_goals = OverarchingGoalApi::find_by(app_state.db_conn_ref(), params).await?;
 

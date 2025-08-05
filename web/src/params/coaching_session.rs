@@ -1,15 +1,33 @@
 use chrono::{NaiveDate, NaiveDateTime};
-use domain::Id;
-use domain::{IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, UpdateMap};
-use sea_orm::Value;
+use sea_orm::{Order, Value};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+
+use super::sort::SortOrder;
+use super::WithSortDefaults;
+use domain::{
+    coaching_sessions, Id, IntoQueryFilterMap, IntoUpdateMap, QueryFilterMap, QuerySort, UpdateMap,
+};
+
+/// Sortable fields for coaching sessions
+#[derive(Debug, Deserialize, ToSchema)]
+#[schema(example = "date")]
+pub(crate) enum SortField {
+    #[serde(rename = "date")]
+    Date,
+    #[serde(rename = "created_at")]
+    CreatedAt,
+    #[serde(rename = "updated_at")]
+    UpdatedAt,
+}
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     pub(crate) coaching_relationship_id: Id,
     pub(crate) from_date: NaiveDate,
     pub(crate) to_date: NaiveDate,
+    pub(crate) sort_by: Option<SortField>,
+    pub(crate) sort_order: Option<SortOrder>,
 }
 
 impl IntoQueryFilterMap for IndexParams {
@@ -45,4 +63,25 @@ impl IntoUpdateMap for UpdateParams {
         );
         update_map
     }
+}
+
+impl QuerySort<coaching_sessions::Column> for IndexParams {
+    fn get_sort_column(&self) -> Option<coaching_sessions::Column> {
+        self.sort_by.as_ref().map(|field| match field {
+            SortField::Date => coaching_sessions::Column::Date,
+            SortField::CreatedAt => coaching_sessions::Column::CreatedAt,
+            SortField::UpdatedAt => coaching_sessions::Column::UpdatedAt,
+        })
+    }
+
+    fn get_sort_order(&self) -> Option<Order> {
+        self.sort_order.as_ref().map(|order| match order {
+            SortOrder::Asc => Order::Asc,
+            SortOrder::Desc => Order::Desc,
+        })
+    }
+}
+
+impl WithSortDefaults for IndexParams {
+    type SortField = SortField;
 }

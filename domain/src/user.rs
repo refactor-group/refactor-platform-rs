@@ -9,19 +9,19 @@ pub use entity_api::user::{
     verify_password, AuthSession, Backend, Credentials, Role,
 };
 use entity_api::{
-    coaching_relationship, mutate, organizations_user, query, query::IntoQueryFilterMap, user,
+    coaching_relationship, mutate, organizations_user, query,
+    query::{IntoQueryFilterMap, QuerySort},
+    user,
 };
 use log::*;
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait, Value};
 
-pub async fn find_by(
-    db: &DatabaseConnection,
-    params: impl IntoQueryFilterMap,
-) -> Result<Vec<users::Model>, Error> {
-    let users =
-        query::find_by::<users::Entity, users::Column>(db, params.into_query_filter_map()).await?;
-
+pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<users::Model>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<users::Column>,
+{
+    let users = query::find_by::<users::Entity, users::Column, P>(db, params).await?;
     Ok(users)
 }
 
