@@ -63,7 +63,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
 
     if app_state.config.is_production() {
         info!("Server starting... listening for internal connections on http://{host}:{port}");
-        info!("External access available via HTTPS proxy at https://refactor.engineer");
+        info!("External access available via HTTPS proxy at https://myrefactor.com");
     } else {
         info!("Server starting... listening for connections on http://{host}:{port}");
     }

@@ -16,6 +16,8 @@ services:
       # Mount your letsencrypt SSL certs
       - /etc/letsencrypt/live/refactor.engineer/:/etc/letsencrypt/live/refactor.engineer/:ro
       - /etc/letsencrypt/archive/refactor.engineer/:/etc/letsencrypt/archive/refactor.engineer/:ro
+      - /etc/letsencrypt/live/myrefactor.com/:/etc/letsencrypt/live/myrefactor.com/:ro
+      - /etc/letsencrypt/archive/myrefactor.com/:/etc/letsencrypt/archive/myrefactor.com/:ro
       - ${SSL_DHPARAMS_PATH}:/etc/letsencrypt/ssl-dhparams.pem:ro
       # For SSL certbot renewal
       - ./nginx/html:/var/www/html:ro
