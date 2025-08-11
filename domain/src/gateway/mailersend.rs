@@ -254,7 +254,12 @@ impl MailerSendClient {
                 Ok(resp) => resp,
                 Err(e) => {
                     warn!("Failed to send email request: {e:?}");
-                    return;
+                    return Err(Error {
+                        source: Some(Box::new(e)),
+                        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                            "Failed to send email request".to_string()
+                        ))
+                    });
                 }
             };
 
@@ -267,9 +272,14 @@ impl MailerSendClient {
                     .map(|s| s.to_string());
 
                 info!("Email sent successfully to {to_emails:?}, message_id: {message_id:?}");
+                Ok(())
             } else {
                 let error_text = response.text().await.unwrap_or_default();
                 warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
+                Err(Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text))
+                })
             }
         });
     }
