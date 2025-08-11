@@ -79,7 +79,7 @@ pub struct SendEmailRequestBuilder {
     from: Option<EmailRecipient>,
     to: Vec<EmailRecipient>,
     subject: Option<String>,
-    template_id: Option<TemplateId>,
+    template_id: Option<String>,
     personalization: HashMap<String, String>,
 }
 
@@ -128,9 +128,9 @@ impl SendEmailRequestBuilder {
     }
 
     /// Set the template ID
-    pub fn template_id(mut self, template_id: impl Into<String>) -> Result<Self, Error> {
-        self.template_id = Some(TemplateId::new(template_id)?);
-        Ok(self)
+    pub fn template_id(mut self, template_id: String) -> Self {
+        self.template_id = Some(template_id);
+        self
     }
 
     /// Add a personalization variable
@@ -173,7 +173,11 @@ impl SendEmailRequestBuilder {
         })?;
 
         // Template ID is already validated when set
-        let template_id = self.template_id;
+        let template_id = if let Some(id) = self.template_id {
+            Some(TemplateId::new(id)?)
+        } else {
+            None
+        };
 
         // Create personalization for each recipient if data exists
         let personalization = if !self.personalization.is_empty() {

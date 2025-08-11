@@ -198,7 +198,7 @@ async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), 
             format!("{} {}", user.first_name, user.last_name),
         )
         .subject("Welcome to Refactor Platform")
-        .template_id(template_id)?
+        .template_id(template_id)
         .add_personalization("first_name", &user.first_name)
         .add_personalization("last_name", &user.last_name)
         .build()
