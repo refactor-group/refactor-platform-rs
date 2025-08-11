@@ -1,7 +1,7 @@
 use crate::{
     error::Error,
     error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
-    gateway::mailersend::{EmailRecipient, MailerSendClient, SendEmailRequest},
+    gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
     users, Id,
 };
 use chrono::Utc;
@@ -189,25 +189,20 @@ async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), 
     })?;
     log::info!("Using template ID: {template_id}");
 
-    let mut personalization_data = std::collections::HashMap::new();
-    personalization_data.insert("first_name".to_string(), user.first_name.clone());
-    personalization_data.insert("last_name".to_string(), user.last_name.clone());
-    log::debug!("Prepared personalization data for {}", user.email);
+    log::debug!("Preparing personalization data for {}", user.email);
 
-    let email_request = SendEmailRequest::new(
-        EmailRecipient {
-            email: "hello@refactor.engineer".to_string(),
-            name: Some("Refactor Platform".to_string()),
-        },
-        vec![EmailRecipient {
-            email: user.email.clone(),
-            name: Some(format!("{} {}", user.first_name, user.last_name)),
-        }],
-        "Welcome to Refactor Platform".to_string(),
-        template_id,
-        personalization_data,
-    )
-    .await?;
+    let email_request = SendEmailRequestBuilder::new()
+        .from("hello@myrefactor.com")
+        .to_with_name(
+            &user.email,
+            format!("{} {}", user.first_name, user.last_name),
+        )
+        .subject("Welcome to Refactor Platform")
+        .template_id(template_id)?
+        .add_personalization("first_name", &user.first_name)
+        .add_personalization("last_name", &user.last_name)
+        .build()
+        .await?;
     log::debug!("Email request created for {}", user.email);
 
     // send_email now handles the async spawning internally
