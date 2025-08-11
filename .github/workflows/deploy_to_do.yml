@@ -115,6 +115,7 @@ jobs:
           # -------- Mailersend Config
           # Template ID for welcome emails
           WELCOME_EMAIL_TEMPLATE_ID=${{ vars.WELCOME_EMAIL_TEMPLATE_ID }}
+          MAILERSEND_API_KEY=${{ vars.MAILERSEND_API_KEY }}
 
           # -------- Frontend Config
           # Docker image for frontend
