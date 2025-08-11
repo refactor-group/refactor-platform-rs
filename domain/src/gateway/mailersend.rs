@@ -257,8 +257,8 @@ impl MailerSendClient {
                     return Err(Error {
                         source: Some(Box::new(e)),
                         error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                            "Failed to send email request".to_string()
-                        ))
+                            "Failed to send email request".to_string(),
+                        )),
                     });
                 }
             };
@@ -278,7 +278,7 @@ impl MailerSendClient {
                 warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
                 Err(Error {
                     source: None,
-                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text))
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text)),
                 })
             }
         });

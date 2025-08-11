@@ -172,24 +172,23 @@ pub async fn create_by_organization(
 
 /// Send a welcome email to a newly created user
 async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
-    log::info!(
+    info!(
         "Initiating welcome email for user: {} ({})",
-        user.email,
-        user.id
+        user.email, user.id
     );
 
     let mailersend_client = MailerSendClient::new(config).await?;
 
     let template_id = config.welcome_email_template_id().ok_or_else(|| {
-        log::error!("Welcome email template ID not configured");
+        error!("Welcome email template ID not configured");
         Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
-    log::info!("Using template ID: {template_id}");
+    info!("Using template ID: {template_id}");
 
-    log::debug!("Preparing personalization data for {}", user.email);
+    debug!("Preparing personalization data for {}", user.email);
 
     let email_request = SendEmailRequestBuilder::new()
         .from("hello@myrefactor.com")
@@ -203,7 +202,7 @@ async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), 
         .add_personalization("last_name", &user.last_name)
         .build()
         .await?;
-    log::debug!("Email request created for {}", user.email);
+    debug!("Email request created for {}", user.email);
 
     // send_email now handles the async spawning internally
     mailersend_client.send_email(email_request).await;
