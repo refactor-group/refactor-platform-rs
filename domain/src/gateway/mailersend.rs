@@ -4,6 +4,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 use service::config::Config;
 use std::collections::HashMap;
+use std::fmt::Display;
 
 /// Template ID with validation
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -199,8 +200,11 @@ impl SendEmailRequestBuilder {
 
 impl SendEmailRequest {
     /// Validate email address and return error if invalid
-    fn validate_email(email: &str) -> Result<(), Error> {
-        if !EmailAddress::is_valid(email) {
+    fn validate_email<E>(email: E) -> Result<(), Error>
+    where
+        E: AsRef<str> + Display,
+    {
+        if !EmailAddress::is_valid(email.as_ref()) {
             warn!("Invalid email: {email}");
             return Err(Error {
                 source: None,
