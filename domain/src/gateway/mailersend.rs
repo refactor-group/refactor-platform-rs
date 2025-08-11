@@ -6,7 +6,7 @@ use service::config::Config;
 use std::collections::HashMap;
 
 /// Template ID with validation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TemplateId(String);
 
 impl TemplateId {
@@ -48,20 +48,20 @@ pub struct MailerSendClient {
 }
 
 /// Email recipient with name and email address
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct EmailRecipient {
     pub email: String,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Personalization {
     pub email: String,
     pub data: HashMap<String, String>,
 }
 
 /// Request payload for sending an email via MailerSend
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Eq, PartialEq)]
 pub struct SendEmailRequest {
     pub from: EmailRecipient,
     pub to: Vec<EmailRecipient>,
