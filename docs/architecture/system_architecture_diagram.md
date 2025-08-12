@@ -35,6 +35,7 @@ The Refactor Platform is a coaching management system built with Rust (Axum back
 ### External Integrations
 - **TipTap**: Collaborative document editing service
 - **JWT**: Token generation and validation service
+- **MailerSend**: Transactional email service for notifications
 
 ## Data Flow Example
 
@@ -84,6 +85,7 @@ graph TB
     %% External Services
     TipTap[TipTap Gateway<br/>Document Collaboration]
     JWT[JWT Service<br/>Token Generation]
+    MailerSend[MailerSend<br/>Email Service]
     
     %% Request Flow
     Client --> Nginx
@@ -135,6 +137,7 @@ graph TB
     %% External Integrations
     Domain --> TipTap
     Domain --> JWT
+    Domain --> MailerSend
     
     %% Styling
     classDef external fill:#e1f5fe

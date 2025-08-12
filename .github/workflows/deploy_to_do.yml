@@ -112,6 +112,11 @@ jobs:
           # JWT signing key for TipTap
           TIPTAP_JWT_SIGNING_KEY=${{ secrets.TIPTAP_JWT_SIGNING_KEY }}
 
+          # -------- Mailersend Config
+          # Template ID for welcome emails
+          WELCOME_EMAIL_TEMPLATE_ID=${{ vars.WELCOME_EMAIL_TEMPLATE_ID }}
+          MAILERSEND_API_KEY=${{ vars.MAILERSEND_API_KEY }}
+
           # -------- Frontend Config
           # Docker image for frontend
           FRONTEND_IMAGE_NAME=${{ vars.FRONTEND_IMAGE_NAME }}

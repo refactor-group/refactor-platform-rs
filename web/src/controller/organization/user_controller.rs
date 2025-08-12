@@ -8,7 +8,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use domain::{user as UserApi, users, Id};
+use domain::{emails as EmailsAPI, user as UserApi, users, Id};
 use service::config::ApiVersion;
 
 use log::*;
@@ -71,6 +71,9 @@ pub(crate) async fn create(
         UserApi::create_by_organization(app_state.db_conn_ref(), organization_id, user_model)
             .await?;
     info!("User created: {user:?}");
+
+    EmailsAPI::send_welcome_email(&app_state.config, &user).await?;
+
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
 

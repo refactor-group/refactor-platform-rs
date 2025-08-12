@@ -5,8 +5,8 @@ use crate::{
 };
 use chrono::Utc;
 pub use entity_api::user::{
-    create, create_by_organization, find_by_email, find_by_id, find_by_organization, generate_hash,
-    verify_password, AuthSession, Backend, Credentials, Role,
+    create, find_by_email, find_by_id, find_by_organization, generate_hash, verify_password,
+    AuthSession, Backend, Credentials, Role,
 };
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query,
@@ -101,7 +101,8 @@ pub async fn create_user_and_coaching_relationship(
     })?;
 
     // Create the user within the organization
-    let new_user = create_by_organization(&txn, organization_id, user_model).await?;
+    let new_user =
+        entity_api::user::create_by_organization(&txn, organization_id, user_model).await?;
     // Create the coaching relationship using the new user's ID as the coachee_id
     let new_coaching_relationship_model = entity_api::coaching_relationships::Model {
         coachee_id: new_user.id,
@@ -149,4 +150,16 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     })?;
 
     Ok(())
+}
+
+pub async fn create_by_organization(
+    db: &DatabaseConnection,
+    organization_id: Id,
+    user_model: users::Model,
+) -> Result<users::Model, Error> {
+    // Create the user first using the entity_api function
+    let new_user =
+        entity_api::user::create_by_organization(db, organization_id, user_model).await?;
+
+    Ok(new_user)
 }
