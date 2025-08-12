@@ -19,5 +19,9 @@ tokio = { version = "1.0", features = ["full"] }
 version = "1.1.0"                                                       # sea-orm version
 features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
 
+[dev-dependencies]
+mockito = "1.6"
+serial_test = "3.1"
+
 
 

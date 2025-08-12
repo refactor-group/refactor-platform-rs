@@ -19,6 +19,7 @@ pub mod action;
 pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
+pub mod emails;
 pub mod error;
 pub mod jwt;
 pub mod note;

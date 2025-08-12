@@ -1,7 +1,6 @@
 use crate::{
     error::Error,
     error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
-    gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
     users, Id,
 };
 use chrono::Utc;
@@ -17,7 +16,6 @@ use entity_api::{
 use log::*;
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait, Value};
-use service::config::Config;
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<users::Model>, Error>
 where
@@ -156,7 +154,6 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
 
 pub async fn create_by_organization(
     db: &DatabaseConnection,
-    config: &Config,
     organization_id: Id,
     user_model: users::Model,
 ) -> Result<users::Model, Error> {
@@ -164,47 +161,5 @@ pub async fn create_by_organization(
     let new_user =
         entity_api::user::create_by_organization(db, organization_id, user_model).await?;
 
-    // Send welcome email in the background
-    send_welcome_email(config, &new_user).await?;
-
     Ok(new_user)
-}
-
-/// Send a welcome email to a newly created user
-async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
-    info!(
-        "Initiating welcome email for user: {} ({})",
-        user.email, user.id
-    );
-
-    let mailersend_client = MailerSendClient::new(config).await?;
-
-    let template_id = config.welcome_email_template_id().ok_or_else(|| {
-        error!("Welcome email template ID not configured");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-        }
-    })?;
-    info!("Using template ID: {template_id}");
-
-    debug!("Preparing personalization data for {}", user.email);
-
-    let email_request = SendEmailRequestBuilder::new()
-        .from("hello@myrefactor.com")
-        .to_with_name(
-            &user.email,
-            format!("{} {}", user.first_name, user.last_name),
-        )
-        .subject("Welcome to Refactor Platform")
-        .template_id(template_id)
-        .add_personalization("first_name", &user.first_name)
-        .add_personalization("last_name", &user.last_name)
-        .build()
-        .await?;
-    debug!("Email request created for {}", user.email);
-
-    // send_email now handles the async spawning internally
-    mailersend_client.send_email(email_request).await;
-    Ok(())
 }

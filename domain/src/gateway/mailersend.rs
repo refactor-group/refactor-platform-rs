@@ -330,13 +330,31 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use service::config::Config;
 
     #[tokio::test]
+    #[serial]
     async fn test_mailersend_client_creation_fails_without_api_key() {
+        // Save current env state
+        let saved_api_key = std::env::var("MAILERSEND_API_KEY").ok();
+
+        // Ensure no API key is set
+        std::env::remove_var("MAILERSEND_API_KEY");
+
         let config = Config::default();
+        assert!(
+            config.mailersend_api_key().is_none(),
+            "API key should be None"
+        );
+
         let result = MailerSendClient::new(&config).await;
         assert!(result.is_err());
+
+        // Restore env state
+        if let Some(key) = saved_api_key {
+            std::env::set_var("MAILERSEND_API_KEY", key);
+        }
     }
 
     #[tokio::test]
