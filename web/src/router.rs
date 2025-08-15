@@ -493,7 +493,8 @@ mod organization_endpoints_tests {
 
             let session_layer = SessionManagerLayer::new(session_store)
                 .with_secure(false)
-                .with_expiry(Expiry::OnInactivity(Duration::days(1)));
+                .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+                .with_always_save(true);
 
             // Auth service
             let backend = Backend::new(db);
