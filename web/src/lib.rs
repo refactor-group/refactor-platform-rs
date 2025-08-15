@@ -51,7 +51,9 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         // Get non-secure cookies for local testing, while production automatically gets secure cookies
         .with_secure(app_state.config.is_production())
         .with_same_site(tower_sessions::cookie::SameSite::Lax) // Assists in CSRF protection
-        .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+        .with_expiry(Expiry::OnInactivity(Duration::seconds(
+            app_state.config.backend_session_expiry_seconds as i64,
+        )))
         // Save session on every request to reset the inactivity timer
         // This ensures active users stay logged in
         .with_always_save(true);
