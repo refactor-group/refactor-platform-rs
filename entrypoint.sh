@@ -87,6 +87,7 @@ main() {
             local interface="${BACKEND_INTERFACE:-0.0.0.0}"
             local port="${BACKEND_PORT:-4000}"
             local origins="${BACKEND_ALLOWED_ORIGINS:-*}"
+            local session_expiry="${BACKEND_SESSION_EXPIRY_SECONDS:-86400}"
             
             log_info "Starting Refactor Platform API server..."
             log_debug "Log level: $log_level, Interface: $interface, Port: $port"
@@ -97,6 +98,7 @@ main() {
                 -i "$interface" \
                 -p "$port" \
                 --allowed-origins="$origins" \
+                --backend-session-expiry-seconds="$session_expiry" \
                 "$@"
             ;;
             

@@ -99,6 +99,8 @@ jobs:
           BACKEND_SERVICE_API_PATH=${{ vars.BACKEND_SERVICE_API_PATH }}
           # API version to use between frontend and backend
           BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION }}
+          # Session expiry duration in seconds (default: 24 hours = 86400 seconds)
+          BACKEND_SESSION_EXPIRY_SECONDS=${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
           # Deployment environment used (development, staging, production)
           RUST_ENV=${{ vars.RUST_ENV }}
 

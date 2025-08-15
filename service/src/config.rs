@@ -142,6 +142,10 @@ pub struct Config {
         .map(|s| s.parse::<RustEnv>().unwrap()),
     )]
     pub runtime_env: RustEnv,
+
+    /// Session expiry duration in seconds (default: 24 hours = 86400 seconds)
+    #[arg(long, env, default_value_t = 86400)]
+    pub backend_session_expiry_seconds: u64,
 }
 
 impl Default for Config {
