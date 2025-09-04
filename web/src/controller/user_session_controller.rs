@@ -1,5 +1,6 @@
 use crate::controller::ApiResponse;
 use crate::error::{Error as WebError, Result as WebResult};
+use crate::extractors::read_only_session::ReadOnlySession;
 use axum::{http::StatusCode, response::IntoResponse, Form, Json};
 use domain::user::{AuthSession, Credentials};
 use log::*;
@@ -119,4 +120,27 @@ pub async fn delete(mut auth_session: AuthSession) -> impl IntoResponse {
         Ok(_) => StatusCode::OK.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+/// Checks the current authentication status without modifying the session.
+/// This is a read-only endpoint that returns whether the user is authenticated
+/// and when the session expires.
+///
+/// Returns:
+/// - 200 OK with JSON: {"authenticated": true, "expires_at": "2024-01-20T15:30:00Z"} when authenticated
+/// - 200 OK with JSON: {"authenticated": false} when not authenticated
+#[utoipa::path(
+    get,
+    path = "/check",
+    responses(
+        (status = 200, description = "Returns authentication status", body = ReadOnlySession,
+            examples(
+                ("authenticated" = (value = json!({"authenticated": true, "expires_at": "2024-01-20T15:30:00Z"}))),
+                ("unauthenticated" = (value = json!({"authenticated": false})))
+            )
+        ),
+    )
+)]
+pub async fn check(session: ReadOnlySession) -> impl IntoResponse {
+    Json(session)
 }

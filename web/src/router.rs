@@ -1,4 +1,4 @@
-use crate::{controller::health_check_controller, params, protect, AppState};
+use crate::{controller::health_check_controller, extractors, params, protect, AppState};
 use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
@@ -69,6 +69,7 @@ use self::organization::coaching_relationship_controller;
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
+            user_session_controller::check,
             user::password_controller::update_password,
             jwt_controller::generate_collab_token,
         ),
@@ -85,6 +86,7 @@ use self::organization::coaching_relationship_controller;
                 domain::user::Credentials,
                 params::user::UpdateParams,
                 params::coaching_session::UpdateParams,
+                extractors::read_only_session::ReadOnlySession,
             )
         ),
         modifiers(&SecurityAddon),
@@ -414,7 +416,9 @@ pub fn user_session_protected_routes() -> Router {
 }
 
 pub fn user_session_routes() -> Router {
-    Router::new().route("/login", post(user_session_controller::login))
+    Router::new()
+        .route("/login", post(user_session_controller::login))
+        .route("/auth/check", get(user_session_controller::check))
 }
 
 fn jwt_routes(app_state: AppState) -> Router {
