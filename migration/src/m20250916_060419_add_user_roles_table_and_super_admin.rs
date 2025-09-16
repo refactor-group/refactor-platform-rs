@@ -11,7 +11,9 @@ impl MigrationTrait for Migration {
         // but SeaORM wraps migrations in transactions. We use IF NOT EXISTS for safety.
         manager
             .get_connection()
-            .execute_unprepared("ALTER TYPE refactor_platform.role ADD VALUE IF NOT EXISTS 'super_admin'")
+            .execute_unprepared(
+                "ALTER TYPE refactor_platform.role ADD VALUE IF NOT EXISTS 'super_admin'",
+            )
             .await?;
 
         // 2. Create the user_roles table
@@ -34,7 +36,7 @@ impl MigrationTrait for Migration {
                 ON DELETE CASCADE 
                 ON UPDATE CASCADE
         )";
-        
+
         manager
             .get_connection()
             .execute_unprepared(create_table_sql)
@@ -43,7 +45,7 @@ impl MigrationTrait for Migration {
         // 3. Create unique index to prevent duplicate role assignments
         let create_index_sql = "CREATE UNIQUE INDEX IF NOT EXISTS user_roles_user_org_role_unique 
             ON refactor_platform.user_roles(user_id, organization_id, role)";
-        
+
         manager
             .get_connection()
             .execute_unprepared(create_index_sql)
