@@ -40,6 +40,15 @@ Table refactor_platform.users {
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
 }
 
+Table refactor_platform.user_roles {
+  id uuid [primary key, unique, not null, default: `gen_random_uuid()`]
+  role refactor_platform.role [not null]
+  organization_id uuid [note: 'The organization joined to the user']
+  user_id uuid [not null, note: 'The user joined to the organization']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
+}
+
 Table refactor_platform.organizations_users {
   id uuid [primary key, unique, not null, default: `gen_random_uuid()`]
   organization_id uuid [not null, note: 'The organization joined to the user']
@@ -121,6 +130,12 @@ enum refactor_platform.status {
   wont_do
 }
 
+enum refactor_platform.role {
+  user
+  admin
+  super_admin
+}
+
 // coaching_relationships relationships
 Ref: refactor_platform.coaching_relationships.organization_id > refactor_platform.organizations.id
 Ref: refactor_platform.coaching_relationships.coachee_id > refactor_platform.users.id
@@ -146,3 +161,7 @@ Ref: refactor_platform.actions.coaching_session_id > refactor_platform.coaching_
 // organizations_users relationships
 Ref: refactor_platform.organizations_users.organization_id > refactor_platform.organizations.id
 Ref: refactor_platform.organizations_users.user_id > refactor_platform.users.id
+
+//user_roles relationships
+Ref: refactor_platform.user_roles.organization_id > refactor_platform.organizations.id
+Ref: refactor_platform.user_roles.user_id > refactor_platform.users.id

@@ -164,6 +164,21 @@ impl Check for UserIsAdmin {
         authenticated_user.role == domain::users::Role::Admin
     }
 }
+// Not used yet
+#[allow(dead_code)]
+pub struct UserIsSuperAdmin;
+
+#[async_trait]
+impl Check for UserIsSuperAdmin {
+    async fn eval(
+        &self,
+        _app_state: &AppState,
+        authenticated_user: &domain::users::Model,
+        _args: Vec<Id>,
+    ) -> bool {
+        authenticated_user.role == domain::users::Role::SuperAdmin
+    }
+}
 
 pub struct UserCanAccessCoachingSession;
 
