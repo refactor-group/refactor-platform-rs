@@ -7,8 +7,11 @@ pub struct Migration;
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // 1. Add super_admin variant to the existing role enum
-        // PostgreSQL's ALTER TYPE ... ADD VALUE cannot be run inside a transaction block
-        // but SeaORM wraps migrations in transactions. We use IF NOT EXISTS for safety.
+        // Note: We use execute_unprepared() instead of SeaORM's schema builder because:
+        // - PostgreSQL's ALTER TYPE ... ADD VALUE has special transaction restrictions
+        // - It cannot be executed in a transaction block that has other commands
+        // - execute_unprepared() gives us direct control over the SQL execution
+        // - The IF NOT EXISTS clause makes it safe for re-runs
         manager
             .get_connection()
             .execute_unprepared(
@@ -17,7 +20,8 @@ impl MigrationTrait for Migration {
             .await?;
 
         // 2. Create the user_roles table
-        // Using raw SQL to handle PostgreSQL schema qualification properly
+        // We continue using execute_unprepared() for consistency and to ensure
+        // proper PostgreSQL schema qualification (refactor_platform.user_roles)
         let create_table_sql = "CREATE TABLE IF NOT EXISTS refactor_platform.user_roles (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             role refactor_platform.role NOT NULL,
@@ -42,13 +46,30 @@ impl MigrationTrait for Migration {
             .execute_unprepared(create_table_sql)
             .await?;
 
-        // 3. Create unique index to prevent duplicate role assignments
-        let create_index_sql = "CREATE UNIQUE INDEX IF NOT EXISTS user_roles_user_org_role_unique 
-            ON refactor_platform.user_roles(user_id, organization_id, role)";
+        // 3. Create partial unique indexes to prevent duplicate role assignments
+        // This handles NULL organization_id properly (for super_admin roles)
+
+        // Partial index for organization-scoped roles (where organization_id is NOT NULL)
+        let create_org_index_sql =
+            "CREATE UNIQUE INDEX IF NOT EXISTS user_roles_user_org_role_unique 
+            ON refactor_platform.user_roles(user_id, organization_id, role)
+            WHERE organization_id IS NOT NULL";
 
         manager
             .get_connection()
-            .execute_unprepared(create_index_sql)
+            .execute_unprepared(create_org_index_sql)
+            .await?;
+
+        // Partial index for global roles (prevents duplicate global roles for same user)
+        // This includes super_admin and any other future global roles
+        let create_global_role_index_sql =
+            "CREATE UNIQUE INDEX IF NOT EXISTS user_roles_user_global_role_unique 
+            ON refactor_platform.user_roles(user_id, role)
+            WHERE organization_id IS NULL";
+
+        manager
+            .get_connection()
+            .execute_unprepared(create_global_role_index_sql)
             .await?;
 
         Ok(())
