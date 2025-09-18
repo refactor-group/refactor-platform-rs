@@ -4,7 +4,7 @@ use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
 
 use entity::users::{ActiveModel, Column, Entity, Model};
-use entity::{organizations, organizations_users, Id};
+use entity::{organizations, organizations_users, roles, user_roles, Id};
 use log::*;
 use password_auth;
 use sea_orm::{
@@ -21,7 +21,6 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
     debug!("New User Relationship Model to be inserted: {user_model:?}");
 
     let now = Utc::now();
-
     let user_active_model: ActiveModel = ActiveModel {
         email: Set(user_model.email),
         first_name: Set(user_model.first_name),
@@ -36,7 +35,11 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         ..Default::default()
     };
 
-    Ok(user_active_model.insert(db).await?)
+    let mut created_user = user_active_model.insert(db).await?;
+
+    // Newly created users will not have roles at this point so we will add an empty vec manually
+    created_user.roles = Vec::new();
+    Ok(created_user)
 }
 
 pub async fn create_by_organization(
@@ -44,10 +47,9 @@ pub async fn create_by_organization(
     organization_id: Id,
     user_model: Model,
 ) -> Result<Model, Error> {
-    // start database transaction
     let txn = db.begin().await?;
 
-    let user = create(&txn, user_model).await?;
+    let mut user = create(&txn, user_model).await?;
     let now = Utc::now();
     let organization_user = organizations_users::ActiveModel {
         organization_id: Set(organization_id),
@@ -59,34 +61,63 @@ pub async fn create_by_organization(
 
     organization_user.insert(&txn).await?;
 
+    let default_user_role = user_roles::ActiveModel {
+        user_id: Set(user.id),
+        organization_id: Set(Some(organization_id)),
+        role: Set(roles::Role::User),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    };
+
+    let role = default_user_role.insert(&txn).await?;
+
+    user.roles = vec![role];
+
     txn.commit().await?;
-    // end database transaction
+
     Ok(user)
 }
 
 pub async fn find_by_email(db: &impl ConnectionTrait, email: &str) -> Result<Option<Model>, Error> {
-    let user: Option<Model> = Entity::find()
+    let results = Entity::find()
         .filter(Column::Email.eq(email))
-        .one(db)
+        .find_with_related(user_roles::Entity)
+        .all(db)
         .await?;
 
-    debug!("User find_by_email result: {user:?}");
-
-    Ok(user)
+    match results.into_iter().next() {
+        Some((mut user, roles)) => {
+            user.roles = roles;
+            Ok(Some(user))
+        }
+        None => Ok(None),
+    }
 }
 
 pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
-    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
-        source: None,
-        error_kind: EntityApiErrorKind::RecordNotFound,
-    })
+    let results = Entity::find_by_id(id)
+        .find_with_related(user_roles::Entity)
+        .all(db)
+        .await?;
+
+    match results.into_iter().next() {
+        Some((mut user, roles)) => {
+            user.roles = roles;
+            Ok(user)
+        }
+        None => Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        }),
+    }
 }
 
 pub async fn find_by_organization(
     db: &DatabaseConnection,
     organization_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    let users = Entity::find()
+    let results = Entity::find()
         .distinct()
         .join(
             JoinType::InnerJoin,
@@ -97,10 +128,17 @@ pub async fn find_by_organization(
             organizations_users::Relation::Organizations.def(),
         )
         .filter(organizations::Column::Id.eq(organization_id))
+        .find_with_related(user_roles::Entity)
         .all(db)
         .await?;
 
-    Ok(users)
+    Ok(results
+        .into_iter()
+        .map(|(mut user, roles)| {
+            user.roles = roles;
+            user
+        })
+        .collect())
 }
 
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
