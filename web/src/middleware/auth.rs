@@ -34,7 +34,7 @@ mod tests {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
-        middleware::{from_fn, from_fn_with_state},
+        middleware::from_fn,
         response::Response,
         routing::get,
         Router,
@@ -72,7 +72,7 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(test_handler))
-            .route_layer(from_fn_with_state(app_state.clone(), require_auth))
+            .route_layer(from_fn(require_auth))
             .layer(auth_layer)
             .with_state(app_state);
 
@@ -101,7 +101,7 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(test_handler))
-            .route_layer(from_fn_with_state(app_state.clone(), require_auth))
+            .route_layer(from_fn(require_auth))
             .layer(auth_layer)
             .with_state(app_state);
 
@@ -118,7 +118,7 @@ mod tests {
     #[tokio::test]
     async fn test_require_auth_allows_authenticated_request_to_proceed() {
         use chrono::Utc;
-        use domain::{users, Id};
+        use domain::{users, user_roles, Id};
         use password_auth::generate_hash;
         use sea_orm::{DatabaseBackend, MockDatabase};
 
@@ -136,13 +136,15 @@ mod tests {
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),
             role: domain::users::Role::User,
+            roles: vec![],
         };
 
         let config = Config::default();
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([[test_user.clone()]]) // For login authentication
-                .append_query_results([[test_user.clone()]]) // For session user lookup
+                .append_query_results([[(test_user.clone(), None::<user_roles::Model>)]]) // For find_with_related in authentication  
+                .append_query_results([[test_user.clone()]]) // For get_user after login (simple find)
+                .append_query_results([[test_user.clone()]]) // For session user lookup in protected route (simple find)
                 .into_connection(),
         );
         let app_state = crate::AppState::new(config, &db);
@@ -166,7 +168,7 @@ mod tests {
             .merge(
                 Router::new()
                     .route("/test", get(test_handler))
-                    .route_layer(from_fn_with_state(app_state.clone(), require_auth)),
+                    .route_layer(from_fn(require_auth)),
             )
             .layer(auth_layer)
             .with_state(app_state);
