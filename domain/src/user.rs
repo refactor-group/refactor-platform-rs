@@ -4,10 +4,10 @@ use crate::{
     users, Id,
 };
 use chrono::Utc;
-pub use entity_api::user::{
+pub use entity_api::{user_roles, user::{
     create, find_by_email, find_by_id, find_by_organization, generate_hash, verify_password,
     AuthSession, Backend, Credentials, Role,
-};
+}};
 use entity_api::{
     coaching_relationship, mutate, organizations_user, query,
     query::{IntoQueryFilterMap, QuerySort},

@@ -85,7 +85,6 @@ pub async fn find_by_email(db: &impl ConnectionTrait, email: &str) -> Result<Opt
         .find_with_related(user_roles::Entity)
         .all(db)
         .await?;
-
     match results.into_iter().next() {
         Some((mut user, roles)) => {
             user.roles = roles;
@@ -161,6 +160,7 @@ pub fn generate_hash(password: String) -> String {
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
+    warn!("USER DATA: {:?}", user);
     match password_auth::verify_password(creds.password, &user.password) {
         Ok(_) => Ok(Some(user)),
         Err(_) => Err(Error {
@@ -248,8 +248,8 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."timezone", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."email" = $1 LIMIT $2"#,
-                [user_email.into(), sea_orm::Value::BigUnsigned(Some(1))]
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
+                [user_email.into()]
             )]
         );
 
@@ -260,18 +260,15 @@ mod test {
     async fn find_by_id_returns_a_single_record() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-        let coaching_session_id = Id::new_v4();
-        let _ = find_by_id(&db, coaching_session_id).await;
+        let user_id = Id::new_v4();
+        let _ = find_by_id(&db, user_id).await;
 
         assert_eq!(
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."timezone", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."id" = $1 LIMIT $2"#,
-                [
-                    coaching_session_id.into(),
-                    sea_orm::Value::BigUnsigned(Some(1))
-                ]
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
+                [user_id.into()]
             )]
         );
 
@@ -289,7 +286,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."timezone", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" WHERE "organizations"."id" = $1"#,
+                r#"SELECT DISTINCT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "organizations"."id" = $1 ORDER BY "users"."id" ASC"#,
                 [organization_id.into()]
             )]
         );
@@ -302,6 +299,7 @@ mod test {
         let now = chrono::Utc::now();
         let user_id = Id::new_v4();
         let organization_id = Id::new_v4();
+        let user_role_id = Id::new_v4();
 
         let user_model = entity::users::Model {
             id: user_id,
@@ -316,6 +314,7 @@ mod test {
             created_at: now.into(),
             updated_at: now.into(),
             role: entity::users::Role::User,
+            roles: vec![],
         };
 
         let organization_user_model = entity::organizations_users::Model {
@@ -326,9 +325,19 @@ mod test {
             updated_at: now.into(),
         };
 
+        let user_role_model = entity::user_roles::Model {
+            id: user_role_id,
+            user_id,
+            organization_id: Some(organization_id),
+            role: entity::roles::Role::User,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results([[user_model.clone()]])
             .append_query_results([[organization_user_model.clone()]])
+            .append_query_results([[user_role_model.clone()]])
             .into_connection();
 
         let user = create_by_organization(&db, organization_id, user_model.clone()).await?;
@@ -337,6 +346,9 @@ mod test {
         assert_eq!(user.email, user_model.email);
         assert_eq!(user.first_name, user_model.first_name);
         assert_eq!(user.last_name, user_model.last_name);
+        // The returned user should have the role populated
+        assert_eq!(user.roles.len(), 1);
+        assert_eq!(user.roles[0].role, entity::roles::Role::User);
 
         Ok(())
     }
@@ -360,6 +372,7 @@ mod test {
             created_at: now.into(),
             updated_at: now.into(),
             role: entity::users::Role::User,
+            roles: vec![],
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
