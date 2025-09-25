@@ -118,7 +118,7 @@ mod tests {
     #[tokio::test]
     async fn test_require_auth_allows_authenticated_request_to_proceed() {
         use chrono::Utc;
-        use domain::{users, user_roles, Id};
+        use domain::{user_roles, users, Id};
         use password_auth::generate_hash;
         use sea_orm::{DatabaseBackend, MockDatabase};
 
@@ -142,7 +142,7 @@ mod tests {
         let config = Config::default();
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([[(test_user.clone(), None::<user_roles::Model>)]]) // For find_with_related in authentication  
+                .append_query_results([[(test_user.clone(), None::<user_roles::Model>)]]) // For find_with_related in authentication
                 .append_query_results([[test_user.clone()]]) // For get_user after login (simple find)
                 .append_query_results([[test_user.clone()]]) // For session user lookup in protected route (simple find)
                 .into_connection(),

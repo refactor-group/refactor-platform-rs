@@ -436,4 +436,3 @@ fn jwt_routes(app_state: AppState) -> Router {
 pub fn static_routes() -> Router {
     Router::new().nest_service("/", ServeDir::new("./"))
 }
-
