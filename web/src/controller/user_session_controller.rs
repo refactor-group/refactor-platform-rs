@@ -3,15 +3,7 @@ use crate::error::{Error as WebError, Result as WebResult};
 use axum::{http::StatusCode, response::IntoResponse, Form, Json};
 use domain::user::{AuthSession, Credentials};
 use log::*;
-use serde::Deserialize;
 use serde_json::json;
-
-// This allows us to extract the "next" field from the query string. We use this
-// to redirect after log in.
-#[derive(Debug, Deserialize)]
-pub struct NextUrl {
-    _next: Option<String>,
-}
 
 /// Logs the user into the platform and returns a new session cookie.
 ///
