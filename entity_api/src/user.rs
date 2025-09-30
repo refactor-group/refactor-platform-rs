@@ -202,7 +202,6 @@ impl AuthnBackend for Backend {
         &self,
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
-
         match find_by_email(self.db.as_ref(), &creds.email).await? {
             Some(user) => authenticate_user(creds, user).await,
             None => Err(Error {
