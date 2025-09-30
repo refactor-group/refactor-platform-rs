@@ -160,7 +160,6 @@ pub fn generate_hash(password: String) -> String {
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
-    warn!("USER DATA: {:?}", user);
     match password_auth::verify_password(creds.password, &user.password) {
         Ok(_) => Ok(Some(user)),
         Err(_) => Err(Error {
@@ -203,7 +202,6 @@ impl AuthnBackend for Backend {
         &self,
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
-        debug!("** authenticate(): {:?}:{:?}", creds.email, creds.password);
 
         match find_by_email(self.db.as_ref(), &creds.email).await? {
             Some(user) => authenticate_user(creds, user).await,
@@ -215,13 +213,17 @@ impl AuthnBackend for Backend {
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        debug!("** get_user(): {:?}", *user_id);
-
-        let user: Option<Self::User> = Entity::find_by_id(*user_id).one(self.db.as_ref()).await?;
-
-        debug!("Get user result: {:?}", user);
-
-        Ok(user)
+        let results = Entity::find_by_id(*user_id)
+            .find_with_related(user_roles::Entity)
+            .all(self.db.as_ref())
+            .await?;
+        match results.into_iter().next() {
+            Some((mut user, roles)) => {
+                user.roles = roles;
+                Ok(Some(user))
+            }
+            None => Ok(None),
+        }
     }
 }
 
