@@ -16,3 +16,6 @@ dbml-error.log
 
 # nginx log files
 nginx/logs/
+
+# serena files
+.serena/
