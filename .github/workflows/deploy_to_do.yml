@@ -391,6 +391,16 @@ jobs:
             docker ps -a
             # List all containers
 
+            echo "INFO: 📜 Checking migration logs..."
+            # Capture and display migration logs
+            if docker ps -a --format '{{.Names}}' | grep -q db-migrator; then
+              echo "=== DB Migration Logs ==="
+              docker logs db-migrator 2>&1 || echo "⚠️ No migration logs available"
+              echo "========================="
+            else
+              echo "⚠️ db-migrator container not found"
+            fi
+
             echo "INFO: 🩺 Verifying app status..."
             # Verify application health
             echo "INFO: 🩺 Checking rust-app service status..."
