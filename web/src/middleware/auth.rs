@@ -34,7 +34,7 @@ mod tests {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
-        middleware::from_fn,
+        middleware::{from_fn, from_fn_with_state},
         response::Response,
         routing::get,
         Router,
@@ -72,7 +72,7 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(test_handler))
-            .route_layer(from_fn(require_auth))
+            .route_layer(from_fn_with_state(app_state.clone(), require_auth))
             .layer(auth_layer)
             .with_state(app_state);
 
@@ -101,7 +101,7 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(test_handler))
-            .route_layer(from_fn(require_auth))
+            .route_layer(from_fn_with_state(app_state.clone(), require_auth))
             .layer(auth_layer)
             .with_state(app_state);
 
@@ -118,16 +118,13 @@ mod tests {
     #[tokio::test]
     async fn test_require_auth_allows_authenticated_request_to_proceed() {
         use chrono::Utc;
-        use domain::{user_roles, users, Id};
+        use domain::{users, Id};
         use password_auth::generate_hash;
         use sea_orm::{DatabaseBackend, MockDatabase};
 
-        // Create test user and role
-        let test_user_id = Id::new_v4();
-        let now = Utc::now();
-
+        // Create a test user that matches the existing test pattern
         let test_user = users::Model {
-            id: test_user_id,
+            id: Id::new_v4(),
             email: "test@domain.com".to_string(),
             first_name: "test".to_string(),
             last_name: "login".to_string(),
@@ -136,30 +133,16 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
-            created_at: now.into(),
-            updated_at: now.into(),
-            role: users::Role::User,
-            roles: vec![], // Will be populated by find_with_related
-        };
-
-        let test_role = user_roles::Model {
-            id: Id::new_v4(),
-            role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
-            user_id: test_user_id,
-            created_at: now.into(),
-            updated_at: now.into(),
+            created_at: Utc::now().into(),
+            updated_at: Utc::now().into(),
+            role: domain::users::Role::User,
         };
 
         let config = Config::default();
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
-                // Mock find_with_related by providing flattened JOIN rows as (user, role) tuples
-                // Each tuple represents ONE row from the SQL JOIN result
-                // SeaORM will automatically group them into Vec<(User, Vec<Role>)>
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]]) // For find_with_related in authentication
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]]) // For get_user after login
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]]) // For session user lookup
+                .append_query_results([[test_user.clone()]]) // For login authentication
+                .append_query_results([[test_user.clone()]]) // For session user lookup
                 .into_connection(),
         );
         let app_state = crate::AppState::new(config, &db);
@@ -183,7 +166,7 @@ mod tests {
             .merge(
                 Router::new()
                     .route("/test", get(test_handler))
-                    .route_layer(from_fn(require_auth)),
+                    .route_layer(from_fn_with_state(app_state.clone(), require_auth)),
             )
             .layer(auth_layer)
             .with_state(app_state);
