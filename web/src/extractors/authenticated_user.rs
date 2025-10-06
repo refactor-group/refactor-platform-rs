@@ -52,7 +52,6 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             role: users::Role::User,
-            roles: vec![],
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),
         };

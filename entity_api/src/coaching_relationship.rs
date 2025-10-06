@@ -371,7 +371,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "Temporarily disabled due to user::find_by_id mock complexity with find_with_related queries"]
     #[tokio::test]
     async fn create_returns_validation_error_for_duplicate_relationship() -> Result<(), Error> {
         use entity::coaching_relationships::Model;
@@ -394,7 +393,6 @@ mod tests {
             role: entity::users::Role::User,
             github_profile_url: Some("https://github.com/coach_user".to_string()),
             timezone: "UTC".to_string(),
-            roles: vec![],
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
         };
@@ -408,7 +406,6 @@ mod tests {
             display_name: Some("Coachee User".to_string()),
             github_username: Some("coachee_user".to_string()),
             role: entity::users::Role::User,
-            roles: vec![],
             github_profile_url: Some("https://github.com/coachee_user".to_string()),
             timezone: "UTC".to_string(),
             created_at: chrono::Utc::now().into(),

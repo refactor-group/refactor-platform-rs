@@ -72,7 +72,6 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             role: users::Role::User,
-            roles: vec![],
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         }
@@ -275,7 +274,6 @@ mod tests {
             github_profile_url: Some("https://github.com/janesmith".to_string()),
             timezone: "America/New_York".to_string(),
             role: users::Role::Admin,
-            roles: vec![],
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         };
@@ -327,7 +325,6 @@ mod tests {
             github_profile_url: None,
             timezone: "Europe/London".to_string(),
             role: users::Role::Admin,
-            roles: vec![],
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         };

@@ -4,7 +4,7 @@ use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
 
 use entity::users::{ActiveModel, Column, Entity, Model};
-use entity::{organizations, organizations_users, roles, user_roles, Id};
+use entity::{organizations, organizations_users, Id};
 use log::*;
 use password_auth;
 use sea_orm::{
@@ -21,6 +21,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
     debug!("New User Relationship Model to be inserted: {user_model:?}");
 
     let now = Utc::now();
+
     let user_active_model: ActiveModel = ActiveModel {
         email: Set(user_model.email),
         first_name: Set(user_model.first_name),
@@ -35,11 +36,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         ..Default::default()
     };
 
-    let mut created_user = user_active_model.insert(db).await?;
-
-    // Newly created users will not have roles at this point so we will add an empty vec manually
-    created_user.roles = Vec::new();
-    Ok(created_user)
+    Ok(user_active_model.insert(db).await?)
 }
 
 pub async fn create_by_organization(
@@ -47,9 +44,10 @@ pub async fn create_by_organization(
     organization_id: Id,
     user_model: Model,
 ) -> Result<Model, Error> {
+    // start database transaction
     let txn = db.begin().await?;
 
-    let mut user = create(&txn, user_model).await?;
+    let user = create(&txn, user_model).await?;
     let now = Utc::now();
     let organization_user = organizations_users::ActiveModel {
         organization_id: Set(organization_id),
@@ -61,62 +59,34 @@ pub async fn create_by_organization(
 
     organization_user.insert(&txn).await?;
 
-    let default_user_role = user_roles::ActiveModel {
-        user_id: Set(user.id),
-        organization_id: Set(Some(organization_id)),
-        role: Set(roles::Role::User),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    };
-
-    let role = default_user_role.insert(&txn).await?;
-
-    user.roles = vec![role];
-
     txn.commit().await?;
-
+    // end database transaction
     Ok(user)
 }
 
 pub async fn find_by_email(db: &impl ConnectionTrait, email: &str) -> Result<Option<Model>, Error> {
-    let results = Entity::find()
+    let user: Option<Model> = Entity::find()
         .filter(Column::Email.eq(email))
-        .find_with_related(user_roles::Entity)
-        .all(db)
+        .one(db)
         .await?;
-    match results.into_iter().next() {
-        Some((mut user, roles)) => {
-            user.roles = roles;
-            Ok(Some(user))
-        }
-        None => Ok(None),
-    }
+
+    debug!("User find_by_email result: {user:?}");
+
+    Ok(user)
 }
 
 pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
-    let results = Entity::find_by_id(id)
-        .find_with_related(user_roles::Entity)
-        .all(db)
-        .await?;
-
-    match results.into_iter().next() {
-        Some((mut user, roles)) => {
-            user.roles = roles;
-            Ok(user)
-        }
-        None => Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::RecordNotFound,
-        }),
-    }
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 pub async fn find_by_organization(
     db: &DatabaseConnection,
     organization_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    let results = Entity::find()
+    let users = Entity::find()
         .distinct()
         .join(
             JoinType::InnerJoin,
@@ -127,17 +97,10 @@ pub async fn find_by_organization(
             organizations_users::Relation::Organizations.def(),
         )
         .filter(organizations::Column::Id.eq(organization_id))
-        .find_with_related(user_roles::Entity)
         .all(db)
         .await?;
 
-    Ok(results
-        .into_iter()
-        .map(|(mut user, roles)| {
-            user.roles = roles;
-            user
-        })
-        .collect())
+    Ok(users)
 }
 
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
@@ -202,6 +165,8 @@ impl AuthnBackend for Backend {
         &self,
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
+        debug!("** authenticate(): {:?}:{:?}", creds.email, creds.password);
+
         match find_by_email(self.db.as_ref(), &creds.email).await? {
             Some(user) => authenticate_user(creds, user).await,
             None => Err(Error {
@@ -212,17 +177,13 @@ impl AuthnBackend for Backend {
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        let results = Entity::find_by_id(*user_id)
-            .find_with_related(user_roles::Entity)
-            .all(self.db.as_ref())
-            .await?;
-        match results.into_iter().next() {
-            Some((mut user, roles)) => {
-                user.roles = roles;
-                Ok(Some(user))
-            }
-            None => Ok(None),
-        }
+        debug!("** get_user(): {:?}", *user_id);
+
+        let user: Option<Self::User> = Entity::find_by_id(*user_id).one(self.db.as_ref()).await?;
+
+        debug!("Get user result: {:?}", user);
+
+        Ok(user)
     }
 }
 
@@ -249,8 +210,8 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
-                [user_email.into()]
+                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."timezone", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."email" = $1 LIMIT $2"#,
+                [user_email.into(), sea_orm::Value::BigUnsigned(Some(1))]
             )]
         );
 
@@ -261,15 +222,18 @@ mod test {
     async fn find_by_id_returns_a_single_record() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-        let user_id = Id::new_v4();
-        let _ = find_by_id(&db, user_id).await;
+        let coaching_session_id = Id::new_v4();
+        let _ = find_by_id(&db, coaching_session_id).await;
 
         assert_eq!(
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
-                [user_id.into()]
+                r#"SELECT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."timezone", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" WHERE "users"."id" = $1 LIMIT $2"#,
+                [
+                    coaching_session_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
             )]
         );
 
@@ -287,7 +251,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "organizations"."id" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT DISTINCT "users"."id", "users"."email", "users"."first_name", "users"."last_name", "users"."display_name", "users"."password", "users"."github_username", "users"."github_profile_url", "users"."timezone", CAST("users"."role" AS "text"), "users"."created_at", "users"."updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" WHERE "organizations"."id" = $1"#,
                 [organization_id.into()]
             )]
         );
@@ -300,7 +264,6 @@ mod test {
         let now = chrono::Utc::now();
         let user_id = Id::new_v4();
         let organization_id = Id::new_v4();
-        let user_role_id = Id::new_v4();
 
         let user_model = entity::users::Model {
             id: user_id,
@@ -315,7 +278,6 @@ mod test {
             created_at: now.into(),
             updated_at: now.into(),
             role: entity::users::Role::User,
-            roles: vec![],
         };
 
         let organization_user_model = entity::organizations_users::Model {
@@ -326,19 +288,9 @@ mod test {
             updated_at: now.into(),
         };
 
-        let user_role_model = entity::user_roles::Model {
-            id: user_role_id,
-            user_id,
-            organization_id: Some(organization_id),
-            role: entity::roles::Role::User,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results([[user_model.clone()]])
             .append_query_results([[organization_user_model.clone()]])
-            .append_query_results([[user_role_model.clone()]])
             .into_connection();
 
         let user = create_by_organization(&db, organization_id, user_model.clone()).await?;
@@ -347,9 +299,6 @@ mod test {
         assert_eq!(user.email, user_model.email);
         assert_eq!(user.first_name, user_model.first_name);
         assert_eq!(user.last_name, user_model.last_name);
-        // The returned user should have the role populated
-        assert_eq!(user.roles.len(), 1);
-        assert_eq!(user.roles[0].role, entity::roles::Role::User);
 
         Ok(())
     }
@@ -373,7 +322,6 @@ mod test {
             created_at: now.into(),
             updated_at: now.into(),
             role: entity::users::Role::User,
-            roles: vec![],
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)

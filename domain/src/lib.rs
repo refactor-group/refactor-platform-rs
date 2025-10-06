@@ -12,7 +12,7 @@ pub use entity_api::{
 // Re-exports from `entity` crate
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
-    organizations, overarching_goals, query::QuerySort, user_roles, users, Id,
+    organizations, overarching_goals, query::QuerySort, users, Id,
 };
 
 pub mod action;
