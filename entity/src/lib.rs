@@ -15,6 +15,7 @@ pub mod organizations_users;
 pub mod overarching_goals;
 pub mod roles;
 pub mod status;
+pub mod user_roles;
 pub mod users;
 
 /// A type alias that represents any Entity's internal id field data type.
