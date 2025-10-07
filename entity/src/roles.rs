@@ -11,6 +11,8 @@ pub enum Role {
     User,
     #[sea_orm(string_value = "admin")]
     Admin,
+    #[sea_orm(string_value = "super_admin")]
+    SuperAdmin,
 }
 
 impl std::fmt::Display for Role {
@@ -18,6 +20,7 @@ impl std::fmt::Display for Role {
         match self {
             Role::User => write!(fmt, "user"),
             Role::Admin => write!(fmt, "admin"),
+            Role::SuperAdmin => write!(fmt, "super_admin"),
         }
     }
 }
