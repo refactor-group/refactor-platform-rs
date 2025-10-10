@@ -13,11 +13,11 @@ impl MigrationTrait for Migration {
         // - execute_unprepared() gives us direct control over the SQL execution
         // - The IF NOT EXISTS clause makes it safe for re-runs
 
-        // Ensure the type is owned by the refactor user
-        manager
-            .get_connection()
-            .execute_unprepared("ALTER TYPE refactor_platform.role OWNER TO refactor")
-            .await?;
+        // Note: The role enum type must be owned by 'refactor' user to modify it.
+        // If this migration fails with "must be owner of type role", a superuser must run:
+        //   ALTER TYPE refactor_platform.role OWNER TO refactor;
+        // This is required because SeaORM's create_type() creates types with the executing
+        // user as owner, and ownership wasn't transferred in the original migration.
 
         manager
             .get_connection()
