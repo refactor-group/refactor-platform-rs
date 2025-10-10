@@ -16,9 +16,7 @@ impl MigrationTrait for Migration {
         // Ensure the type is owned by the refactor user
         manager
             .get_connection()
-            .execute_unprepared(
-                "ALTER TYPE refactor_platform.role OWNER TO refactor",
-            )
+            .execute_unprepared("ALTER TYPE refactor_platform.role OWNER TO refactor")
             .await?;
 
         manager
