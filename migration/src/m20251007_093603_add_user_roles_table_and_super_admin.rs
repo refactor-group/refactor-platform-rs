@@ -12,6 +12,13 @@ impl MigrationTrait for Migration {
         // - It cannot be executed in a transaction block that has other commands
         // - execute_unprepared() gives us direct control over the SQL execution
         // - The IF NOT EXISTS clause makes it safe for re-runs
+
+        // Ensure the type is owned by the refactor user
+        manager
+            .get_connection()
+            .execute_unprepared("ALTER TYPE refactor_platform.role OWNER TO refactor")
+            .await?;
+
         manager
             .get_connection()
             .execute_unprepared(
