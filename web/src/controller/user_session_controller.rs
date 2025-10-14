@@ -79,6 +79,7 @@ pub async fn login(
             "display_name": user.display_name,
             "timezone": user.timezone,
             "role": user.role,
+            "roles": user.roles
     });
 
     debug!("user_session_json: {user_session_json}");

@@ -27,8 +27,14 @@ pub struct Model {
     #[sea_orm(default = "UTC")]
     pub timezone: String,
     #[sea_orm(default = "user")]
+    // This is a legacy field and will be removed in favor of roles
     #[serde(skip_deserializing)]
     pub role: Role,
+    /// Associated user roles (populated via find_with_related)
+    /// This field is ignored by SeaORM for database operations.
+    #[sea_orm(ignore)]
+    #[serde(skip_deserializing)]
+    pub roles: Vec<super::user_roles::Model>,
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub created_at: DateTimeWithTimeZone,
@@ -41,6 +47,8 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::organizations_users::Entity")]
     OrganizationsUsers,
+    #[sea_orm(has_many = "super::user_roles::Entity")]
+    UserRoles,
 }
 
 impl Related<super::organizations::Entity> for Entity {
@@ -50,6 +58,12 @@ impl Related<super::organizations::Entity> for Entity {
 
     fn via() -> Option<RelationDef> {
         Some(super::organizations_users::Relation::Users.def().rev())
+    }
+}
+
+impl Related<super::user_roles::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::UserRoles.def()
     }
 }
 
