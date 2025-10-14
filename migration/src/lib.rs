@@ -9,7 +9,8 @@ mod m20250705_200000_add_timezone_to_users;
 mod m20250730_000000_add_coaching_sessions_sorting_indexes;
 mod m20250801_000000_add_sorting_indexes;
 mod m20251007_093603_add_user_roles_table_and_super_admin;
-
+mod m20251008_000000_migrate_admin_users_to_super_admin_role;
+mod m20251009_000000_migrate_regular_users_to_user_roles;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -25,6 +26,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20250730_000000_add_coaching_sessions_sorting_indexes::Migration),
             Box::new(m20250801_000000_add_sorting_indexes::Migration),
             Box::new(m20251007_093603_add_user_roles_table_and_super_admin::Migration),
+            Box::new(m20251008_000000_migrate_admin_users_to_super_admin_role::Migration),
+            Box::new(m20251009_000000_migrate_regular_users_to_user_roles::Migration),
         ]
     }
 }

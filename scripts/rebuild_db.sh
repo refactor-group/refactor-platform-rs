@@ -70,6 +70,20 @@ echo "Modifying the generated SQL file..."
 sed -i '' '/CREATE SCHEMA/d' migration/src/base_refactor_platform_rs.sql
 
 echo "Running the migrations..."
-DATABASE_URL=postgres://$DB_USER:password@localhost:5432/$DB_NAME sea-orm-cli migrate up -s $SCHEMA_NAME || { echo "Failed to run migrations"; exit 1; }
+# PostgreSQL Enum Transaction Restriction Workaround:
+# When ALTER TYPE ... ADD VALUE adds a new enum value (e.g., 'super_admin'), PostgreSQL
+# requires that value to be committed before it can be used in subsequent operations.
+# Even though SeaORM commits each migration separately, running all migrations in rapid
+# succession on a fresh database can cause "unsafe use of new value" errors.
+# Solution: Split migration execution into two batches to ensure the enum value is fully
+# committed before any migration attempts to use it.
+
+# Step 1: Apply migrations up to and including the user_roles table creation (9 migrations)
+echo "Step 1: Applying migrations up to user_roles table creation..."
+DATABASE_URL=postgres://$DB_USER:password@localhost:5432/$DB_NAME sea-orm-cli migrate up -n 9 -s $SCHEMA_NAME || { echo "Failed to run initial migrations"; exit 1; }
+
+# Step 2: Apply the remaining migration that uses super_admin enum value
+echo "Step 2: Applying remaining migrations that use the super_admin enum..."
+DATABASE_URL=postgres://$DB_USER:password@localhost:5432/$DB_NAME sea-orm-cli migrate up -s $SCHEMA_NAME || { echo "Failed to run remaining migrations"; exit 1; }
 
 echo "Database setup and migrations completed successfully"
