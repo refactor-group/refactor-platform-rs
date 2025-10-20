@@ -1,0 +1,79 @@
+###################################################################
+# Docker Compose template for PR preview environments
+# Variables substituted by GitHub Actions:
+#  - PR_NUMBER: Pull request number
+#  - BACKEND_IMAGE: Backend Docker image with PR tag
+#  - PR_POSTGRES_PORT: Calculated postgres port (5432 + PR_NUMBER)
+#  - PR_BACKEND_PORT: Calculated backend port ( 4000 + PR_NUMBER)
+###################################################################
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: postgres-pr-${PR_NUMBER}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-refactor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-refactor}
+    ports:
+      - "${PR_POSTGRES_PORT}:5432"
+    volumes:
+      # Dynamic volume name using extension field
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${postgres_user:-refactor} -d ${POSTGRES_DB:-refactor}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+  migrator:
+    image: ${BACKEND_IMAGE}
+    container_name: migrator-pr-${PR_NUMBER}
+    platform: linux/arm64/v8
+    environment:
+      # use service name 'postgres' (DNS resolution)
+      DATABASE_URL: postgres://${POSTGRES_USER:-refactor}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-refactor}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend_network
+    restart: "no"
+  backend:
+    image: ${BACKEND_IMAGE}
+    container_name: backend-pr-${PR_NUMBER}
+    platform: linux/arm64/v8
+    environment:
+      ROLE: app
+      RUST_ENV: staging
+      # Reference static service name 'postgres'
+      DATABASE_URL: postgres://${POSTGRES_USER:-refactor}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-refactor}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
+      BACKEND_PORT: ${PR_BACKEND_PORT}
+      BACKEND_ALLOWED_ORIGINS: "*"
+      BACKEND_LOG_FILTER_LEVEL: DEBUG
+      BACKEND_SESSION_EXPIRY_SECONDS: 86400
+      TIPTAP_APP_ID: ${TIPTAP_APP_ID:-}
+      TIPTAP_URL: ${TIPTAP_RUL:-}
+      TIPTAP_AUTH_KEY: ${TIPTATP_AUTH_KEY:-}
+      TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY:-}
+      MAILERSEND_API_KEY: ${MAILERSEND_API_KEY:-}
+      WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID:-}
+    ports:
+      - "${PR_BACKEND_PORT}:${PR_BACKEND_PORT}"
+    depends_on:
+      - migrator
+    networks:
+      - backend_network
+    restart: unless_stopped
+
+# Static network name, but isolated per docker-compose instance
+networks:
+  backend_network:
+    driver: bridge
+# Static volume name, but unique per project (compose -p flag)
+volumes:
+  postgres_data:

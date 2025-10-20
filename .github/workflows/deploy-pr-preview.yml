@@ -1,0 +1,313 @@
+name: Deploy PR Preview to RPi5
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+  # Manual trigger with branch selection
+  workflow_dispatch:
+    inputs:
+      backend_branch:
+        description: "Backend branch to deploy"
+        required: true
+        default: "main"
+        type: string
+      frontend_branch:
+        description: "Frontend branch to deploy (for reference/future use)"
+        required: false
+        default: "main"
+        type: string
+      pr_number:
+        description: "PR number for naming (auto-detected for PR triggers)"
+        required: false
+        type: string
+      force_rebuild:
+        description: "Force rebuild without cache"
+        required: false
+        default: false
+        type: boolean
+
+# Prevent concurrent deployments for same PR/branch
+concurrency:
+  # Group by PR number (if exists) or workflow run ID (for manual runs)
+  group: preview-deploy-${{ github.event.pull_request.number || github.run_id }}
+  # Cancel any in-progress runs when a new one starts
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+  pull-requests: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy-preview:
+    name: Deploy PR Preview Environment
+    runs-on: ubuntu-24.04
+    environment: staging
+
+    steps:
+      # Determine context (PR vs manual dispatch)
+      - name: Set Deployment Context
+        id: context
+        run: |
+          # Determine if this is a PR trigger or manual dispatch
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # PR-triggered deployment
+            PR_NUM="${{ github.event.pull_request.number }}"
+            BACKEND_BRANCH="${{ github.head_ref }}"
+            FRONTEND_BRANCH="main"  # Default for PR triggers
+            TRIGGER_TYPE="pull_request"
+          else
+            # Manual dispatch deployment
+            # Use provided PR number or generate unique ID from run number
+            PR_NUM="${{ inputs.pr_number }}"
+            if [[ -z "$PR_NUM" ]]; then
+              # Generate pseudo-PR number for manual runs (9000+ range to avoid conflicts)
+              PR_NUM=$((9000 + ${{ github.run_number }}))
+            fi
+            BACKEND_BRANCH="${{ inputs.backend_branch }}"
+            FRONTEND_BRANCH="${{ inputs.frontend_branch }}"
+            TRIGGER_TYPE="workflow_dispatch"
+          fi
+
+          # Output all context variables
+          echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
+          echo "backend_branch=${BACKEND_BRANCH}" >> $GITHUB_OUTPUT
+          echo "frontend_branch=${FRONTEND_BRANCH}" >> $GITHUB_OUTPUT
+          echo "trigger_type=${TRIGGER_TYPE}" >> $GITHUB_OUTPUT
+
+          # Calculate dynamic ports to avoid collisions
+          # Postgres: 5432 base + PR number offset
+          echo "postgres_port=$((5432 + PR_NUM))" >> $GITHUB_OUTPUT
+          # Backend: 4000 base + PR number offset
+          echo "backend_port=$((4000 + PR_NUM))" >> $GITHUB_OUTPUT
+
+          # Docker Compose project name for namespace isolation
+          echo "project_name=pr-${PR_NUM}" >> $GITHUB_OUTPUT
+
+          # Image tag includes PR number and commit SHA for traceability
+          echo "image_tag=ghcr.io/${{ github.repository }}/pr-${PR_NUM}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+          # Log context for debugging
+          echo "::notice::Deploying PR #${PR_NUM} from backend branch '${BACKEND_BRANCH}'"
+          echo "::notice::Frontend branch: '${FRONTEND_BRANCH}' (reference only)"
+          echo "::notice::Trigger type: ${TRIGGER_TYPE}"
+
+      # Checkout the specified backend branch
+      - name: Checkout Backend Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.context.outputs.backend_branch }}
+
+      # Setup Tailscale for secure RPi5 access
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          # Staging-specific Tailscale OAuth credentials
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID_STAGING }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET_STAGING }}
+          tags: tag:github-actions
+          version: latest
+          use-cache: true
+
+      # Authenticate with GHCR for image push/pull operations
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Configure Docker Buildx for multi-platform builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build and push PR-specific backend image
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          # Target RPi5 ARM64 architecture
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.context.outputs.image_tag }}
+          # Conditional cache usage based on force_rebuild input
+          cache-from: ${{ inputs.force_rebuild != true && 'type=gha' || '' }}
+          cache-to: ${{ inputs.force_rebuild != true && 'type=gha,mode=max' || '' }}
+          labels: |
+            org.opencontainers.image.title=Refactor Platform Backend PR-${{ steps.context.outputs.pr_number }}
+            org.opencontainers.image.description=PR preview for backend branch ${{ steps.context.outputs.backend_branch }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      # Deploy to RPi5 over private Tailscale network
+      - name: Deploy to RPi5 via Tailscale
+        run: |
+          # Configure SSH for Tailscale connection
+          mkdir -p ~/.ssh
+          # Write RPi5 SSH private key from GitHub secret
+          echo "${{ secrets.RPI5_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Add known host key to prevent interactive prompts
+          echo "${{ secrets.RPI5_HOST_KEY }}" >> ~/.ssh/known_hosts
+
+          # Verify SSH connectivity before proceeding
+          echo "🔍 Testing SSH connection to ${{ secrets.RPI5_TAILSCALE_NAME }}..."
+          if ! ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 \
+            -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            'echo "SSH connection successful"'; then
+            echo "::error::Failed to connect to RPi5 via Tailscale"
+            exit 1
+          fi
+
+          # Transfer Docker Compose template to RPi5
+          echo "📦 Copying deployment files to RPi5..."
+          scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+            -i ~/.ssh/id_ed25519 \
+            docker-compose.pr-preview.yaml \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${{ steps.context.outputs.pr_number }}-compose.yaml
+
+          # Execute deployment script on RPi5
+          echo "🚀 Starting deployment on RPi5..."
+          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 \
+            -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            'bash -s' << 'DEPLOY_SCRIPT_EOF'
+            set -e  # Exit on any error
+            
+            # Set PR-specific environment variables
+            export PR_NUMBER=${{ steps.context.outputs.pr_number }}
+            export BACKEND_IMAGE=${{ steps.context.outputs.image_tag }}
+            export PR_POSTGRES_PORT=${{ steps.context.outputs.postgres_port }}
+            export PR_BACKEND_PORT=${{ steps.context.outputs.backend_port }}
+            # Database credentials for staging environment (from secrets)
+            export POSTGRES_USER="${{ secrets.STAGING_POSTGRES_USER }}"
+            export POSTGRES_PASSWORD="${{ secrets.STAGING_POSTGRES_PASSWORD }}"
+            export POSTGRES_DB="${{ secrets.STAGING_POSTGRES_DB }}"
+            export POSTGRES_SCHEMA="${{ secrets.STAGING_POSTGRES_SCHEMA }}"
+            
+            # Navigate to deployment directory
+            cd /home/${{ secrets.RPI5_USERNAME }}
+            
+            echo "📦 Logging into GHCR..."
+            # Authenticate Docker with GitHub Container Registry
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            
+            echo "📥 Pulling backend image: ${BACKEND_IMAGE}..."
+            docker pull ${BACKEND_IMAGE}
+            
+            # Stop existing containers for this PR (if any)
+            echo "🛑 Stopping existing PR-${PR_NUMBER} environment (if running)..."
+            docker compose -p pr-${PR_NUMBER} -f pr-${PR_NUMBER}-compose.yaml down || true
+            
+            echo "🚀 Starting PR preview environment..."
+            # Deploy with project namespace for isolation
+            docker compose -p pr-${PR_NUMBER} -f pr-${PR_NUMBER}-compose.yaml up -d
+            
+            echo "⏳ Waiting for services to stabilize..."
+            sleep ${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
+            
+            echo "🩺 Checking deployment status..."
+            # Display running containers for this PR
+            docker compose -p pr-${PR_NUMBER} ps
+            
+            echo "📜 Checking migration logs..."
+            # Show migration output (non-blocking if container exited)
+            docker logs migrator-pr-${PR_NUMBER} 2>&1 || echo "⚠️  Migration container has exited"
+            
+            echo "📜 Checking backend logs (last 20 lines)..."
+            docker logs backend-pr-${PR_NUMBER} --tail 20 2>&1 || echo "⚠️  Backend not ready yet"
+            
+            echo "✅ PR preview environment deployed successfully!"
+            echo "🌐 Backend URL: http://${{ secrets.RPI5_TAILSCALE_NAME }}:${PR_BACKEND_PORT}"
+          DEPLOY_SCRIPT_EOF
+
+      # Post deployment details to PR (only for PR triggers)
+      - name: Comment on PR with Preview URL
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.context.outputs.pr_number }};
+            const backendPort = ${{ steps.context.outputs.backend_port }};
+            const postgresPort = ${{ steps.context.outputs.postgres_port }};
+            const backendBranch = '${{ steps.context.outputs.backend_branch }}';
+            const backendUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}:${backendPort}`;
+
+            // Construct deployment summary comment
+            const comment = `## 🚀 PR Preview Environment Deployed!
+
+            ### 🔗 Access URLs
+            | Service | URL |
+            |---------|-----|
+            | **Backend API** | ${backendUrl} |
+            | **Health Check** | ${backendUrl}/health |
+
+            ### 📊 Environment Details
+            - **PR Number:** #${prNumber}
+            - **Backend Branch:** \`${backendBranch}\`
+            - **Commit:** \`${{ github.sha }}\`
+            - **Image:** \`${{ steps.context.outputs.image_tag }}\`
+            - **Postgres Port:** ${postgresPort}
+
+            ### 🔐 Access Instructions
+            1. **Connect to Tailscale** network (required)
+            2. Access backend at: ${backendUrl}
+            3. Test health endpoint: ${backendUrl}/health
+
+            ### 🧹 Cleanup
+            _This environment will be automatically cleaned up when the PR is closed or merged._
+
+            ---
+            *Deployed at: ${new Date().toISOString()}*`;
+
+            // Find existing bot comment to update or create new
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            // Look for existing preview environment comment
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && c.body.includes('PR Preview Environment')
+            );
+
+            if (botComment) {
+              // Update existing comment with new deployment info
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment,
+              });
+              console.log('Updated existing PR comment');
+            } else {
+              // Create new comment on PR
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: comment,
+              });
+              console.log('Created new PR comment');
+            }
+
+      # Summary for manual dispatch runs
+      - name: Output Deployment Summary
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "::notice::✅ Manual deployment completed successfully!"
+          echo "::notice::Backend URL: http://${{ secrets.RPI5_TAILSCALE_NAME }}:${{ steps.context.outputs.backend_port }}"
+          echo "::notice::Postgres Port: ${{ steps.context.outputs.postgres_port }}"
+          echo "::notice::PR Number: ${{ steps.context.outputs.pr_number }}"
+          echo "::notice::Backend Branch: ${{ steps.context.outputs.backend_branch }}"
+          echo "::notice::Frontend Branch: ${{ steps.context.outputs.frontend_branch }}"
