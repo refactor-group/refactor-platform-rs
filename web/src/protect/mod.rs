@@ -159,9 +159,25 @@ impl Check for UserIsAdmin {
         &self,
         _app_state: &AppState,
         authenticated_user: &domain::users::Model,
-        _args: Vec<Id>,
+        args: Vec<Id>,
     ) -> bool {
-        authenticated_user.role == domain::users::Role::Admin
+        // Check if user is a SuperAdmin (global access)
+        if authenticated_user
+            .roles
+            .iter()
+            .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
+        {
+            return true;
+        }
+
+        // If organization_id is provided, check for Admin role in that organization
+        if let Some(organization_id) = args.first() {
+            return authenticated_user.roles.iter().any(|r| {
+                r.role == domain::users::Role::Admin && r.organization_id == Some(*organization_id)
+            });
+        }
+
+        false
     }
 }
 // Not used yet

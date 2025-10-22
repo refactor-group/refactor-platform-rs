@@ -20,7 +20,7 @@ pub(crate) async fn create(
 ) -> impl IntoResponse {
     let checks: Vec<Predicate> = vec![
         Predicate::new(UserInOrganization, vec![organization_id]),
-        Predicate::new(UserIsAdmin, vec![]),
+        Predicate::new(UserIsAdmin, vec![organization_id]),
     ];
 
     crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
