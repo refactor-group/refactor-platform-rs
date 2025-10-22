@@ -127,7 +127,6 @@ pub async fn find_by_organization(
 pub async fn find_by_organization_with_user_names(
     db: &DatabaseConnection,
     organization_id: Id,
-    user_id: Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     let coaches = Alias::new("coaches");
     let coachees = Alias::new("coachees");
@@ -143,11 +142,6 @@ pub async fn find_by_organization_with_user_names(
             JoinType::Join,
             coachees::Relation::CoachingRelationships.def().rev(),
             coachees.clone(),
-        )
-        .filter(
-            Condition::any()
-                .add(coaching_relationships::Column::CoachId.eq(user_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
         )
         .select_only()
         .column(coaching_relationships::Column::Id)

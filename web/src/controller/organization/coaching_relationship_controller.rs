@@ -115,7 +115,7 @@ pub async fn read(
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
+    AuthenticatedUser(_user): AuthenticatedUser,
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
@@ -125,7 +125,6 @@ pub async fn index(
     let coaching_relationships = CoachingRelationshipApi::find_by_organization_with_user_names(
         app_state.db_conn_ref(),
         organization_id,
-        user.id,
     )
     .await?;
 
