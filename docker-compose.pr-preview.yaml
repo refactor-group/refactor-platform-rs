@@ -1,79 +1,97 @@
 ###################################################################
-# Docker Compose template for PR preview environments
-# Variables substituted by GitHub Actions:
-#  - PR_NUMBER: Pull request number
-#  - BACKEND_IMAGE: Backend Docker image with PR tag
-#  - PR_POSTGRES_PORT: Calculated postgres port (5432 + PR_NUMBER)
-#  - PR_BACKEND_PORT: Calculated backend port ( 4000 + PR_NUMBER)
+# Docker Compose Config for PR preview environments
+# Uses Docker Compose projects (-p flag) for automatic namespacing
+# All variables provided by GitHub Actions - no defaults needed
 ###################################################################
 
 services:
+  # PostgreSQL database service for PR environment
   postgres:
-    image: postgres:17
-    container_name: postgres-pr-${PR_NUMBER}
+    image: postgres:17                    # Use stable PostgreSQL 17
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-refactor}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-refactor}
+      # Database configuration - all values from GitHub Actions
+      POSTGRES_USER: ${POSTGRES_USER}         # Database username
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # Database password
+      POSTGRES_DB: ${POSTGRES_DB}             # Database name
     ports:
+      # Map dynamic external port to standard internal port 5432
       - "${PR_POSTGRES_PORT}:5432"
     volumes:
-      # Dynamic volume name using extension field
+      # Persist database data - Docker Compose project creates unique volume automatically
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - backend_network
+      # Use default network - Docker Compose project creates unique network automatically
+      - default
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${postgres_user:-refactor} -d ${POSTGRES_DB:-refactor}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+      # Verify database is ready before dependent services start
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s      # Check every 5 seconds
+      timeout: 5s       # Timeout after 5 seconds
+      retries: 5        # Try 5 times before marking unhealthy
+    restart: unless-stopped  # Restart automatically unless manually stopped
+  
+  # Database migration service - runs once to setup schema
   migrator:
-    image: ${BACKEND_IMAGE}
-    container_name: migrator-pr-${PR_NUMBER}
-    platform: linux/arm64/v8
+    image: ${BACKEND_IMAGE}               # Use same image as backend
+    platform: linux/arm64/v8             # Explicit ARM64 platform for RPi5
     environment:
-      # use service name 'postgres' (DNS resolution)
-      DATABASE_URL: postgres://${POSTGRES_USER:-refactor}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-refactor}
-      DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
+      # Application role configuration
+      ROLE: migrator                      # Tell app to run migrations
+      RUST_ENV: ${RUST_ENV}              # Environment (staging/dev/prod)
+      # Database connection string for migrations
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA} # Database schema name
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_healthy        # Wait for postgres to be healthy
     networks:
-      - backend_network
-    restart: "no"
+      # Use default network - Docker Compose project creates unique network automatically
+      - default
+    restart: "no"                        # Run once and exit (don't restart)
+  
+  # Main backend application service
   backend:
-    image: ${BACKEND_IMAGE}
-    container_name: backend-pr-${PR_NUMBER}
-    platform: linux/arm64/v8
+    image: ${BACKEND_IMAGE}               # PR-specific backend image
+    platform: linux/arm64/v8             # Explicit ARM64 platform for RPi5
     environment:
-      ROLE: app
-      RUST_ENV: staging
-      # Reference static service name 'postgres'
-      DATABASE_URL: postgres://${POSTGRES_USER:-refactor}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-refactor}
-      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
-      BACKEND_PORT: ${PR_BACKEND_PORT}
-      BACKEND_ALLOWED_ORIGINS: "*"
-      BACKEND_LOG_FILTER_LEVEL: DEBUG
-      BACKEND_SESSION_EXPIRY_SECONDS: 86400
-      TIPTAP_APP_ID: ${TIPTAP_APP_ID:-}
-      TIPTAP_URL: ${TIPTAP_RUL:-}
-      TIPTAP_AUTH_KEY: ${TIPTATP_AUTH_KEY:-}
-      TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY:-}
-      MAILERSEND_API_KEY: ${MAILERSEND_API_KEY:-}
-      WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID:-}
+      # Application role and environment
+      ROLE: app                           # Tell app to run as web server
+      RUST_ENV: ${RUST_ENV}              # Environment configuration
+      
+      # Database connection configuration
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
+      
+      # Backend server configuration - use container port for internal binding
+      BACKEND_PORT: ${PR_BACKEND_CONTAINER_PORT}      # Port app binds to inside container
+      BACKEND_INTERFACE: ${BACKEND_INTERFACE}         # Network interface to bind to
+      BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}  # CORS configuration
+      BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}  # Logging level
+      BACKEND_SESSION_EXPIRY_SECONDS: ${BACKEND_SESSION_EXPIRY_SECONDS}  # Session timeout
+      
+      # Optional third-party service credentials (set to 'UNUSED' if not needed)
+      TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      TIPTAP_URL: ${TIPTAP_URL}
+      TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+      MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
+      WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID}
     ports:
-      - "${PR_BACKEND_PORT}:${PR_BACKEND_PORT}"
+      # Map dynamic external port to container internal port
+      - "${PR_BACKEND_PORT}:${PR_BACKEND_CONTAINER_PORT}"
     depends_on:
-      - migrator
+      - migrator                          # Start after migrations complete
     networks:
-      - backend_network
-    restart: unless_stopped
+      # Use default network - Docker Compose project creates unique network automatically
+      - default
+    restart: unless-stopped               # Restart automatically unless manually stopped
 
-# Static network name, but isolated per docker-compose instance
-networks:
-  backend_network:
-    driver: bridge
-# Static volume name, but unique per project (compose -p flag)
+# Docker Compose project (-p flag) automatically creates:
+# - Unique network: {project_name}_default 
+# - Unique volume: {project_name}_postgres_data
+# - Container names: {project_name}-{service_name}-1
+# This eliminates need for manual PR-specific naming in compose file
+
 volumes:
+  # Volume automatically namespaced by Docker Compose project
   postgres_data:
