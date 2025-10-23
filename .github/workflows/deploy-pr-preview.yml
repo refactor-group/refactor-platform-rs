@@ -137,9 +137,14 @@ jobs:
           tags: |
             ${{ steps.context.outputs.image_tag_pr }}
             ${{ steps.context.outputs.image_tag_sha }}
-          # Conditional caching - skip if force rebuild requested
-          cache-from: ${{ inputs.force_rebuild != true && 'type=gha' || '' }}
-          cache-to: ${{ inputs.force_rebuild != true && 'type=gha,mode=max' || '' }}
+          # Multi-layer cache strategy for faster builds
+          # Pull cache from: PR-specific → branch → main (fallback chain)
+          cache-from: |
+            ${{ inputs.force_rebuild != true && format('type=gha,scope=pr-{0}', steps.context.outputs.pr_number) || '' }}
+            ${{ inputs.force_rebuild != true && format('type=gha,scope=branch-{0}', steps.context.outputs.backend_branch) || '' }}
+            ${{ inputs.force_rebuild != true && 'type=gha,scope=main' || '' }}
+          # Write cache scoped to this PR for subsequent builds
+          cache-to: ${{ inputs.force_rebuild != true && format('type=gha,mode=max,scope=pr-{0}', steps.context.outputs.pr_number) || '' }}
           # Add metadata labels for container image
           labels: |
             org.opencontainers.image.title=Refactor Platform Backend PR-${{ steps.context.outputs.pr_number }}
