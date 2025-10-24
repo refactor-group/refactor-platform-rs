@@ -125,6 +125,15 @@ impl Check for UserInOrganization {
         authenticated_user: &domain::users::Model,
         args: Vec<Id>,
     ) -> bool {
+        // SuperAdmins have access to all organizations
+        if authenticated_user
+            .roles
+            .iter()
+            .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
+        {
+            return true;
+        }
+
         let organization_id = args[0];
         match UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await {
             Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
