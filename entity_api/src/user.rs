@@ -105,17 +105,24 @@ pub async fn find_by_organization(
     organization_id: Id,
 ) -> Result<Vec<Model>, Error> {
     let results = Entity::find()
-        .inner_join(user_roles::Entity)
-        .filter(user_roles::Column::OrganizationId.eq(organization_id))
         .find_with_related(user_roles::Entity)
         .all(db)
         .await?;
 
     Ok(results
         .into_iter()
-        .map(|(mut user, roles)| {
-            user.roles = roles;
-            user
+        .filter_map(|(mut user, roles)| {
+            // Check if user has any role in the specified organization
+            let has_role_in_org = roles
+                .iter()
+                .any(|r| r.organization_id == Some(organization_id));
+
+            if has_role_in_org {
+                user.roles = roles;
+                Some(user)
+            } else {
+                None
+            }
         })
         .collect())
 }
@@ -267,8 +274,8 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "user_roles"."organization_id" = $1 ORDER BY "users"."id" ASC"#,
-                [organization_id.into()]
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
+                []
             )]
         );
 
