@@ -98,12 +98,10 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
     let organizations = if is_super_admin {
         // Super admins have access to all organizations
         let orgs = Entity::find().all(db).await?;
-        warn!("Super admin - returning {} organizations", orgs.len());
         orgs
     } else {
         // Regular users only see organizations they're explicitly assigned to
         let orgs = by_user(Entity::find(), user_id).await.all(db).await?;
-        warn!("Regular user - returning {} organizations", orgs.len());
         orgs
     };
 
@@ -159,7 +157,11 @@ mod tests {
 
     #[tokio::test]
     async fn find_by_user_returns_all_records_associated_with_user() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        // Mock empty results for both the super admin check and the organizations query
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<user_roles::Model, Vec<user_roles::Model>, _>(vec![vec![]])
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
 
         let user_id = Id::new_v4();
         let _ = find_by_user(&db, user_id).await;
