@@ -116,8 +116,6 @@ pub async fn read(
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Path(organization_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
