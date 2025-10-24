@@ -64,7 +64,7 @@ pub async fn find_by(
     db: &impl ConnectionTrait,
     params: HashMap<String, String>,
 ) -> Result<Vec<Model>, Error> {
-    for (key, value) in params {
+    if let Some((key, value)) = params.into_iter().next() {
         match key.as_str() {
             "user_id" => {
                 let user_uuid = uuid_parse_str(&value)?;
