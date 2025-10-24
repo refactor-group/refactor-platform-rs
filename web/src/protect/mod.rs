@@ -318,4 +318,3 @@ impl Check for UserCanAccessCoachingSession {
             || coaching_relationship.coachee_id == authenticated_user.id
     }
 }
-
