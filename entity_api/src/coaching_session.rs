@@ -61,6 +61,20 @@ pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Resul
     Ok(())
 }
 
+pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
+    let sessions = Entity::find()
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(
+            coaching_relationships::Column::CoachId
+                .eq(user_id)
+                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .all(db)
+        .await?;
+
+    Ok(sessions)
+}
+
 #[cfg(test)]
 // We need to gate seaORM's mock feature behind conditional compilation because
 // the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
@@ -152,6 +166,25 @@ mod tests {
                 DatabaseBackend::Postgres,
                 r#"DELETE FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1"#,
                 [coaching_session_id.into(),]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_user_returns_sessions_where_user_is_coach_or_coachee() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let user_id = Id::new_v4();
+        let _ = find_by_user(&db, user_id).await;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                [user_id.into(), user_id.into()]
             )]
         );
 

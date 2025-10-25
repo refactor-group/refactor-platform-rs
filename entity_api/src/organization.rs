@@ -1,7 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
-use entity::{organizations::*, organizations_users, prelude::Organizations, Id};
+use entity::{organizations::*, organizations_users, user_roles, prelude::Organizations, Id};
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, ActiveValue::Unchanged, ConnectionTrait, JoinType,
     QuerySelect, TryIntoModel,
@@ -92,8 +92,13 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
 
 async fn by_user(query: Select<Organizations>, user_id: Id) -> Select<Organizations> {
     query
-        .join(JoinType::InnerJoin, Relation::OrganizationsUsers.def())
-        .filter(organizations_users::Column::UserId.eq(user_id))
+        .join_as(
+            JoinType::InnerJoin,
+            user_roles::Relation::Organizations.def().rev(),
+            user_roles::Entity,
+        )
+        .filter(user_roles::Column::UserId.eq(user_id))
+        .filter(user_roles::Column::OrganizationId.is_not_null())
         .distinct()
 }
 
@@ -148,7 +153,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."organizations_users" ON "organizations"."id" = "organizations_users"."organization_id" WHERE "organizations_users"."user_id" = $1"#,
+                r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."user_roles" ON "user_roles"."organization_id" = "organizations"."id" WHERE "user_roles"."user_id" = $1 AND "user_roles"."organization_id" IS NOT NULL"#,
                 [user_id.into()]
             )]
         );
