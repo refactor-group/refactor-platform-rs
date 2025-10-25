@@ -1,7 +1,13 @@
+pub(crate) mod action;
+pub(crate) mod coaching_session;
+pub(crate) mod overarching_goal;
+
+// Re-export user profile update params for backward compatibility
 use domain::{IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct UpdateParams {
     pub email: Option<String>,
@@ -11,6 +17,7 @@ pub struct UpdateParams {
     pub github_profile_url: Option<String>,
     pub timezone: Option<String>,
 }
+
 impl IntoUpdateMap for UpdateParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();

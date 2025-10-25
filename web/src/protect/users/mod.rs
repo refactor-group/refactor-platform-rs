@@ -12,6 +12,90 @@ pub(crate) mod passwords;
 
 // checks:
 // - that the `user_id` matches the `authenticated_user.id`
+pub(crate) async fn organizations(
+    State(_app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path(user_id): Path<Id>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    // check that we are only allowing authenticated users to read their own organizations (for now)
+    if authenticated_user.id == user_id {
+        next.run(request).await
+    } else {
+        error!(
+            "Unauthorized: user_id {} does not match authenticated_user_id {}",
+            user_id, authenticated_user.id
+        );
+        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+    }
+}
+
+// checks:
+// - that the `user_id` matches the `authenticated_user.id`
+pub(crate) async fn actions(
+    State(_app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path(user_id): Path<Id>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    // check that we are only allowing authenticated users to read their own actions (for now)
+    if authenticated_user.id == user_id {
+        next.run(request).await
+    } else {
+        error!(
+            "Unauthorized: user_id {} does not match authenticated_user_id {}",
+            user_id, authenticated_user.id
+        );
+        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+    }
+}
+
+// checks:
+// - that the `user_id` matches the `authenticated_user.id`
+pub(crate) async fn coaching_sessions(
+    State(_app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path(user_id): Path<Id>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    // check that we are only allowing authenticated users to read their own coaching sessions (for now)
+    if authenticated_user.id == user_id {
+        next.run(request).await
+    } else {
+        error!(
+            "Unauthorized: user_id {} does not match authenticated_user_id {}",
+            user_id, authenticated_user.id
+        );
+        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+    }
+}
+
+// checks:
+// - that the `user_id` matches the `authenticated_user.id`
+pub(crate) async fn overarching_goals(
+    State(_app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path(user_id): Path<Id>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    // check that we are only allowing authenticated users to read their own overarching goals (for now)
+    if authenticated_user.id == user_id {
+        next.run(request).await
+    } else {
+        error!(
+            "Unauthorized: user_id {} does not match authenticated_user_id {}",
+            user_id, authenticated_user.id
+        );
+        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+    }
+}
+
+// checks:
+// - that the `user_id` matches the `authenticated_user.id`
 pub(crate) async fn read(
     State(_app_state): State<AppState>,
     AuthenticatedUser(authenticated_user): AuthenticatedUser,
