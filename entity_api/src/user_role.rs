@@ -1,5 +1,5 @@
 use super::error::Error;
-use entity::organizations_users::{Column, Entity};
+use entity::user_roles::{Column, Entity};
 use entity::Id;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter};
 
@@ -12,9 +12,6 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
 }
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod test {
     use super::*;
@@ -32,7 +29,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"DELETE FROM "refactor_platform"."organizations_users" WHERE "organizations_users"."user_id" = $1"#,
+                r#"DELETE FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = $1"#,
                 [user_id.into()]
             )]
         );

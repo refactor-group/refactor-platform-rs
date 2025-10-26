@@ -11,7 +11,6 @@ pub mod coaching_sessions;
 pub mod jwts;
 pub mod notes;
 pub mod organizations;
-pub mod organizations_users;
 pub mod overarching_goals;
 pub mod roles;
 pub mod status;

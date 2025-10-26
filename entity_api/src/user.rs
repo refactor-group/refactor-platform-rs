@@ -4,13 +4,10 @@ use axum_login::{AuthnBackend, UserId};
 use chrono::Utc;
 
 use entity::users::{ActiveModel, Column, Entity, Model};
-use entity::{organizations, organizations_users, roles, user_roles, Id};
+use entity::{roles, user_roles, Id};
 use log::*;
 use password_auth;
-use sea_orm::{
-    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QuerySelect, Set,
-    TransactionTrait,
-};
+use sea_orm::{entity::prelude::*, ConnectionTrait, DatabaseConnection, Set, TransactionTrait};
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
@@ -51,15 +48,6 @@ pub async fn create_by_organization(
 
     let mut user = create(&txn, user_model).await?;
     let now = Utc::now();
-    let organization_user = organizations_users::ActiveModel {
-        organization_id: Set(organization_id),
-        user_id: Set(user.id),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    };
-
-    organization_user.insert(&txn).await?;
 
     let default_user_role = user_roles::ActiveModel {
         user_id: Set(user.id),
@@ -117,25 +105,24 @@ pub async fn find_by_organization(
     organization_id: Id,
 ) -> Result<Vec<Model>, Error> {
     let results = Entity::find()
-        .distinct()
-        .join(
-            JoinType::InnerJoin,
-            organizations_users::Relation::Users.def().rev(),
-        )
-        .join(
-            JoinType::InnerJoin,
-            organizations_users::Relation::Organizations.def(),
-        )
-        .filter(organizations::Column::Id.eq(organization_id))
         .find_with_related(user_roles::Entity)
         .all(db)
         .await?;
 
     Ok(results
         .into_iter()
-        .map(|(mut user, roles)| {
-            user.roles = roles;
-            user
+        .filter_map(|(mut user, roles)| {
+            // Check if user has any role in the specified organization
+            let has_role_in_org = roles
+                .iter()
+                .any(|r| r.organization_id == Some(organization_id));
+
+            if has_role_in_org {
+                user.roles = roles;
+                Some(user)
+            } else {
+                None
+            }
         })
         .collect())
 }
@@ -287,8 +274,8 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT DISTINCT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" INNER JOIN "refactor_platform"."organizations_users" ON "users"."id" = "organizations_users"."user_id" INNER JOIN "refactor_platform"."organizations" ON "organizations_users"."organization_id" = "organizations"."id" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "organizations"."id" = $1 ORDER BY "users"."id" ASC"#,
-                [organization_id.into()]
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
+                []
             )]
         );
 
@@ -318,14 +305,6 @@ mod test {
             roles: vec![],
         };
 
-        let organization_user_model = entity::organizations_users::Model {
-            id: Id::new_v4(),
-            organization_id,
-            user_id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
         let user_role_model = entity::user_roles::Model {
             id: user_role_id,
             user_id,
@@ -337,7 +316,6 @@ mod test {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results([[user_model.clone()]])
-            .append_query_results([[organization_user_model.clone()]])
             .append_query_results([[user_role_model.clone()]])
             .into_connection();
 
