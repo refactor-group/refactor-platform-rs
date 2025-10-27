@@ -31,3 +31,14 @@ impl From<&str> for Status {
         }
     }
 }
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotStarted => write!(f, "not_started"),
+            Self::InProgress => write!(f, "in_progress"),
+            Self::Completed => write!(f, "completed"),
+            Self::WontDo => write!(f, "wont_do"),
+        }
+    }
+}
