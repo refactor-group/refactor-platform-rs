@@ -66,81 +66,91 @@ env:
 
 jobs:
   # ===========================================================================
-  # JOB 1: CI Dependency Gate - Wait for Lint and Test Only (NOT Docker Build)
+  # JOB 1: Lint & Format Check
   # ===========================================================================
-  # Purpose: Wait ONLY for lint and test jobs from build-test-push.yml
-  # Why: Prevents wasting ARM64 runner time on code that fails basic checks
-  # Explicitly SKIPS: Docker build job (useless x86_64 build runs in parallel)
-  # Result: ARM64 build proceeds once lint/test pass, x86_64 build is ignored
+  # Purpose: Run clippy and rustfmt checks before building
+  # Why: Prevents building code that fails basic quality standards
+  # Runner: GitHub-hosted Ubuntu (fast feedback, low cost)
   # ===========================================================================
-  wait-for-ci:
-    name: Wait for Essential CI Checks
-    # Run on Neo ARM64 runner - CI check is lightweight enough for self-hosted
-    runs-on: [self-hosted, Linux, ARM64, neo]
-    if: github.event_name == 'pull_request'
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-24.04
 
     steps:
-      # STEP 1: Wait for lint job from build-test-push.yml
-      # Ensures code quality standards are met before proceeding
-      - name: Wait for Lint Check
-        uses: fountainhead/action-wait-for-check@v1.2.0
-        id: wait-for-lint
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          checkName: "Lint & Format"
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          timeoutSeconds: 300 # 5 minute timeout (lint is fast)
-          intervalSeconds: 10 # Check every 10 seconds
+          components: clippy, rustfmt
 
-      # STEP 2: Wait for test job from build-test-push.yml
-      # Ensures tests pass before deploying to preview environment
-      - name: Wait for Test Check
-        uses: fountainhead/action-wait-for-check@v1.2.0
-        id: wait-for-test
+      - name: Use cached dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          checkName: "Build & Test"
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          timeoutSeconds: 600 # 10 minute timeout (tests take longer)
-          intervalSeconds: 10 # Check every 10 seconds
+          shared-key: "main"
+          key: "lint"
+          cache-all-crates: true
 
-      # STEP 3: Fail fast if lint or test failed
-      # Saves expensive ARM64 runner minutes by avoiding unnecessary builds
-      # NOTE: We intentionally DO NOT wait for "Build & Push Docker Image" job
-      - name: Check Essential CI Status
-        if: steps.wait-for-lint.outputs.conclusion != 'success' || steps.wait-for-test.outputs.conclusion != 'success'
-        run: |
-          echo "::error::Essential CI checks failed. Lint: ${{ steps.wait-for-lint.outputs.conclusion }}, Test: ${{ steps.wait-for-test.outputs.conclusion }}"
-          echo "::notice::We only check lint and test - the x86_64 docker build is irrelevant for ARM64 deployment"
-          exit 1
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
 
-      # STEP 4: Log success and proceed to ARM64 build
-      # At this point, lint and test passed, we can build ARM64 image
-      - name: CI Dependencies Satisfied
-        run: |
-          echo "::notice::✅ Essential CI checks passed - proceeding with ARM64 preview build"
-          echo "::notice::📝 Lint status: ${{ steps.wait-for-lint.outputs.conclusion }}"
-          echo "::notice::🧪 Test status: ${{ steps.wait-for-test.outputs.conclusion }}"
-          echo "::notice::⏭️  Skipped: x86_64 docker build (irrelevant for ARM64 deployment)"
+      - name: Run format check
+        run: cargo fmt --all -- --check
 
   # ===========================================================================
-  # JOB 2: Native ARM64 Image Build (No Emulation)
+  # JOB 2: Build & Test
   # ===========================================================================
-  # Purpose: Build ARM64 Docker image natively on RPi5 runner
-  # Why: Native ARM64 builds are 5-10x faster than QEMU emulation
+  # Purpose: Compile and run tests before deploying
+  # Why: Ensures code works before wasting ARM64 runner time
+  # Runner: GitHub-hosted Ubuntu (fast, parallelizable)
+  # ===========================================================================
+  test:
+    name: Build & Test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Set OpenSSL Paths
+        run: |
+          echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
+
+      - name: Use cached dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "main"
+          key: "test"
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Run tests
+        run: cargo test
+
+  # ===========================================================================
+  # JOB 3: Native ARM64 Image Build On Neo (aka "The One")
+  # ===========================================================================
   # Runner: Neo (self-hosted RPi5 with ARM64 architecture)
   # Optimization: Multi-tier caching (PR → branch → main → shared)
-  # Dependency: Only waits for lint/test (NOT x86_64 docker build)
+  # Dependency: Waits for lint and test jobs to pass
   # ===========================================================================
   build-arm64-image:
     name: Build ARM64 Backend Image
     # Run on Neo (RPi5) - dedicated self-hosted ARM64 runner
     runs-on: [self-hosted, Linux, ARM64, neo]
     environment: pr-preview
-    # Proceed after lint/test pass (PR) or immediately (manual dispatch)
-    # Intentionally does NOT wait for x86_64 docker build job
-    needs: [wait-for-ci]
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.wait-for-ci.result == 'success')
+    # Wait for lint and test to pass before building ARM64 image
+    needs: [lint, test]
 
     # Export values to subsequent jobs for deployment coordination
     outputs:
@@ -221,26 +231,47 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
 
       # STEP 5: Install sccache for Rust compilation caching
-      # Downloads ARM64-specific sccache binary (v0.8.0)
+      # Downloads ARM64-specific sccache binary (v0.8.2)
       # Works alongside Rust cache for maximum build speed
       - name: Install sccache
         run: |
           set -euo pipefail
-          SCCACHE_VERSION="v0.8.0"
-          SCCACHE_ARCHIVE="sccache-${SCCACHE_VERSION}-aarch64-unknown-linux-gnu"
+          SCCACHE_VERSION="v0.8.2"
+          SCCACHE_ARCHIVE="sccache-${SCCACHE_VERSION}-aarch64-unknown-linux-musl"
 
           # Download ARM64 sccache binary
+          echo "📥 Downloading sccache ${SCCACHE_VERSION} for ARM64..."
           curl -sSL --retry 5 --retry-connrefused \
             -o "$RUNNER_TEMP/sccache.tar.gz" \
             "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}.tar.gz"
 
+          # Verify download completed
+          if [[ ! -f "$RUNNER_TEMP/sccache.tar.gz" ]]; then
+            echo "::error::Failed to download sccache"
+            exit 1
+          fi
+
+          # Check if file is actually gzipped
+          if ! file "$RUNNER_TEMP/sccache.tar.gz" | grep -q "gzip"; then
+            echo "::error::Downloaded file is not in gzip format"
+            file "$RUNNER_TEMP/sccache.tar.gz"
+            exit 1
+          fi
+
           # Extract and install sccache binary
+          echo "📦 Extracting sccache..."
           tar -xzf "$RUNNER_TEMP/sccache.tar.gz" -C "$RUNNER_TEMP"
+
           mkdir -p "$HOME/.local/bin"
           install -m 755 "$RUNNER_TEMP/${SCCACHE_ARCHIVE}/sccache" "$HOME/.local/bin/sccache"
           mkdir -p "$HOME/.cache/sccache"
+
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+
+          # Verify installation
+          "$HOME/.local/bin/sccache" --version
+          echo "::notice::✅ sccache installed successfully"
 
       # STEP 6: Configure sccache as Rust compiler wrapper
       # Enables compilation caching - can reduce build time by 80%+
@@ -367,7 +398,7 @@ jobs:
           push-to-registry: true
 
   # ===========================================================================
-  # JOB 3: Deploy to RPi5 via Tailscale VPN
+  # JOB 4: Deploy to RPi5 via Tailscale VPN
   # ===========================================================================
   # Purpose: Deploy Docker Compose stack to Neo (RPi5) using Tailscale
   # Why: Secure deployment without exposing RPi5 to public internet
