@@ -66,14 +66,14 @@ env:
 
 jobs:
   # ===========================================================================
-  # JOB 1: CI Dependency Gate
+  # JOB 1: CI Dependency Gate - Wait for Essential Checks Only
   # ===========================================================================
   # Purpose: Wait for lint and test jobs to pass before expensive ARM64 builds
   # Why: Prevents wasting ARM64 runner time on code that fails basic checks
-  # When: Only runs for PR events (manual dispatch skips this)
+  # Note: Only waits for lint/test, NOT the docker build - allows parallel execution
   # ===========================================================================
   wait-for-ci:
-    name: Wait for CI to Pass
+    name: Wait for Essential CI Checks
     # Use standard x86_64 runner for lightweight CI checking
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
@@ -81,41 +81,52 @@ jobs:
     steps:
       # Wait for lint job from build-test-push.yml workflow to complete
       # This ensures code quality before proceeding to ARM64 builds
-      - name: Wait for Build, Test & Push workflow
+      - name: Wait for Lint Check
         uses: fountainhead/action-wait-for-check@v1.2.0
-        id: wait-for-build
+        id: wait-for-lint
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          checkName: "Lint & Format"
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          timeoutSeconds: 600 # 10 minute timeout
+          checkName: "Lint & Format" # Must match job name in build-test-push.yml
+          ref: ${{ github.event.pull_request.head.sha || github.sha }} # Check specific commit
+          timeoutSeconds: 300 # 5 minute timeout (lint is fast)
           intervalSeconds: 10 # Check every 10 seconds
 
       # Wait for test job to ensure functionality before deployment
       # Prevents deploying broken code to preview environment
-      - name: Wait for tests to complete
+      - name: Wait for Test Check
         uses: fountainhead/action-wait-for-check@v1.2.0
         id: wait-for-test
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          checkName: "Build & Test"
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          timeoutSeconds: 600 # 10 minute timeout
+          checkName: "Build & Test" # Must match job name in build-test-push.yml
+          ref: ${{ github.event.pull_request.head.sha || github.sha }} # Check specific commit
+          timeoutSeconds: 600 # 10 minute timeout (tests take longer)
           intervalSeconds: 10 # Check every 10 seconds
 
-      # Fail fast if CI checks didn't pass - no point building ARM64 images
+      # Fail fast if essential CI checks didn't pass
       # This saves expensive ARM64 runner minutes and provides quick feedback
-      - name: Check CI Status
-        if: steps.wait-for-build.outputs.conclusion != 'success' || steps.wait-for-test.outputs.conclusion != 'success'
+      # Note: We don't wait for docker build - that can run in parallel
+      - name: Check Essential CI Status
+        if: steps.wait-for-lint.outputs.conclusion != 'success' || steps.wait-for-test.outputs.conclusion != 'success'
         run: |
-          echo "::error::CI checks failed. Lint: ${{ steps.wait-for-build.outputs.conclusion }}, Test: ${{ steps.wait-for-test.outputs.conclusion }}"
+          echo "::error::Essential CI checks failed. Lint: ${{ steps.wait-for-lint.outputs.conclusion }}, Test: ${{ steps.wait-for-test.outputs.conclusion }}"
+          echo "::notice::Docker build from main workflow can run in parallel - we only need lint and test to pass"
           exit 1
+
+      # Log successful dependency resolution for debugging
+      - name: CI Dependencies Satisfied
+        run: |
+          echo "::notice::✅ Essential CI checks passed - proceeding with ARM64 preview build"
+          echo "::notice::📝 Lint status: ${{ steps.wait-for-lint.outputs.conclusion }}"
+          echo "::notice::🧪 Test status: ${{ steps.wait-for-test.outputs.conclusion }}"
+          echo "::notice::🚀 ARM64 preview build can now proceed in parallel with main workflow's x86_64 docker build"
 
   # ===========================================================================
   # JOB 2: ARM64 Image Build with Aggressive Caching
   # ===========================================================================
   # Purpose: Build ARM64 Docker image optimized for RPi5 deployment
   # Why: Native ARM64 builds are 5-10x faster than emulation
+  # Optimization: Runs in parallel with main workflow's docker build job
   # Caching: Multi-tier strategy (PR → branch → main → shared) for speed
   # ===========================================================================
   build-arm64-image:
@@ -123,9 +134,10 @@ jobs:
     # Use correct ARM64 runner label for GitHub (if available on your plan)
     # For public repos, ARM64 runners require GitHub Team/Enterprise
     # Alternative: Use ubuntu-24.04 with QEMU emulation as fallback
-    runs-on: ${{ github.repository_owner == 'refactor-group' && 'ubuntu-24.04-arm64' || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository_owner == 'refactor-group' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     environment: pr-preview
-    # Run after CI passes (for PRs) or immediately (for manual dispatch)
+    # Run after essential CI passes (for PRs) or immediately (for manual dispatch)
+    # Modified: Only depends on lint/test, not docker build - enables parallel execution
     needs: [wait-for-ci]
     if: always() && (github.event_name == 'workflow_dispatch' || needs.wait-for-ci.result == 'success')
 
@@ -177,8 +189,9 @@ jobs:
           echo "image_tag_sha=${IMAGE_TAG_SHA}" >> $GITHUB_OUTPUT
 
           # Log deployment context for debugging
-          echo "::notice::🚀 Building PR #${PR_NUM} from branch '${BACKEND_BRANCH}'"
+          echo "::notice::🚀 Building ARM64 PR #${PR_NUM} from branch '${BACKEND_BRANCH}'"
           echo "::notice::📦 Image: ${IMAGE_TAG_PR}"
+          echo "::notice::⚡ Building in parallel with main workflow's x86_64 docker build"
 
       # Checkout the specific branch being deployed (not always main)
       # Critical for feature branch deployments and manual dispatch
@@ -261,7 +274,7 @@ jobs:
             echo "::notice::📦 Image already exists for SHA ${{ github.sha }}"
           else
             echo "image_exists=false" >> $GITHUB_OUTPUT
-            echo "::notice::🔨 Building new image for SHA ${{ github.sha }}"
+            echo "::notice::🔨 Building new ARM64 image for SHA ${{ github.sha }}"
           fi
 
       # Build and push ARM64 image with sophisticated multi-tier caching
@@ -350,7 +363,7 @@ jobs:
   deploy-to-rpi5:
     name: Deploy to RPi5 via Tailscale
     # Use same ARM64 logic as build job for consistency
-    runs-on: ${{ github.repository_owner == 'refactor-group' && 'ubuntu-24.04-arm64' || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository_owner == 'refactor-group' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     needs: build-arm64-image
     environment: pr-preview
 
@@ -559,7 +572,7 @@ jobs:
 
             ---
             *Deployed: ${new Date().toISOString()}*
-            *Optimizations: ${isNativeArm64 ? 'ARM64 native' : 'ARM64 emulation'} + sccache + Rust cache + Docker BuildKit*`;
+            *Optimizations: ${isNativeArm64 ? 'ARM64 native' : 'ARM64 emulation'} + sccache + Rust cache + Docker BuildKit + parallel builds*`;
 
             // Find existing bot comment and update it, or create new one
             const { data: comments } = await github.rest.issues.listComments({
@@ -601,3 +614,4 @@ jobs:
           echo "::notice::🗄️  Postgres: ${{ secrets.NEO_SSH_HOST }}:${{ steps.ports.outputs.postgres_port }}"
           echo "::notice::📦 Image: ${{ needs.build-arm64-image.outputs.image_tag_pr }}"
           echo "::notice::🏗️  Build: ${{ needs.build-arm64-image.outputs.is_native_arm64 == 'true' && 'Native ARM64' || 'ARM64 Emulation' }}"
+          echo "::notice::⚡ Built in parallel with main workflow's x86_64 docker build"
