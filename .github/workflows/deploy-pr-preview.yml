@@ -331,8 +331,34 @@ jobs:
           echo "🚀 Deploying PR preview environment..."
           ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
-            /bin/bash << 'ENDSSH'
-            set -e
+            "PR_NUMBER='${PR_NUMBER}' \
+            BACKEND_IMAGE='${BACKEND_IMAGE}' \
+            PROJECT_NAME='${PROJECT_NAME}' \
+            PR_POSTGRES_PORT='${{ steps.ports.outputs.postgres_port }}' \
+            PR_BACKEND_PORT='${{ steps.ports.outputs.backend_port }}' \
+            PR_BACKEND_CONTAINER_PORT='${{ steps.ports.outputs.backend_container_port }}' \
+            PR_FRONTEND_PORT='${{ steps.ports.outputs.frontend_port }}' \
+            POSTGRES_USER='${{ secrets.PR_PREVIEW_POSTGRES_USER }}' \
+            POSTGRES_PASSWORD='${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' \
+            POSTGRES_DB='${{ secrets.PR_PREVIEW_POSTGRES_DB }}' \
+            POSTGRES_SCHEMA='${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' \
+            RUST_ENV='${{ vars.RUST_ENV }}' \
+            BACKEND_INTERFACE='${{ vars.BACKEND_INTERFACE }}' \
+            BACKEND_ALLOWED_ORIGINS='${{ vars.BACKEND_ALLOWED_ORIGINS }}' \
+            BACKEND_LOG_FILTER_LEVEL='${{ vars.BACKEND_LOG_FILTER_LEVEL }}' \
+            BACKEND_SESSION_EXPIRY_SECONDS='${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}' \
+            TIPTAP_APP_ID='${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' \
+            TIPTAP_URL='${{ secrets.PR_PREVIEW_TIPTAP_URL }}' \
+            TIPTAP_AUTH_KEY='${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' \
+            TIPTAP_JWT_SIGNING_KEY='${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' \
+            MAILERSEND_API_KEY='${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' \
+            WELCOME_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' \
+            GITHUB_TOKEN='${{ secrets.GITHUB_TOKEN }}' \
+            GITHUB_ACTOR='${{ github.actor }}' \
+            RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}' \
+            SERVICE_STARTUP_WAIT_SECONDS='${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}' \
+            /bin/bash" << 'ENDSSH'
+            set -eo pipefail
 
             # Validate we're on the target server
             if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
@@ -340,32 +366,10 @@ jobs:
               exit 1
             fi
 
-            export PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
-            export BACKEND_IMAGE="${{ needs.build-arm64-image.outputs.image_tag_pr }}"
-            export PR_POSTGRES_PORT="${{ steps.ports.outputs.postgres_port }}"
-            export PR_BACKEND_PORT="${{ steps.ports.outputs.backend_port }}"
-            export PR_BACKEND_CONTAINER_PORT="${{ steps.ports.outputs.backend_container_port }}"
-            export PR_FRONTEND_PORT="${{ steps.ports.outputs.frontend_port }}"
-            export POSTGRES_USER="${{ secrets.PR_PREVIEW_POSTGRES_USER }}"
-            export POSTGRES_PASSWORD="${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}"
-            export POSTGRES_DB="${{ secrets.PR_PREVIEW_POSTGRES_DB }}"
-            export POSTGRES_SCHEMA="${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}"
-            export RUST_ENV="${{ vars.RUST_ENV }}"
-            export BACKEND_INTERFACE="${{ vars.BACKEND_INTERFACE }}"
-            export BACKEND_ALLOWED_ORIGINS="${{ vars.BACKEND_ALLOWED_ORIGINS }}"
-            export BACKEND_LOG_FILTER_LEVEL="${{ vars.BACKEND_LOG_FILTER_LEVEL }}"
-            export BACKEND_SESSION_EXPIRY_SECONDS="${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}"
-            export TIPTAP_APP_ID="${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}"
-            export TIPTAP_URL="${{ secrets.PR_PREVIEW_TIPTAP_URL }}"
-            export TIPTAP_AUTH_KEY="${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}"
-            export TIPTAP_JWT_SIGNING_KEY="${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}"
-            export MAILERSEND_API_KEY="${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}"
-            export WELCOME_EMAIL_TEMPLATE_ID="${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}"
-
-            cd /home/${{ secrets.RPI5_USERNAME }}
+            cd /home/${RPI5_USERNAME}
 
             echo "📦 Logging into GHCR..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "${GITHUB_TOKEN}" | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
 
             echo "📥 Pulling image: ${BACKEND_IMAGE}..."
             docker pull ${BACKEND_IMAGE}
@@ -376,8 +380,8 @@ jobs:
             echo "🚀 Starting PR preview environment..."
             docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml up -d
 
-            echo "⏳ Waiting ${{ vars.SERVICE_STARTUP_WAIT_SECONDS }} seconds for services..."
-            sleep ${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
+            echo "⏳ Waiting ${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
+            sleep ${SERVICE_STARTUP_WAIT_SECONDS}
 
             echo "🩺 Deployment status:"
             docker compose -p ${PROJECT_NAME} ps
