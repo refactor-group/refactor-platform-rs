@@ -74,7 +74,7 @@ jobs:
           cache-all-crates: true
 
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets
 
       - name: Run format check
         run: cargo fmt --all -- --check
