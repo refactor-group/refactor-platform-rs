@@ -1,0 +1,198 @@
+name: Cleanup PR Preview Environment
+
+# Trigger when PR is closed (includes both close and merge events)
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+# Only need read access to repo and write to comment on PRs
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  cleanup-preview:
+    name: Cleanup PR Preview Environment
+    runs-on: ubuntu-24.04
+    # Use same environment as deployment for consistent secrets/variables
+    environment: pr-preview
+
+    steps:
+      # Calculate cleanup context and determine volume retention policy
+      - name: Set Cleanup Context
+        id: context
+        run: |
+          # Extract PR metadata
+          PR_NUM="${{ github.event.pull_request.number }}"
+          IS_MERGED="${{ github.event.pull_request.merged }}"
+          
+          # Calculate ports for logging/verification (same formula as deployment)
+          POSTGRES_PORT=$((5432 + PR_NUM))
+          BACKEND_PORT=$((4000 + PR_NUM))
+          
+          # Store context for subsequent steps
+          echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
+          echo "is_merged=${IS_MERGED}" >> $GITHUB_OUTPUT
+          echo "postgres_port=${POSTGRES_PORT}" >> $GITHUB_OUTPUT
+          echo "backend_port=${BACKEND_PORT}" >> $GITHUB_OUTPUT
+          echo "project_name=pr-${PR_NUM}" >> $GITHUB_OUTPUT
+          
+          # Determine cleanup strategy based on how PR was closed
+          if [[ "${IS_MERGED}" == "true" ]]; then
+            echo "cleanup_reason=merged" >> $GITHUB_OUTPUT
+            echo "volume_action=retain" >> $GITHUB_OUTPUT
+            echo "::notice::🔀 PR #${PR_NUM} was merged - retaining volume for 7 days"
+          else
+            echo "cleanup_reason=closed" >> $GITHUB_OUTPUT
+            echo "volume_action=remove" >> $GITHUB_OUTPUT
+            echo "::notice::🚫 PR #${PR_NUM} was closed without merge - removing volume immediately"
+          fi
+
+      # Connect to Tailscale VPN for secure RPi5 access
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID_PR_PREVIEW }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET_PR_PREVIEW }}
+          tags: tag:github-actions
+          version: latest
+          # Reuse cached Tailscale binary for faster execution
+          use-cache: true
+
+      # Execute cleanup commands on RPi5 via SSH
+      - name: Cleanup Deployment on RPi5
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PROJECT_NAME: ${{ steps.context.outputs.project_name }}
+          VOLUME_ACTION: ${{ steps.context.outputs.volume_action }}
+          IS_MERGED: ${{ steps.context.outputs.is_merged }}
+        run: |
+          # Configure SSH authentication
+          mkdir -p ~/.ssh
+          echo "${{ secrets.RPI5_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.RPI5_HOST_KEY }}" >> ~/.ssh/known_hosts
+
+          # Execute cleanup script on RPi5 with error handling
+          echo "🧹 Starting cleanup for PR #${PR_NUMBER}..."
+          ssh -o BatchMode=yes -o ConnectTimeout=30 \
+            -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            "set -e && \
+             export PR_NUMBER='${PR_NUMBER}' && \
+             export PROJECT_NAME='${PROJECT_NAME}' && \
+             cd /home/${{ secrets.RPI5_USERNAME }} && \
+             echo '🛑 Stopping containers for ${PROJECT_NAME}...' && \
+             docker compose -p \${PROJECT_NAME} -f pr-\${PR_NUMBER}-compose.yaml down 2>/dev/null || echo '⚠️  No running containers found (already cleaned up?)' && \
+             echo '🗑️  Removing Docker images...' && \
+             docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep 'pr-'${PR_NUMBER} | awk '{print \$2}' | xargs -r docker rmi -f 2>/dev/null || echo '⚠️  No images found' && \
+             echo '📁 Removing compose file...' && \
+             rm -f pr-\${PR_NUMBER}-compose.yaml && echo '✅ Compose file removed' || echo '⚠️  Compose file not found' && \
+             if [[ '${VOLUME_ACTION}' == 'remove' ]]; then \
+               echo '🗑️  Removing database volume (PR closed without merge)...' && \
+               docker volume rm \${PROJECT_NAME}_postgres_data 2>/dev/null && echo '✅ Volume removed' || echo '⚠️  Volume not found'; \
+             else \
+               echo '⏰ Database volume retained for 7 days (PR merged)' && \
+               echo '📅 Volume \${PROJECT_NAME}_postgres_data will expire: \$(date -d '+7 days' '+%Y-%m-%d')'; \
+             fi && \
+             echo '' && \
+             echo '📊 Remaining PR environments on RPi5:' && \
+             REMAINING=\$(docker ps --filter 'name=pr-' --format '{{.Names}}' | wc -l) && \
+             if [[ \$REMAINING -gt 0 ]]; then \
+               echo \"Active PR environments: \$REMAINING\" && \
+               docker ps --filter 'name=pr-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -6; \
+             else \
+               echo 'No PR environments currently running ✨'; \
+             fi && \
+             echo '' && \
+             echo '✅ Cleanup complete for PR #${PR_NUMBER}!'"
+
+      # Post cleanup status to PR as comment for developer visibility
+      - name: Update PR Comment with Cleanup Status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Extract context from previous steps
+            const prNumber = ${{ steps.context.outputs.pr_number }};
+            const isMerged = '${{ steps.context.outputs.is_merged }}' === 'true';
+            const cleanupReason = isMerged ? 'merged into main' : 'closed without merging';
+            const volumeStatus = isMerged 
+              ? '📅 Scheduled for removal in 7 days (retention policy)' 
+              : '🗑️  Removed immediately';
+            const backendPort = ${{ steps.context.outputs.backend_port }};
+            const postgresPort = ${{ steps.context.outputs.postgres_port }};
+
+            // Create comprehensive cleanup status comment
+            const comment = `## 🧹 PR Preview Environment Cleaned Up!
+
+            ### 📊 Cleanup Summary
+            | Resource | Status |
+            |----------|--------|
+            | **Containers** | ✅ Stopped and removed |
+            | **Docker Images** | ✅ Removed from RPi5 |
+            | **Network** | ✅ Removed |
+            | **Compose File** | ✅ Deleted |
+            | **Database Volume** | ${volumeStatus} |
+
+            ### 📝 Details
+            - **PR Number:** #${prNumber}
+            - **Reason:** ${cleanupReason}
+            - **Backend Port:** ${backendPort} (now available)
+            - **Postgres Port:** ${postgresPort} (now available)
+            - **Project Name:** \`pr-${prNumber}\`
+
+            ### ⏰ Volume Retention Policy
+            ${isMerged 
+              ? '- **Merged PRs:** Database volume retained for 7 days\n- Allows post-merge investigation if needed\n- Volume: `pr-' + prNumber + '_postgres_data`\n- Auto-cleanup: ' + new Date(Date.now() + 7*24*60*60*1000).toISOString().split('T')[0]
+              : '- **Closed PRs:** Database volume removed immediately\n- Frees up disk space on RPi5\n- No data retention for abandoned PRs'}
+
+            ---
+            *Cleaned up: ${new Date().toISOString()}*
+            *Workflow: [\`cleanup-pr-preview.yml\`](https://github.com/${{ github.repository }}/actions/workflows/cleanup-pr-preview.yml)*`;
+
+            // Find existing PR preview comment to append cleanup info
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            // Look for original deployment comment from bot
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && c.body.includes('PR Preview Environment Deployed')
+            );
+
+            if (botComment) {
+              // Append cleanup status to existing deployment comment
+              const updatedBody = botComment.body + '\n\n' + comment;
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: updatedBody,
+              });
+              console.log('✅ Updated existing PR comment with cleanup status');
+            } else {
+              // Create standalone cleanup comment if deployment comment not found
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: comment,
+              });
+              console.log('✅ Created new cleanup comment (deployment comment not found)');
+            }
+
+      # Log final cleanup summary to workflow output
+      - name: Cleanup Summary
+        run: |
+          echo "::notice::✅ Cleanup complete for PR #${{ steps.context.outputs.pr_number }}"
+          echo "::notice::🗑️  Resources removed: containers, images, network, compose file"
+          if [[ "${{ steps.context.outputs.volume_action }}" == "retain" ]]; then
+            echo "::notice::📦 Volume retained for 7 days (merged PR retention policy)"
+          else
+            echo "::notice::🗑️  Volume removed immediately (closed PR cleanup)"
+          fi
+          echo "::notice::🎉 RPi5 resources freed for other PR previews"
