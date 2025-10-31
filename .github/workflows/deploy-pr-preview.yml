@@ -330,71 +330,73 @@ jobs:
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-compose.yaml
 
           echo "🚀 Deploying PR preview environment..."
-          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+
+          # Create a temporary script to pass via stdin to avoid heredoc issues
+          cat << 'DEPLOY_SCRIPT' | ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
-            "PR_NUMBER='${PR_NUMBER}' \
-            BACKEND_IMAGE='${BACKEND_IMAGE}' \
-            PROJECT_NAME='${PROJECT_NAME}' \
-            PR_POSTGRES_PORT='${{ steps.ports.outputs.postgres_port }}' \
-            PR_BACKEND_PORT='${{ steps.ports.outputs.backend_port }}' \
-            PR_BACKEND_CONTAINER_PORT='${{ steps.ports.outputs.backend_container_port }}' \
-            PR_FRONTEND_PORT='${{ steps.ports.outputs.frontend_port }}' \
-            POSTGRES_USER='${{ secrets.PR_PREVIEW_POSTGRES_USER }}' \
-            POSTGRES_PASSWORD='${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' \
-            POSTGRES_DB='${{ secrets.PR_PREVIEW_POSTGRES_DB }}' \
-            POSTGRES_SCHEMA='${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' \
-            RUST_ENV='${{ vars.RUST_ENV }}' \
-            BACKEND_INTERFACE='${{ vars.BACKEND_INTERFACE }}' \
-            BACKEND_ALLOWED_ORIGINS='${{ vars.BACKEND_ALLOWED_ORIGINS }}' \
-            BACKEND_LOG_FILTER_LEVEL='${{ vars.BACKEND_LOG_FILTER_LEVEL }}' \
-            BACKEND_SESSION_EXPIRY_SECONDS='${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}' \
-            TIPTAP_APP_ID='${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' \
-            TIPTAP_URL='${{ secrets.PR_PREVIEW_TIPTAP_URL }}' \
-            TIPTAP_AUTH_KEY='${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' \
-            TIPTAP_JWT_SIGNING_KEY='${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' \
-            MAILERSEND_API_KEY='${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' \
-            WELCOME_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' \
-            GITHUB_TOKEN='${{ secrets.GITHUB_TOKEN }}' \
-            GITHUB_ACTOR='${{ github.actor }}' \
-            RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}' \
-            SERVICE_STARTUP_WAIT_SECONDS='${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}' \
-            /bin/bash" << 'ENDSSH'
-            set -eo pipefail
+            "export PR_NUMBER='${PR_NUMBER}' && \
+             export BACKEND_IMAGE='${BACKEND_IMAGE}' && \
+             export PROJECT_NAME='${PROJECT_NAME}' && \
+             export PR_POSTGRES_PORT='${{ steps.ports.outputs.postgres_port }}' && \
+             export PR_BACKEND_PORT='${{ steps.ports.outputs.backend_port }}' && \
+             export PR_BACKEND_CONTAINER_PORT='${{ steps.ports.outputs.backend_container_port }}' && \
+             export PR_FRONTEND_PORT='${{ steps.ports.outputs.frontend_port }}' && \
+             export POSTGRES_USER=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n') && \
+             export POSTGRES_PASSWORD=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n') && \
+             export POSTGRES_DB=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n') && \
+             export POSTGRES_SCHEMA=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n') && \
+             export RUST_ENV='${{ vars.RUST_ENV }}' && \
+             export BACKEND_INTERFACE='${{ vars.BACKEND_INTERFACE }}' && \
+             export BACKEND_ALLOWED_ORIGINS='${{ vars.BACKEND_ALLOWED_ORIGINS }}' && \
+             export BACKEND_LOG_FILTER_LEVEL='${{ vars.BACKEND_LOG_FILTER_LEVEL }}' && \
+             export BACKEND_SESSION_EXPIRY_SECONDS='${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}' && \
+             export TIPTAP_APP_ID='${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' && \
+             export TIPTAP_URL='${{ secrets.PR_PREVIEW_TIPTAP_URL }}' && \
+             export TIPTAP_AUTH_KEY='${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' && \
+             export TIPTAP_JWT_SIGNING_KEY='${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' && \
+             export MAILERSEND_API_KEY='${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' && \
+             export WELCOME_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' && \
+             export GITHUB_TOKEN='${{ secrets.GITHUB_TOKEN }}' && \
+             export GITHUB_ACTOR='${{ github.actor }}' && \
+             export RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}' && \
+             export SERVICE_STARTUP_WAIT_SECONDS='${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}' && \
+             /bin/bash"
+set -eo pipefail
 
-            # Validate we're on the target server
-            if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
-              echo "::error::Script running on GitHub runner instead of target server!"
-              exit 1
-            fi
+# Validate we're on the target server
+if [[ "\$(hostname)" == *"runner"* ]] || [[ "\$(pwd)" == *"runner"* ]]; then
+  echo "::error::Script running on GitHub runner instead of target server!"
+  exit 1
+fi
 
-            cd /home/${RPI5_USERNAME}
+cd /home/\${RPI5_USERNAME}
 
-            echo "📦 Logging into GHCR..."
-            echo "${GITHUB_TOKEN}" | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+echo "📦 Logging into GHCR..."
+echo "\${GITHUB_TOKEN}" | docker login ghcr.io -u \${GITHUB_ACTOR} --password-stdin
 
-            echo "📥 Pulling image: ${BACKEND_IMAGE}..."
-            docker pull ${BACKEND_IMAGE}
+echo "📥 Pulling image: \${BACKEND_IMAGE}..."
+docker pull \${BACKEND_IMAGE}
 
-            echo "🛑 Stopping existing PR-${PR_NUMBER} environment..."
-            docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down 2>/dev/null || true
+echo "🛑 Stopping existing PR-\${PR_NUMBER} environment..."
+docker compose -p \${PROJECT_NAME} -f pr-\${PR_NUMBER}-compose.yaml down 2>/dev/null || true
 
-            echo "🚀 Starting PR preview environment..."
-            docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml up -d
+echo "🚀 Starting PR preview environment..."
+docker compose -p \${PROJECT_NAME} -f pr-\${PR_NUMBER}-compose.yaml up -d
 
-            echo "⏳ Waiting ${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
-            sleep ${SERVICE_STARTUP_WAIT_SECONDS}
+echo "⏳ Waiting \${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
+sleep \${SERVICE_STARTUP_WAIT_SECONDS}
 
-            echo "🩺 Deployment status:"
-            docker compose -p ${PROJECT_NAME} ps
+echo "🩺 Deployment status:"
+docker compose -p \${PROJECT_NAME} ps
 
-            echo "📜 Migration logs:"
-            docker logs ${PROJECT_NAME}-migrator-1 2>&1 | tail -20 || echo "⚠️ Migrator exited"
+echo "📜 Migration logs:"
+docker logs \${PROJECT_NAME}-migrator-1 2>&1 | tail -20 || echo "⚠️ Migrator exited"
 
-            echo "📜 Backend logs:"
-            docker logs ${PROJECT_NAME}-backend-1 2>&1 | tail -20 || echo "⚠️ Backend starting"
+echo "📜 Backend logs:"
+docker logs \${PROJECT_NAME}-backend-1 2>&1 | tail -20 || echo "⚠️ Backend starting"
 
-            echo "✅ Deployment complete!"
-            ENDSSH
+echo "✅ Deployment complete!"
+DEPLOY_SCRIPT
 
       - name: Comment on PR with Preview URLs
         if: github.event_name == 'pull_request'
