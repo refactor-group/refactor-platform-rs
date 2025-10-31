@@ -2,7 +2,7 @@
 # PR Preview Deployment Workflow
 # =============================================================================
 # Purpose: Deploys isolated PR preview environments to RPi5 via Tailscale
-# Features: ARM64 native builds, multi-tier caching, secure VPN deployment
+# Features: ARM64 native builds, multi‐tier caching, secure VPN deployment
 # Target: Raspberry Pi 5 (ARM64) with Docker Compose via Tailscale SSH
 # =============================================================================
 
@@ -68,10 +68,6 @@ jobs:
   # ===========================================================================
   # JOB 1: Lint & Format Check
   # ===========================================================================
-  # Purpose: Run clippy and rustfmt checks before building
-  # Why: Prevents building code that fails basic quality standards
-  # Runner: GitHub-hosted Ubuntu (fast feedback, low cost)
-  # ===========================================================================
   lint:
     name: Lint & Format
     runs-on: ubuntu-24.04
@@ -100,10 +96,6 @@ jobs:
 
   # ===========================================================================
   # JOB 2: Build & Test
-  # ===========================================================================
-  # Purpose: Compile and run tests before deploying
-  # Why: Ensures code works before wasting ARM64 runner time
-  # Runner: GitHub-hosted Ubuntu (fast, parallelizable)
   # ===========================================================================
   test:
     name: Build & Test
@@ -140,19 +132,13 @@ jobs:
   # ===========================================================================
   # JOB 3: Native ARM64 Image Build On Neo (aka "The One")
   # ===========================================================================
-  # Runner: Neo (self-hosted RPi5 with ARM64 architecture)
-  # Optimization: Multi-tier caching (PR → branch → main → shared)
-  # Dependency: Waits for lint and test jobs to pass
-  # ===========================================================================
   build-arm64-image:
     name: Build ARM64 Backend Image
     # Run on Neo (RPi5) - dedicated self-hosted ARM64 runner
     runs-on: [self-hosted, Linux, ARM64, neo]
     environment: pr-preview
-    # Wait for lint and test to pass before building ARM64 image
     needs: [lint, test]
 
-    # Export values to subsequent jobs for deployment coordination
     outputs:
       pr_number: ${{ steps.context.outputs.pr_number }}
       image_tag_pr: ${{ steps.context.outputs.image_tag_pr }}
@@ -161,14 +147,9 @@ jobs:
       is_native_arm64: ${{ steps.context.outputs.is_native_arm64 }}
 
     steps:
-      # STEP 1: Verify ARM64 runner and set deployment context
-      # Calculates PR number, branch name, and Docker image tags
-      # Fails fast if not running on ARM64 architecture
       - name: Set Deployment Context
         id: context
         run: |
-          # Verify we're running on native ARM64 (Neo RPi5 runner)
-          # This workflow requires ARM64 - fail immediately if on wrong architecture
           if [[ "$(uname -m)" == "aarch64" ]]; then
             echo "is_native_arm64=true" >> $GITHUB_OUTPUT
             echo "::notice::🚀 Running on native ARM64 runner (Neo)"
@@ -177,116 +158,40 @@ jobs:
             exit 1
           fi
 
-          # Determine PR number and branch based on trigger type
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             PR_NUM="${{ github.event.pull_request.number }}"
             BACKEND_BRANCH="${{ github.head_ref }}"
           else
             PR_NUM="${{ inputs.pr_number }}"
-            # Generate pseudo-PR number for manual runs (9000+ avoids conflicts)
             if [[ -z "$PR_NUM" ]]; then
               PR_NUM=$((9000 + ${{ github.run_number }}))
             fi
             BACKEND_BRANCH="${{ inputs.backend_branch }}"
           fi
 
-          # Export context for subsequent steps
           echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
           echo "backend_branch=${BACKEND_BRANCH}" >> $GITHUB_OUTPUT
-
-          # Generate Docker image tags for deployment and traceability
           IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          IMAGE_TAG_PR="${IMAGE_BASE}:pr-${PR_NUM}"                      # Latest for PR
-          IMAGE_TAG_SHA="${IMAGE_BASE}:pr-${PR_NUM}-${{ github.sha }}"   # Specific commit
+          IMAGE_TAG_PR="${IMAGE_BASE}:pr-${PR_NUM}"
+          IMAGE_TAG_SHA="${IMAGE_BASE}:pr-${PR_NUM}-${{ github.sha }}"
           echo "image_tag_pr=${IMAGE_TAG_PR}" >> $GITHUB_OUTPUT
           echo "image_tag_sha=${IMAGE_TAG_SHA}" >> $GITHUB_OUTPUT
-
-          # Log deployment context for debugging
           echo "::notice::🚀 Building ARM64 PR #${PR_NUM} from branch '${BACKEND_BRANCH}'"
           echo "::notice::📦 Image: ${IMAGE_TAG_PR}"
 
-      # STEP 2: Checkout code from the PR branch
-      # Gets the actual feature branch code, not main
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.context.outputs.backend_branch }}
 
-      # STEP 3: Install Rust toolchain for ARM64
-      # Native compilation on ARM64 - no cross-compilation needed
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
-
-      # STEP 4: Setup Rust dependency cache
-      # Multi-tier cache: PR-specific → branch → shared ARM64
-      # Dramatically speeds up subsequent builds by caching compiled dependencies
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "arm64-preview" # Global cache namespace
+          shared-key: "arm64-preview"
           key: ${{ steps.context.outputs.backend_branch }}-${{ steps.context.outputs.pr_number }}
           cache-all-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
 
-      # STEP 5: Install sccache for Rust compilation caching
-      # Downloads ARM64-specific sccache binary (v0.8.2)
-      # Works alongside Rust cache for maximum build speed
-      - name: Install sccache
-        run: |
-          set -euo pipefail
-          SCCACHE_VERSION="v0.8.2"
-          SCCACHE_ARCHIVE="sccache-${SCCACHE_VERSION}-aarch64-unknown-linux-musl"
-
-          # Download ARM64 sccache binary
-          echo "📥 Downloading sccache ${SCCACHE_VERSION} for ARM64..."
-          curl -sSL --retry 5 --retry-connrefused \
-            -o "$RUNNER_TEMP/sccache.tar.gz" \
-            "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}.tar.gz"
-
-          # Verify download completed
-          if [[ ! -f "$RUNNER_TEMP/sccache.tar.gz" ]]; then
-            echo "::error::Failed to download sccache"
-            exit 1
-          fi
-
-          # Check if file is actually gzipped
-          if ! file "$RUNNER_TEMP/sccache.tar.gz" | grep -q "gzip"; then
-            echo "::error::Downloaded file is not in gzip format"
-            file "$RUNNER_TEMP/sccache.tar.gz"
-            exit 1
-          fi
-
-          # Extract and install sccache binary
-          echo "📦 Extracting sccache..."
-          tar -xzf "$RUNNER_TEMP/sccache.tar.gz" -C "$RUNNER_TEMP"
-
-          mkdir -p "$HOME/.local/bin"
-          install -m 755 "$RUNNER_TEMP/${SCCACHE_ARCHIVE}/sccache" "$HOME/.local/bin/sccache"
-          mkdir -p "$HOME/.cache/sccache"
-
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
-
-          # Verify installation
-          "$HOME/.local/bin/sccache" --version
-          echo "::notice::✅ sccache installed successfully"
-
-      # STEP 6: Configure sccache as Rust compiler wrapper
-      # Enables compilation caching - can reduce build time by 80%+
-      - name: Configure sccache Environment
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-
-          # Display initial cache statistics for debugging
-          echo "::group::sccache initial stats"
-          sccache --show-stats
-          echo "::endgroup::"
-
-      # STEP 7: Login to GitHub Container Registry (GHCR)
-      # Required to push built ARM64 image to registry
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -294,8 +199,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # STEP 8: Setup Docker Buildx for ARM64 builds
-      # Uses latest BuildKit for optimal build performance
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -303,12 +206,9 @@ jobs:
             image=moby/buildkit:latest
             network=host
 
-      # STEP 9: Check if image already exists for this commit
-      # Avoids rebuilding if SHA-tagged image is already in registry
       - name: Check for Existing Image
         id: check_image
         run: |
-          # Check if SHA-specific image already exists in registry
           if docker manifest inspect ${{ steps.context.outputs.image_tag_sha }} >/dev/null 2>&1; then
             echo "image_exists=true" >> $GITHUB_OUTPUT
             echo "::notice::📦 Image already exists for SHA ${{ github.sha }}"
@@ -317,9 +217,6 @@ jobs:
             echo "::notice::🔨 Building new ARM64 image for SHA ${{ github.sha }}"
           fi
 
-      # STEP 10: Build and push ARM64 Docker image
-      # Only builds if image doesn't exist or force_rebuild is true
-      # Uses multi-tier caching for maximum speed
       - name: Build and Push ARM64 Backend Image
         id: build_push
         if: steps.check_image.outputs.image_exists != 'true' || inputs.force_rebuild == true
@@ -327,29 +224,19 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/arm64 # Native ARM64 for RPi5
+          platforms: linux/arm64
           push: true
           tags: |
             ${{ steps.context.outputs.image_tag_pr }}
             ${{ steps.context.outputs.image_tag_sha }}
-
-          # Multi-tier cache strategy (priority order):
-          # 1. PR-specific cache (most relevant)
-          # 2. Branch cache (shared across PR updates)
-          # 3. Main branch cache (fallback)
-          # 4. Shared ARM64 cache (all ARM64 builds)
           cache-from: |
             ${{ inputs.force_rebuild != true && format('type=gha,scope=pr-{0}', steps.context.outputs.pr_number) || '' }}
             ${{ inputs.force_rebuild != true && format('type=gha,scope=branch-{0}', steps.context.outputs.backend_branch) || '' }}
             ${{ inputs.force_rebuild != true && 'type=gha,scope=main' || '' }}
             ${{ inputs.force_rebuild != true && 'type=gha,scope=arm64-shared' || '' }}
-
-          # Write cache to PR scope and shared ARM64 scope
           cache-to: |
             ${{ inputs.force_rebuild != true && format('type=gha,mode=max,scope=pr-{0}', steps.context.outputs.pr_number) || '' }}
             ${{ inputs.force_rebuild != true && 'type=gha,mode=max,scope=arm64-shared' || '' }}
-
-          # OCI image labels for metadata and traceability
           labels: |
             org.opencontainers.image.title=Refactor Platform Backend PR-${{ steps.context.outputs.pr_number }}
             org.opencontainers.image.description=PR preview for branch ${{ steps.context.outputs.backend_branch }}
@@ -358,28 +245,20 @@ jobs:
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
             pr.number=${{ steps.context.outputs.pr_number }}
             pr.branch=${{ steps.context.outputs.backend_branch }}
-
-          # Build arguments for optimization
           build-args: |
-            BUILDKIT_INLINE_CACHE=1     # Enable BuildKit inline caching
-            CARGO_INCREMENTAL=0         # Disable incremental (sccache compatibility)
-            RUSTC_WRAPPER=sccache       # Use sccache in Docker build
+            BUILDKIT_INLINE_CACHE=1
+            CARGO_INCREMENTAL=0
+            RUSTC_WRAPPER=sccache
+          provenance: true
+          sbom: false
 
-          provenance: true # Generate build provenance
-          sbom: false # Skip SBOM for faster builds
-
-      # STEP 11: Re-tag existing image (if build was skipped)
-      # Ensures PR tag always points to correct image
       - name: Tag Existing Image
         if: steps.check_image.outputs.image_exists == 'true' && inputs.force_rebuild != true
         run: |
-          # Point PR tag to existing SHA-tagged image
           docker buildx imagetools create \
             --tag ${{ steps.context.outputs.image_tag_pr }} \
             ${{ steps.context.outputs.image_tag_sha }}
 
-      # STEP 12: Display sccache statistics
-      # Shows cache hit ratios for build optimization insights
       - name: Display sccache Statistics
         if: always()
         run: |
@@ -387,8 +266,6 @@ jobs:
           sccache --show-stats
           echo "::endgroup::"
 
-      # STEP 13: Generate build provenance attestation
-      # Provides cryptographic proof of how image was built
       - name: Attest Build Provenance
         if: steps.build_push.conclusion == 'success'
         uses: actions/attest-build-provenance@v2
@@ -400,11 +277,6 @@ jobs:
   # ===========================================================================
   # JOB 4: Deploy to RPi5 via Tailscale VPN
   # ===========================================================================
-  # Purpose: Deploy Docker Compose stack to Neo (RPi5) using Tailscale
-  # Why: Secure deployment without exposing RPi5 to public internet
-  # Runner: Neo (same ARM64 runner as build for efficiency)
-  # Features: Dynamic port allocation, multi-service orchestration
-  # ===========================================================================
   deploy-to-rpi5:
     name: Deploy to RPi5 via Tailscale
     runs-on: [self-hosted, Linux, ARM64, neo]
@@ -412,99 +284,69 @@ jobs:
     environment: pr-preview
 
     steps:
-      # STEP 1: Calculate unique port assignments for this PR
-      # Each PR gets isolated ports: base_port + pr_number
-      # Prevents port conflicts between multiple concurrent PR previews
       - name: Calculate Deployment Ports
         id: ports
         run: |
           PR_NUM="${{ needs.build-arm64-image.outputs.pr_number }}"
-
-          # Dynamic port allocation: base + PR number offset
-          # Port bases are configured in pr-preview environment
           BACKEND_CONTAINER_PORT=${{ vars.BACKEND_PORT_BASE }}
           BACKEND_EXTERNAL_PORT=$((${{ vars.BACKEND_PORT_BASE }} + PR_NUM))
           POSTGRES_EXTERNAL_PORT=$((${{ vars.POSTGRES_PORT_BASE }} + PR_NUM))
           FRONTEND_EXTERNAL_PORT=$((${{ vars.FRONTEND_PORT_BASE }} + PR_NUM))
-
-          # Export port assignments for deployment steps
           echo "backend_container_port=${BACKEND_CONTAINER_PORT}" >> $GITHUB_OUTPUT
           echo "backend_port=${BACKEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
           echo "postgres_port=${POSTGRES_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
           echo "frontend_port=${FRONTEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
           echo "project_name=pr-${PR_NUM}" >> $GITHUB_OUTPUT
-
-          # Log port allocation for monitoring
           echo "::notice::🔌 Postgres: ${POSTGRES_EXTERNAL_PORT} | Backend: ${BACKEND_EXTERNAL_PORT} | Frontend: ${FRONTEND_EXTERNAL_PORT}"
 
-      # STEP 2: Checkout repository for docker-compose config
-      # Gets the PR branch code (same as build job)
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.build-arm64-image.outputs.backend_branch }}
 
-      # STEP 3: Connect to Tailscale VPN
-      # Establishes secure tunnel to Neo without exposing to public internet
-      # Uses OAuth for ephemeral authentication (no SSH keys to manage)
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID_PR_PREVIEW }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET_PR_PREVIEW }}
-          tags: tag:github-actions # Tag for Tailscale admin panel
+          tags: tag:github-actions
           version: latest
           use-cache: true
 
-      # STEP 4: Deploy to Neo via Tailscale SSH
-      # Transfers docker-compose config and orchestrates deployment
-      # Runs entirely over secure Tailscale VPN tunnel
       - name: Deploy to Neo via Tailscale SSH
         env:
-          # Deployment context variables from previous jobs
           PR_NUMBER: ${{ needs.build-arm64-image.outputs.pr_number }}
           BACKEND_IMAGE: ${{ needs.build-arm64-image.outputs.image_tag_pr }}
           PROJECT_NAME: ${{ steps.ports.outputs.project_name }}
-
-          # Port assignments for service binding
           PR_POSTGRES_PORT: ${{ steps.ports.outputs.postgres_port }}
           PR_BACKEND_PORT: ${{ steps.ports.outputs.backend_port }}
           PR_BACKEND_CONTAINER_PORT: ${{ steps.ports.outputs.backend_container_port }}
           PR_FRONTEND_PORT: ${{ steps.ports.outputs.frontend_port }}
-
-          # Database configuration from pr-preview environment
           POSTGRES_USER: ${{ secrets.PR_PREVIEW_POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}
           POSTGRES_DB: ${{ secrets.PR_PREVIEW_POSTGRES_DB }}
           POSTGRES_SCHEMA: ${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}
-
-          # Backend runtime configuration from pr-preview environment
           RUST_ENV: ${{ vars.RUST_ENV }}
           BACKEND_INTERFACE: ${{ vars.BACKEND_INTERFACE }}
           BACKEND_ALLOWED_ORIGINS: ${{ vars.BACKEND_ALLOWED_ORIGINS }}
           BACKEND_LOG_FILTER_LEVEL: ${{ vars.BACKEND_LOG_FILTER_LEVEL }}
           BACKEND_SESSION_EXPIRY_SECONDS: ${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
           SERVICE_STARTUP_WAIT: ${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
-
-          # Third-party service integrations from pr-preview environment
           TIPTAP_APP_ID: ${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
           TIPTAP_URL: ${{ secrets.PR_PREVIEW_TIPTAP_URL }}
-          TIPTAP_AUTH_KEY: ${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}
-          TIPTAP_JWT_SIGNING_KEY: ${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}
+          TIPTAP_AUTH_KEY: ${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}
+          TIPTAP_JWT_SIGNING_KEY: ${{ secrets.PR_PREVIEW_TIPAP_JWT_SIGNING_KEY }}
           MAILERSEND_API_KEY: ${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}
           WELCOME_EMAIL_TEMPLATE_ID: ${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}
         run: |
-          # Transfer docker-compose config to Neo via Tailscale SCP
           echo "📦 Transferring compose file to neo..."
           scp -o StrictHostKeyChecking=accept-new docker-compose.pr-preview.yaml \
-            ${{ secrets.NEO_SSH_USER }}@${{ secrets.NEO_SSH_HOST }}:/home/${{ secrets.NEO_SSH_USER }}/pr-${PR_NUMBER}-compose.yaml
+            ${{ secrets.NEO_SSH_USER }}@${{ secrets.NEO_SSH_HOST }}:/home/${{ secrets.NEO_SSH_USER }}/pr-${{ env.PR_NUMBER }}-compose.yaml
 
-          # Execute deployment commands on Neo via Tailscale SSH
           echo "🚀 Deploying PR preview environment..."
           ssh -o StrictHostKeyChecking=accept-new ${{ secrets.NEO_SSH_USER }}@${{ secrets.NEO_SSH_HOST }} << 'ENDSSH'
-            set -e  # Exit on any error
+            set -e
 
-            # Export environment variables for docker-compose variable substitution
             export PR_NUMBER="${PR_NUMBER}"
             export BACKEND_IMAGE="${BACKEND_IMAGE}"
             export PR_POSTGRES_PORT="${PR_POSTGRES_PORT}"
@@ -527,52 +369,40 @@ jobs:
             export MAILERSEND_API_KEY="${MAILERSEND_API_KEY}"
             export WELCOME_EMAIL_TEMPLATE_ID="${WELCOME_EMAIL_TEMPLATE_ID}"
 
-
             cd /home/${{ secrets.NEO_SSH_USER }}
 
-            # Login to GHCR to pull ARM64 image
             echo "📦 Logging into GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-            # Pull ARM64 image built in previous job
             echo "📥 Pulling image: ${BACKEND_IMAGE}..."
             docker pull ${BACKEND_IMAGE}
 
-            # Stop existing environment (if any) to avoid conflicts
             echo "🛑 Stopping existing PR-${PR_NUMBER} environment..."
             docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down 2>/dev/null || true
 
-            # Start new preview environment with docker-compose
             echo "🚀 Starting PR preview environment..."
             docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml up -d
 
-            # Wait for services to initialize
             echo "⏳ Waiting ${SERVICE_STARTUP_WAIT} seconds for services..."
             sleep ${SERVICE_STARTUP_WAIT}
 
-            # Display deployment status
             echo "🩺 Deployment status:"
             docker compose -p ${PROJECT_NAME} ps
 
-            # Show recent migration logs for verification
             echo "📜 Migration logs:"
             docker logs ${PROJECT_NAME}-migrator-1 2>&1 | tail -20 || echo "⚠️ Migrator exited"
 
-            # Show recent backend logs for verification
             echo "📜 Backend logs:"
             docker logs ${PROJECT_NAME}-backend-1 2>&1 | tail -20 || echo "⚠️ Backend starting"
 
             echo "✅ Deployment complete!"
             ENDSSH
 
-      # STEP 5: Post deployment info to PR (for PR triggers only)
-      # Creates or updates comment with preview URLs and access info
       - name: Comment on PR with Preview URLs
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
-            // Extract deployment context from previous jobs
             const prNumber = ${{ needs.build-arm64-image.outputs.pr_number }};
             const backendPort = ${{ steps.ports.outputs.backend_port }};
             const postgresPort = ${{ steps.ports.outputs.postgres_port }};
@@ -583,7 +413,6 @@ jobs:
             const backendUrl = `http://${{ secrets.NEO_SSH_HOST }}:${backendPort}`;
             const frontendUrl = `http://${{ secrets.NEO_SSH_HOST }}:${frontendPort}`;
 
-            // Build PR comment with deployment details
             const comment = `## 🚀 PR Preview Environment Deployed!
 
             ### 🔗 Access URLs
@@ -622,19 +451,17 @@ jobs:
             *Deployed: ${new Date().toISOString()}*
             *Optimizations: Native ARM64 build on Neo + sccache + Rust cache + Docker BuildKit*`;
 
-            // Find and update existing bot comment, or create new one
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
             });
 
-            const botComment = comments.find(c => 
+            const botComment = comments.find(c =>
               c.user.type === 'Bot' && c.body.includes('PR Preview Environment')
             );
 
             if (botComment) {
-              // Update existing comment
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -642,7 +469,6 @@ jobs:
                 body: comment,
               });
             } else {
-              // Create new comment
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -651,8 +477,6 @@ jobs:
               });
             }
 
-      # STEP 6: Display deployment summary (for manual workflow_dispatch runs)
-      # Shows access URLs in workflow logs when there's no PR to comment on
       - name: Display Deployment Summary
         if: github.event_name == 'workflow_dispatch'
         run: |
