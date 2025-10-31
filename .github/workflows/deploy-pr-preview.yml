@@ -361,42 +361,42 @@ jobs:
              export RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}' && \
              export SERVICE_STARTUP_WAIT_SECONDS='${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}' && \
              /bin/bash"
-set -eo pipefail
+          set -eo pipefail
 
-# Validate we're on the target server
-if [[ "\$(hostname)" == *"runner"* ]] || [[ "\$(pwd)" == *"runner"* ]]; then
-  echo "::error::Script running on GitHub runner instead of target server!"
-  exit 1
-fi
+          # Validate we're on the target server
+          if [[ "\$(hostname)" == *"runner"* ]] || [[ "\$(pwd)" == *"runner"* ]]; then
+            echo "::error::Script running on GitHub runner instead of target server!"
+            exit 1
+          fi
 
-cd /home/\${RPI5_USERNAME}
+          cd /home/\${RPI5_USERNAME}
 
-echo "📦 Logging into GHCR..."
-echo "\${GITHUB_TOKEN}" | docker login ghcr.io -u \${GITHUB_ACTOR} --password-stdin
+          echo "📦 Logging into GHCR..."
+          echo "\${GITHUB_TOKEN}" | docker login ghcr.io -u \${GITHUB_ACTOR} --password-stdin
 
-echo "📥 Pulling image: \${BACKEND_IMAGE}..."
-docker pull \${BACKEND_IMAGE}
+          echo "📥 Pulling image: \${BACKEND_IMAGE}..."
+          docker pull \${BACKEND_IMAGE}
 
-echo "🛑 Stopping existing PR-\${PR_NUMBER} environment..."
-docker compose -p \${PROJECT_NAME} -f pr-\${PR_NUMBER}-compose.yaml down 2>/dev/null || true
+          echo "🛑 Stopping existing PR-\${PR_NUMBER} environment..."
+          docker compose -p \${PROJECT_NAME} -f pr-\${PR_NUMBER}-compose.yaml down 2>/dev/null || true
 
-echo "🚀 Starting PR preview environment..."
-docker compose -p \${PROJECT_NAME} -f pr-\${PR_NUMBER}-compose.yaml up -d
+          echo "🚀 Starting PR preview environment..."
+          docker compose -p \${PROJECT_NAME} -f pr-\${PR_NUMBER}-compose.yaml up -d
 
-echo "⏳ Waiting \${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
-sleep \${SERVICE_STARTUP_WAIT_SECONDS}
+          echo "⏳ Waiting \${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
+          sleep \${SERVICE_STARTUP_WAIT_SECONDS}
 
-echo "🩺 Deployment status:"
-docker compose -p \${PROJECT_NAME} ps
+          echo "🩺 Deployment status:"
+          docker compose -p \${PROJECT_NAME} ps
 
-echo "📜 Migration logs:"
-docker logs \${PROJECT_NAME}-migrator-1 2>&1 | tail -20 || echo "⚠️ Migrator exited"
+          echo "📜 Migration logs:"
+          docker logs \${PROJECT_NAME}-migrator-1 2>&1 | tail -20 || echo "⚠️ Migrator exited"
 
-echo "📜 Backend logs:"
-docker logs \${PROJECT_NAME}-backend-1 2>&1 | tail -20 || echo "⚠️ Backend starting"
+          echo "📜 Backend logs:"
+          docker logs \${PROJECT_NAME}-backend-1 2>&1 | tail -20 || echo "⚠️ Backend starting"
 
-echo "✅ Deployment complete!"
-DEPLOY_SCRIPT
+          echo "✅ Deployment complete!"
+          DEPLOY_SCRIPT
 
       - name: Comment on PR with Preview URLs
         if: github.event_name == 'pull_request'
