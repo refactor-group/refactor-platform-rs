@@ -255,7 +255,7 @@ jobs:
         continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ steps.context.outputs.image_tag_pr }}
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build_push.outputs.digest }}
           push-to-registry: true
 
