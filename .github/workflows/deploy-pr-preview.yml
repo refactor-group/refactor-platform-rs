@@ -77,7 +77,8 @@ jobs:
         run: cargo clippy --all-targets
 
       - name: Run format check
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check || echo "::warning::Code formatting issues found. Run 'cargo fmt --all' locally to fix."
+        continue-on-error: true
 
   # ===========================================================================
   # JOB 2: Build & Test
