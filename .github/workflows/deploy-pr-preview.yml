@@ -2,23 +2,17 @@
 # PR Preview Deployment Workflow
 # =============================================================================
 # Purpose: Deploys isolated PR preview environments to RPi5 via Tailscale
-# Features: ARM64 native builds, multi‐tier caching, secure VPN deployment
+# Features: ARM64 native builds, multi-tier caching, secure VPN deployment
 # Target: Raspberry Pi 5 (ARM64) with Docker Compose via Tailscale SSH
 # =============================================================================
 
 name: Deploy PR Preview to RPi5
 
-# =============================================================================
-# Workflow Triggers - When this workflow runs
-# =============================================================================
 on:
-  # Automatically trigger on PR events to main branch
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
       - main
-
-  # Manual trigger for testing and debugging deployments
   workflow_dispatch:
     inputs:
       backend_branch:
@@ -36,17 +30,10 @@ on:
         default: false
         type: boolean
 
-# =============================================================================
-# Concurrency Control - Prevent conflicting deployments
-# =============================================================================
 concurrency:
-  # Only one deployment per PR to prevent port conflicts and resource issues
   group: preview-deploy-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-# =============================================================================
-# GitHub Permissions - Minimal required permissions for security
-# =============================================================================
 permissions:
   contents: read
   packages: write
@@ -54,9 +41,6 @@ permissions:
   attestations: write
   id-token: write
 
-# =============================================================================
-# Global Environment Variables - Shared across all jobs
-# =============================================================================
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -84,7 +68,7 @@ jobs:
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "main"
+          shared-key: "pr-preview"
           key: "lint"
           cache-all-crates: true
 
@@ -118,7 +102,7 @@ jobs:
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "main"
+          shared-key: "pr-preview"
           key: "test"
           cache-all-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -134,7 +118,6 @@ jobs:
   # ===========================================================================
   build-arm64-image:
     name: Build ARM64 Backend Image
-    # Run on Neo (RPi5) - dedicated self-hosted ARM64 runner
     runs-on: [self-hosted, Linux, ARM64, neo]
     environment: pr-preview
     needs: [lint, test]
@@ -187,8 +170,8 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "arm64-preview"
-          key: ${{ steps.context.outputs.backend_branch }}-${{ steps.context.outputs.pr_number }}
+          shared-key: "pr-preview-arm64"
+          key: "arm64-${{ steps.context.outputs.backend_branch }}"
           cache-all-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
 
@@ -229,14 +212,8 @@ jobs:
           tags: |
             ${{ steps.context.outputs.image_tag_pr }}
             ${{ steps.context.outputs.image_tag_sha }}
-          cache-from: |
-            ${{ inputs.force_rebuild != true && format('type=gha,scope=pr-{0}', steps.context.outputs.pr_number) || '' }}
-            ${{ inputs.force_rebuild != true && format('type=gha,scope=branch-{0}', steps.context.outputs.backend_branch) || '' }}
-            ${{ inputs.force_rebuild != true && 'type=gha,scope=main' || '' }}
-            ${{ inputs.force_rebuild != true && 'type=gha,scope=arm64-shared' || '' }}
-          cache-to: |
-            ${{ inputs.force_rebuild != true && format('type=gha,mode=max,scope=pr-{0}', steps.context.outputs.pr_number) || '' }}
-            ${{ inputs.force_rebuild != true && 'type=gha,mode=max,scope=arm64-shared' || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.title=Refactor Platform Backend PR-${{ steps.context.outputs.pr_number }}
             org.opencontainers.image.description=PR preview for branch ${{ steps.context.outputs.backend_branch }}
@@ -263,7 +240,11 @@ jobs:
         if: always()
         run: |
           echo "::group::sccache final stats"
-          sccache --show-stats
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats
+          else
+            echo "sccache not available"
+          fi
           echo "::endgroup::"
 
       - name: Attest Build Provenance
@@ -313,63 +294,73 @@ jobs:
           version: latest
           use-cache: true
 
-      - name: Deploy to Neo via Tailscale SSH
-        env:
-          PR_NUMBER: ${{ needs.build-arm64-image.outputs.pr_number }}
-          BACKEND_IMAGE: ${{ needs.build-arm64-image.outputs.image_tag_pr }}
-          PROJECT_NAME: ${{ steps.ports.outputs.project_name }}
-          PR_POSTGRES_PORT: ${{ steps.ports.outputs.postgres_port }}
-          PR_BACKEND_PORT: ${{ steps.ports.outputs.backend_port }}
-          PR_BACKEND_CONTAINER_PORT: ${{ steps.ports.outputs.backend_container_port }}
-          PR_FRONTEND_PORT: ${{ steps.ports.outputs.frontend_port }}
-          POSTGRES_USER: ${{ secrets.PR_PREVIEW_POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ secrets.PR_PREVIEW_POSTGRES_DB }}
-          POSTGRES_SCHEMA: ${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}
-          RUST_ENV: ${{ vars.RUST_ENV }}
-          BACKEND_INTERFACE: ${{ vars.BACKEND_INTERFACE }}
-          BACKEND_ALLOWED_ORIGINS: ${{ vars.BACKEND_ALLOWED_ORIGINS }}
-          BACKEND_LOG_FILTER_LEVEL: ${{ vars.BACKEND_LOG_FILTER_LEVEL }}
-          BACKEND_SESSION_EXPIRY_SECONDS: ${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
-          SERVICE_STARTUP_WAIT: ${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
-          TIPTAP_APP_ID: ${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
-          TIPTAP_URL: ${{ secrets.PR_PREVIEW_TIPTAP_URL }}
-          TIPTAP_AUTH_KEY: ${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}
-          TIPTAP_JWT_SIGNING_KEY: ${{ secrets.PR_PREVIEW_TIPAP_JWT_SIGNING_KEY }}
-          MAILERSEND_API_KEY: ${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}
-          WELCOME_EMAIL_TEMPLATE_ID: ${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}
+      - name: Setup SSH Configuration
         run: |
-          echo "📦 Transferring compose file to neo..."
-          scp -o StrictHostKeyChecking=accept-new docker-compose.pr-preview.yaml \
-            ${{ secrets.NEO_SSH_USER }}@${{ secrets.NEO_SSH_HOST }}:/home/${{ secrets.NEO_SSH_USER }}/pr-${{ env.PR_NUMBER }}-compose.yaml
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.RPI5_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.RPI5_HOST_KEY }}" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Test SSH Connection
+        run: |
+          echo "🔍 Testing SSH connection to ${{ secrets.RPI5_TAILSCALE_NAME }}..."
+          if ! ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 \
+            -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            'echo "SSH connection successful"'; then
+            echo "::error::SSH connection failed to ${{ secrets.RPI5_TAILSCALE_NAME }}"
+            exit 1
+          fi
+          echo "::notice::✅ SSH connection verified"
+
+      - name: Deploy to RPi5 via Tailscale SSH
+        run: |
+          PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
+          BACKEND_IMAGE="${{ needs.build-arm64-image.outputs.image_tag_pr }}"
+          PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
+
+          echo "📦 Transferring compose file to RPi5..."
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            docker-compose.pr-preview.yaml \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-compose.yaml
 
           echo "🚀 Deploying PR preview environment..."
-          ssh -o StrictHostKeyChecking=accept-new ${{ secrets.NEO_SSH_USER }}@${{ secrets.NEO_SSH_HOST }} << 'ENDSSH'
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            /bin/bash << 'ENDSSH'
             set -e
 
-            export PR_NUMBER="${PR_NUMBER}"
-            export BACKEND_IMAGE="${BACKEND_IMAGE}"
-            export PR_POSTGRES_PORT="${PR_POSTGRES_PORT}"
-            export PR_BACKEND_PORT="${PR_BACKEND_PORT}"
-            export PR_BACKEND_CONTAINER_PORT="${PR_BACKEND_CONTAINER_PORT}"
-            export PR_FRONTEND_PORT="${PR_FRONTEND_PORT}"
-            export POSTGRES_USER="${POSTGRES_USER}"
-            export POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
-            export POSTGRES_DB="${POSTGRES_DB}"
-            export POSTGRES_SCHEMA="${POSTGRES_SCHEMA}"
-            export RUST_ENV="${RUST_ENV}"
-            export BACKEND_INTERFACE="${BACKEND_INTERFACE}"
-            export BACKEND_ALLOWED_ORIGINS="${BACKEND_ALLOWED_ORIGINS}"
-            export BACKEND_LOG_FILTER_LEVEL="${BACKEND_LOG_FILTER_LEVEL}"
-            export BACKEND_SESSION_EXPIRY_SECONDS="${BACKEND_SESSION_EXPIRY_SECONDS}"
-            export TIPTAP_APP_ID="${TIPTAP_APP_ID}"
-            export TIPTAP_URL="${TIPTAP_URL}"
-            export TIPTAP_AUTH_KEY="${TIPTAP_AUTH_KEY}"
-            export TIPTAP_JWT_SIGNING_KEY="${TIPTAP_JWT_SIGNING_KEY}"
-            export MAILERSEND_API_KEY="${MAILERSEND_API_KEY}"
-            export WELCOME_EMAIL_TEMPLATE_ID="${WELCOME_EMAIL_TEMPLATE_ID}"
+            # Validate we're on the target server
+            if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+              echo "::error::Script running on GitHub runner instead of target server!"
+              exit 1
+            fi
 
-            cd /home/${{ secrets.NEO_SSH_USER }}
+            export PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
+            export BACKEND_IMAGE="${{ needs.build-arm64-image.outputs.image_tag_pr }}"
+            export PR_POSTGRES_PORT="${{ steps.ports.outputs.postgres_port }}"
+            export PR_BACKEND_PORT="${{ steps.ports.outputs.backend_port }}"
+            export PR_BACKEND_CONTAINER_PORT="${{ steps.ports.outputs.backend_container_port }}"
+            export PR_FRONTEND_PORT="${{ steps.ports.outputs.frontend_port }}"
+            export POSTGRES_USER="${{ secrets.PR_PREVIEW_POSTGRES_USER }}"
+            export POSTGRES_PASSWORD="${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}"
+            export POSTGRES_DB="${{ secrets.PR_PREVIEW_POSTGRES_DB }}"
+            export POSTGRES_SCHEMA="${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}"
+            export RUST_ENV="${{ vars.RUST_ENV }}"
+            export BACKEND_INTERFACE="${{ vars.BACKEND_INTERFACE }}"
+            export BACKEND_ALLOWED_ORIGINS="${{ vars.BACKEND_ALLOWED_ORIGINS }}"
+            export BACKEND_LOG_FILTER_LEVEL="${{ vars.BACKEND_LOG_FILTER_LEVEL }}"
+            export BACKEND_SESSION_EXPIRY_SECONDS="${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}"
+            export TIPTAP_APP_ID="${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}"
+            export TIPTAP_URL="${{ secrets.PR_PREVIEW_TIPTAP_URL }}"
+            export TIPTAP_AUTH_KEY="${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}"
+            export TIPTAP_JWT_SIGNING_KEY="${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}"
+            export MAILERSEND_API_KEY="${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}"
+            export WELCOME_EMAIL_TEMPLATE_ID="${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}"
+
+            cd /home/${{ secrets.RPI5_USERNAME }}
 
             echo "📦 Logging into GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -383,8 +374,8 @@ jobs:
             echo "🚀 Starting PR preview environment..."
             docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml up -d
 
-            echo "⏳ Waiting ${SERVICE_STARTUP_WAIT} seconds for services..."
-            sleep ${SERVICE_STARTUP_WAIT}
+            echo "⏳ Waiting ${{ vars.SERVICE_STARTUP_WAIT_SECONDS }} seconds for services..."
+            sleep ${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
 
             echo "🩺 Deployment status:"
             docker compose -p ${PROJECT_NAME} ps
@@ -410,8 +401,8 @@ jobs:
             const backendBranch = '${{ needs.build-arm64-image.outputs.backend_branch }}';
             const imageTag = '${{ needs.build-arm64-image.outputs.image_tag_pr }}';
             const isNativeArm64 = '${{ needs.build-arm64-image.outputs.is_native_arm64 }}' === 'true';
-            const backendUrl = `http://${{ secrets.NEO_SSH_HOST }}:${backendPort}`;
-            const frontendUrl = `http://${{ secrets.NEO_SSH_HOST }}:${frontendPort}`;
+            const backendUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}:${backendPort}`;
+            const frontendUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}:${frontendPort}`;
 
             const comment = `## 🚀 PR Preview Environment Deployed!
 
@@ -481,8 +472,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           echo "::notice::✅ Deployment complete!"
-          echo "::notice::🌐 Frontend: http://${{ secrets.NEO_SSH_HOST }}:${{ steps.ports.outputs.frontend_port }}"
-          echo "::notice::🌐 Backend: http://${{ secrets.NEO_SSH_HOST }}:${{ steps.ports.outputs.backend_port }}"
-          echo "::notice::🗄️  Postgres: ${{ secrets.NEO_SSH_HOST }}:${{ steps.ports.outputs.postgres_port }}"
+          echo "::notice::🌐 Frontend: http://${{ secrets.RPI5_TAILSCALE_NAME }}:${{ steps.ports.outputs.frontend_port }}"
+          echo "::notice::🌐 Backend: http://${{ secrets.RPI5_TAILSCALE_NAME }}:${{ steps.ports.outputs.backend_port }}"
+          echo "::notice::🗄️ Postgres: ${{ secrets.RPI5_TAILSCALE_NAME }}:${{ steps.ports.outputs.postgres_port }}"
           echo "::notice::📦 Image: ${{ needs.build-arm64-image.outputs.image_tag_pr }}"
           echo "::notice::🏗️  Build: Native ARM64 on Neo"
