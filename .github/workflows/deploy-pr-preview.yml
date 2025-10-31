@@ -252,6 +252,7 @@ jobs:
 
       - name: Attest Build Provenance
         if: steps.build_push.conclusion == 'success'
+        continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ steps.context.outputs.image_tag_pr }}
