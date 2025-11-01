@@ -25,7 +25,6 @@ pub(crate) mod extractors;
 pub(crate) mod middleware;
 pub(crate) mod params;
 pub(crate) mod protect;
-pub(crate) mod response;
 mod router;
 
 pub async fn init_server(app_state: AppState) -> Result<()> {

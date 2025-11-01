@@ -42,19 +42,15 @@ where
     match s {
         None => Ok(Vec::new()),
         Some(s) if s.is_empty() => Ok(Vec::new()),
-        Some(s) => {
-            let mut includes = Vec::new();
-            for part in s.split(',') {
-                let trimmed = part.trim();
-                if !trimmed.is_empty() {
-                    let include: IncludeParam = serde_json::from_value(
-                        serde_json::Value::String(trimmed.to_string())
-                    ).map_err(serde::de::Error::custom)?;
-                    includes.push(include);
-                }
-            }
-            Ok(includes)
-        }
+        Some(s) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                serde_json::from_value(serde_json::Value::String(s.to_string()))
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect(),
     }
 }
 
@@ -85,113 +81,5 @@ impl IndexParams {
         self.sort_order = sort_order;
         self
     }
-
-    /// Validates that include parameters are meaningful
-    /// Returns error message if validation fails
-    pub fn validate_includes(&self) -> Result<(), &'static str> {
-        // organization requires relationship (can't get org without relationship)
-        if self.include.contains(&IncludeParam::Organization)
-            && !self.include.contains(&IncludeParam::Relationship) {
-            return Err("Cannot include 'organization' without 'relationship'");
-        }
-        Ok(())
-    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validate_includes_allows_organization_with_relationship() {
-        let params = IndexParams {
-            user_id: Id::new_v4(),
-            from_date: None,
-            to_date: None,
-            sort_by: None,
-            sort_order: None,
-            include: vec![IncludeParam::Relationship, IncludeParam::Organization],
-        };
-
-        assert!(params.validate_includes().is_ok());
-    }
-
-    #[test]
-    fn validate_includes_rejects_organization_without_relationship() {
-        let params = IndexParams {
-            user_id: Id::new_v4(),
-            from_date: None,
-            to_date: None,
-            sort_by: None,
-            sort_order: None,
-            include: vec![IncludeParam::Organization],
-        };
-
-        assert!(params.validate_includes().is_err());
-        assert_eq!(
-            params.validate_includes().unwrap_err(),
-            "Cannot include 'organization' without 'relationship'"
-        );
-    }
-
-    #[test]
-    fn validate_includes_allows_goal_alone() {
-        let params = IndexParams {
-            user_id: Id::new_v4(),
-            from_date: None,
-            to_date: None,
-            sort_by: None,
-            sort_order: None,
-            include: vec![IncludeParam::Goal],
-        };
-
-        assert!(params.validate_includes().is_ok());
-    }
-
-    #[test]
-    fn validate_includes_allows_agreements_alone() {
-        let params = IndexParams {
-            user_id: Id::new_v4(),
-            from_date: None,
-            to_date: None,
-            sort_by: None,
-            sort_order: None,
-            include: vec![IncludeParam::Agreements],
-        };
-
-        assert!(params.validate_includes().is_ok());
-    }
-
-    #[test]
-    fn validate_includes_allows_all_includes() {
-        let params = IndexParams {
-            user_id: Id::new_v4(),
-            from_date: None,
-            to_date: None,
-            sort_by: None,
-            sort_order: None,
-            include: vec![
-                IncludeParam::Relationship,
-                IncludeParam::Organization,
-                IncludeParam::Goal,
-                IncludeParam::Agreements,
-            ],
-        };
-
-        assert!(params.validate_includes().is_ok());
-    }
-
-    #[test]
-    fn validate_includes_allows_empty_includes() {
-        let params = IndexParams {
-            user_id: Id::new_v4(),
-            from_date: None,
-            to_date: None,
-            sort_by: None,
-            sort_order: None,
-            include: vec![],
-        };
-
-        assert!(params.validate_includes().is_ok());
-    }
-}

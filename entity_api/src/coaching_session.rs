@@ -5,7 +5,7 @@ use entity::{
     organizations, overarching_goals, users, Id,
 };
 use log::debug;
-use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, QuerySelect, Set, TryIntoModel};
+use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, TryIntoModel};
 use std::collections::HashMap;
 
 pub async fn create(
@@ -77,14 +77,21 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
 }
 
 /// Enriched session data with optional related resources
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EnrichedSession {
+    #[serde(flatten)]
     pub session: Model,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub relationship: Option<coaching_relationships::Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub coach: Option<users::Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub coachee: Option<users::Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<organizations::Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub overarching_goal: Option<overarching_goals::Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
 }
 
@@ -110,18 +117,51 @@ impl IncludeOptions {
     pub fn needs_relationships(&self) -> bool {
         self.relationship || self.organization
     }
+
+    /// Validates that include options are meaningful
+    /// Returns error if validation fails
+    pub fn validate(&self) -> Result<(), Error> {
+        // organization requires relationship (can't get org without relationship)
+        if self.organization && !self.relationship {
+            return Err(Error {
+                source: None,
+                error_kind: EntityApiErrorKind::InvalidQueryTerm,
+            });
+        }
+        Ok(())
+    }
 }
 
-/// Find sessions by user with optional date filtering and related data includes
+/// Sort field for coaching sessions
+#[derive(Debug, Clone, Copy)]
+pub enum SortField {
+    Date,
+    CreatedAt,
+    UpdatedAt,
+}
+
+/// Sort order for queries
+#[derive(Debug, Clone, Copy)]
+pub enum SortOrder {
+    Asc,
+    Desc,
+}
+
+/// Find sessions by user with optional date filtering, sorting, and related data includes
 pub async fn find_by_user_with_includes(
     db: &impl ConnectionTrait,
     user_id: Id,
     from_date: Option<chrono::NaiveDate>,
     to_date: Option<chrono::NaiveDate>,
+    sort_by: Option<SortField>,
+    sort_order: Option<SortOrder>,
     includes: IncludeOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
-    // Load base sessions with date filtering
-    let sessions = load_sessions_for_user(db, user_id, from_date, to_date).await?;
+    // Validate include options
+    includes.validate()?;
+
+    // Load base sessions with date filtering and sorting
+    let sessions = load_sessions_for_user(db, user_id, from_date, to_date, sort_by, sort_order).await?;
 
     // Early return if no includes requested
     if !includes.needs_relationships() && !includes.goal && !includes.agreements {
@@ -138,12 +178,14 @@ pub async fn find_by_user_with_includes(
         .collect())
 }
 
-/// Load base sessions filtered by user and optional date range
+/// Load base sessions filtered by user, optional date range, and sorting
 async fn load_sessions_for_user(
     db: &impl ConnectionTrait,
     user_id: Id,
     from_date: Option<chrono::NaiveDate>,
     to_date: Option<chrono::NaiveDate>,
+    sort_by: Option<SortField>,
+    sort_order: Option<SortOrder>,
 ) -> Result<Vec<Model>, Error> {
     let mut query = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
@@ -161,6 +203,20 @@ async fn load_sessions_for_user(
         // Use next day with less-than for inclusive end date
         let end_of_day = to.succ_opt().unwrap_or(to);
         query = query.filter(coaching_sessions::Column::Date.lt(end_of_day));
+    }
+
+    // Apply sorting if both field and order are provided
+    if let (Some(field), Some(order)) = (sort_by, sort_order) {
+        let sea_order = match order {
+            SortOrder::Asc => sea_orm::Order::Asc,
+            SortOrder::Desc => sea_orm::Order::Desc,
+        };
+
+        query = match field {
+            SortField::Date => query.order_by(coaching_sessions::Column::Date, sea_order),
+            SortField::CreatedAt => query.order_by(coaching_sessions::Column::CreatedAt, sea_order),
+            SortField::UpdatedAt => query.order_by(coaching_sessions::Column::UpdatedAt, sea_order),
+        };
     }
 
     query.all(db).await.map_err(Into::into)
@@ -496,7 +552,7 @@ mod tests {
             .into_connection();
 
         let includes = IncludeOptions::none();
-        let results = find_by_user_with_includes(&db, user_id, None, None, includes).await?;
+        let results = find_by_user_with_includes(&db, user_id, None, None, None, None, includes).await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session_id);
@@ -530,7 +586,7 @@ mod tests {
             .into_connection();
 
         let includes = IncludeOptions::none();
-        let results = find_by_user_with_includes(&db, user_id, Some(from_date), Some(to_date), includes).await?;
+        let results = find_by_user_with_includes(&db, user_id, Some(from_date), Some(to_date), None, None, includes).await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session.id);
@@ -593,5 +649,55 @@ mod tests {
         assert!(enriched.organization.is_none());
         assert!(enriched.overarching_goal.is_none());
         assert!(enriched.agreement.is_none());
+    }
+
+    #[test]
+    fn validate_allows_organization_with_relationship() {
+        let includes = IncludeOptions {
+            relationship: true,
+            organization: true,
+            goal: false,
+            agreements: false,
+        };
+        assert!(includes.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_organization_without_relationship() {
+        let includes = IncludeOptions {
+            relationship: false,
+            organization: true,
+            goal: false,
+            agreements: false,
+        };
+        assert!(includes.validate().is_err());
+    }
+
+    #[test]
+    fn validate_allows_goal_alone() {
+        let includes = IncludeOptions {
+            relationship: false,
+            organization: false,
+            goal: true,
+            agreements: false,
+        };
+        assert!(includes.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_allows_all_includes() {
+        let includes = IncludeOptions {
+            relationship: true,
+            organization: true,
+            goal: true,
+            agreements: true,
+        };
+        assert!(includes.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_allows_none() {
+        let includes = IncludeOptions::none();
+        assert!(includes.validate().is_ok());
     }
 }
