@@ -1,7 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::{organization::Entity, uuid_parse_str};
 use chrono::Utc;
-use entity::{organizations::*, organizations_users, user_roles, prelude::Organizations, Id};
+use entity::{organizations::*, user_roles, prelude::Organizations, Id};
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, ActiveValue::Unchanged, ConnectionTrait, JoinType,
     QuerySelect, TryIntoModel,
