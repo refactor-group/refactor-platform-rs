@@ -331,41 +331,92 @@ jobs:
 
           echo "🚀 Deploying PR preview environment..."
 
-          # Create a temporary script to pass via stdin to avoid heredoc issues
+          # Create environment variable file to avoid shell quoting issues
+          cat > /tmp/pr-${PR_NUMBER}-env.sh << 'ENV_SCRIPT'
+          export PR_NUMBER="${PR_NUMBER}"
+          export BACKEND_IMAGE="${BACKEND_IMAGE}"
+          export PROJECT_NAME="${PROJECT_NAME}"
+          export PR_POSTGRES_PORT="${PR_POSTGRES_PORT}"
+          export PR_BACKEND_PORT="${PR_BACKEND_PORT}"
+          export PR_BACKEND_CONTAINER_PORT="${PR_BACKEND_CONTAINER_PORT}"
+          export PR_FRONTEND_PORT="${PR_FRONTEND_PORT}"
+          export POSTGRES_USER="${POSTGRES_USER}"
+          export POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
+          export POSTGRES_DB="${POSTGRES_DB}"
+          export POSTGRES_SCHEMA="${POSTGRES_SCHEMA}"
+          export RUST_ENV="${RUST_ENV}"
+          export RUST_BACKTRACE="${RUST_BACKTRACE}"
+          export BACKEND_INTERFACE="${BACKEND_INTERFACE}"
+          export BACKEND_ALLOWED_ORIGINS="${BACKEND_ALLOWED_ORIGINS}"
+          export BACKEND_LOG_FILTER_LEVEL="${BACKEND_LOG_FILTER_LEVEL}"
+          export BACKEND_SESSION_EXPIRY_SECONDS="${BACKEND_SESSION_EXPIRY_SECONDS}"
+          export TIPTAP_APP_ID="${TIPTAP_APP_ID}"
+          export TIPTAP_URL="${TIPTAP_URL}"
+          export TIPTAP_AUTH_KEY="${TIPTAP_AUTH_KEY}"
+          export TIPTAP_JWT_SIGNING_KEY="${TIPTAP_JWT_SIGNING_KEY}"
+          export MAILERSEND_API_KEY="${MAILERSEND_API_KEY}"
+          export WELCOME_EMAIL_TEMPLATE_ID="${WELCOME_EMAIL_TEMPLATE_ID}"
+          export GITHUB_TOKEN="${GITHUB_TOKEN}"
+          export GITHUB_ACTOR="${GITHUB_ACTOR}"
+          export RPI5_USERNAME="${RPI5_USERNAME}"
+          export SERVICE_STARTUP_WAIT_SECONDS="${SERVICE_STARTUP_WAIT_SECONDS}"
+          ENV_SCRIPT
+
+          # Substitute variables into the env script
+          sed -i "s|\${PR_NUMBER}|${PR_NUMBER}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${BACKEND_IMAGE}|${BACKEND_IMAGE}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${PROJECT_NAME}|${PROJECT_NAME}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${PR_POSTGRES_PORT}|${{ steps.ports.outputs.postgres_port }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${PR_BACKEND_PORT}|${{ steps.ports.outputs.backend_port }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${PR_BACKEND_CONTAINER_PORT}|${{ steps.ports.outputs.backend_container_port }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${PR_FRONTEND_PORT}|${{ steps.ports.outputs.frontend_port }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${POSTGRES_USER}|$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${POSTGRES_PASSWORD}|$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${POSTGRES_DB}|$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${POSTGRES_SCHEMA}|$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${RUST_ENV}|${{ vars.RUST_ENV }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${RUST_BACKTRACE}|${{ env.RUST_BACKTRACE }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${BACKEND_INTERFACE}|${{ vars.BACKEND_INTERFACE }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${BACKEND_ALLOWED_ORIGINS}|${{ vars.BACKEND_ALLOWED_ORIGINS }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${BACKEND_LOG_FILTER_LEVEL}|${{ vars.BACKEND_LOG_FILTER_LEVEL }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${BACKEND_SESSION_EXPIRY_SECONDS}|${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${TIPTAP_APP_ID}|$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${TIPTAP_URL}|$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${TIPTAP_AUTH_KEY}|$(echo '${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${TIPTAP_JWT_SIGNING_KEY}|$(echo '${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${MAILERSEND_API_KEY}|$(echo '${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${WELCOME_EMAIL_TEMPLATE_ID}|$(echo '${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' | tr -d '\n\r')|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${GITHUB_TOKEN}|${{ secrets.GITHUB_TOKEN }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${GITHUB_ACTOR}|${{ github.actor }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${RPI5_USERNAME}|${{ secrets.RPI5_USERNAME }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+          sed -i "s|\${SERVICE_STARTUP_WAIT_SECONDS}|${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}|g" /tmp/pr-${PR_NUMBER}-env.sh
+
+          # Transfer env script to RPi5
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            /tmp/pr-${PR_NUMBER}-env.sh \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-env.sh
+
+          # Execute deployment with sourced environment
           cat << 'DEPLOY_SCRIPT' | ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
-            "export PR_NUMBER='${PR_NUMBER}' && \
-             export BACKEND_IMAGE='${BACKEND_IMAGE}' && \
-             export PROJECT_NAME='${PROJECT_NAME}' && \
-             export PR_POSTGRES_PORT='${{ steps.ports.outputs.postgres_port }}' && \
-             export PR_BACKEND_PORT='${{ steps.ports.outputs.backend_port }}' && \
-             export PR_BACKEND_CONTAINER_PORT='${{ steps.ports.outputs.backend_container_port }}' && \
-             export PR_FRONTEND_PORT='${{ steps.ports.outputs.frontend_port }}' && \
-             export POSTGRES_USER=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n') && \
-             export POSTGRES_PASSWORD=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n') && \
-             export POSTGRES_DB=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n') && \
-             export POSTGRES_SCHEMA=\$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n') && \
-             export RUST_ENV='${{ vars.RUST_ENV }}' && \
-             export BACKEND_INTERFACE='${{ vars.BACKEND_INTERFACE }}' && \
-             export BACKEND_ALLOWED_ORIGINS='${{ vars.BACKEND_ALLOWED_ORIGINS }}' && \
-             export BACKEND_LOG_FILTER_LEVEL='${{ vars.BACKEND_LOG_FILTER_LEVEL }}' && \
-             export BACKEND_SESSION_EXPIRY_SECONDS='${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}' && \
-             export TIPTAP_APP_ID='${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' && \
-             export TIPTAP_URL='${{ secrets.PR_PREVIEW_TIPTAP_URL }}' && \
-             export TIPTAP_AUTH_KEY='${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' && \
-             export TIPTAP_JWT_SIGNING_KEY='${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' && \
-             export MAILERSEND_API_KEY='${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' && \
-             export WELCOME_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' && \
-             export GITHUB_TOKEN='${{ secrets.GITHUB_TOKEN }}' && \
-             export GITHUB_ACTOR='${{ github.actor }}' && \
-             export RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}' && \
-             export SERVICE_STARTUP_WAIT_SECONDS='${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}' && \
-             /bin/bash"
+            /bin/bash
           set -eo pipefail
+
+          # Load environment variables from transferred file
+          # We need to detect which PR number from the available env files
+          # Since we're in SSH context, find the most recent pr-*-env.sh file
+          ENV_FILE=$(ls -t ~/pr-*-env.sh 2>/dev/null | head -1)
+          if [[ -f "$ENV_FILE" ]]; then
+            echo "📥 Loading environment from: $ENV_FILE"
+            source "$ENV_FILE"
+          else
+            echo "❌ Environment file not found!"
+            exit 1
+          fi
 
           # Validate we're on the target server
           if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
-            echo "::error::Script running on GitHub runner instead of target server!"
+            echo "❌ Script running on GitHub runner instead of target server!"
             exit 1
           fi
 
@@ -389,13 +440,50 @@ jobs:
           echo "🩺 Deployment status:"
           docker compose -p ${PROJECT_NAME} ps
 
-          echo "📜 Migration logs:"
-          docker logs ${PROJECT_NAME}-migrator-1 2>&1 | tail -20 || echo "⚠️ Migrator exited"
+          # Check migrator container exit code
+          echo "📜 Checking migration status..."
+          MIGRATOR_EXIT_CODE=$(docker inspect ${PROJECT_NAME}-migrator-1 --format='{{.State.ExitCode}}' 2>/dev/null || echo "255")
+          docker logs ${PROJECT_NAME}-migrator-1 2>&1 | tail -20
 
-          echo "📜 Backend logs:"
-          docker logs ${PROJECT_NAME}-backend-1 2>&1 | tail -20 || echo "⚠️ Backend starting"
+          if [[ "${MIGRATOR_EXIT_CODE}" != "0" ]]; then
+            echo "❌ Migration failed with exit code: ${MIGRATOR_EXIT_CODE}"
+            echo "📜 Full migration logs:"
+            docker logs ${PROJECT_NAME}-migrator-1 2>&1
+            exit 1
+          fi
+          echo "✅ Migrations completed successfully"
 
+          # Check backend container health
+          echo "📜 Checking backend status..."
+          BACKEND_STATUS=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
+          docker logs ${PROJECT_NAME}-backend-1 2>&1 | tail -20
+
+          if [[ "${BACKEND_STATUS}" != "running" ]]; then
+            echo "❌ Backend is not running (status: ${BACKEND_STATUS})"
+            echo "📜 Full backend logs:"
+            docker logs ${PROJECT_NAME}-backend-1 2>&1
+            exit 1
+          fi
+
+          # Check if backend is restarting
+          BACKEND_RESTART_COUNT=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.RestartCount}}' 2>/dev/null || echo "0")
+          if [[ "${BACKEND_RESTART_COUNT}" -gt "0" ]]; then
+            echo "⚠️  Backend has restarted ${BACKEND_RESTART_COUNT} time(s) - checking for crash loop"
+            sleep 5
+            BACKEND_STATUS_RECHECK=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
+            if [[ "${BACKEND_STATUS_RECHECK}" != "running" ]]; then
+              echo "❌ Backend is crash looping"
+              echo "📜 Full backend logs:"
+              docker logs ${PROJECT_NAME}-backend-1 2>&1
+              exit 1
+            fi
+          fi
+
+          echo "✅ Backend is running successfully"
           echo "✅ Deployment complete!"
+
+          # Cleanup environment file for security
+          rm -f "$ENV_FILE"
           DEPLOY_SCRIPT
 
       - name: Comment on PR with Preview URLs

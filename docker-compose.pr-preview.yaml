@@ -38,6 +38,7 @@ services:
       # Application role configuration
       ROLE: migrator                      # Tell app to run migrations
       RUST_ENV: ${RUST_ENV}              # Environment (staging/dev/prod)
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1} # Enable backtraces for debugging
       # Database connection string for migrations
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DATABASE_SCHEMA: ${POSTGRES_SCHEMA} # Database schema name
@@ -57,7 +58,8 @@ services:
       # Application role and environment
       ROLE: app                           # Tell app to run as web server
       RUST_ENV: ${RUST_ENV}              # Environment configuration
-      
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1} # Enable backtraces for debugging
+
       # Database connection configuration
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
