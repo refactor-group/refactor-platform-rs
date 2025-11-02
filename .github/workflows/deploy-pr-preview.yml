@@ -331,7 +331,7 @@ jobs:
 
           echo "🚀 Deploying PR preview environment..."
 
-          # Create .env file for Docker Compose
+          # Create .env file for Docker Compose with sanitized secrets
           cat > /tmp/pr-${PR_NUMBER}.env << EOF
           PR_NUMBER=${PR_NUMBER}
           BACKEND_IMAGE=${BACKEND_IMAGE}
@@ -340,22 +340,22 @@ jobs:
           PR_BACKEND_PORT=${{ steps.ports.outputs.backend_port }}
           PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
           PR_FRONTEND_PORT=${{ steps.ports.outputs.frontend_port }}
-          POSTGRES_USER=${{ secrets.PR_PREVIEW_POSTGRES_USER }}
-          POSTGRES_PASSWORD=${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}
-          POSTGRES_DB=${{ secrets.PR_PREVIEW_POSTGRES_DB }}
-          POSTGRES_SCHEMA=${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}
+          POSTGRES_USER=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n\r' | tr -d ' ')
+          POSTGRES_PASSWORD=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n\r' | tr -d ' ')
+          POSTGRES_DB=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r' | tr -d ' ')
+          POSTGRES_SCHEMA=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n\r' | tr -d ' ')
           RUST_ENV=${{ vars.RUST_ENV }}
           RUST_BACKTRACE=${{ env.RUST_BACKTRACE }}
           BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
           BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
           BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
           BACKEND_SESSION_EXPIRY_SECONDS=${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
-          TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
-          TIPTAP_URL=${{ secrets.PR_PREVIEW_TIPTAP_URL }}
-          TIPTAP_AUTH_KEY=${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}
-          TIPTAP_JWT_SIGNING_KEY=${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}
-          MAILERSEND_API_KEY=${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}
-          WELCOME_EMAIL_TEMPLATE_ID=${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}
+          TIPTAP_APP_ID=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')
+          TIPTAP_URL=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')
+          TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' | tr -d '\n\r')
+          TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' | tr -d '\n\r')
+          MAILERSEND_API_KEY=$(echo '${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' | tr -d '\n\r')
+          WELCOME_EMAIL_TEMPLATE_ID=$(echo '${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' | tr -d '\n\r')
           GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR=${{ github.actor }}
           RPI5_USERNAME=${{ secrets.RPI5_USERNAME }}
