@@ -331,53 +331,56 @@ jobs:
 
           echo "🚀 Deploying PR preview environment..."
 
-          # Create environment variable file with proper variable expansion
-          cat > /tmp/pr-${PR_NUMBER}-env.sh << EOF
-          export PR_NUMBER="${PR_NUMBER}"
-          export BACKEND_IMAGE="${BACKEND_IMAGE}"
-          export PROJECT_NAME="${PROJECT_NAME}"
-          export PR_POSTGRES_PORT="${{ steps.ports.outputs.postgres_port }}"
-          export PR_BACKEND_PORT="${{ steps.ports.outputs.backend_port }}"
-          export PR_BACKEND_CONTAINER_PORT="${{ steps.ports.outputs.backend_container_port }}"
-          export PR_FRONTEND_PORT="${{ steps.ports.outputs.frontend_port }}"
-          export POSTGRES_USER="${{ secrets.PR_PREVIEW_POSTGRES_USER }}"
-          export POSTGRES_PASSWORD="${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}"
-          export POSTGRES_DB="${{ secrets.PR_PREVIEW_POSTGRES_DB }}"
-          export POSTGRES_SCHEMA="${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}"
-          export RUST_ENV="${{ vars.RUST_ENV }}"
-          export RUST_BACKTRACE="${{ env.RUST_BACKTRACE }}"
-          export BACKEND_INTERFACE="${{ vars.BACKEND_INTERFACE }}"
-          export BACKEND_ALLOWED_ORIGINS="${{ vars.BACKEND_ALLOWED_ORIGINS }}"
-          export BACKEND_LOG_FILTER_LEVEL="${{ vars.BACKEND_LOG_FILTER_LEVEL }}"
-          export BACKEND_SESSION_EXPIRY_SECONDS="${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}"
-          export TIPTAP_APP_ID="${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}"
-          export TIPTAP_URL="${{ secrets.PR_PREVIEW_TIPTAP_URL }}"
-          export TIPTAP_AUTH_KEY="${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}"
-          export TIPTAP_JWT_SIGNING_KEY="${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}"
-          export MAILERSEND_API_KEY="${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}"
-          export WELCOME_EMAIL_TEMPLATE_ID="${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}"
-          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          export GITHUB_ACTOR="${{ github.actor }}"
-          export RPI5_USERNAME="${{ secrets.RPI5_USERNAME }}"
-          export SERVICE_STARTUP_WAIT_SECONDS="${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}"
+          # Create .env file for Docker Compose
+          cat > /tmp/pr-${PR_NUMBER}.env << EOF
+          PR_NUMBER=${PR_NUMBER}
+          BACKEND_IMAGE=${BACKEND_IMAGE}
+          PROJECT_NAME=${PROJECT_NAME}
+          PR_POSTGRES_PORT=${{ steps.ports.outputs.postgres_port }}
+          PR_BACKEND_PORT=${{ steps.ports.outputs.backend_port }}
+          PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
+          PR_FRONTEND_PORT=${{ steps.ports.outputs.frontend_port }}
+          POSTGRES_USER=${{ secrets.PR_PREVIEW_POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}
+          POSTGRES_DB=${{ secrets.PR_PREVIEW_POSTGRES_DB }}
+          POSTGRES_SCHEMA=${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}
+          RUST_ENV=${{ vars.RUST_ENV }}
+          RUST_BACKTRACE=${{ env.RUST_BACKTRACE }}
+          BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
+          BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
+          BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
+          BACKEND_SESSION_EXPIRY_SECONDS=${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
+          TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
+          TIPTAP_URL=${{ secrets.PR_PREVIEW_TIPTAP_URL }}
+          TIPTAP_AUTH_KEY=${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}
+          TIPTAP_JWT_SIGNING_KEY=${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}
+          MAILERSEND_API_KEY=${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}
+          WELCOME_EMAIL_TEMPLATE_ID=${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR=${{ github.actor }}
+          RPI5_USERNAME=${{ secrets.RPI5_USERNAME }}
+          SERVICE_STARTUP_WAIT_SECONDS=${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
           EOF
 
-          # Transfer env script to RPi5
+          # Transfer .env file to RPi5
           scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
-            /tmp/pr-${PR_NUMBER}-env.sh \
-            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-env.sh
+            /tmp/pr-${PR_NUMBER}.env \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
 
-          # Execute deployment with sourced environment
+          # Execute deployment
           cat << 'DEPLOY_SCRIPT' | ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
             /bin/bash
           set -eo pipefail
 
-          # Load environment variables from transferred file
-          ENV_FILE=$(ls -t ~/pr-*-env.sh 2>/dev/null | head -1)
+          # Load environment variables for script use
+          ENV_FILE=$(ls -t ~/pr-*.env 2>/dev/null | head -1)
           if [[ -f "$ENV_FILE" ]]; then
-            echo "📥 Loading environment from: $ENV_FILE"
+            echo "📥 Found environment file: $ENV_FILE"
+            # Export variables for use in this script
+            set -a
             source "$ENV_FILE"
+            set +a
           else
             echo "❌ Environment file not found!"
             exit 1
@@ -401,7 +404,8 @@ jobs:
           docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down 2>/dev/null || true
 
           echo "🚀 Starting PR preview environment..."
-          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml up -d
+          # Use --env-file to pass environment variables to Docker Compose
+          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file pr-${PR_NUMBER}.env up -d
 
           echo "⏳ Waiting ${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
           sleep ${SERVICE_STARTUP_WAIT_SECONDS}
