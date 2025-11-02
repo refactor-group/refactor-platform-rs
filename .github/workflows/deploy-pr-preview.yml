@@ -8,6 +8,7 @@
 
 name: Deploy PR Preview to RPi5
 
+# Define when this workflow should run automatically or manually
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -30,10 +31,12 @@ on:
         default: false
         type: boolean
 
+# Prevent multiple deployments for the same PR from running simultaneously
 concurrency:
   group: preview-deploy-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# Define what GitHub resources this workflow can access
 permissions:
   contents: read
   packages: write
@@ -41,6 +44,7 @@ permissions:
   attestations: write
   id-token: write
 
+# Set environment variables that apply to all jobs in this workflow
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -57,15 +61,18 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      # Get the source code for this PR/branch
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Install Rust with clippy and rustfmt tools for code quality checks
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: clippy, rustfmt
 
+      # Speed up builds by using cached Rust dependencies
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -73,9 +80,11 @@ jobs:
           key: "lint"
           cache-all-crates: true
 
+      # Check code quality and common mistakes with clippy
       - name: Run clippy
         run: cargo clippy --all-targets
 
+      # Check if code follows Rust formatting standards
       - name: Run format check
         run: cargo fmt --all -- --check || echo "::warning::Code formatting issues found. Run 'cargo fmt --all' locally to fix."
         continue-on-error: true
@@ -88,20 +97,24 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      # Get the source code for this PR/branch
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Install Rust compiler for x86_64 Linux (GitHub runner architecture)
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: x86_64-unknown-linux-gnu
 
+      # Configure OpenSSL paths for compilation on Ubuntu
       - name: Set OpenSSL Paths
         run: |
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
 
+      # Speed up builds by using cached Rust dependencies
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -110,9 +123,11 @@ jobs:
           cache-all-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Compile all Rust code to check for compilation errors
       - name: Build
         run: cargo build --all-targets
 
+      # Run the test suite to ensure code works correctly
       - name: Run tests
         run: cargo test
 
@@ -133,6 +148,7 @@ jobs:
       is_native_arm64: ${{ steps.context.outputs.is_native_arm64 }}
 
     steps:
+      # Figure out PR number, branch, and image tags for this deployment
       - name: Set Deployment Context
         id: context
         run: |
@@ -165,11 +181,13 @@ jobs:
           echo "::notice::🚀 Building ARM64 PR #${PR_NUM} from branch '${BACKEND_BRANCH}'"
           echo "::notice::📦 Image: ${IMAGE_TAG_PR}"
 
+      # Get the source code for the specific branch we're building
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.context.outputs.backend_branch }}
 
+      # Speed up Rust compilation with cached dependencies
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -178,6 +196,7 @@ jobs:
           cache-all-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
 
+      # Authenticate with GitHub Container Registry to push Docker images
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -185,6 +204,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Set up Docker with BuildKit for advanced caching and multi-platform builds
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -192,6 +212,7 @@ jobs:
             image=moby/buildkit:latest
             network=host
 
+      # Check if we already built an image for this exact commit to avoid duplicate work
       - name: Check for Existing Image
         id: check_image
         run: |
@@ -203,6 +224,7 @@ jobs:
             echo "::notice::🔨 Building new ARM64 image for SHA ${{ github.sha }}"
           fi
 
+      # Build the Docker image natively on ARM64 for best performance on RPi5
       - name: Build and Push ARM64 Backend Image
         id: build_push
         if: steps.check_image.outputs.image_exists != 'true' || inputs.force_rebuild == true
@@ -232,6 +254,7 @@ jobs:
           provenance: true
           sbom: false
 
+      # If image already exists, just tag it with the PR tag to avoid rebuilding
       - name: Tag Existing Image
         if: steps.check_image.outputs.image_exists == 'true' && inputs.force_rebuild != true
         run: |
@@ -239,6 +262,7 @@ jobs:
             --tag ${{ steps.context.outputs.image_tag_pr }} \
             ${{ steps.context.outputs.image_tag_sha }}
 
+      # Show compilation cache statistics for debugging build performance
       - name: Display sccache Statistics
         if: always()
         run: |
@@ -250,6 +274,7 @@ jobs:
           fi
           echo "::endgroup::"
 
+      # Create cryptographic proof of how this image was built for security
       - name: Attest Build Provenance
         if: steps.build_push.conclusion == 'success'
         continue-on-error: true
@@ -269,6 +294,7 @@ jobs:
     environment: pr-preview
 
     steps:
+      # Calculate unique port numbers for this PR to avoid conflicts
       - name: Calculate Deployment Ports
         id: ports
         run: |
@@ -284,11 +310,13 @@ jobs:
           echo "project_name=pr-${PR_NUM}" >> $GITHUB_OUTPUT
           echo "::notice::🔌 Postgres: ${POSTGRES_EXTERNAL_PORT} | Backend: ${BACKEND_EXTERNAL_PORT} | Frontend: ${FRONTEND_EXTERNAL_PORT}"
 
+      # Get the Docker Compose file for PR preview deployment
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.build-arm64-image.outputs.backend_branch }}
 
+      # Verify we can reach the RPi5 through Tailscale VPN
       - name: Verify Tailscale Connection
         run: |
           # Tailscale is pre-installed and already connected on the self-hosted runner
@@ -297,6 +325,7 @@ jobs:
           tailscale status || echo "⚠️ Tailscale status check failed, but continuing..."
           echo "✅ Tailscale verification complete"
 
+      # Set up SSH key and known hosts to connect securely to RPi5
       - name: Setup SSH Configuration
         run: |
           mkdir -p ~/.ssh
@@ -306,6 +335,7 @@ jobs:
           echo "${{ secrets.RPI5_HOST_KEY }}" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      # Test SSH connection to RPi5 before attempting deployment
       - name: Test SSH Connection
         run: |
           echo "🔍 Testing SSH connection to ${{ secrets.RPI5_TAILSCALE_NAME }}..."
@@ -318,20 +348,19 @@ jobs:
           fi
           echo "::notice::✅ SSH connection verified"
 
-      - name: Deploy to RPi5 via Tailscale SSH
+      # Ensure the Postgres schema exists before running migrations
+      - name: Prepare Postgres Schema
         run: |
           PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
           BACKEND_IMAGE="${{ needs.build-arm64-image.outputs.image_tag_pr }}"
           PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
 
-          echo "📦 Transferring compose file to RPi5..."
+          echo "📦 Transferring compose file to RPi5 for schema preparation..."
           scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
             docker-compose.pr-preview.yaml \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-compose.yaml
 
-          echo "🚀 Deploying PR preview environment..."
-
-          # Create .env file for Docker Compose with sanitized secrets
+          # Assemble environment configuration for the remote compose commands
           cat > /tmp/pr-${PR_NUMBER}.env << EOF
           PR_NUMBER=${PR_NUMBER}
           BACKEND_IMAGE=${BACKEND_IMAGE}
@@ -362,22 +391,135 @@ jobs:
           SERVICE_STARTUP_WAIT_SECONDS=${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
           EOF
 
-          # Transfer .env file to RPi5
+          echo "📦 Transferring environment configuration to RPi5..."
           scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
             /tmp/pr-${PR_NUMBER}.env \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
 
-          # Execute deployment
+          cat << 'PREP_SCRIPT' | ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            /bin/bash
+          set -eo pipefail
+
+          ENV_FILE=$(ls -t ~/pr-*.env 2>/dev/null | head -1)
+          if [[ -f "$ENV_FILE" ]]; then
+            echo "📥 Found environment file for schema prep: $ENV_FILE"
+            # Load environment configuration for compose commands
+            set -a
+            source "$ENV_FILE"
+            set +a
+          else
+            echo "❌ Environment file not found during schema preparation!"
+            exit 1
+          fi
+
+          # Guard against accidentally running on the GitHub runner
+          if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+            echo "❌ Schema preparation running on GitHub runner instead of target server!"
+            exit 1
+          fi
+
+          cd /home/${RPI5_USERNAME}
+
+          # Fully reset prior deployment state and drop any persisted volumes
+          echo "🧹 Resetting previous deployment (including database volume)..."
+          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true
+
+          # Start only Postgres so the schema can be provisioned cleanly
+          echo "🐘 Starting postgres for schema preparation..."
+          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "$ENV_FILE" up -d postgres
+
+          echo "⏳ Waiting for postgres to become ready..."
+          READY=""
+          for attempt in {1..30}; do
+            if docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
+              env PGPASSWORD="${POSTGRES_PASSWORD}" pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null 2>&1; then
+              READY="yes"
+              break
+            fi
+            sleep 2
+          done
+
+          if [[ -z "$READY" ]]; then
+            echo "❌ Postgres did not become ready in time"
+            docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml logs postgres || true
+            exit 1
+          fi
+
+          # Create the schema, grant privileges, and set search_path every run
+          echo "🛠 Ensuring schema ${POSTGRES_SCHEMA} exists and permissions are set..."
+          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
+            env PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<SQL
+          CREATE SCHEMA IF NOT EXISTS "${POSTGRES_SCHEMA}";
+          GRANT ALL PRIVILEGES ON DATABASE "${POSTGRES_DB}" TO "${POSTGRES_USER}";
+          ALTER ROLE "${POSTGRES_USER}" SET search_path TO "${POSTGRES_SCHEMA}";
+          SQL
+
+          echo "✅ Schema preparation completed"
+          PREP_SCRIPT
+
+      # Deploy the PR preview environment to RPi5 via SSH
+      - name: Deploy to RPi5 via Tailscale SSH
+        run: |
+          PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
+          BACKEND_IMAGE="${{ needs.build-arm64-image.outputs.image_tag_pr }}"
+          PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
+
+          # Copy Docker Compose file to RPi5
+          echo "📦 Transferring compose file to RPi5..."
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            docker-compose.pr-preview.yaml \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-compose.yaml
+
+          echo "🚀 Deploying PR preview environment..."
+
+          # Create environment file with all secrets and configuration for Docker Compose
+          cat > /tmp/pr-${PR_NUMBER}.env << EOF
+          PR_NUMBER=${PR_NUMBER}
+          BACKEND_IMAGE=${BACKEND_IMAGE}
+          PROJECT_NAME=${PROJECT_NAME}
+          PR_POSTGRES_PORT=${{ steps.ports.outputs.postgres_port }}
+          PR_BACKEND_PORT=${{ steps.ports.outputs.backend_port }}
+          PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
+          PR_FRONTEND_PORT=${{ steps.ports.outputs.frontend_port }}
+          POSTGRES_USER=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n\r' | tr -d ' ')
+          POSTGRES_PASSWORD=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n\r' | tr -d ' ')
+          POSTGRES_DB=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r' | tr -d ' ')
+          POSTGRES_SCHEMA=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n\r' | tr -d ' ')
+          RUST_ENV=${{ vars.RUST_ENV }}
+          RUST_BACKTRACE=${{ env.RUST_BACKTRACE }}
+          BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
+          BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
+          BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
+          BACKEND_SESSION_EXPIRY_SECONDS=${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
+          TIPTAP_APP_ID=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')
+          TIPTAP_URL=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')
+          TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' | tr -d '\n\r')
+          TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' | tr -d '\n\r')
+          MAILERSEND_API_KEY=$(echo '${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' | tr -d '\n\r')
+          WELCOME_EMAIL_TEMPLATE_ID=$(echo '${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' | tr -d '\n\r')
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR=${{ github.actor }}
+          RPI5_USERNAME=${{ secrets.RPI5_USERNAME }}
+          SERVICE_STARTUP_WAIT_SECONDS=${{ vars.SERVICE_STARTUP_WAIT_SECONDS }}
+          EOF
+
+          # Copy environment file to RPi5
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            /tmp/pr-${PR_NUMBER}.env \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
+
+          # Execute the actual deployment commands on RPi5
           cat << 'DEPLOY_SCRIPT' | ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
             /bin/bash
           set -eo pipefail
 
-          # Load environment variables for script use
+          # Load all environment variables from the file we just transferred
           ENV_FILE=$(ls -t ~/pr-*.env 2>/dev/null | head -1)
           if [[ -f "$ENV_FILE" ]]; then
             echo "📥 Found environment file: $ENV_FILE"
-            # Export variables for use in this script
+            # Export variables so compose and helper commands share configuration
             set -a
             source "$ENV_FILE"
             set +a
@@ -386,7 +528,7 @@ jobs:
             exit 1
           fi
 
-          # Validate we're on the target server
+          # Guard against accidentally running on the GitHub runner
           if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
             echo "❌ Script running on GitHub runner instead of target server!"
             exit 1
@@ -394,26 +536,27 @@ jobs:
 
           cd /home/${RPI5_USERNAME}
 
+          # Authenticate with GHCR so the newest image pulls successfully
           echo "📦 Logging into GHCR..."
           echo "${GITHUB_TOKEN}" | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
 
+          # Pull the PR-specific backend image prior to compose startup
           echo "📥 Pulling image: ${BACKEND_IMAGE}..."
           docker pull ${BACKEND_IMAGE}
 
-          echo "🛑 Stopping existing PR-${PR_NUMBER} environment..."
-          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true
-
+          # Launch the full stack using the prepared environment file
           echo "🚀 Starting PR preview environment..."
-          # Use --env-file to pass environment variables to Docker Compose
-          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file pr-${PR_NUMBER}.env up -d
+          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "$ENV_FILE" up -d
 
+          # Give services a brief warm-up period before validation checks
           echo "⏳ Waiting ${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
           sleep ${SERVICE_STARTUP_WAIT_SECONDS}
 
+          # Show container state for observability
           echo "🩺 Deployment status:"
           docker compose -p ${PROJECT_NAME} ps
 
-          # Check migrator container exit code
+          # Confirm migrations completed successfully and dump recent logs
           echo "📜 Checking migration status..."
           MIGRATOR_EXIT_CODE=$(docker inspect ${PROJECT_NAME}-migrator-1 --format='{{.State.ExitCode}}' 2>/dev/null || echo "255")
           docker logs ${PROJECT_NAME}-migrator-1 2>&1 | tail -20
@@ -426,7 +569,7 @@ jobs:
           fi
           echo "✅ Migrations completed successfully"
 
-          # Check backend container health
+          # Validate that the backend service is healthy and running
           echo "📜 Checking backend status..."
           BACKEND_STATUS=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
           docker logs ${PROJECT_NAME}-backend-1 2>&1 | tail -20
@@ -438,7 +581,7 @@ jobs:
             exit 1
           fi
 
-          # Check if backend is restarting
+          # Check if backend is in a crash loop (restarting repeatedly)
           BACKEND_RESTART_COUNT=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.RestartCount}}' 2>/dev/null || echo "0")
           if [[ "${BACKEND_RESTART_COUNT}" -gt "0" ]]; then
             echo "⚠️  Backend has restarted ${BACKEND_RESTART_COUNT} time(s) - checking for crash loop"
@@ -455,10 +598,11 @@ jobs:
           echo "✅ Backend is running successfully"
           echo "✅ Deployment complete!"
 
-          # Cleanup environment file for security
+          # Remove the copied env file from disk now that deployment finished
           rm -f "$ENV_FILE"
           DEPLOY_SCRIPT
 
+      # Post a comment on the PR with links to access the preview environment
       - name: Comment on PR with Preview URLs
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -538,6 +682,7 @@ jobs:
               });
             }
 
+      # Show deployment summary for manual workflow runs
       - name: Display Deployment Summary
         if: github.event_name == 'workflow_dispatch'
         run: |
