@@ -401,7 +401,7 @@ jobs:
           docker pull ${BACKEND_IMAGE}
 
           echo "🛑 Stopping existing PR-${PR_NUMBER} environment..."
-          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down 2>/dev/null || true
+          docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true
 
           echo "🚀 Starting PR preview environment..."
           # Use --env-file to pass environment variables to Docker Compose
