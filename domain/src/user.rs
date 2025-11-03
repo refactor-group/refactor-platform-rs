@@ -5,9 +5,9 @@ use crate::{
 };
 use chrono::Utc;
 use entity_api::{
-    coaching_relationship, mutate, organizations_user, query,
+    coaching_relationship, mutate, query,
     query::{IntoQueryFilterMap, QuerySort},
-    user,
+    user, user_role,
 };
 pub use entity_api::{
     user::{
@@ -142,7 +142,7 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     })?;
 
     coaching_relationship::delete_by_user_id(&txn, user_id).await?;
-    organizations_user::delete_by_user_id(&txn, user_id).await?;
+    user_role::delete_by_user_id(&txn, user_id).await?;
     user::delete(&txn, user_id).await?;
 
     txn.commit().await.map_err(|e| Error {

@@ -4,7 +4,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 pub use entity::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
-    organizations, organizations_users, overarching_goals, user_roles, users, users::Role, Id,
+    organizations, overarching_goals, user_roles, users, users::Role, Id,
 };
 
 pub mod action;
@@ -15,10 +15,10 @@ pub mod error;
 pub mod mutate;
 pub mod note;
 pub mod organization;
-pub mod organizations_user;
 pub mod overarching_goal;
 pub mod query;
 pub mod user;
+pub mod user_role;
 
 pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
     Id::parse_str(uuid_str).map_err(|_| error::Error {
@@ -146,66 +146,11 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    let _jim_refactor_coaching = organizations_users::ActiveModel {
-        organization_id: Set(refactor_coaching_id),
-        user_id: Set(jim_hodapp.id.clone().unwrap()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
-
-    let _caleb_refactor_coaching = organizations_users::ActiveModel {
-        organization_id: Set(refactor_coaching_id),
-        user_id: Set(caleb_bourg.id.clone().unwrap()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
-
     coaching_relationships::ActiveModel {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(other_user.id.clone().unwrap()),
         organization_id: Set(acme_corp.id.clone().unwrap()),
         slug: Set("jim-other".to_owned()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
-
-    let _caleb_acme_corp = organizations_users::ActiveModel {
-        organization_id: Set(acme_corp.id.clone().unwrap()),
-        user_id: Set(caleb_bourg.id.clone().unwrap()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
-
-    let _jim_acme_corp = organizations_users::ActiveModel {
-        organization_id: Set(acme_corp.id.clone().unwrap()),
-        user_id: Set(jim_hodapp.id.clone().unwrap()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
-
-    let _other_user_acme_corp = organizations_users::ActiveModel {
-        organization_id: Set(acme_corp.id.clone().unwrap()),
-        user_id: Set(other_user.id.clone().unwrap()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()

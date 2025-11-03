@@ -45,19 +45,17 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "super::organizations_users::Entity")]
-    OrganizationsUsers,
     #[sea_orm(has_many = "super::user_roles::Entity")]
     UserRoles,
 }
 
 impl Related<super::organizations::Entity> for Entity {
     fn to() -> RelationDef {
-        super::organizations_users::Relation::Organizations.def()
+        super::user_roles::Relation::Organizations.def()
     }
 
     fn via() -> Option<RelationDef> {
-        Some(super::organizations_users::Relation::Users.def().rev())
+        Some(super::user_roles::Relation::Users.def().rev())
     }
 }
 

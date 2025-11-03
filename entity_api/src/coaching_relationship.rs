@@ -127,7 +127,6 @@ pub async fn find_by_organization(
 pub async fn find_by_organization_with_user_names(
     db: &DatabaseConnection,
     organization_id: Id,
-    user_id: Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     let coaches = Alias::new("coaches");
     let coachees = Alias::new("coachees");
@@ -143,11 +142,6 @@ pub async fn find_by_organization_with_user_names(
             JoinType::Join,
             coachees::Relation::CoachingRelationships.def().rev(),
             coachees.clone(),
-        )
-        .filter(
-            Condition::any()
-                .add(coaching_relationships::Column::CoachId.eq(user_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
         )
         .select_only()
         .column(coaching_relationships::Column::Id)
@@ -352,19 +346,14 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
         let organization_id = Id::new_v4();
-        let user_id = Id::new_v4();
-        let _ = find_by_organization_with_user_names(&db, organization_id, user_id).await;
+        let _ = find_by_organization_with_user_names(&db, organization_id).await;
 
         assert_eq!(
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1) AND ("coaching_relationships"."coach_id" = $2 OR "coaching_relationships"."coachee_id" = $3)"#,
-                [
-                    organization_id.clone().into(),
-                    user_id.clone().into(),
-                    user_id.clone().into()
-                ]
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
+                [organization_id.clone().into()]
             )]
         );
 

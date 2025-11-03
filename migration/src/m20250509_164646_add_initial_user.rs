@@ -1,13 +1,7 @@
 use chrono::Utc;
-use entity::organizations::{Column as OrganizationColumn, Entity as OrganizationEntity};
-use entity::organizations_users::{
-    Column as OrganizationUsersColumn, Entity as OrganizationUsersEntity,
-};
-use entity::users::{Column as UsersColumn, Entity as UsersEntity};
 use password_auth::generate_hash;
-use sea_orm::{ColumnTrait, DbBackend, EntityTrait, Statement, Value};
+use sea_orm::{DbBackend, Statement, Value};
 use sea_orm_migration::prelude::*;
-use sea_orm_migration::sea_orm::{ModelTrait, QueryFilter};
 use uuid::Uuid;
 
 #[derive(DeriveMigrationName)]
@@ -104,28 +98,44 @@ async fn insert_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
 async fn delete_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     let db = manager.get_connection();
 
-    let user = UsersEntity::find()
-        .filter(UsersColumn::Email.eq("admin@refactorcoach.com"))
-        .one(db)
-        .await?
-        .unwrap();
+    // Delete organizations_users join (if table still exists)
+    let delete_org_users_sql = r#"
+        DELETE FROM organizations_users
+        WHERE user_id IN (SELECT id FROM users WHERE email = $1)
+    "#;
+    let _ = db
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            delete_org_users_sql,
+            vec![Value::String(Some(Box::new(
+                "admin@refactorcoach.com".to_owned(),
+            )))],
+        ))
+        .await;
 
-    let org = OrganizationEntity::find()
-        .filter(OrganizationColumn::Name.eq("Refactor Group"))
-        .one(db)
-        .await?
-        .unwrap();
+    // Delete user
+    let delete_user_sql = r#"
+        DELETE FROM users WHERE email = $1
+    "#;
+    db.execute(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        delete_user_sql,
+        vec![Value::String(Some(Box::new(
+            "admin@refactorcoach.com".to_owned(),
+        )))],
+    ))
+    .await?;
 
-    let organizations_users_join = OrganizationUsersEntity::find()
-        .filter(OrganizationUsersColumn::OrganizationId.eq(org.id))
-        .filter(OrganizationUsersColumn::UserId.eq(user.id))
-        .one(db)
-        .await?
-        .unwrap();
-
-    organizations_users_join.delete(db).await?;
-    user.delete(db).await?;
-    org.delete(db).await?;
+    // Delete organization
+    let delete_org_sql = r#"
+        DELETE FROM organizations WHERE name = $1
+    "#;
+    db.execute(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        delete_org_sql,
+        vec![Value::String(Some(Box::new("Refactor Group".to_owned())))],
+    ))
+    .await?;
 
     Ok(())
 }
