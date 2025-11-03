@@ -373,8 +373,8 @@ jobs:
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-            CARGO_INCREMENTAL=0
-            RUSTC_WRAPPER=sccache
+            CARGO_INCREMENTAL=${{ vars.CARGO_INCREMENTAL }}
+            RUSTC_WRAPPER=${{ vars.RUSTC_WRAPPER }}
           provenance: true
           sbom: false
 

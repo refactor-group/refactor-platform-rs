@@ -48,9 +48,6 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0
-  RUST_BACKTRACE: short
 
 jobs:
   # ===========================================================================
@@ -59,6 +56,12 @@ jobs:
   lint:
     name: Lint & Format
     runs-on: ubuntu-24.04
+    environment: pr-preview
+
+    env:
+      CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+      CARGO_INCREMENTAL: ${{ vars.CARGO_INCREMENTAL }}
+      RUST_BACKTRACE: ${{ vars.RUST_BACKTRACE }}
 
     steps:
       # Get the source code for this PR/branch
@@ -95,6 +98,12 @@ jobs:
   test:
     name: Build & Test
     runs-on: ubuntu-24.04
+    environment: pr-preview
+
+    env:
+      CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+      CARGO_INCREMENTAL: ${{ vars.CARGO_INCREMENTAL }}
+      RUST_BACKTRACE: ${{ vars.RUST_BACKTRACE }}
 
     steps:
       # Get the source code for this PR/branch
@@ -253,8 +262,8 @@ jobs:
             pr.branch=${{ steps.context.outputs.backend_branch }}
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-            CARGO_INCREMENTAL=0
-            RUSTC_WRAPPER=sccache
+            CARGO_INCREMENTAL=${{ vars.CARGO_INCREMENTAL }}
+            RUSTC_WRAPPER=${{ vars.RUSTC_WRAPPER }}
           provenance: true
           sbom: false
 
@@ -296,9 +305,6 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, neo]
     needs: build-arm64-image
     environment: pr-preview
-
-    env:
-      RUST_BACKTRACE: full # Enable full Rust backtraces for debugging
 
     steps:
       # Calculate unique port numbers for this PR to avoid conflicts
@@ -381,15 +387,15 @@ jobs:
           POSTGRES_DB=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r' | tr -d ' ')
           POSTGRES_SCHEMA=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n\r' | tr -d ' ')
           RUST_ENV=${{ vars.RUST_ENV }}
-          RUST_BACKTRACE=${{ env.RUST_BACKTRACE }}
+          RUST_BACKTRACE=${{ vars.RUST_BACKTRACE }}
           BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
           BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
           BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
           BACKEND_SESSION_EXPIRY_SECONDS=${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
           TIPTAP_APP_ID=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')
           TIPTAP_URL=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')
-          TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' | tr -d '\n\r')
-          TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' | tr -d '\n\r')
+          TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}' | tr -d '\n\r')
+          TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}' | tr -d '\n\r')
           MAILERSEND_API_KEY=$(echo '${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' | tr -d '\n\r')
           WELCOME_EMAIL_TEMPLATE_ID=$(echo '${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' | tr -d '\n\r')
           GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
@@ -494,15 +500,15 @@ jobs:
           POSTGRES_DB=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r' | tr -d ' ')
           POSTGRES_SCHEMA=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n\r' | tr -d ' ')
           RUST_ENV=${{ vars.RUST_ENV }}
-          RUST_BACKTRACE=${{ env.RUST_BACKTRACE }}
+          RUST_BACKTRACE=${{ vars.RUST_BACKTRACE }}
           BACKEND_INTERFACE=${{ vars.BACKEND_INTERFACE }}
           BACKEND_ALLOWED_ORIGINS=${{ vars.BACKEND_ALLOWED_ORIGINS }}
-          BACKEND_LOG_FILTER_LEVEL=${{ vars.BACKEND_LOG_FILTER_LEVEL }}
-          BACKEND_SESSION_EXPIRY_SECONDS=${{ vars.BACKEND_SESSION_EXPIRY_SECONDS }}
+          TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}' | tr -d '\n\r')
+          TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}' | tr -d '\n\r')
           TIPTAP_APP_ID=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')
           TIPTAP_URL=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')
-          TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPAP_AUTH_KEY }}' | tr -d '\n\r')
-          TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPJWT_SIGNING_KEY }}' | tr -d '\n\r')
+          TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}' | tr -d '\n\r')
+          TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}' | tr -d '\n\r')
           MAILERSEND_API_KEY=$(echo '${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' | tr -d '\n\r')
           WELCOME_EMAIL_TEMPLATE_ID=$(echo '${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' | tr -d '\n\r')
           GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
