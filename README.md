@@ -90,6 +90,7 @@ The platform uses MailerSend for transactional emails. To configure email functi
    - `--welcome-email-template-id`: The template ID for welcome emails
 
 Example:
+
 ```bash
 export MAILERSEND_API_KEY="your-api-key"
 export WELCOME_EMAIL_TEMPLATE_ID="your-template-id"
@@ -233,13 +234,14 @@ Note that to generate a new Entity using the CLI you must ignore all other table
 
 ## PR Preview Environments
 
-This repository automatically deploys isolated preview environments for each pull request. When you open a PR, a complete stack (backend + database) deploys to a dedicated server for testing before merge.
+This repository automatically deploys **isolated preview environments** for each pull request. When you open a PR, a complete stack (backend + frontend + database) deploys to a dedicated server on our Tailnet for testing before merge.
 
 **What happens automatically:**
+
 - ✅ PR opened → Environment deploys
 - ✅ New commits → Environment updates
 - ✅ PR closed/merged → Environment cleans up
 
-**Access:** Requires Tailscale VPN connection. Access URLs are posted as a comment on your PR.
+**Access:** Requires Tailscale VPN connection. Access URLs are posted as a comment on your PR in the GitHub Web UI.
 
 For detailed information, see the [PR Preview Environments Runbook](docs/runbooks/pr-preview-environments.md).
