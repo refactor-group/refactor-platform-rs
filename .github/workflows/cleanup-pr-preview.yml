@@ -15,7 +15,7 @@ on:
     branches:
       - main
 
-# Manual trigger for cleanup of specific PR numbers
+  # Manual trigger for cleanup of specific PR numbers
   workflow_dispatch:
     inputs:
       pr_number:
