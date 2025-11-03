@@ -252,40 +252,6 @@ docker volume rm pr-123_postgres_data
 
 ---
 
-## 🔥 Build Cache Optimization
-
-### Nightly Cache Warming
-**Automatic process runs at 3 AM UTC:**
-- Builds ARM64 image from latest `main`
-- Populates GitHub Actions cache
-- PR builds start with warm dependencies cache
-- Reduces first-time build from 20min → 5-10min
-
-### Cache Strategy
-```
-Cache Layers:
-1. Rust dependencies (cargo chef)
-2. System packages (apt)
-3. Build artifacts
-4. ARM64 cross-compilation tools
-```
-
-### Cache Status
-**Check cache health:**
-```bash
-# View cache warming workflow
-GitHub → Actions → "Warm Build Cache"
-
-# Check cache size/usage
-GitHub → Settings → Actions → Caches
-```
-
-**Force cache refresh:**
-- Enable "Force rebuild" in workflow dispatch
-- Or wait for next nightly warming
-
----
-
 ## ❓ FAQ
 
 **Q: How many PRs can run simultaneously?**  
@@ -299,7 +265,7 @@ A: Not yet, backend only (frontend coming later)
 
 **Q: How do I see active environments?**
 ```bash
-ssh deploy@neo.rove-barbel.ts.net 'docker ps --filter "name=pr-"'
+ssh <username>@neo.rove-barbel.ts.net 'docker ps --filter "name=pr-"'
 ```
 
 **Q: Why is my first PR build slow?**  
@@ -332,5 +298,5 @@ A: `.github/workflows/warm-build-cache.yml` (nightly cache)
 
 ---
 
-**Last Updated:** 2025-10-23  
+**Last Updated:** 2025-11-02  
 **Maintained By:** Platform Engineering Team (aka Levi)
