@@ -63,8 +63,11 @@ jobs:
           echo "frontend_port=${FRONTEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
           echo "project_name=pr-${PR_NUM}" >> $GITHUB_OUTPUT
 
-          # Images are NEVER deleted - kept for auditability and Docker layer caching
-          # Volume cleanup strategy based on how PR was closed
+          # Cleanup strategy:
+          # - PR-specific images removed from RPi5 to prevent accumulation
+          # - Shared images (postgres:17) retained on RPi5 for reuse
+          # - Images in GHCR kept for auditability and future deployments
+          # - Volume cleanup based on whether PR was merged or closed
           if [[ "${IS_MERGED}" == "true" ]]; then
             echo "cleanup_reason=merged" >> $GITHUB_OUTPUT
             echo "volume_action=retain" >> $GITHUB_OUTPUT
@@ -75,7 +78,8 @@ jobs:
             echo "::notice::🚫 PR #${PR_NUM} was closed without merge - removing volume immediately"
           fi
 
-          echo "::notice::📦 Docker images will be retained for auditability and layer caching"
+          echo "::notice::🗑️  PR-specific images will be removed from RPi5"
+          echo "::notice::📦 Images in GHCR retained for auditability and future deployments"
 
       # Verify we can reach the RPi5 through Tailscale VPN
       - name: Verify Tailscale Connection
@@ -173,12 +177,20 @@ jobs:
             echo "💡 Manual cleanup command: docker volume rm ${PROJECT_NAME}_postgres_data"
           fi
 
-          # Images are NEVER removed - kept for auditability and Docker layer caching
+          # Remove PR-specific Docker images (keep shared postgres:17 image)
           echo ""
-          echo "📦 Docker images retained (not removed):"
-          echo "   - Provides auditability of deployed versions"
-          echo "   - Enables Docker layer caching for faster rebuilds"
-          echo "   - Images tagged: pr-${PR_NUMBER}"
+          echo "🗑️  Removing PR-specific Docker images..."
+          PR_IMAGES=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep "pr-${PR_NUMBER}" || true)
+          if [[ -n "$PR_IMAGES" ]]; then
+            echo "$PR_IMAGES" | while read -r image; do
+              echo "   Removing: $image"
+              docker rmi -f "$image" 2>/dev/null || echo "   ⚠️  Failed to remove $image"
+            done
+            echo "✅ PR-specific images removed"
+          else
+            echo "⚠️  No PR-specific images found (may have been cleaned up already)"
+          fi
+          echo "📦 Shared images retained: postgres:17 (used by all PRs)"
 
           echo ""
           echo "📊 Remaining PR environments on RPi5:"
@@ -217,7 +229,8 @@ jobs:
             | Resource | Status |
             |----------|--------|
             | **Containers** | ✅ Stopped and removed |
-            | **Docker Images** | 📦 Retained (auditability + caching) |
+            | **PR-Specific Images** | ✅ Removed from RPi5 |
+            | **Shared Images** | 📦 Retained (postgres:17) |
             | **Network** | ✅ Removed |
             | **Compose File** | ✅ Deleted |
             | **Environment File** | ✅ Deleted |
@@ -230,11 +243,11 @@ jobs:
             - **Postgres Port:** ${postgresPort} (now available)
             - **Project Name:** \`pr-${prNumber}\`
 
-            ### 📦 Image Retention Policy
-            - **Docker images are kept** for auditability and layer caching
-            - Enables faster rebuilds by reusing Docker layers
-            - Provides complete deployment history
-            - Tagged as: \`pr-${prNumber}\`
+            ### 📦 Image Cleanup Policy
+            - **PR-specific images removed** from RPi5 to prevent accumulation
+            - **Shared images retained** (postgres:17 used by all PRs)
+            - Images remain in GHCR for auditability and future deployments
+            - Frees disk space on RPi5 while maintaining deployment history
 
             ### ⏰ Volume Retention Policy
             ${isMerged
@@ -280,11 +293,12 @@ jobs:
       - name: Cleanup Summary
         run: |
           echo "::notice::✅ Cleanup complete for PR #${{ steps.context.outputs.pr_number }}"
-          echo "::notice::🗑️  Resources removed: containers, network, compose file, env file"
-          echo "::notice::📦 Resources retained: Docker images (auditability + caching)"
+          echo "::notice::🗑️  Resources removed: containers, PR-specific images, network, compose file, env file"
+          echo "::notice::📦 Shared images retained: postgres:17 (used by all PRs)"
+          echo "::notice::📦 Images in GHCR retained for auditability and future deployments"
           if [[ "${{ steps.context.outputs.volume_action }}" == "retain" ]]; then
             echo "::notice::📦 Volume retained for 7 days (merged PR retention policy)"
           else
             echo "::notice::🗑️  Volume removed immediately (closed PR cleanup)"
           fi
-          echo "::notice::🎉 RPi5 resources freed for other PR previews"
+          echo "::notice::🎉 RPi5 disk space freed for other PR previews"
