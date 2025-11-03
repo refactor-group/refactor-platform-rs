@@ -38,15 +38,11 @@ Cleanup happens automatically when PR closes/merges.
 
 ```
 PR opened/updated
-  → GitHub Actions builds image (uses warm cache)
-  → Deploys to RPi5 via Tailscale
-  → Bot comments with URLs
-  → Test via Tailscale
-  → PR closes → Auto cleanup
-
-Nightly (3 AM UTC)
-  → Cache warming builds ARM64 from main
-  → PR builds start with warm cache
+  → GitHub Actions builds ARM64 image
+  → Deploys to RPi5 via Tailscale SSH
+  → Bot comments with access URLs
+  → Test via Tailscale VPN
+  → PR closes/merges → Auto cleanup
 ```
 
 **Each PR gets:**
@@ -54,6 +50,13 @@ Nightly (3 AM UTC)
 - Backend API container (your PR code)
 - Isolated Docker network
 - Unique ports (no conflicts)
+
+**Cleanup when PR closes:**
+- ✅ Containers stopped and removed
+- ✅ PR-specific images removed from RPi5
+- ✅ Network and config files removed
+- ✅ Volume removed (or retained 7 days if merged)
+- 📦 Images in GHCR kept for auditability
 
 ---
 
@@ -223,19 +226,24 @@ environment:
 
 **Automatic cleanup when PR closes:**
 - ✅ Containers stopped and removed
-- ✅ Docker images deleted
-- ✅ Networks removed
-- ✅ Compose files deleted
+- ✅ PR-specific images removed from RPi5
+- ✅ Networks and config files removed
+- ✅ Volume removed (or retained 7 days if merged)
+
+**Image retention:**
+- **RPi5:** PR images removed, postgres:17 kept
+- **GHCR:** All images kept for auditability
 
 **Volume retention:**
-- **Merged PRs:** 7-day retention (allows post-merge debugging)
+- **Merged PRs:** 7-day retention (allows investigation)
 - **Closed PRs:** Immediate removal (frees space)
 
 **Manual cleanup (if needed):**
 ```bash
-ssh deploy@neo.rove-barbel.ts.net
+ssh <username>@neo.rove-barbel.ts.net
 docker compose -p pr-123 -f pr-123-compose.yaml down
 docker volume rm pr-123_postgres_data
+docker rmi $(docker images --format '{{.Repository}}:{{.Tag}}' | grep 'pr-123')
 ```
 
 ---

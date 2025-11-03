@@ -233,6 +233,13 @@ Note that to generate a new Entity using the CLI you must ignore all other table
 
 ## PR Preview Environments
 
-This repository supports automated PR preview environments that deploy isolated instances of the application for each pull request. When you open a PR, a complete environment (backend + database) is automatically deployed to a dedicated server, allowing you to test changes in a real environment before merging.
+This repository automatically deploys isolated preview environments for each pull request. When you open a PR, a complete stack (backend + database) deploys to a dedicated server for testing before merge.
 
-For detailed information about PR preview environments, including how to access them, troubleshooting, and architecture details, see the [PR Preview Environments Runbook](docs/runbooks/pr-preview-environments.md).
+**What happens automatically:**
+- ✅ PR opened → Environment deploys
+- ✅ New commits → Environment updates
+- ✅ PR closed/merged → Environment cleans up
+
+**Access:** Requires Tailscale VPN connection. Access URLs are posted as a comment on your PR.
+
+For detailed information, see the [PR Preview Environments Runbook](docs/runbooks/pr-preview-environments.md).
