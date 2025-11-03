@@ -225,6 +225,7 @@ jobs:
           fi
 
       # Build the Docker image natively on ARM64 for best performance on RPi5
+      # Uses multi-tier caching: PR image (if exists) → main-arm64 → GHA cache
       - name: Build and Push ARM64 Backend Image
         id: build_push
         if: steps.check_image.outputs.image_exists != 'true' || inputs.force_rebuild == true
@@ -237,7 +238,10 @@ jobs:
           tags: |
             ${{ steps.context.outputs.image_tag_pr }}
             ${{ steps.context.outputs.image_tag_sha }}
-          cache-from: type=gha
+          cache-from: |
+            type=registry,ref=${{ steps.context.outputs.image_tag_pr }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-arm64
+            type=gha
           cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.title=Refactor Platform Backend PR-${{ steps.context.outputs.pr_number }}
