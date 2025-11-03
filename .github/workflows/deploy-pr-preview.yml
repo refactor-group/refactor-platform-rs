@@ -293,6 +293,9 @@ jobs:
     needs: build-arm64-image
     environment: pr-preview
 
+    env:
+      RUST_BACKTRACE: full # Enable full Rust backtraces for debugging
+
     steps:
       # Calculate unique port numbers for this PR to avoid conflicts
       - name: Calculate Deployment Ports

@@ -80,7 +80,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     let listener = TcpListener::bind(listen_addr).await.unwrap();
 
     // Handle CORS origin configuration
-    // If wildcard (*) is present, use AllowOrigin::any(), otherwise use AllowOrigin::list()
+    // If wildcard (*) is present, mirror request origin; otherwise use explicit list
     let has_wildcard = app_state
         .config
         .allowed_origins
@@ -89,9 +89,10 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
 
     info!("allowed_origins: {:#?}", app_state.config.allowed_origins);
 
+    // Mirror the request origin when wildcard "*" is configured to keep credentials enabled
     let allow_origin = if has_wildcard {
-        info!("Using wildcard CORS origin (allows all origins)");
-        AllowOrigin::any()
+        info!("Using mirrored CORS origin (allows all origins with credentials)");
+        AllowOrigin::mirror_request()
     } else {
         let allowed_origins = app_state
             .config
