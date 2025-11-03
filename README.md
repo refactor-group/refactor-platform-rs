@@ -228,3 +228,11 @@ Note that to generate a new Entity using the CLI you must ignore all other table
 ```bash
  DATABASE_URL=postgres://refactor:password@localhost:5432/refactor sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
 ```
+
+---
+
+## PR Preview Environments
+
+This repository supports automated PR preview environments that deploy isolated instances of the application for each pull request. When you open a PR, a complete environment (backend + database) is automatically deployed to a dedicated server, allowing you to test changes in a real environment before merging.
+
+For detailed information about PR preview environments, including how to access them, troubleshooting, and architecture details, see the [PR Preview Environments Runbook](docs/runbooks/pr-preview-environments.md).
