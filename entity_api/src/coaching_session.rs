@@ -150,16 +150,18 @@ pub struct EnrichedSession {
 ///
 /// # Usage Example
 /// ```rust
+/// use entity_api::coaching_session::IncludeOptions;
+///
 /// // Create options requesting relationship and organization data
 /// let mut options = IncludeOptions::none();
 /// options.relationship = true;
 /// options.organization = true;
-/// options.validate()?; // Passes: organization depends on relationship
+/// options.validate().unwrap(); // Passes: organization depends on relationship
 ///
 /// // This would fail validation:
 /// let mut invalid = IncludeOptions::none();
 /// invalid.organization = true;  // Without relationship: true
-/// invalid.validate()?; // Error: organization requires relationship
+/// assert!(invalid.validate().is_err()); // Error: organization requires relationship
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct IncludeOptions {
