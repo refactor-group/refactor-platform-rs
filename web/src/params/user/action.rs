@@ -6,7 +6,9 @@ use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
 use domain::{actions, status::Status, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 
-/// Sortable fields for user actions
+/// Sortable fields for user actions endpoint.
+///
+/// Maps query parameter values (e.g., `?sort_by=due_by`) to database columns.
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "created_at")]
 pub(crate) enum SortField {
@@ -18,17 +20,27 @@ pub(crate) enum SortField {
     UpdatedAt,
 }
 
+/// Query parameters for GET `/users/{user_id}/actions` endpoint.
+///
+/// Supports filtering by coaching session and status, plus standard sorting.
+/// The `user_id` is populated from the URL path parameter, not query string.
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
+    /// User ID from URL path (not a query parameter)
     #[serde(skip)]
     pub(crate) user_id: Id,
+    /// Optional: filter actions by coaching session
     pub(crate) coaching_session_id: Option<Id>,
+    /// Optional: filter actions by status (e.g., "open", "completed")
     pub(crate) status: Option<Status>,
+    /// Optional: field to sort by (defaults via WithSortDefaults)
     pub(crate) sort_by: Option<SortField>,
+    /// Optional: sort direction (defaults via WithSortDefaults)
     pub(crate) sort_order: Option<SortOrder>,
 }
 
 impl IndexParams {
+    /// Creates params with only user_id set (all filters empty).
     pub fn new(user_id: Id) -> Self {
         Self {
             user_id,
@@ -39,6 +51,9 @@ impl IndexParams {
         }
     }
 
+    /// Builder method to add optional filters and sorting.
+    ///
+    /// Useful for programmatically constructing params in tests or internal code.
     pub fn with_filters(
         mut self,
         coaching_session_id: Option<Id>,

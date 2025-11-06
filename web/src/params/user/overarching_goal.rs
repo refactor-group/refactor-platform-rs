@@ -6,7 +6,9 @@ use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
 use domain::{overarching_goals, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 
-/// Sortable fields for user overarching goals
+/// Sortable fields for user overarching goals endpoint.
+///
+/// Maps query parameter values (e.g., `?sort_by=title`) to database columns.
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "title")]
 pub(crate) enum SortField {
@@ -18,16 +20,25 @@ pub(crate) enum SortField {
     UpdatedAt,
 }
 
+/// Query parameters for GET `/users/{user_id}/overarching_goals` endpoint.
+///
+/// Supports filtering by coaching session and standard sorting.
+/// Overarching goals are long-term objectives that span multiple coaching sessions.
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
+    /// User ID from URL path (not a query parameter)
     #[serde(skip)]
     pub(crate) user_id: Id,
+    /// Optional: filter goals associated with a specific coaching session
     pub(crate) coaching_session_id: Option<Id>,
+    /// Optional: field to sort by (defaults via WithSortDefaults)
     pub(crate) sort_by: Option<SortField>,
+    /// Optional: sort direction (defaults via WithSortDefaults)
     pub(crate) sort_order: Option<SortOrder>,
 }
 
 impl IndexParams {
+    /// Creates params with only user_id set (all filters empty).
     pub fn new(user_id: Id) -> Self {
         Self {
             user_id,
@@ -37,6 +48,9 @@ impl IndexParams {
         }
     }
 
+    /// Builder method to add optional coaching session filter and sorting.
+    ///
+    /// Useful for programmatically constructing params in tests or internal code.
     pub fn with_filters(
         mut self,
         coaching_session_id: Option<Id>,

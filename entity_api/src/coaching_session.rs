@@ -76,7 +76,39 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
     Ok(sessions)
 }
 
-/// Enriched session data with optional related resources
+/// Public API response type: a single coaching session with its optional related resources.
+///
+/// # Purpose
+/// This struct solves the N+1 query problem when fetching coaching sessions with their
+/// related data. Instead of making separate database queries for each session's relationships,
+/// users, organizations, etc., this struct enables batch loading all related resources in a
+/// single efficient operation.
+///
+/// **Contrast with `RelatedData`:** This holds specific related data for ONE session (returned to clients),
+/// while `RelatedData` holds ALL related data in lookup tables (internal only).
+///
+/// # Usage Pattern
+/// Clients can request specific related resources via query parameters (e.g., `?include=relationship,organization`),
+/// and the `find_by_user_with_includes` function will:
+/// 1. Fetch all coaching sessions for the user
+/// 2. Batch load requested related resources into `RelatedData` using `IN` queries
+/// 3. Assemble each `EnrichedSession` by looking up its specific related data
+///
+/// # Serialization Behavior
+/// - The base `session` fields are flattened into the JSON root using `#[serde(flatten)]`
+/// - Optional related resources are only included in JSON when present (`skip_serializing_if`)
+/// - This allows the same struct to represent sessions with varying levels of detail
+///
+/// # Example JSON Output
+/// ```json
+/// {
+///   "id": "session-123",
+///   "date": "2025-01-15",
+///   "relationship": { "id": "rel-456", ... },  // Only if included
+///   "coach": { "id": "user-789", ... },        // Only if included
+///   "organization": { "id": "org-101", ... }    // Only if included
+/// }
+/// ```
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EnrichedSession {
     #[serde(flatten)]
@@ -95,7 +127,38 @@ pub struct EnrichedSession {
     pub agreement: Option<agreements::Model>,
 }
 
-/// Configuration for which related resources to include
+/// Configuration for which related resources to include when fetching coaching sessions.
+///
+/// # Purpose
+/// This struct acts as a feature flag configuration for batch loading related resources.
+/// It controls which additional database queries are executed beyond fetching the base
+/// coaching sessions, enabling clients to request only the data they need.
+///
+/// # Design Rationale
+/// Using boolean flags instead of an enum allows for:
+/// - Multiple resources to be requested simultaneously
+/// - Fine-grained control over query execution
+/// - Easy addition of new optional resources without breaking changes
+/// - Zero-cost abstraction (Copy trait) for passing options around
+///
+/// # Relationship Dependencies
+/// Some resources have dependencies on others due to database foreign key relationships:
+/// - `organization` requires `relationship` because organizations are linked via coaching_relationships
+/// - The `validate()` method enforces these constraints at the API boundary
+///
+/// # Usage Example
+/// ```rust
+/// // Create options requesting relationship and organization data
+/// let mut options = IncludeOptions::none();
+/// options.relationship = true;
+/// options.organization = true;
+/// options.validate()?; // Passes: organization depends on relationship
+///
+/// // This would fail validation:
+/// let mut invalid = IncludeOptions::none();
+/// invalid.organization = true;  // Without relationship: true
+/// invalid.validate()?; // Error: organization requires relationship
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct IncludeOptions {
     pub relationship: bool,
@@ -105,6 +168,10 @@ pub struct IncludeOptions {
 }
 
 impl IncludeOptions {
+    /// Creates an `IncludeOptions` with all resources disabled.
+    ///
+    /// This is the baseline configuration - only the base coaching session data
+    /// will be fetched without any related resources.
     pub fn none() -> Self {
         Self {
             relationship: false,
@@ -114,12 +181,27 @@ impl IncludeOptions {
         }
     }
 
+    /// Returns true if any option requires loading coaching_relationships data.
+    ///
+    /// This helper method determines whether we need to execute the batch query
+    /// for coaching_relationships. Currently, both the `relationship` and `organization`
+    /// options require this data (organization is accessed via relationship.organization_id).
     pub fn needs_relationships(&self) -> bool {
         self.relationship || self.organization
     }
 
-    /// Validates that include options are meaningful
-    /// Returns error if validation fails
+    /// Validates that the include options form a valid dependency graph.
+    ///
+    /// # Validation Rules
+    /// - `organization = true` requires `relationship = true`
+    ///   (organizations are accessed through coaching_relationships)
+    ///
+    /// # Errors
+    /// Returns `EntityApiErrorKind::InvalidQueryTerm` if validation fails.
+    ///
+    /// # Why This Matters
+    /// Early validation at the entity_api layer prevents invalid database queries
+    /// and provides clear error messages to clients about invalid include combinations.
     pub fn validate(&self) -> Result<(), Error> {
         // organization requires relationship (can't get org without relationship)
         if self.organization && !self.relationship {
@@ -222,7 +304,15 @@ async fn load_sessions_for_user(
     query.all(db).await.map_err(Into::into)
 }
 
-/// Container for all related data loaded in batches
+/// Internal lookup tables for batch-loaded related data (not serialized).
+///
+/// This struct stores ALL related resources in HashMaps for O(1) lookup during assembly.
+/// Contrast with `EnrichedSession`, which holds the specific related data for a single session.
+///
+/// **Usage:** Temporary container used only within `find_by_user_with_includes`:
+/// 1. Load phase: Execute bulk queries, populate these HashMaps
+/// 2. Assembly phase: For each session, lookup its specific related data by ID
+/// 3. Discard: This struct is not returned to clients
 #[derive(Debug, Default)]
 struct RelatedData {
     relationships: HashMap<Id, coaching_relationships::Model>,
