@@ -41,7 +41,10 @@ pub async fn index(
 
     let organizations = OrganizationApi::find_by_user(app_state.db_conn_ref(), user_id).await?;
 
-    debug!("Found {} organizations for user {user_id}", organizations.len());
+    debug!(
+        "Found {} organizations for user {user_id}",
+        organizations.len()
+    );
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), organizations)))
 }

@@ -12,8 +12,8 @@ use sea_orm::{DatabaseConnection, IntoActiveModel};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    find_by_id, find_by_id_with_coaching_relationship, find_by_user_with_includes,
-    EnrichedSession, IncludeOptions, SortField, SortOrder,
+    find_by_id, find_by_id_with_coaching_relationship, find_by_user_with_includes, EnrichedSession,
+    IncludeOptions, SortField, SortOrder,
 };
 
 #[derive(Debug, Clone)]

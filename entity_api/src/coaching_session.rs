@@ -5,7 +5,9 @@ use entity::{
     organizations, overarching_goals, users, Id,
 };
 use log::debug;
-use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, TryIntoModel};
+use sea_orm::{
+    entity::prelude::*, DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, TryIntoModel,
+};
 use std::collections::HashMap;
 
 pub async fn create(
@@ -243,11 +245,15 @@ pub async fn find_by_user_with_includes(
     includes.validate()?;
 
     // Load base sessions with date filtering and sorting
-    let sessions = load_sessions_for_user(db, user_id, from_date, to_date, sort_by, sort_order).await?;
+    let sessions =
+        load_sessions_for_user(db, user_id, from_date, to_date, sort_by, sort_order).await?;
 
     // Early return if no includes requested
     if !includes.needs_relationships() && !includes.goal && !includes.agreements {
-        return Ok(sessions.into_iter().map(EnrichedSession::from_session).collect());
+        return Ok(sessions
+            .into_iter()
+            .map(EnrichedSession::from_session)
+            .collect());
     }
 
     // Load all related data in efficient batches
@@ -332,7 +338,10 @@ async fn load_related_data(
     let mut data = RelatedData::default();
 
     // Extract IDs for batch loading
-    let relationship_ids: Vec<Id> = sessions.iter().map(|s| s.coaching_relationship_id).collect();
+    let relationship_ids: Vec<Id> = sessions
+        .iter()
+        .map(|s| s.coaching_relationship_id)
+        .collect();
     let session_ids: Vec<Id> = sessions.iter().map(|s| s.id).collect();
 
     // Load relationships (needed for both relationship and organization includes)
@@ -351,7 +360,11 @@ async fn load_related_data(
 
     // Load organizations if requested
     if includes.organization {
-        let org_ids: Vec<Id> = data.relationships.values().map(|r| r.organization_id).collect();
+        let org_ids: Vec<Id> = data
+            .relationships
+            .values()
+            .map(|r| r.organization_id)
+            .collect();
         data.organizations = batch_load_organizations(db, &org_ids).await?;
     }
 
@@ -460,7 +473,10 @@ async fn batch_load_agreements(
 
 /// Assemble an enriched session from base session and related data
 fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedSession {
-    let relationship = related.relationships.get(&session.coaching_relationship_id).cloned();
+    let relationship = related
+        .relationships
+        .get(&session.coaching_relationship_id)
+        .cloned();
 
     let (coach, coachee) = relationship
         .as_ref()
@@ -642,7 +658,8 @@ mod tests {
             .into_connection();
 
         let includes = IncludeOptions::none();
-        let results = find_by_user_with_includes(&db, user_id, None, None, None, None, includes).await?;
+        let results =
+            find_by_user_with_includes(&db, user_id, None, None, None, None, includes).await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session_id);
@@ -676,7 +693,16 @@ mod tests {
             .into_connection();
 
         let includes = IncludeOptions::none();
-        let results = find_by_user_with_includes(&db, user_id, Some(from_date), Some(to_date), None, None, includes).await?;
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            Some(from_date),
+            Some(to_date),
+            None,
+            None,
+            includes,
+        )
+        .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session.id);

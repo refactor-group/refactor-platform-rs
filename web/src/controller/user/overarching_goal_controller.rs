@@ -70,7 +70,13 @@ pub async fn index(
 
     let overarching_goals = OverarchingGoalApi::find_by(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found {} overarching goals for user {user_id}", overarching_goals.len());
+    debug!(
+        "Found {} overarching goals for user {user_id}",
+        overarching_goals.len()
+    );
 
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), overarching_goals)))
+    Ok(Json(ApiResponse::new(
+        StatusCode::OK.into(),
+        overarching_goals,
+    )))
 }
