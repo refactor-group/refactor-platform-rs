@@ -814,11 +814,13 @@ jobs:
                   cat > /tmp/pr-${PR_NUMBER}.env << EOF
                   PR_NUMBER=${PR_NUMBER}
                   BACKEND_IMAGE=${BACKEND_IMAGE}
+                  FRONTEND_IMAGE=${{ needs.build-arm64-image.outputs.frontend_image }}
                   PROJECT_NAME=${PROJECT_NAME}
                   PR_POSTGRES_PORT=${{ steps.ports.outputs.postgres_port }}
                   PR_BACKEND_PORT=${{ steps.ports.outputs.backend_port }}
                   PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
                   PR_FRONTEND_PORT=${{ steps.ports.outputs.frontend_port }}
+                  PR_FRONTEND_CONTAINER_PORT=${{ steps.ports.outputs.frontend_container_port }}
                   POSTGRES_USER=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n\r' | tr -d ' ')
                   POSTGRES_PASSWORD=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n\r' | tr -d ' ')
                   POSTGRES_DB=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r' | tr -d ' ')
