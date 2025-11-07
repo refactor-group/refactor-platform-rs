@@ -1,334 +1,329 @@
-# PR Preview Environments
-
-Automated isolated staging environments for every pull request.
-
----
+# PR Preview Environments - Developer Guide
 
 ## 🚀 Quick Start
 
-1. **Create PR** to `main` branch
-2. **Wait 5-15 min** for deployment
-3. **Connect to Tailscale** VPN
-4. **Click backend URL** in PR comment
-5. **Test your changes**
+**Want to test your changes in a live environment?** Just open a PR! A preview environment will be automatically deployed.
 
-Cleanup happens automatically when PR closes/merges.
+### What You Get
 
----
+Every PR automatically gets:
+- ✅ **Isolated full-stack environment** (Postgres + Backend + Frontend)
+- ✅ **Unique ports** based on your PR number
+- ✅ **Live database** with migrations applied
+- ✅ **Access via Tailscale VPN**
+- ✅ **Automatic cleanup** when PR closes
 
-## 💡 What & Why
+### How to Access Your Preview
 
-### The Problem
+1. **Open a PR** in either `refactor-platform-rs` or `refactor-platform-fe`
+2. **Wait for deployment** (~5-10 minutes for first build)
+3. **Check PR comment** for your unique URLs
+4. **Connect to Tailscale** VPN (required for access)
+5. **Visit your preview** at the URLs provided
 
-- Manual deployment for testing
-- Environment conflicts between developers
-- Changes merged without full-stack testing
-- Slow feedback loops
+**Example PR Comment:**
+```
+🚀 PR Preview Environment Deployed!
 
-### The Solution
+Frontend: http://rpi5-hostname:3042
+Backend:  http://rpi5-hostname:4042
+Health:   http://rpi5-hostname:4042/health
 
-**Automatic isolated environments via Docker Compose Projects** that deploy on every PR:
-
-- ✅ Own database, network, and ports
-- ✅ Run ~10 PRs simultaneously
-- ✅ Auto-cleanup on close/merge
-- ✅ Live in 5-10 minutes
-- ✅ Access via Tailscale VPN
+Ports: Frontend: 3042 | Backend: 4042 | Postgres: 5474
+```
 
 ---
 
 ## 🏗️ How It Works
 
-```markdown
-PR opened/updated
-  → GitHub Actions builds ARM64 image
-  → Deploys to RPi5 via Tailscale SSH
-  → Bot comments with access URLs
-  → Test via Tailscale VPN
-  → PR closes/merges → Auto cleanup
+### Port Allocation
+
+Each PR gets unique ports calculated from the PR number:
+
+| Service | Formula | Example (PR #42) |
+|---------|---------|------------------|
+| Frontend | 3000 + PR# | 3042 |
+| Backend | 4000 + PR# | 4042 |
+| Postgres | 5432 + PR# | 5474 |
+
+### Deployment Flow
+
+**Backend PR:**
+1. PR opened → Workflow triggers
+2. Backend: Builds from **your PR branch** 📦
+3. Frontend: Uses **main-arm64** image (or builds if missing)
+4. Deploys: Full stack with your backend changes
+
+**Frontend PR:**
+1. PR opened → Workflow triggers
+2. Frontend: Builds from **your PR branch** 📦
+3. Backend: Uses **main-arm64** image (or builds if missing)
+4. Deploys: Full stack with your frontend changes
+
+### Architecture
+
 ```
-
-**Each PR gets:**
-
-- Postgres container (fresh DB with migrations)
-- Backend API container (your PR code)
-- Isolated Docker network
-- Unique ports (no conflicts)
-
-**Cleanup when PR closes:**
-
-- ✅ Docker Compose Project stopped
-- ✅ Containers stopped and removed
-- ✅ PR-specific images removed from RPi5
-- ✅ Network and config files removed
-- ✅ Volume removed (or retained 7 days if merged)
-- 📦 Images in GHCR kept for auditability
+┌─────────────────────────────────────────────────┐
+│  GitHub Actions Workflow                        │
+│  ├─ Lint & Test                                │
+│  ├─ Build ARM64 Images (on Neo runner)         │
+│  └─ Deploy to RPi5 via Tailscale SSH           │
+└─────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────┐
+│  RPi5 (ARM64) - Preview Environment            │
+│  ├─ Postgres (port: 5432 + PR#)                │
+│  ├─ Backend  (port: 4000 + PR#)                │
+│  └─ Frontend (port: 3000 + PR#)                │
+└─────────────────────────────────────────────────┘
+```
 
 ---
 
-## 🔌 Accessing Your Environment
+## 🔧 Configuration
 
-### Prerequisites
+### Secrets & Variables
 
-- Tailscale installed and connected
-- Member of team Tailscale network
+**All secrets are managed in ONE place:** Backend repo's `pr-preview` environment.
 
-### Access Steps
+This means:
+- ✅ Frontend repo needs **zero** PR preview secrets
+- ✅ No secret duplication across repos
+- ✅ Single source of truth for configuration
 
-**1. Find your preview URL in PR comment:**
+**Backend `pr-preview` Environment Contains:**
+- RPi5 SSH connection details
+- Database credentials
+- TipTap API keys
+- MailerSend API keys
+- Frontend build configuration
 
-```markdown
-🚀 PR Preview Environment Deployed!
-Backend API: http://neo.rove-barbel.ts.net:4123
-Health Check: http://neo.rove-barbel.ts.net:4123/health
-```
+### Workflow Files
 
-**2. Connect to Tailscale:**
+**Backend Repository:**
+- `.github/workflows/ci-deploy-pr-preview.yml` - Reusable workflow (does the heavy lifting)
+- `.github/workflows/pr-preview-backend.yml` - Overlay for backend PRs
 
-```bash
-tailscale status  # Verify connected
-```
-
-**3. Click URLs** (only works on Tailscale!)
-
----
-
-## 🧮 Port Allocation
-
-**Formula:**
-
-```markdown
-Backend Port  = 4000 + PR_NUMBER
-Postgres Port = 5432 + PR_NUMBER
-```
-
-**Examples:**
-
-- PR #1 → Backend: `4001`, Postgres: `5433`
-- PR #123 → Backend: `4123`, Postgres: `5555`
-- PR #999 → Backend: `4999`, Postgres: `6431`
+**Frontend Repository:**
+- `.github/workflows/pr-preview-frontend.yml` - Overlay for frontend PRs (calls backend reusable workflow)
 
 ---
 
-## 🧪 Testing Your Changes
+## 🧪 Testing Your Preview
 
 ### Health Check
 
 ```bash
-curl http://neo.rove-barbel.ts.net:4123/health
+# Check backend health
+curl http://rpi5-hostname:4042/health
+
+# Expected response
+{"status":"ok"}
 ```
 
 ### API Testing
 
 ```bash
-PR_NUM=123
-BASE_URL="http://neo.rove-barbel.ts.net:$((4000 + PR_NUM))"
+# List users endpoint
+curl http://rpi5-hostname:4042/api/v1/users
 
-curl $BASE_URL/api/v1/users
-curl $BASE_URL/health
+# Create a test user (if endpoint exists)
+curl -X POST http://rpi5-hostname:4042/api/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","name":"Test User"}'
 ```
 
 ### Database Access
 
+Connect to your PR's database:
+
 ```bash
-psql -h neo.rove-barbel.ts.net -p 5555 -U refactor -d refactor
+# SSH tunnel to Postgres
+ssh -L 5432:localhost:5474 user@rpi5-hostname
+
+# Then connect locally
+psql -h localhost -p 5432 -U refactor -d refactor
 ```
 
-### Browser
+### Frontend Testing
 
-Open while connected to Tailscale:
+Visit `http://rpi5-hostname:3042` in your browser (Tailscale required).
+
+---
+
+## 🔍 Troubleshooting
+
+### Deployment Failed
+
+1. **Check workflow logs:**
+   - Go to PR → "Checks" tab → Click on failed workflow
+   - Review error messages in logs
+
+2. **Common issues:**
+   - **Linting errors:** Fix code formatting issues
+   - **Test failures:** Ensure all tests pass locally first
+   - **Build errors:** Check Dockerfile and dependencies
+   - **Migration errors:** Verify database migrations are valid
+
+### Preview Not Accessible
+
+1. **Verify Tailscale connection:**
+   ```bash
+   tailscale status
+   # Should show you're connected to the network
+   ```
+
+2. **Check service status:**
+   - View PR comment for deployment status
+   - Check workflow logs for errors
+
+3. **Verify ports:**
+   - Ensure you're using the correct port from PR comment
+   - Ports are unique per PR (3000+PR#, 4000+PR#)
+
+### Environment Not Updating
+
+- **Push new commits:** Workflow triggers on new commits
+- **Re-run workflow:** Go to Actions → Re-run failed jobs
+- **Check branch:** Ensure you're pushing to the PR branch
+
+---
+
+## 🧹 Cleanup
+
+### Automatic Cleanup
+
+Preview environments are **automatically cleaned up** when:
+- PR is closed
+- PR is merged
+
+The cleanup workflow removes:
+- Docker containers
+- Database volumes
+- Temporary files
+
+### Manual Cleanup (if needed)
+
+If you need to manually clean up a preview:
 
 ```bash
-http://neo.rove-barbel.ts.net:4123/health
+# SSH into RPi5
+ssh user@rpi5-hostname
+
+# Stop and remove PR environment
+docker compose -p pr-42 down -v
+
+# Remove compose file
+rm ~/pr-42-compose.yaml ~/pr-42.env
 ```
 
 ---
 
-## 🔧 Troubleshooting
+## 🎯 Advanced Usage
 
-### ❌ Can't Access URL
+### Force Rebuild
 
-**Check Tailscale:**
+Trigger a complete rebuild (ignoring caches):
 
-```bash
-tailscale status | grep neo
-```
-
-**Verify container running:**
-
-```bash
-ssh deploy@neo.rove-barbel.ts.net 'docker ps | grep pr-123'
-```
-
-**Check deployment succeeded:**
-
-- Go to PR → Checks tab → Look for green checkmark
-
-### ❌ Deployment Failed
-
-**View logs:** PR → Checks tab → Click failed step
-
-**Common issues:**
-
-- Build errors → Check Rust compilation logs
-- SSH timeout → Verify Tailscale OAuth in GitHub secrets
-- Container won't start → Check backend logs on RPi5
-
-### ❌ Slow Deployment (10+ min)
-
-**Normal times:**
-
-- **First PR run:** 10-15 min
-- **Subsequent runs for the same PR:** 3-5 min (using cache)
-- **Cache miss (or code changes requiring entire Image rebuild):** 10-15 min (full rebuild)
-
-**If unexpectedly slow:**
-
-- Build complexity → Large code changes take longer
-- RPi5 load → Multiple simultaneous builds
-
-### 🔍 View Container Logs
-
-```bash
-ssh deploy@neo.rove-barbel.ts.net
-
-# Backend logs
-docker logs pr-123-backend-1 --tail 50
-
-# Migration logs
-docker logs pr-123-migrator-1
-
-# All PR containers
-docker ps --filter "name=pr-"
-```
-
----
-
-## ⚙️ Configuration
-
-### Update Environment Variables
-
-**Location:** `Settings → Environments → pr-preview`
-
-**Common changes:**
-
-- `BACKEND_LOG_LEVEL`: `DEBUG` → `INFO`
-- `BACKEND_SESSION_EXPIRY`: `86400` (24h) → `3600` (1h)
-
-### Add New Environment Variable
-
-**1. Add to GitHub:** `Settings → Environments → pr-preview → Add secret`
-
-**2. Add to workflow:**
-
-```yaml
-env:
-  MY_VAR: ${{ secrets.MY_VAR }}
-```
-
-**3. Add to SSH export in deployment step:**
-
-```bash
-export MY_VAR='${MY_VAR}'
-```
-
-**4. Add to `docker-compose.pr-preview.yaml`:**
-
-```yaml
-environment:
-  MY_VAR: ${MY_VAR}
-```
-
----
-
-## 🧹 Cleanup Behavior
-
-**Automatic cleanup when PR closes:**
-
-- ✅ Docker Compose Project stopped
-- ✅ Containers stopped and removed
-- ✅ PR-specific images removed from RPi5
-- ✅ Networks and config files removed
-- ✅ Volume removed (or retained 7 days if merged)
-
-**Image retention:**
-
-- **RPi5:** PR images removed, postgres:17 kept
-- **GHCR:** All images kept for auditability
-
-**Volume retention:**
-
-- **Merged PRs:** 7-day retention (allows investigation)
-- **Closed PRs:** Immediate removal (frees space)
-
-**Manual cleanup (if needed):**
-
-```bash
-ssh <username>@neo.rove-barbel.ts.net
-docker compose -p pr-123 -f pr-123-compose.yaml down
-docker volume rm pr-123_postgres_data
-docker rmi $(docker images --format '{{.Repository}}:{{.Tag}}' | grep 'pr-123')
-```
-
----
-
-## 🎯 Manual Deployment (No PR)
-
-**Use workflow dispatch:**
-
-1. Actions tab → "Deploy PR Preview to RPi5"
+1. Go to Actions → CI Deploy PR Preview
 2. Click "Run workflow"
-3. Select branch and options
-4. Click "Run workflow"
+3. Select your branch
+4. Set `force_rebuild: true`
 
-**Note:** No PR comment (no PR to comment on)
+### Use Specific Image
+
+Override backend or frontend image:
+
+1. Edit overlay workflow (`.github/workflows/pr-preview-*.yml`)
+2. Set `backend_image` or `frontend_image` input
+3. Example: `backend_image: 'ghcr.io/refactor-group/refactor-platform-rs:main-arm64'`
+
+### Test Different Branch Combinations
+
+**Frontend PR using different backend branch:**
+
+1. Edit `.github/workflows/pr-preview-frontend.yml`
+2. Change `backend_branch: 'main'` to desired branch
+3. Commit and push
+
+**Backend PR using different frontend branch:**
+
+1. Edit `.github/workflows/pr-preview-backend.yml`
+2. Change `frontend_branch: 'main'` to desired branch
+3. Commit and push
 
 ---
 
-## ❓ FAQ
+## 📊 Monitoring
 
-**Q: How many PRs can run simultaneously?**  
-A: ~10-15 comfortably on RPi5
+### View Logs
 
-**Q: What if deployment fails?**  
-A: PR still mergeable, check workflow logs for errors
-
-**Q: Can I test frontend changes?**  
-A: Not yet, backend only (frontend coming later)
-
-**Q: How do I see active environments?**
-
+**Real-time logs during deployment:**
 ```bash
-ssh <username>@neo.rove-barbel.ts.net 'docker ps --filter "name=pr-"'
+# SSH into RPi5
+ssh user@rpi5-hostname
+
+# View backend logs
+docker logs pr-42-backend-1 -f
+
+# View frontend logs
+docker logs pr-42-frontend-1 -f
+
+# View postgres logs
+docker logs pr-42-postgres-1 -f
+
+# View migration logs
+docker logs pr-42-migrator-1
 ```
 
-**Q: Why is my first PR build slow?**  
-A: PRs before first cache warm can take 10-15 minutes, subsequent workflow runs will take around 5 minutes.
+### Check Container Status
 
-**Q: Where are the workflows?**  
-A: `.github/workflows/deploy-pr-preview.yml` (deploy)  
-A: `.github/workflows/cleanup-pr-preview.yml` (cleanup)  
+```bash
+# SSH into RPi5
+ssh user@rpi5-hostname
 
----
+# List all containers for your PR
+docker compose -p pr-42 ps
 
-## 📁 Key Files
-
-| File | Purpose |
-|------|---------|
-| `.github/workflows/deploy-pr-preview.yml` | Deployment automation |
-| `.github/workflows/cleanup-pr-preview.yml` | Cleanup automation |
-| `docker-compose.pr-preview.yaml` | Multi-tenant template |
+# View resource usage
+docker stats pr-42-backend-1 pr-42-frontend-1 pr-42-postgres-1
+```
 
 ---
 
-## 🆘 Getting Help
+## 🔐 Security Notes
 
-1. Check troubleshooting section above
-2. Review GitHub Actions logs
-3. SSH to RPi5 and check container logs
-4. Ask in `Levi` Slack
+- **Tailscale VPN Required:** Previews are not publicly accessible
+- **Shared Environment:** All PRs deploy to same RPi5 (isolated by Docker Compose projects)
+- **Temporary Data:** Database resets when environment is cleaned up
+- **Do Not:** Store sensitive production data in preview environments
 
 ---
 
-**Last Updated:** 2025-11-02  
-**Maintained By:** Platform Engineering Team (aka Levi)
+## 🤝 Contributing to PR Preview System
+
+Want to improve the PR preview system?
+
+**Key files to modify:**
+- `ci-deploy-pr-preview.yml` - Main deployment logic
+- `docker-compose.pr-preview.yaml` - Service definitions
+- `pr-preview-backend.yml` / `pr-preview-frontend.yml` - Trigger configurations
+
+**After changes:**
+1. Test in a PR first
+2. Document changes in this runbook
+3. Update PR template if user-facing changes
+
+---
+
+## 📚 Additional Resources
+
+- [GitHub Actions Workflow Syntax](https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions)
+- [Docker Compose Documentation](https://docs.docker.com/compose/)
+- [Tailscale Setup Guide](https://tailscale.com/kb/start/)
+
+---
+
+**Questions?** Ask in #engineering Slack channel or open an issue.
+
+**Happy Testing! 🚀**

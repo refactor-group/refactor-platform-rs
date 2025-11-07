@@ -58,84 +58,11 @@ on:
                 type: boolean
                 default: false
         # =========================================================================
-        # SECRETS - Sensitive data passed from calling workflow
+        # SECRETS - All secrets come from pr-preview environment in backend repo
         # =========================================================================
-        secrets:
-            # SSH connection details for RPi5 deployment target
-            RPI5_SSH_KEY:
-                description: "SSH private key for RPi5 access"
-                required: true
-            RPI5_HOST_KEY:
-                description: "SSH host key for RPi5"
-                required: true
-            RPI5_TAILSCALE_NAME:
-                description: "Tailscale hostname of RPi5"
-                required: true
-            RPI5_USERNAME:
-                description: "Username on RPi5"
-                required: true
-
-            # Database configuration for PR environments
-            PR_PREVIEW_POSTGRES_USER:
-                description: "PostgreSQL username"
-                required: true
-            PR_PREVIEW_POSTGRES_PASSWORD:
-                description: "PostgreSQL password"
-                required: true
-            PR_PREVIEW_POSTGRES_DB:
-                description: "PostgreSQL database name"
-                required: true
-            PR_PREVIEW_POSTGRES_SCHEMA:
-                description: "PostgreSQL schema name"
-                required: true
-
-            # Third-party service credentials for backend
-            PR_PREVIEW_TIPTAP_APP_ID:
-                description: "TipTap application ID"
-                required: true
-            PR_PREVIEW_TIPTAP_URL:
-                description: "TipTap service URL"
-                required: true
-            PR_PREVIEW_TIPTAP_AUTH_KEY:
-                description: "TipTap authentication key"
-                required: true
-            PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY:
-                description: "TipTap JWT signing key"
-                required: true
-            PR_PREVIEW_MAILERSEND_API_KEY:
-                description: "MailerSend API key"
-                required: true
-            PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID:
-                description: "Welcome email template ID"
-                required: true
-
-            # Frontend build-time configuration
-            PR_PREVIEW_BACKEND_SERVICE_PROTOCOL:
-                description: "Backend service protocol (http/https)"
-                required: false
-            PR_PREVIEW_BACKEND_SERVICE_HOST:
-                description: "Backend service host"
-                required: false
-            PR_PREVIEW_BACKEND_SERVICE_PORT:
-                description: "Backend service port"
-                required: false
-            PR_PREVIEW_BACKEND_SERVICE_API_PATH:
-                description: "Backend API path"
-                required: false
-            PR_PREVIEW_BACKEND_API_VERSION:
-                description: "Backend API version"
-                required: false
-            PR_PREVIEW_FRONTEND_SERVICE_PORT:
-                description: "Frontend service port"
-                required: false
-            PR_PREVIEW_FRONTEND_SERVICE_INTERFACE:
-                description: "Frontend service interface"
-                required: false
-
-            # GitHub authentication token (automatically provided)
-            GITHUB_TOKEN:
-                description: "GitHub token for authentication"
-                required: true
+        # No secrets need to be passed from calling workflows!
+        # The reusable workflow always uses the backend repo's pr-preview environment
+        # which contains all necessary secrets for both backend and frontend deployments
 
     # Allow manual execution for testing and debugging
     workflow_dispatch:
@@ -208,7 +135,8 @@ jobs:
         runs-on: ubuntu-24.04
         # Only run on backend PRs or when explicitly targeting backend
         if: inputs.repo_type == 'backend'
-        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+        # Always use pr-preview environment from this (backend) repo
+        environment: pr-preview
 
         env:
             CARGO_TERM_COLOR: always
@@ -254,7 +182,7 @@ jobs:
         runs-on: ubuntu-24.04
         # Only run on frontend PRs or when explicitly targeting frontend
         if: inputs.repo_type == 'frontend'
-        # Frontend repo uses repo-level secrets (no environment)
+        # Use pr-preview environment from backend repo (where this workflow lives)
 
         steps:
             # Get the source code for the branch being deployed
@@ -287,7 +215,8 @@ jobs:
         runs-on: ubuntu-24.04
         # Only run on backend PRs or when explicitly targeting backend
         if: inputs.repo_type == 'backend'
-        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+        # Always use pr-preview environment from this (backend) repo
+        environment: pr-preview
 
         env:
             CARGO_TERM_COLOR: always
@@ -339,7 +268,7 @@ jobs:
         runs-on: ubuntu-24.04
         # Only run on frontend PRs or when explicitly targeting frontend
         if: inputs.repo_type == 'frontend'
-        # Frontend repo uses repo-level secrets (no environment)
+        # Use pr-preview environment from backend repo (where this workflow lives)
 
         env:
             NODE_ENV: test
@@ -404,8 +333,8 @@ jobs:
     build-arm64-image:
         name: Build ARM64 Images
         runs-on: [self-hosted, Linux, ARM64, neo]
-        # Backend uses pr-preview environment, frontend uses repo-level secrets
-        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+        # Always use pr-preview environment from this (backend) repo for all secrets
+        environment: pr-preview
         # Wait for quality checks to pass before building
         needs:
             - lint-backend
@@ -673,14 +602,14 @@ jobs:
                       pr.branch=${{ steps.resolve.outputs.frontend_branch }}
                       pr.number=${{ steps.resolve.outputs.pr_number }}
                   build-args: |
-                      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PROTOCOL || 'http' }}
-                      NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_HOST || 'localhost' }}
-                      NEXT_PUBLIC_BACKEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PORT || steps.resolve.outputs.backend_service_port }}
-                      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_API_PATH || 'api' }}
-                      NEXT_PUBLIC_BACKEND_API_VERSION=${{ secrets.PR_PREVIEW_BACKEND_API_VERSION || 'v1' }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ vars.PR_PREVIEW_BACKEND_SERVICE_PROTOCOL || 'http' }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ vars.PR_PREVIEW_BACKEND_SERVICE_HOST || 'localhost' }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_PORT=${{ steps.resolve.outputs.backend_service_port }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=${{ vars.PR_PREVIEW_BACKEND_SERVICE_API_PATH || 'api' }}
+                      NEXT_PUBLIC_BACKEND_API_VERSION=${{ vars.PR_PREVIEW_BACKEND_API_VERSION || 'v1' }}
                       NEXT_PUBLIC_TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
-                      FRONTEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_PORT || '3000' }}
-                      FRONTEND_SERVICE_INTERFACE=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
+                      FRONTEND_SERVICE_PORT=${{ vars.PR_PREVIEW_FRONTEND_SERVICE_PORT || '3000' }}
+                      FRONTEND_SERVICE_INTERFACE=${{ vars.PR_PREVIEW_FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
                   provenance: true
                   sbom: true
 
@@ -712,8 +641,8 @@ jobs:
         runs-on: [self-hosted, Linux, ARM64, neo]
         needs: build-arm64-image
         if: needs.build-arm64-image.result == 'success'
-        # Backend uses pr-preview environment, frontend uses repo-level secrets
-        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+        # Always use pr-preview environment from this (backend) repo for all secrets
+        environment: pr-preview
 
         steps:
             # Calculate unique ports for this PR deployment
