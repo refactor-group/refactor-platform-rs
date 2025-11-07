@@ -58,56 +58,60 @@ on:
                 type: boolean
                 default: false
         # =========================================================================
-        # SECRETS - Complete declaration of all required secrets
+        # SECRETS - Resolved from pr-preview environment
         # =========================================================================
+        # NOTE: All secrets are set to required: false because they are resolved
+        # from the pr-preview environment at job execution time, not passed at
+        # workflow call time. This allows both same-repo and cross-repo calls to
+        # work correctly with secrets centralized in the backend repo's environment.
         secrets:
             # SSH connection details for RPi5 deployment target
             RPI5_SSH_KEY:
                 description: "SSH private key for RPi5 access"
-                required: true
+                required: false
             RPI5_HOST_KEY:
                 description: "SSH host key for RPi5"
-                required: true
+                required: false
             RPI5_TAILSCALE_NAME:
                 description: "Tailscale hostname of RPi5"
-                required: true
+                required: false
             RPI5_USERNAME:
                 description: "Username on RPi5"
-                required: true
+                required: false
 
             # Database configuration for PR environments
             PR_PREVIEW_POSTGRES_USER:
                 description: "PostgreSQL username"
-                required: true
+                required: false
             PR_PREVIEW_POSTGRES_PASSWORD:
                 description: "PostgreSQL password"
-                required: true
+                required: false
             PR_PREVIEW_POSTGRES_DB:
                 description: "PostgreSQL database name"
-                required: true
+                required: false
             PR_PREVIEW_POSTGRES_SCHEMA:
                 description: "PostgreSQL schema name"
-                required: true
+                required: false
 
             # Third-party service credentials for backend
             PR_PREVIEW_TIPTAP_APP_ID:
                 description: "TipTap application ID"
-                required: true
+                required: false
             PR_PREVIEW_TIPTAP_URL:
                 description: "TipTap service URL"
-                required: true
+                required: false
             PR_PREVIEW_TIPTAP_AUTH_KEY:
                 description: "TipTap authentication key"
-                required: true
+                required: false
             PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY:
                 description: "TipTap JWT signing key"
-                required: true
+                required: false
             PR_PREVIEW_MAILERSEND_API_KEY:
                 description: "MailerSend API key"
-                required: true
+                required: false
             PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID:
                 description: "Welcome email template ID"
-                required: true
+                required: false
 
             # Frontend build-time configuration (optional with defaults)
             PR_PREVIEW_BACKEND_SERVICE_PROTOCOL:
