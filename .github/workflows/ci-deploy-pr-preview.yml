@@ -726,7 +726,12 @@ jobs:
         name: Deploy to RPi5 via Tailscale
         runs-on: [self-hosted, Linux, ARM64, neo]
         needs: build-arm64-image
-        # Job runs by default when needed job succeeds (no explicit if needed)
+        # Must use always() pattern because build-arm64-image uses always()
+        # Without this, the job won't run even when build succeeds
+        if: |
+            always() &&
+            !cancelled() &&
+            needs.build-arm64-image.result == 'success'
         # Use pr-preview environment from calling repository
         environment: pr-preview
 
