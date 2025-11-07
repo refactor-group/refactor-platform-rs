@@ -63,14 +63,14 @@ services:
       # Database connection configuration
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
-      
+
       # Backend server configuration - use container port for internal binding
       BACKEND_PORT: ${PR_BACKEND_CONTAINER_PORT}      # Port app binds to inside container
       BACKEND_INTERFACE: ${BACKEND_INTERFACE}         # Network interface to bind to
       BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}  # CORS configuration
       BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}  # Logging level
       BACKEND_SESSION_EXPIRY_SECONDS: ${BACKEND_SESSION_EXPIRY_SECONDS}  # Session timeout
-      
+
       # Optional third-party service credentials (set to 'UNUSED' if not needed)
       TIPTAP_APP_ID: ${TIPTAP_APP_ID}
       TIPTAP_URL: ${TIPTAP_URL}
@@ -83,6 +83,33 @@ services:
       - "${PR_BACKEND_PORT}:${PR_BACKEND_CONTAINER_PORT}"
     depends_on:
       - migrator                          # Start after migrations complete
+    networks:
+      # Use default network - Docker Compose project creates unique network automatically
+      - default
+    restart: unless-stopped               # Restart automatically unless manually stopped
+
+  # Frontend application service
+  frontend:
+    image: ${FRONTEND_IMAGE}              # PR-specific frontend image
+    platform: linux/arm64/v8             # Explicit ARM64 platform for RPi5
+    environment:
+      # Next.js production environment
+      NODE_ENV: production
+      # Frontend server configuration
+      HOSTNAME: 0.0.0.0                  # Network interface to bind to
+      PORT: ${PR_FRONTEND_CONTAINER_PORT} # Port app binds to inside container
+      # Backend connection configuration (build-time values baked into image)
+      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL:-http}
+      NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${NEXT_PUBLIC_BACKEND_SERVICE_HOST:-localhost}
+      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${PR_BACKEND_PORT}
+      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${NEXT_PUBLIC_BACKEND_SERVICE_API_PATH:-api}
+      NEXT_PUBLIC_BACKEND_API_VERSION: ${NEXT_PUBLIC_BACKEND_API_VERSION:-v1}
+      NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+    ports:
+      # Map dynamic external port to container internal port
+      - "${PR_FRONTEND_PORT}:${PR_FRONTEND_CONTAINER_PORT}"
+    depends_on:
+      - backend                           # Start after backend is running
     networks:
       # Use default network - Docker Compose project creates unique network automatically
       - default

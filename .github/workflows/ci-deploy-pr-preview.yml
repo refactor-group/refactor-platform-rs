@@ -1,0 +1,1129 @@
+# =============================================================================
+# Reusable PR Preview Deployment Workflow
+# =============================================================================
+# Purpose: Deploy isolated PR preview environments for backend OR frontend
+# Features: ARM64 native builds, multi-tier caching, secure VPN deployment
+# Target: Raspberry Pi 5 (ARM64) via Tailscale SSH
+# Used by: Both refactor-platform-rs and refactor-platform-fe repositories
+# =============================================================================
+
+name: CI Deploy PR Preview Environment
+
+on:
+    workflow_call:
+        inputs:
+            # Determines whether this is a backend or frontend deployment
+            repo_type:
+                description: "Repository type: 'backend' or 'frontend'"
+                required: true
+                type: string
+            # PR number for isolated environment naming and port allocation
+            pr_number:
+                description: "PR number for this deployment"
+                required: true
+                type: string
+            # Branch being deployed (will be repo_type branch)
+            branch_name:
+                description: "Branch name to deploy"
+                required: true
+                type: string
+            # Fallback backend branch when deploying frontend (usually 'main')
+            backend_branch:
+                description: "Backend branch to use when ensuring backend image (fallback when repo_type=frontend)"
+                required: false
+                type: string
+                default: "main"
+            # Fallback frontend branch when deploying backend (usually 'main')
+            frontend_branch:
+                description: "Frontend branch to use when ensuring frontend image (fallback when repo_type=backend)"
+                required: false
+                type: string
+                default: "main"
+            # Override to use specific backend image instead of building
+            backend_image:
+                description: "Override backend Docker image tag (skip build if provided)"
+                required: false
+                type: string
+                default: ""
+            # Override to use specific frontend image instead of building
+            frontend_image:
+                description: "Override frontend Docker image tag (skip build if provided)"
+                required: false
+                type: string
+                default: ""
+            # Force complete rebuild ignoring all caches
+            force_rebuild:
+                description: "Force rebuild without cache"
+                required: false
+                type: boolean
+                default: false
+        # =========================================================================
+        # SECRETS - Sensitive data passed from calling workflow
+        # =========================================================================
+        secrets:
+            # SSH connection details for RPi5 deployment target
+            RPI5_SSH_KEY:
+                description: "SSH private key for RPi5 access"
+                required: true
+            RPI5_HOST_KEY:
+                description: "SSH host key for RPi5"
+                required: true
+            RPI5_TAILSCALE_NAME:
+                description: "Tailscale hostname of RPi5"
+                required: true
+            RPI5_USERNAME:
+                description: "Username on RPi5"
+                required: true
+
+            # Database configuration for PR environments
+            PR_PREVIEW_POSTGRES_USER:
+                description: "PostgreSQL username"
+                required: true
+            PR_PREVIEW_POSTGRES_PASSWORD:
+                description: "PostgreSQL password"
+                required: true
+            PR_PREVIEW_POSTGRES_DB:
+                description: "PostgreSQL database name"
+                required: true
+            PR_PREVIEW_POSTGRES_SCHEMA:
+                description: "PostgreSQL schema name"
+                required: true
+
+            # Third-party service credentials for backend
+            PR_PREVIEW_TIPTAP_APP_ID:
+                description: "TipTap application ID"
+                required: true
+            PR_PREVIEW_TIPTAP_URL:
+                description: "TipTap service URL"
+                required: true
+            PR_PREVIEW_TIPTAP_AUTH_KEY:
+                description: "TipTap authentication key"
+                required: true
+            PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY:
+                description: "TipTap JWT signing key"
+                required: true
+            PR_PREVIEW_MAILERSEND_API_KEY:
+                description: "MailerSend API key"
+                required: true
+            PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID:
+                description: "Welcome email template ID"
+                required: true
+
+            # Frontend build-time configuration
+            PR_PREVIEW_BACKEND_SERVICE_PROTOCOL:
+                description: "Backend service protocol (http/https)"
+                required: false
+            PR_PREVIEW_BACKEND_SERVICE_HOST:
+                description: "Backend service host"
+                required: false
+            PR_PREVIEW_BACKEND_SERVICE_PORT:
+                description: "Backend service port"
+                required: false
+            PR_PREVIEW_BACKEND_SERVICE_API_PATH:
+                description: "Backend API path"
+                required: false
+            PR_PREVIEW_BACKEND_API_VERSION:
+                description: "Backend API version"
+                required: false
+            PR_PREVIEW_FRONTEND_SERVICE_PORT:
+                description: "Frontend service port"
+                required: false
+            PR_PREVIEW_FRONTEND_SERVICE_INTERFACE:
+                description: "Frontend service interface"
+                required: false
+
+            # GitHub authentication token (automatically provided)
+            GITHUB_TOKEN:
+                description: "GitHub token for authentication"
+                required: true
+
+    # Allow manual execution for testing and debugging
+    workflow_dispatch:
+        inputs:
+            repo_type:
+                description: "Repository type: 'backend' or 'frontend'"
+                required: true
+                type: string
+            pr_number:
+                description: "PR number for this deployment"
+                required: true
+                type: string
+            branch_name:
+                description: "Branch name to deploy"
+                required: true
+                type: string
+            backend_branch:
+                description: "Backend branch to use when ensuring backend image (fallback when repo_type=frontend)"
+                required: false
+                type: string
+                default: "main"
+            frontend_branch:
+                description: "Frontend branch to use when ensuring frontend image (fallback when repo_type=backend)"
+                required: false
+                type: string
+                default: "main"
+            backend_image:
+                description: "Override backend Docker image tag (skip build if provided)"
+                required: false
+                type: string
+                default: ""
+            frontend_image:
+                description: "Override frontend Docker image tag (skip build if provided)"
+                required: false
+                type: string
+                default: ""
+            force_rebuild:
+                description: "Force rebuild without cache"
+                required: false
+                type: boolean
+                default: false
+
+# Prevent multiple deployments for the same PR from running simultaneously
+concurrency:
+    group: preview-deploy-${{ inputs.pr_number }}-${{ inputs.repo_type }}
+    cancel-in-progress: true
+
+# Define what GitHub resources this workflow can access
+permissions:
+    contents: read
+    packages: write
+    pull-requests: write
+    attestations: write
+    id-token: write
+
+# Set environment variables that apply to all jobs in this workflow
+env:
+    REGISTRY: ghcr.io
+    BACKEND_REPOSITORY: ${{ github.repository_owner }}/refactor-platform-rs
+    FRONTEND_REPOSITORY: ${{ github.repository_owner }}/refactor-platform-fe
+    BACKEND_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/refactor-platform-rs
+    FRONTEND_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/refactor-platform-fe
+
+jobs:
+    # ===========================================================================
+    # JOB 1: Backend Code Quality Checks
+    # ===========================================================================
+    lint-backend:
+        name: Lint & Format (Backend)
+        runs-on: ubuntu-24.04
+        # Only run on backend PRs or when explicitly targeting backend
+        if: inputs.repo_type == 'backend'
+        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+
+        env:
+            CARGO_TERM_COLOR: always
+            CARGO_INCREMENTAL: "0"
+            RUST_BACKTRACE: "1"
+
+        steps:
+            # Get the source code for the branch being deployed
+            - name: Checkout backend code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.branch_name }}
+
+            # Install Rust compiler and quality tools (clippy, rustfmt)
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+                  components: clippy, rustfmt
+
+            # Cache Rust dependencies to speed up subsequent runs
+            - name: Use cached dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: "pr-preview"
+                  key: "lint"
+                  cache-all-crates: true
+
+            # Run clippy to catch common mistakes and improve code quality
+            - name: Run clippy
+              run: cargo clippy --all-targets
+
+            # Check if code follows Rust formatting standards
+            - name: Run format check
+              run: cargo fmt --all -- --check || echo "::warning::Code formatting issues found. Run 'cargo fmt --all' locally to fix."
+              continue-on-error: true
+
+    # ===========================================================================
+    # JOB 2: Frontend Code Quality Checks
+    # ===========================================================================
+    lint-frontend:
+        name: Lint & Format (Frontend)
+        runs-on: ubuntu-24.04
+        # Only run on frontend PRs or when explicitly targeting frontend
+        if: inputs.repo_type == 'frontend'
+        # Frontend repo uses repo-level secrets (no environment)
+
+        steps:
+            # Get the source code for the branch being deployed
+            - name: Checkout frontend code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.branch_name }}
+
+            # Setup Node.js with npm cache for faster dependency installation
+            - name: Setup Node.js
+              uses: actions/setup-node@v5
+              with:
+                  node-version: 24.x
+                  cache: "npm"
+                  cache-dependency-path: package-lock.json
+
+            # Install exact versions from package-lock.json for consistency
+            - name: Install dependencies
+              run: npm ci --prefer-offline
+
+            # Run ESLint to catch JavaScript/TypeScript issues
+            - name: Run ESLint
+              run: npm run lint
+
+    # ===========================================================================
+    # JOB 3: Backend Build and Test
+    # ===========================================================================
+    test-backend:
+        name: Build & Test (Backend)
+        runs-on: ubuntu-24.04
+        # Only run on backend PRs or when explicitly targeting backend
+        if: inputs.repo_type == 'backend'
+        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+
+        env:
+            CARGO_TERM_COLOR: always
+            CARGO_INCREMENTAL: "0"
+            RUST_BACKTRACE: "1"
+
+        steps:
+            # Get the source code for the branch being deployed
+            - name: Checkout backend code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.branch_name }}
+
+            # Install Rust compiler for x86_64 Linux (GitHub runner architecture)
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
+                  targets: x86_64-unknown-linux-gnu
+
+            # Configure OpenSSL paths for compilation on Ubuntu
+            - name: Set OpenSSL Paths
+              run: |
+                  echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
+                  echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
+
+            # Cache Rust dependencies to speed up builds
+            - name: Use cached dependencies
+              uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: "pr-preview"
+                  key: "test"
+                  cache-all-crates: true
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+
+            # Compile all Rust code to check for compilation errors
+            - name: Build
+              run: cargo build --all-targets
+
+            # Run the test suite to ensure code works correctly
+            - name: Run tests
+              run: cargo test
+
+    # ===========================================================================
+    # JOB 4: Frontend Build and Test
+    # ===========================================================================
+    test-frontend:
+        name: Build & Test (Frontend)
+        runs-on: ubuntu-24.04
+        # Only run on frontend PRs or when explicitly targeting frontend
+        if: inputs.repo_type == 'frontend'
+        # Frontend repo uses repo-level secrets (no environment)
+
+        env:
+            NODE_ENV: test
+
+        steps:
+            # Get the source code for the branch being deployed
+            - name: Checkout frontend code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.branch_name }}
+
+            # Setup Node.js with npm cache for faster dependency installation
+            - name: Setup Node.js
+              uses: actions/setup-node@v5
+              with:
+                  node-version: 24.x
+                  cache: "npm"
+                  cache-dependency-path: package-lock.json
+
+            # Cache Next.js build output for faster subsequent builds
+            - name: Cache Next.js build
+              uses: actions/cache@v4
+              with:
+                  path: .next/cache
+                  key: ${{ runner.os }}-nextjs-test-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+                  restore-keys: |
+                      ${{ runner.os }}-nextjs-test-${{ hashFiles('**/package-lock.json') }}-
+                      ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
+
+            # Cache Playwright browser binaries for E2E tests
+            - name: Cache Playwright browsers
+              uses: actions/cache@v4
+              with:
+                  path: ~/.cache/ms-playwright
+                  key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
+                  restore-keys: |
+                      ${{ runner.os }}-playwright-
+
+            # Install exact versions from package-lock.json for consistency
+            - name: Install dependencies
+              run: npm ci --prefer-offline
+
+            # Build the Next.js application to check for build errors
+            - name: Build application
+              run: npm run build
+
+            # Download browser binaries needed for E2E testing
+            - name: Install Playwright browsers
+              run: npx playwright install --with-deps
+
+            # Run unit tests to validate component functionality
+            - name: Run unit tests
+              run: npm run test:run
+
+            # Run end-to-end tests to validate full application flow
+            - name: Run E2E tests
+              run: npm run test:e2e
+
+    # ===========================================================================
+    # JOB 5: Build ARM64 Images for Deployment
+    # ===========================================================================
+    build-arm64-image:
+        name: Build ARM64 Images
+        runs-on: [self-hosted, Linux, ARM64, neo]
+        # Backend uses pr-preview environment, frontend uses repo-level secrets
+        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+        # Wait for quality checks to pass before building
+        needs:
+            - lint-backend
+            - test-backend
+            - lint-frontend
+            - test-frontend
+        # Skip if quality checks failed, but allow skipped jobs (for frontend/backend-only runs)
+        if: |
+            always() &&
+            !cancelled() &&
+            !contains(needs.*.result, 'failure')
+
+        outputs:
+            backend_image: ${{ steps.resolve.outputs.backend_image }}
+            backend_image_sha: ${{ steps.resolve.outputs.backend_image_sha }}
+            frontend_image: ${{ steps.resolve.outputs.frontend_image }}
+            frontend_image_sha: ${{ steps.resolve.outputs.frontend_image_sha }}
+            backend_branch: ${{ steps.resolve.outputs.backend_branch }}
+            frontend_branch: ${{ steps.resolve.outputs.frontend_branch }}
+            backend_service_port: ${{ steps.resolve.outputs.backend_service_port }}
+            frontend_service_port: ${{ steps.resolve.outputs.frontend_service_port }}
+            pr_number: ${{ steps.resolve.outputs.pr_number }}
+            is_native_arm64: ${{ steps.arch.outputs.is_native_arm64 }}
+
+        steps:
+            # Verify we're running on ARM64 architecture for native builds
+            - name: Verify ARM64 runner
+              id: arch
+              run: |
+                  if [[ "$(uname -m)" == "aarch64" ]]; then
+                      echo "is_native_arm64=true" >> $GITHUB_OUTPUT
+                      echo "::notice::🚀 Running on native ARM64 runner (Neo)"
+                  else
+                      echo "is_native_arm64=false" >> $GITHUB_OUTPUT
+                      echo "::error::Not running on ARM64 architecture"
+                      exit 1
+                  fi
+
+            # Calculate what images need to be built based on repo type and inputs
+            - name: Resolve build targets
+              id: resolve
+              env:
+                  FORCE_REBUILD: ${{ inputs.force_rebuild }}
+              run: |
+                  set -euo pipefail
+
+                  # Validate PR number input
+                  PR="${{ inputs.pr_number }}"
+                  if [[ -z "$PR" ]]; then
+                      echo "::error::PR number is required"
+                      exit 1
+                  fi
+                  if ! [[ $PR =~ ^[0-9]+$ ]]; then
+                      echo "::error::PR number must be numeric"
+                      exit 1
+                  fi
+
+                  # Validate repository type
+                  REPO_TYPE="${{ inputs.repo_type }}"
+                  if [[ "$REPO_TYPE" != "backend" && "$REPO_TYPE" != "frontend" ]]; then
+                      echo "::error::repo_type must be 'backend' or 'frontend'"
+                      exit 1
+                  fi
+
+                  # Determine which branches to use for each component
+                  BACKEND_BRANCH="${{ inputs.backend_branch }}"
+                  FRONTEND_BRANCH="${{ inputs.frontend_branch }}"
+                  if [[ "$REPO_TYPE" == "backend" ]]; then
+                      BACKEND_BRANCH="${{ inputs.branch_name }}"
+                  fi
+                  if [[ "$REPO_TYPE" == "frontend" ]]; then
+                      FRONTEND_BRANCH="${{ inputs.branch_name }}"
+                  fi
+
+                  # Set up image repository references
+                  BACKEND_IMAGE_REPO="${{ env.BACKEND_IMAGE_REPO }}"
+                  FRONTEND_IMAGE_REPO="${{ env.FRONTEND_IMAGE_REPO }}"
+
+                  # Check for image overrides
+                  BACKEND_IMAGE_OVERRIDE="${{ inputs.backend_image }}"
+                  FRONTEND_IMAGE_OVERRIDE="${{ inputs.frontend_image }}"
+                  FORCE_BUILD=${FORCE_REBUILD:-false}
+
+                  # Configure backend image strategy
+                  if [[ "$REPO_TYPE" == "backend" ]]; then
+                      # Build PR-specific backend image
+                      BACKEND_IMAGE="${BACKEND_IMAGE_REPO}:pr-${PR}"
+                      BACKEND_SHA="${BACKEND_IMAGE_REPO}:pr-${PR}-${{ github.sha }}"
+                      BACKEND_BUILD_MODE="pr"
+                      BACKEND_NEEDS_BUILD=true
+                      BACKEND_TAGS="${BACKEND_IMAGE},${BACKEND_SHA}"
+                  else
+                      # Use main-arm64 backend image for frontend deployments
+                      BACKEND_IMAGE="${BACKEND_IMAGE_REPO}:main-arm64"
+                      BACKEND_SHA="${BACKEND_IMAGE_REPO}:main-arm64-latest"
+                      BACKEND_BUILD_MODE="ensure_main"
+                      BACKEND_NEEDS_BUILD=$([[ "$FORCE_BUILD" == "true" ]] && echo true || echo false)
+                      BACKEND_TAGS="${BACKEND_IMAGE},${BACKEND_SHA}"
+                  fi
+
+                  # Handle backend image override
+                  if [[ -n "$BACKEND_IMAGE_OVERRIDE" ]]; then
+                      BACKEND_IMAGE="$BACKEND_IMAGE_OVERRIDE"
+                      BACKEND_NEEDS_BUILD=false
+                      BACKEND_BUILD_MODE="skip"
+                  fi
+
+                  # Configure frontend image strategy
+                  if [[ "$REPO_TYPE" == "frontend" ]]; then
+                      # Build PR-specific frontend image
+                      FRONTEND_IMAGE="${FRONTEND_IMAGE_REPO}:pr-${PR}"
+                      FRONTEND_SHA="${FRONTEND_IMAGE_REPO}:pr-${PR}-${{ github.sha }}"
+                      FRONTEND_BUILD_MODE="pr"
+                      FRONTEND_NEEDS_BUILD=true
+                      FRONTEND_TAGS="${FRONTEND_IMAGE},${FRONTEND_SHA}"
+                  else
+                      # Use main-arm64 frontend image for backend deployments
+                      FRONTEND_IMAGE="${FRONTEND_IMAGE_REPO}:main-arm64"
+                      FRONTEND_SHA="${FRONTEND_IMAGE_REPO}:main-arm64-latest"
+                      FRONTEND_BUILD_MODE="ensure_main"
+                      FRONTEND_NEEDS_BUILD=$([[ "$FORCE_BUILD" == "true" ]] && echo true || echo false)
+                      FRONTEND_TAGS="${FRONTEND_IMAGE},${FRONTEND_SHA}"
+                  fi
+
+                  # Handle frontend image override
+                  if [[ -n "$FRONTEND_IMAGE_OVERRIDE" ]]; then
+                      FRONTEND_IMAGE="$FRONTEND_IMAGE_OVERRIDE"
+                      FRONTEND_NEEDS_BUILD=false
+                      FRONTEND_BUILD_MODE="skip"
+                  fi
+
+                  # Calculate unique ports for this PR (formula: base + PR number)
+                  BACKEND_PORT=$((4000 + PR))
+                  FRONTEND_PORT=$((3000 + PR))
+
+                  # Export all calculated values for subsequent steps
+                  echo "backend_branch=${BACKEND_BRANCH}" >> $GITHUB_OUTPUT
+                  echo "frontend_branch=${FRONTEND_BRANCH}" >> $GITHUB_OUTPUT
+                  echo "backend_image=${BACKEND_IMAGE}" >> $GITHUB_OUTPUT
+                  echo "backend_image_sha=${BACKEND_SHA}" >> $GITHUB_OUTPUT
+                  echo "backend_build_mode=${BACKEND_BUILD_MODE}" >> $GITHUB_OUTPUT
+                  echo "backend_needs_build=${BACKEND_NEEDS_BUILD}" >> $GITHUB_OUTPUT
+                  echo "backend_tags=${BACKEND_TAGS}" >> $GITHUB_OUTPUT
+                  echo "frontend_image=${FRONTEND_IMAGE}" >> $GITHUB_OUTPUT
+                  echo "frontend_image_sha=${FRONTEND_SHA}" >> $GITHUB_OUTPUT
+                  echo "frontend_build_mode=${FRONTEND_BUILD_MODE}" >> $GITHUB_OUTPUT
+                  echo "frontend_needs_build=${FRONTEND_NEEDS_BUILD}" >> $GITHUB_OUTPUT
+                  echo "frontend_tags=${FRONTEND_TAGS}" >> $GITHUB_OUTPUT
+                  echo "backend_service_port=${BACKEND_PORT}" >> $GITHUB_OUTPUT
+                  echo "frontend_service_port=${FRONTEND_PORT}" >> $GITHUB_OUTPUT
+                  echo "pr_number=${PR}" >> $GITHUB_OUTPUT
+
+                  echo "::notice::🏗️ Backend: ${BACKEND_IMAGE} (build: ${BACKEND_NEEDS_BUILD})"
+                  echo "::notice::🎨 Frontend: ${FRONTEND_IMAGE} (build: ${FRONTEND_NEEDS_BUILD})"
+
+            # Authenticate with GitHub Container Registry for pushing images
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            # Set up Docker BuildKit for advanced features and caching
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+              with:
+                  driver-opts: |
+                      image=moby/buildkit:latest
+                      network=host
+
+            # Check if main-arm64 backend image exists in registry
+            - name: Check backend image in registry
+              id: backend_registry
+              if: steps.resolve.outputs.backend_build_mode == 'ensure_main' && steps.resolve.outputs.backend_needs_build != 'true'
+              run: |
+                  if docker manifest inspect ${{ steps.resolve.outputs.backend_image }} >/dev/null 2>&1; then
+                      echo "exists=true" >> $GITHUB_OUTPUT
+                      echo "::notice::📦 Backend main-arm64 image already exists"
+                  else
+                      echo "exists=false" >> $GITHUB_OUTPUT
+                      echo "::notice::🔨 Backend main-arm64 image missing - will build"
+                  fi
+
+            # Get backend source code if we need to build it
+            - name: Checkout backend repository
+              if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.BACKEND_REPOSITORY }}
+                  ref: ${{ steps.resolve.outputs.backend_branch }}
+                  path: backend-src
+
+            # Cache Rust dependencies for faster ARM64 builds
+            - name: Setup Rust cache
+              if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
+              uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: "pr-preview-arm64"
+                  key: backend-${{ steps.resolve.outputs.backend_branch }}
+                  workspaces: |
+                      backend-src
+                  cache-all-crates: true
+
+            # Build and push ARM64 backend image with multi-tier caching
+            - name: Build and push backend image
+              id: build_backend
+              if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./backend-src
+                  file: ./backend-src/Dockerfile
+                  platforms: linux/arm64
+                  push: true
+                  tags: ${{ steps.resolve.outputs.backend_tags }}
+                  cache-from: |
+                      type=gha,scope=backend-arm64
+                  cache-to: type=gha,mode=max,scope=backend-arm64
+                  labels: |
+                      pr.branch=${{ steps.resolve.outputs.backend_branch }}
+                      pr.number=${{ steps.resolve.outputs.pr_number }}
+                  build-args: |
+                      CARGO_INCREMENTAL=0
+                  provenance: true
+                  sbom: false
+
+            # Check if main-arm64 frontend image exists in registry
+            - name: Check frontend image in registry
+              id: frontend_registry
+              if: steps.resolve.outputs.frontend_build_mode == 'ensure_main' && steps.resolve.outputs.frontend_needs_build != 'true'
+              run: |
+                  if docker manifest inspect ${{ steps.resolve.outputs.frontend_image }} >/dev/null 2>&1; then
+                      echo "exists=true" >> $GITHUB_OUTPUT
+                      echo "::notice::📦 Frontend main-arm64 image already exists"
+                  else
+                      echo "exists=false" >> $GITHUB_OUTPUT
+                      echo "::notice::🔨 Frontend main-arm64 image missing - will build"
+                  fi
+
+            # Get frontend source code if we need to build it
+            - name: Checkout frontend repository
+              if: steps.resolve.outputs.frontend_build_mode != 'skip' && (steps.resolve.outputs.frontend_needs_build == 'true' || steps.frontend_registry.outputs.exists == 'false')
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.FRONTEND_REPOSITORY }}
+                  ref: ${{ steps.resolve.outputs.frontend_branch }}
+                  path: frontend-src
+
+            # Build and push ARM64 frontend image with Next.js optimization
+            - name: Build and push frontend image
+              id: build_frontend
+              if: steps.resolve.outputs.frontend_build_mode != 'skip' && (steps.resolve.outputs.frontend_needs_build == 'true' || steps.frontend_registry.outputs.exists == 'false')
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./frontend-src
+                  file: ./frontend-src/Dockerfile
+                  target: runner
+                  platforms: linux/arm64
+                  push: true
+                  tags: ${{ steps.resolve.outputs.frontend_tags }}
+                  cache-from: |
+                      type=gha,scope=frontend-arm64
+                  cache-to: type=gha,mode=max,scope=frontend-arm64
+                  labels: |
+                      pr.branch=${{ steps.resolve.outputs.frontend_branch }}
+                      pr.number=${{ steps.resolve.outputs.pr_number }}
+                  build-args: |
+                      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PROTOCOL || 'http' }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_HOST || 'localhost' }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PORT || steps.resolve.outputs.backend_service_port }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_API_PATH || 'api' }}
+                      NEXT_PUBLIC_BACKEND_API_VERSION=${{ secrets.PR_PREVIEW_BACKEND_API_VERSION || 'v1' }}
+                      NEXT_PUBLIC_TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
+                      FRONTEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_PORT || '3000' }}
+                      FRONTEND_SERVICE_INTERFACE=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
+                  provenance: true
+                  sbom: true
+
+            # Create cryptographic proof of backend build for security
+            - name: Attest backend build
+              if: steps.build_backend.conclusion == 'success'
+              continue-on-error: true
+              uses: actions/attest-build-provenance@v2
+              with:
+                  subject-name: ${{ env.BACKEND_IMAGE_REPO }}
+                  subject-digest: ${{ steps.build_backend.outputs.digest }}
+                  push-to-registry: true
+
+            # Create cryptographic proof of frontend build for security
+            - name: Attest frontend build
+              if: steps.build_frontend.conclusion == 'success'
+              continue-on-error: true
+              uses: actions/attest-build-provenance@v2
+              with:
+                  subject-name: ${{ env.FRONTEND_IMAGE_REPO }}
+                  subject-digest: ${{ steps.build_frontend.outputs.digest }}
+                  push-to-registry: true
+
+    # ===========================================================================
+    # JOB 6: Deploy to RPi5 via Tailscale VPN
+    # ===========================================================================
+    deploy-to-rpi5:
+        name: Deploy to RPi5 via Tailscale
+        runs-on: [self-hosted, Linux, ARM64, neo]
+        needs: build-arm64-image
+        if: needs.build-arm64-image.result == 'success'
+        # Backend uses pr-preview environment, frontend uses repo-level secrets
+        environment: ${{ github.event.repository.name == 'refactor-platform-rs' && 'pr-preview' || null }}
+
+        steps:
+            # Calculate unique ports for this PR deployment
+            - name: Calculate Deployment Ports
+              id: ports
+              run: |
+                  PR_NUM="${{ needs.build-arm64-image.outputs.pr_number }}"
+
+                  # Port mapping: unique external ports, standard internal ports
+                  BACKEND_CONTAINER_PORT=3000
+                  BACKEND_EXTERNAL_PORT=${{ needs.build-arm64-image.outputs.backend_service_port }}
+                  POSTGRES_EXTERNAL_PORT=$((5432 + PR_NUM))
+                  FRONTEND_CONTAINER_PORT=3000
+                  FRONTEND_EXTERNAL_PORT=${{ needs.build-arm64-image.outputs.frontend_service_port }}
+
+                  echo "backend_container_port=${BACKEND_CONTAINER_PORT}" >> $GITHUB_OUTPUT
+                  echo "backend_port=${BACKEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
+                  echo "postgres_port=${POSTGRES_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
+                  echo "frontend_container_port=${FRONTEND_CONTAINER_PORT}" >> $GITHUB_OUTPUT
+                  echo "frontend_port=${FRONTEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
+                  echo "project_name=pr-${PR_NUM}" >> $GITHUB_OUTPUT
+
+                  echo "::notice::🔌 Postgres: ${POSTGRES_EXTERNAL_PORT} | Backend: ${BACKEND_EXTERNAL_PORT} | Frontend: ${FRONTEND_EXTERNAL_PORT}"
+
+            # Get Docker Compose configuration from backend repository
+            - name: Checkout Backend Repository for Compose File
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ github.repository_owner }}/refactor-platform-rs
+                  ref: main
+                  path: backend-compose
+
+            # Verify Tailscale VPN connection is working
+            - name: Verify Tailscale Connection
+              run: |
+                  echo "🔍 Checking Tailscale connection status..."
+                  tailscale status || echo "⚠️ Tailscale status check failed, but continuing..."
+                  echo "✅ Tailscale verification complete"
+
+            # Configure SSH keys and known hosts for secure connection
+            - name: Setup SSH Configuration
+              run: |
+                  mkdir -p ~/.ssh
+                  chmod 700 ~/.ssh
+                  echo "${{ secrets.RPI5_SSH_KEY }}" > ~/.ssh/id_ed25519
+                  chmod 600 ~/.ssh/id_ed25519
+                  echo "${{ secrets.RPI5_HOST_KEY }}" >> ~/.ssh/known_hosts
+                  chmod 644 ~/.ssh/known_hosts
+
+            # Test SSH connectivity before attempting deployment
+            - name: Test SSH Connection
+              run: |
+                  echo "🔍 Testing SSH connection to ${{ secrets.RPI5_TAILSCALE_NAME }}..."
+                  if ! ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 \
+                      -i ~/.ssh/id_ed25519 \
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+                      'echo "SSH connection successful"'; then
+                      echo "::error::SSH connection failed to ${{ secrets.RPI5_TAILSCALE_NAME }}"
+                      exit 1
+                  fi
+                  echo "::notice::✅ SSH connection verified"
+
+            # Prepare database schema before running application migrations
+            - name: Prepare Postgres Schema
+              if: inputs.repo_type == 'backend'
+              run: |
+                  PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
+                  BACKEND_IMAGE="${{ needs.build-arm64-image.outputs.backend_image }}"
+                  PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
+
+                  # Transfer Docker Compose file to deployment target
+                  echo "📦 Transferring compose file to RPi5 for schema preparation..."
+                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                      backend-compose/docker-compose.pr-preview.yaml \
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-compose.yaml
+
+                  # Create environment file with all configuration
+                  cat > /tmp/pr-${PR_NUMBER}.env << EOF
+                  PR_NUMBER=${PR_NUMBER}
+                  BACKEND_IMAGE=${BACKEND_IMAGE}
+                  PROJECT_NAME=${PROJECT_NAME}
+                  PR_POSTGRES_PORT=${{ steps.ports.outputs.postgres_port }}
+                  PR_BACKEND_PORT=${{ steps.ports.outputs.backend_port }}
+                  PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
+                  PR_FRONTEND_PORT=${{ steps.ports.outputs.frontend_port }}
+                  POSTGRES_USER=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n\r' | tr -d ' ')
+                  POSTGRES_PASSWORD=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n\r' | tr -d ' ')
+                  POSTGRES_DB=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r' | tr -d ' ')
+                  POSTGRES_SCHEMA=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n\r' | tr -d ' ')
+                  RUST_ENV=staging
+                  RUST_BACKTRACE=1
+                  BACKEND_INTERFACE=0.0.0.0
+                  BACKEND_ALLOWED_ORIGINS=*
+                  BACKEND_LOG_FILTER_LEVEL=info
+                  BACKEND_SESSION_EXPIRY_SECONDS=86400
+                  TIPTAP_APP_ID=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')
+                  TIPTAP_URL=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')
+                  TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}' | tr -d '\n\r')
+                  TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}' | tr -d '\n\r')
+                  MAILERSEND_API_KEY=$(echo '${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' | tr -d '\n\r')
+                  WELCOME_EMAIL_TEMPLATE_ID=$(echo '${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' | tr -d '\n\r')
+                  GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_ACTOR=${{ github.actor }}
+                  RPI5_USERNAME=${{ secrets.RPI5_USERNAME }}
+                  SERVICE_STARTUP_WAIT_SECONDS=10
+                  EOF
+
+                  # Transfer environment configuration to deployment target
+                  echo "📦 Transferring environment configuration to RPi5..."
+                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                      /tmp/pr-${PR_NUMBER}.env \
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
+
+                  # Execute schema preparation on remote server
+                  ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} << 'PREP_SCRIPT'
+                  set -eo pipefail
+
+                  # Load environment configuration
+                  ENV_FILE=$(ls -t ~/pr-*.env 2>/dev/null | head -1)
+                  if [[ -f "$ENV_FILE" ]]; then
+                      echo "📥 Found environment file for schema prep: $ENV_FILE"
+                      set -a
+                      source "$ENV_FILE"
+                      set +a
+                  else
+                      echo "❌ Environment file not found during schema preparation!"
+                      exit 1
+                  fi
+
+                  # Safety check: ensure we're running on target server
+                  if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+                      echo "❌ Schema preparation running on GitHub runner instead of target server!"
+                      exit 1
+                  fi
+
+                  cd /home/${RPI5_USERNAME}
+
+                  # Clean slate: remove any previous deployment state
+                  echo "🧹 Resetting previous deployment (including database volume)..."
+                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true
+
+                  # Start database for schema setup
+                  echo "🐘 Starting postgres for schema preparation..."
+                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "$ENV_FILE" up -d postgres
+
+                  # Wait for database to be ready for connections
+                  echo "⏳ Waiting for postgres to become ready..."
+                  READY=""
+                  for attempt in {1..30}; do
+                      if docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
+                          env PGPASSWORD="${POSTGRES_PASSWORD}" pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null 2>&1; then
+                          READY="yes"
+                          break
+                      fi
+                      sleep 2
+                  done
+
+                  # Abort if database never becomes ready
+                  if [[ -z "$READY" ]]; then
+                      echo "❌ Postgres did not become ready in time"
+                      docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml logs postgres || true
+                      exit 1
+                  fi
+
+                  # Create schema and set permissions for application
+                  echo "🛠 Ensuring schema ${POSTGRES_SCHEMA} exists and permissions are set..."
+                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
+                      env PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<SQL
+                  CREATE SCHEMA IF NOT EXISTS "${POSTGRES_SCHEMA}";
+                  GRANT ALL PRIVILEGES ON DATABASE "${POSTGRES_DB}" TO "${POSTGRES_USER}";
+                  ALTER ROLE "${POSTGRES_USER}" SET search_path TO "${POSTGRES_SCHEMA}";
+                  SQL
+
+                  echo "✅ Schema preparation completed"
+                  PREP_SCRIPT
+
+            # Deploy full application stack to RPi5
+            - name: Deploy to RPi5 via Tailscale SSH
+              run: |
+                  PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
+                  BACKEND_IMAGE="${{ needs.build-arm64-image.outputs.backend_image }}"
+                  FRONTEND_IMAGE="${{ needs.build-arm64-image.outputs.frontend_image }}"
+                  PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
+
+                  # Transfer Docker Compose configuration to target server
+                  echo "📦 Transferring compose file to RPi5..."
+                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                      backend-compose/docker-compose.pr-preview.yaml \
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-compose.yaml
+
+                  echo "🚀 Deploying PR preview environment..."
+
+                  # Create complete environment configuration for deployment
+                  cat > /tmp/pr-${PR_NUMBER}.env << EOF
+                  PR_NUMBER=${PR_NUMBER}
+                  BACKEND_IMAGE=${BACKEND_IMAGE}
+                  FRONTEND_IMAGE=${FRONTEND_IMAGE}
+                  PROJECT_NAME=${PROJECT_NAME}
+                  PR_POSTGRES_PORT=${{ steps.ports.outputs.postgres_port }}
+                  PR_BACKEND_PORT=${{ steps.ports.outputs.backend_port }}
+                  PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
+                  PR_FRONTEND_PORT=${{ steps.ports.outputs.frontend_port }}
+                  PR_FRONTEND_CONTAINER_PORT=${{ steps.ports.outputs.frontend_container_port }}
+                  POSTGRES_USER=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_USER }}' | tr -d '\n\r' | tr -d ' ')
+                  POSTGRES_PASSWORD=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}' | tr -d '\n\r' | tr -d ' ')
+                  POSTGRES_DB=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_DB }}' | tr -d '\n\r' | tr -d ' ')
+                  POSTGRES_SCHEMA=$(echo '${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}' | tr -d '\n\r' | tr -d ' ')
+                  RUST_ENV=staging
+                  RUST_BACKTRACE=1
+                  BACKEND_INTERFACE=0.0.0.0
+                  BACKEND_ALLOWED_ORIGINS=*
+                  BACKEND_LOG_FILTER_LEVEL=info
+                  BACKEND_SESSION_EXPIRY_SECONDS=86400
+                  TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}' | tr -d '\n\r')
+                  TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}' | tr -d '\n\r')
+                  TIPTAP_APP_ID=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')
+                  TIPTAP_URL=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')
+                  MAILERSEND_API_KEY=$(echo '${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}' | tr -d '\n\r')
+                  WELCOME_EMAIL_TEMPLATE_ID=$(echo '${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}' | tr -d '\n\r')
+                  GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_ACTOR=${{ github.actor }}
+                  RPI5_USERNAME=${{ secrets.RPI5_USERNAME }}
+                  SERVICE_STARTUP_WAIT_SECONDS=10
+                  EOF
+
+                  # Transfer deployment configuration to target server
+                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                      /tmp/pr-${PR_NUMBER}.env \
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
+
+                  # Execute main deployment script on remote server
+                  ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} << 'DEPLOY_SCRIPT'
+                  set -eo pipefail
+
+                  # Load deployment environment configuration
+                  ENV_FILE=$(ls -t ~/pr-*.env 2>/dev/null | head -1)
+                  if [[ -f "$ENV_FILE" ]]; then
+                      echo "📥 Found environment file: $ENV_FILE"
+                      set -a
+                      source "$ENV_FILE"
+                      set +a
+                  else
+                      echo "❌ Environment file not found!"
+                      exit 1
+                  fi
+
+                  # Safety check: ensure we're running on target server
+                  if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+                      echo "❌ Script running on GitHub runner instead of target server!"
+                      exit 1
+                  fi
+
+                  cd /home/${RPI5_USERNAME}
+
+                  # Authenticate with container registry
+                  echo "📦 Logging into GHCR..."
+                  echo "${GITHUB_TOKEN}" | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+
+                  # Pull latest backend image
+                  echo "📥 Pulling backend image: ${BACKEND_IMAGE}..."
+                  docker pull ${BACKEND_IMAGE}
+
+                  # Pull frontend image if configured
+                  if [[ -n "${FRONTEND_IMAGE}" && "${FRONTEND_IMAGE}" != "null" ]]; then
+                      echo "📥 Pulling frontend image: ${FRONTEND_IMAGE}..."
+                      docker pull ${FRONTEND_IMAGE}
+                  fi
+
+                  # Start complete application stack
+                  echo "🚀 Starting PR preview environment..."
+                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "$ENV_FILE" up -d
+
+                  # Allow services time to start up
+                  echo "⏳ Waiting ${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
+                  sleep ${SERVICE_STARTUP_WAIT_SECONDS}
+
+                  # Display deployment status
+                  echo "🩺 Deployment status:"
+                  docker compose -p ${PROJECT_NAME} ps
+
+                  # Verify database migrations completed successfully
+                  echo "📜 Checking migration status..."
+                  MIGRATOR_EXIT_CODE=$(docker inspect ${PROJECT_NAME}-migrator-1 --format='{{.State.ExitCode}}' 2>/dev/null || echo "255")
+                  docker logs ${PROJECT_NAME}-migrator-1 2>&1 | tail -20
+
+                  if [[ "${MIGRATOR_EXIT_CODE}" != "0" ]]; then
+                      echo "❌ Migration failed with exit code: ${MIGRATOR_EXIT_CODE}"
+                      echo "📜 Full migration logs:"
+                      docker logs ${PROJECT_NAME}-migrator-1 2>&1
+                      exit 1
+                  fi
+                  echo "✅ Migrations completed successfully"
+
+                  # Verify backend service is healthy
+                  echo "📜 Checking backend status..."
+                  BACKEND_STATUS=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
+                  docker logs ${PROJECT_NAME}-backend-1 2>&1 | tail -20
+
+                  if [[ "${BACKEND_STATUS}" != "running" ]]; then
+                      echo "❌ Backend is not running (status: ${BACKEND_STATUS})"
+                      echo "📜 Full backend logs:"
+                      docker logs ${PROJECT_NAME}-backend-1 2>&1
+                      exit 1
+                  fi
+
+                  # Check for crash loop (repeated restarts)
+                  BACKEND_RESTART_COUNT=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.RestartCount}}' 2>/dev/null || echo "0")
+                  if [[ "${BACKEND_RESTART_COUNT}" -gt "0" ]]; then
+                      echo "⚠️  Backend has restarted ${BACKEND_RESTART_COUNT} time(s) - checking for crash loop"
+                      sleep 5
+                      BACKEND_STATUS_RECHECK=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
+                      if [[ "${BACKEND_STATUS_RECHECK}" != "running" ]]; then
+                          echo "❌ Backend is crash looping"
+                          echo "📜 Full backend logs:"
+                          docker logs ${PROJECT_NAME}-backend-1 2>&1
+                          exit 1
+                      fi
+                  fi
+
+                  echo "✅ Backend is running successfully"
+                  echo "✅ Deployment complete!"
+
+                  # Clean up transferred environment file
+                  rm -f "$ENV_FILE"
+                  DEPLOY_SCRIPT
+
+            # Post deployment status and access URLs to PR
+            - name: Comment on PR with Preview URLs
+              uses: actions/github-script@v7
+              if: github.event_name == 'pull_request' || (github.event_name == 'workflow_call' && github.event.pull_request)
+              with:
+                  script: |
+                      const prNumber = ${{ needs.build-arm64-image.outputs.pr_number }};
+                      const backendPort = ${{ steps.ports.outputs.backend_port }};
+                      const postgresPort = ${{ steps.ports.outputs.postgres_port }};
+                      const frontendPort = ${{ steps.ports.outputs.frontend_port }};
+                      const backendBranch = '${{ needs.build-arm64-image.outputs.backend_branch }}';
+                      const frontendBranch = '${{ needs.build-arm64-image.outputs.frontend_branch }}';
+                      const backendImage = '${{ needs.build-arm64-image.outputs.backend_image }}';
+                      const frontendImage = '${{ needs.build-arm64-image.outputs.frontend_image }}';
+                      const repoType = '${{ inputs.repo_type }}';
+                      const isNativeArm64 = '${{ needs.build-arm64-image.outputs.is_native_arm64 }}' === 'true';
+
+                      const backendUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}:${backendPort}`;
+                      const frontendUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}:${frontendPort}`;
+
+                      const comment = `## 🚀 PR Preview Environment Deployed!
+
+                      ### 🔗 Access URLs
+                      | Service | URL |
+                      |---------|-----|
+                      | **Frontend** | [${frontendUrl}](${frontendUrl}) |
+                      | **Backend API** | [${backendUrl}](${backendUrl}) |
+                      | **Health Check** | [${backendUrl}/health](${backendUrl}/health) |
+
+                      ### 📊 Environment Details
+                      - **PR Number:** #${prNumber}
+                      - **Repository Type:** ${repoType}
+                      - **Backend Branch:** \`${backendBranch}\` → [${backendImage}](https://github.com/${{ github.repository_owner }}?tab=packages)
+                      - **Frontend Branch:** \`${frontendBranch}\` → [${frontendImage}](https://github.com/${{ github.repository_owner }}?tab=packages)
+                      - **Commit:** \`${{ github.sha }}\`
+                      - **Ports:** Frontend: ${frontendPort} | Backend: ${backendPort} | Postgres: ${postgresPort}
+                      - **Build Type:** ${isNativeArm64 ? '🚀 Native ARM64' : '⚠️ ARM64 Emulation'}
+
+                      ### 🔐 Access Requirements
+                      1. **Connect to Tailscale** (required)
+                      2. Access frontend: ${frontendUrl}
+                      3. Access backend: ${backendUrl}
+
+                      ### 🧪 Testing
+                      \`\`\`bash
+                      # Health check
+                      curl ${backendUrl}/health
+
+                      # API test  
+                      curl ${backendUrl}/api/v1/users
+                      \`\`\`
+
+                      ### 🧹 Cleanup
+                      _Environment auto-cleaned when PR closes/merges_
+
+                      ---
+                      *Deployed: ${new Date().toISOString()}*
+                      *Architecture: Native ARM64 build on Neo + Multi-tier caching*`;
+
+                      // Clean up any existing preview comments
+                      const { data: comments } = await github.rest.issues.listComments({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: prNumber,
+                      });
+
+                      const botComment = comments.find(c =>
+                          c.user.type === 'Bot' && c.body.includes('PR Preview Environment')
+                      );
+
+                      if (botComment) {
+                          await github.rest.issues.deleteComment({
+                              owner: context.repo.owner,
+                              repo: context.repo.repo,
+                              comment_id: botComment.id,
+                          });
+                      }
+
+                      // Post fresh deployment status comment
+                      await github.rest.issues.createComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: prNumber,
+                          body: comment,
+                      });
