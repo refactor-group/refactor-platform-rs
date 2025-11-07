@@ -722,7 +722,7 @@ jobs:
         name: Deploy to RPi5 via Tailscale
         runs-on: [self-hosted, Linux, ARM64, neo]
         needs: build-arm64-image
-        if: needs.build-arm64-image.result == 'success'
+        # Job runs by default when needed job succeeds (no explicit if needed)
         # Use pr-preview environment from calling repository
         environment: pr-preview
 
