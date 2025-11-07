@@ -829,7 +829,7 @@ jobs:
                   RUST_BACKTRACE=1
                   BACKEND_INTERFACE=0.0.0.0
                   BACKEND_ALLOWED_ORIGINS=*
-                  BACKEND_LOG_FILTER_LEVEL=info
+                  BACKEND_LOG_FILTER_LEVEL=INFO
                   BACKEND_SESSION_EXPIRY_SECONDS=86400
                   TIPTAP_APP_ID=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}' | tr -d '\n\r')
                   TIPTAP_URL=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_URL }}' | tr -d '\n\r')
@@ -948,7 +948,7 @@ jobs:
                   RUST_BACKTRACE=1
                   BACKEND_INTERFACE=0.0.0.0
                   BACKEND_ALLOWED_ORIGINS=*
-                  BACKEND_LOG_FILTER_LEVEL=info
+                  BACKEND_LOG_FILTER_LEVEL=INFO
                   BACKEND_SESSION_EXPIRY_SECONDS=86400
                   TIPTAP_AUTH_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}' | tr -d '\n\r')
                   TIPTAP_JWT_SIGNING_KEY=$(echo '${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}' | tr -d '\n\r')
