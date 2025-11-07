@@ -55,7 +55,8 @@ jobs:
       # Optional: force complete rebuild
       force_rebuild: false
     # =========================================================================
-    # NO SECRETS NEEDED!
+    # SECRETS - Inherit all secrets from calling workflow's environment
     # =========================================================================
-    # The reusable workflow uses the pr-preview environment from this repo
-    # which contains all necessary secrets and variables for deployment.
+    # The reusable workflow declares required secrets
+    # We must pass them through using 'secrets: inherit'
+    secrets: inherit

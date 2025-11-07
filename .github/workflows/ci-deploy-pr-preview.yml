@@ -610,6 +610,7 @@ jobs:
                   cache-all-crates: true
 
             # Build and push ARM64 backend image with multi-tier caching
+            # Cache strategy: PR-specific image → branch-specific GHA cache → main GHA cache
             - name: Build and push backend image
               id: build_backend
               if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
@@ -621,13 +622,18 @@ jobs:
                   push: true
                   tags: ${{ steps.resolve.outputs.backend_tags }}
                   cache-from: |
+                      type=registry,ref=${{ steps.resolve.outputs.backend_image }}
+                      type=registry,ref=${{ env.BACKEND_IMAGE_REPO }}:main-arm64
+                      type=gha,scope=backend-arm64-${{ steps.resolve.outputs.backend_branch }}
+                      type=gha,scope=backend-arm64-main
                       type=gha,scope=backend-arm64
-                  cache-to: type=gha,mode=max,scope=backend-arm64
+                  cache-to: type=gha,mode=max,scope=backend-arm64-${{ steps.resolve.outputs.backend_branch }}
                   labels: |
                       pr.branch=${{ steps.resolve.outputs.backend_branch }}
                       pr.number=${{ steps.resolve.outputs.pr_number }}
                   build-args: |
                       CARGO_INCREMENTAL=0
+                      BUILDKIT_INLINE_CACHE=1
                   provenance: true
                   sbom: false
 
@@ -654,6 +660,7 @@ jobs:
                   path: frontend-src
 
             # Build and push ARM64 frontend image with Next.js optimization
+            # Cache strategy: PR-specific image → branch-specific GHA cache → main GHA cache
             - name: Build and push frontend image
               id: build_frontend
               if: steps.resolve.outputs.frontend_build_mode != 'skip' && (steps.resolve.outputs.frontend_needs_build == 'true' || steps.frontend_registry.outputs.exists == 'false')
@@ -666,8 +673,12 @@ jobs:
                   push: true
                   tags: ${{ steps.resolve.outputs.frontend_tags }}
                   cache-from: |
+                      type=registry,ref=${{ steps.resolve.outputs.frontend_image }}
+                      type=registry,ref=${{ env.FRONTEND_IMAGE_REPO }}:main-arm64
+                      type=gha,scope=frontend-arm64-${{ steps.resolve.outputs.frontend_branch }}
+                      type=gha,scope=frontend-arm64-main
                       type=gha,scope=frontend-arm64
-                  cache-to: type=gha,mode=max,scope=frontend-arm64
+                  cache-to: type=gha,mode=max,scope=frontend-arm64-${{ steps.resolve.outputs.frontend_branch }}
                   labels: |
                       pr.branch=${{ steps.resolve.outputs.frontend_branch }}
                       pr.number=${{ steps.resolve.outputs.pr_number }}
@@ -680,6 +691,7 @@ jobs:
                       NEXT_PUBLIC_TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
                       FRONTEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_PORT || '3000' }}
                       FRONTEND_SERVICE_INTERFACE=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
+                      BUILDKIT_INLINE_CACHE=1
                   provenance: true
                   sbom: true
 

@@ -1,19 +1,24 @@
 # =============================================================================
-# PR Preview Deployment Workflow
+# PR Preview Deployment Workflow (DISABLED - Use pr-preview-backend.yml instead)
 # =============================================================================
 # Purpose: Deploys isolated PR preview environments to RPi5 via Tailscale
 # Features: ARM64 native builds, multi-tier caching, secure VPN deployment
 # Target: Raspberry Pi 5 (ARM64) with Docker Compose via Tailscale SSH
+# =============================================================================
+# TEMPORARILY DISABLED - Uncommented the pull_request trigger
+# This workflow is temporarily disabled to prevent automatic runs
+# Use pr-preview-backend.yml for PR preview deployments
 # =============================================================================
 
 name: Deploy PR Preview to RPi5
 
 # Define when this workflow should run automatically or manually
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    branches:
-      - main
+  # TEMPORARILY DISABLED - PR trigger commented out
+  # pull_request:
+  #   types: [opened, synchronize, reopened]
+  #   branches:
+  #     - main
   workflow_dispatch:
     inputs:
       backend_branch:
