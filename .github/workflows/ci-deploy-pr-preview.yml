@@ -763,7 +763,7 @@ jobs:
               uses: actions/checkout@v4
               with:
                   repository: ${{ github.repository_owner }}/refactor-platform-rs
-                  ref: main
+                  ref: ${{ needs.build-arm64-image.outputs.backend_branch }}
                   path: backend-compose
 
             # Verify Tailscale VPN connection is working
