@@ -90,6 +90,7 @@ The platform uses MailerSend for transactional emails. To configure email functi
    - `--welcome-email-template-id`: The template ID for welcome emails
 
 Example:
+
 ```bash
 export MAILERSEND_API_KEY="your-api-key"
 export WELCOME_EMAIL_TEMPLATE_ID="your-template-id"
@@ -228,3 +229,19 @@ Note that to generate a new Entity using the CLI you must ignore all other table
 ```bash
  DATABASE_URL=postgres://refactor:password@localhost:5432/refactor sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
 ```
+
+---
+
+## PR Preview Environments
+
+This repository automatically deploys **isolated preview environments** for each pull request. When you open a PR, a complete stack (backend + frontend + database) deploys to a dedicated server on our Tailnet for testing before merge.
+
+**What happens automatically:**
+
+- ✅ PR opened → Environment deploys
+- ✅ New commits → Environment updates
+- ✅ PR closed/merged → Environment cleans up
+
+**Access:** Requires Tailscale VPN connection. Access URLs are posted as a comment on your PR in the GitHub Web UI.
+
+For detailed information, see the [PR Preview Environments Runbook](docs/runbooks/pr-preview-environments.md).
