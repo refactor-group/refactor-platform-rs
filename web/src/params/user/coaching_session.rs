@@ -1,10 +1,12 @@
 use chrono::NaiveDate;
+use sea_orm::Order;
 use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::params::coaching_session::SortField;
 use crate::params::sort::SortOrder;
-use domain::Id;
+use crate::params::WithSortDefaults;
+use domain::{coaching_sessions, Id, QuerySort};
 
 /// Related resources that can be batch-loaded with coaching sessions.
 ///
@@ -104,4 +106,25 @@ impl IndexParams {
         self.sort_order = sort_order;
         self
     }
+}
+
+impl QuerySort<coaching_sessions::Column> for IndexParams {
+    fn get_sort_column(&self) -> Option<coaching_sessions::Column> {
+        self.sort_by.as_ref().map(|field| match field {
+            SortField::Date => coaching_sessions::Column::Date,
+            SortField::CreatedAt => coaching_sessions::Column::CreatedAt,
+            SortField::UpdatedAt => coaching_sessions::Column::UpdatedAt,
+        })
+    }
+
+    fn get_sort_order(&self) -> Option<Order> {
+        self.sort_order.as_ref().map(|order| match order {
+            SortOrder::Asc => Order::Asc,
+            SortOrder::Desc => Order::Desc,
+        })
+    }
+}
+
+impl WithSortDefaults for IndexParams {
+    type SortField = SortField;
 }

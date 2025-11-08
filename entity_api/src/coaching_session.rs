@@ -217,38 +217,46 @@ impl IncludeOptions {
         Ok(())
     }
 }
-
-/// Sort field for coaching sessions
-#[derive(Debug, Clone, Copy)]
-pub enum SortField {
-    Date,
-    CreatedAt,
-    UpdatedAt,
-}
-
-/// Sort order for queries
-#[derive(Debug, Clone, Copy)]
-pub enum SortOrder {
-    Asc,
-    Desc,
-}
-
 /// Find sessions by user with optional date filtering, sorting, and related data includes
 pub async fn find_by_user_with_includes(
     db: &impl ConnectionTrait,
     user_id: Id,
     from_date: Option<chrono::NaiveDate>,
     to_date: Option<chrono::NaiveDate>,
-    sort_by: Option<SortField>,
-    sort_order: Option<SortOrder>,
+    sort_column: Option<coaching_sessions::Column>,
+    sort_order: Option<sea_orm::Order>,
     includes: IncludeOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
     // Validate include options
     includes.validate()?;
 
-    // Load base sessions with date filtering and sorting
-    let sessions =
-        load_sessions_for_user(db, user_id, from_date, to_date, sort_by, sort_order).await?;
+    // Build query for sessions filtered by user
+    let mut query = Entity::find()
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(
+            coaching_relationships::Column::CoachId
+                .eq(user_id)
+                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        );
+
+    // Apply date filtering
+    if let Some(from) = from_date {
+        query = query.filter(coaching_sessions::Column::Date.gte(from));
+    }
+
+    if let Some(to) = to_date {
+        // Use next day with less-than for inclusive end date
+        let end_of_day = to.succ_opt().unwrap_or(to);
+        query = query.filter(coaching_sessions::Column::Date.lt(end_of_day));
+    }
+
+    // Apply sorting if both column and order are provided
+    if let (Some(column), Some(order)) = (sort_column, sort_order) {
+        query = query.order_by(column, order);
+    }
+
+    // Execute query to load base sessions
+    let sessions = query.all(db).await?;
 
     // Early return if no includes requested
     if !includes.needs_relationships() && !includes.goal && !includes.agreements {
@@ -266,50 +274,6 @@ pub async fn find_by_user_with_includes(
         .into_iter()
         .map(|session| assemble_enriched_session(session, &related_data))
         .collect())
-}
-
-/// Load base sessions filtered by user, optional date range, and sorting
-async fn load_sessions_for_user(
-    db: &impl ConnectionTrait,
-    user_id: Id,
-    from_date: Option<chrono::NaiveDate>,
-    to_date: Option<chrono::NaiveDate>,
-    sort_by: Option<SortField>,
-    sort_order: Option<SortOrder>,
-) -> Result<Vec<Model>, Error> {
-    let mut query = Entity::find()
-        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        );
-
-    if let Some(from) = from_date {
-        query = query.filter(coaching_sessions::Column::Date.gte(from));
-    }
-
-    if let Some(to) = to_date {
-        // Use next day with less-than for inclusive end date
-        let end_of_day = to.succ_opt().unwrap_or(to);
-        query = query.filter(coaching_sessions::Column::Date.lt(end_of_day));
-    }
-
-    // Apply sorting if both field and order are provided
-    if let (Some(field), Some(order)) = (sort_by, sort_order) {
-        let sea_order = match order {
-            SortOrder::Asc => sea_orm::Order::Asc,
-            SortOrder::Desc => sea_orm::Order::Desc,
-        };
-
-        query = match field {
-            SortField::Date => query.order_by(coaching_sessions::Column::Date, sea_order),
-            SortField::CreatedAt => query.order_by(coaching_sessions::Column::CreatedAt, sea_order),
-            SortField::UpdatedAt => query.order_by(coaching_sessions::Column::UpdatedAt, sea_order),
-        };
-    }
-
-    query.all(db).await.map_err(Into::into)
 }
 
 /// Internal lookup tables for batch-loaded related data (not serialized).

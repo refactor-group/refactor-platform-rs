@@ -3,14 +3,14 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::SortField;
-use crate::params::sort::SortOrder;
 use crate::params::user::coaching_session::{IncludeParam, IndexParams};
+use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{coaching_session as CoachingSessionApi, Id};
+use domain::{coaching_session as CoachingSessionApi, Id, QuerySort};
 use service::config::ApiVersion;
 
 use log::*;
@@ -45,7 +45,7 @@ pub async fn index(
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
-    Query(params): Query<IndexParams>,
+    Query(mut params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
@@ -58,17 +58,16 @@ pub async fn index(
         agreements: params.include.contains(&IncludeParam::Agreements),
     };
 
-    // Convert web layer sort params to entity_api types
-    let entity_sort_by = params.sort_by.map(|sf| match sf {
-        SortField::Date => CoachingSessionApi::SortField::Date,
-        SortField::CreatedAt => CoachingSessionApi::SortField::CreatedAt,
-        SortField::UpdatedAt => CoachingSessionApi::SortField::UpdatedAt,
-    });
+    // Apply sort defaults if needed
+    <IndexParams as WithSortDefaults>::apply_sort_defaults(
+        &mut params.sort_by,
+        &mut params.sort_order,
+        SortField::Date,
+    );
 
-    let entity_sort_order = params.sort_order.map(|so| match so {
-        SortOrder::Asc => CoachingSessionApi::SortOrder::Asc,
-        SortOrder::Desc => CoachingSessionApi::SortOrder::Desc,
-    });
+    // Use QuerySort trait to get SeaORM types
+    let sort_column = params.get_sort_column();
+    let sort_order = params.get_sort_order();
 
     // Fetch sessions with optional includes and sorting at database level
     let enriched_sessions = CoachingSessionApi::find_by_user_with_includes(
@@ -76,8 +75,8 @@ pub async fn index(
         user_id,
         params.from_date,
         params.to_date,
-        entity_sort_by,
-        entity_sort_order,
+        sort_column,
+        sort_order,
         includes,
     )
     .await?;
