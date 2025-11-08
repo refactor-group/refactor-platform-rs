@@ -27,6 +27,193 @@ Support critical system events like forcing a user to logout when viewing any pa
 
 ---
 
+## Architecture Diagram
+
+### Overall System Architecture
+
+```mermaid
+graph TB
+    subgraph Frontend["Frontend (Browser)"]
+        Tab1["Browser Tab 1<br/>EventSource<br/>(Coach)"]
+        Tab2["Browser Tab 2<br/>EventSource<br/>(Coachee)"]
+    end
+
+    subgraph Nginx["Nginx Reverse Proxy"]
+        SSERoute["/api/sse<br/>proxy_buffering off<br/>proxy_read_timeout 24h"]
+    end
+
+    subgraph Backend["Backend (Single Instance)"]
+        Handler["SSE Handler<br/>(handler.rs)<br/>• Extract AuthenticatedUser<br/>• Create channel<br/>• Register connection"]
+
+        Manager["SSE Manager<br/>(manager.rs)<br/>• DashMap connections<br/>• Filter by scope<br/>• Route messages"]
+
+        Controller["Action Controller<br/>(action_controller.rs)<br/>• Create resource in DB<br/>• Determine recipient<br/>• Send SSE message"]
+
+        DB[(PostgreSQL)]
+    end
+
+    Tab1 -->|"GET /api/sse<br/>(session cookie)"| SSERoute
+    Tab2 -->|"GET /api/sse<br/>(session cookie)"| SSERoute
+
+    SSERoute -->|"Long-lived connection"| Handler
+
+    Handler -->|"register_connection(metadata)"| Manager
+
+    Controller -->|"send_message(SseMessage)"| Manager
+    Controller -->|"Save resource"| DB
+
+    Manager -.->|"Event stream"| Handler
+    Handler -.->|"SSE events"| SSERoute
+    SSERoute -.->|"Server-Sent Events"| Tab1
+    SSERoute -.->|"Server-Sent Events"| Tab2
+
+    style Manager fill:#b3e5fc,stroke:#01579b,stroke-width:2px,color:#000
+    style Handler fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style Controller fill:#f8bbd0,stroke:#880e4f,stroke-width:2px,color:#000
+    style SSERoute fill:#c8e6c9,stroke:#1b5e20,stroke-width:2px,color:#000
+```
+
+### Message Flow Sequence
+
+```mermaid
+sequenceDiagram
+    participant Coach as Coach Browser
+    participant Coachee as Coachee Browser
+    participant Nginx as Nginx
+    participant Handler as SSE Handler
+    participant Manager as SSE Manager
+    participant Controller as Action Controller
+    participant DB as Database
+
+    Note over Coach,Coachee: Connection Establishment
+    Coach->>+Nginx: GET /api/sse (session cookie)
+    Nginx->>+Handler: Forward request
+    Handler->>Handler: Extract user from<br/>AuthenticatedUser
+    Handler->>Manager: register_connection(coach_metadata)
+    Handler-->>Coach: SSE connection established
+
+    Coachee->>+Nginx: GET /api/sse (session cookie)
+    Nginx->>+Handler: Forward request
+    Handler->>Handler: Extract user from<br/>AuthenticatedUser
+    Handler->>Manager: register_connection(coachee_metadata)
+    Handler-->>Coachee: SSE connection established
+
+    Note over Coach,DB: Resource Creation Flow
+    Coach->>Controller: POST /actions<br/>{action data}
+    Controller->>DB: Insert action
+    DB-->>Controller: Action saved
+    Controller->>Controller: Determine recipient<br/>(Coachee)
+    Controller->>Manager: send_message(SseMessage)<br/>scope: User{coachee_id}
+    Manager->>Manager: Filter connections<br/>by user_id
+    Manager-->>Handler: Send to Coachee's channel
+    Handler-->>Nginx: SSE event
+    Nginx-->>Coachee: event: action_created<br/>data: {action}
+    Controller-->>Coach: HTTP 201 Created<br/>{action}
+
+    Note over Coachee: Coachee sees action immediately
+```
+
+### SSE Manager Internal Structure
+
+```mermaid
+graph LR
+    subgraph "SseManager (In-Memory)"
+        DashMap["DashMap&lt;ConnectionId, Metadata&gt;"]
+
+        subgraph Connections["Active Connections"]
+            C1["conn_uuid_1<br/>• user_id: coach_id<br/>• sender: Channel"]
+            C2["conn_uuid_2<br/>• user_id: coachee_id<br/>• sender: Channel"]
+            C3["conn_uuid_3<br/>• user_id: coach_id<br/>• sender: Channel"]
+        end
+    end
+
+    subgraph "Message Routing"
+        Msg["SseMessage<br/>• event: ActionCreated<br/>• scope: User{coachee_id}"]
+        Filter{"Filter by<br/>scope"}
+    end
+
+    Msg --> Filter
+    Filter -->|"user_id == coachee_id"| C2
+    Filter -.->|"Skip"| C1
+    Filter -.->|"Skip"| C3
+
+    DashMap --- Connections
+
+    style C2 fill:#81c784,stroke:#2e7d32,stroke-width:2px,color:#000
+    style C1 fill:#ef9a9a,stroke:#c62828,stroke-width:2px,color:#000
+    style C3 fill:#ef9a9a,stroke:#c62828,stroke-width:2px,color:#000
+    style Filter fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#000
+```
+
+### Event Types and Scopes
+
+```mermaid
+graph TD
+    subgraph "SseEvent Types"
+        Session["Session-Scoped<br/>• ActionCreated<br/>• ActionUpdated<br/>• ActionDeleted<br/>• NoteCreated<br/>• NoteUpdated<br/>• NoteDeleted"]
+
+        Relationship["Relationship-Scoped<br/>• AgreementCreated<br/>• AgreementUpdated<br/>• AgreementDeleted<br/>• GoalCreated<br/>• GoalUpdated<br/>• GoalDeleted"]
+
+        System["System Events<br/>• ForceLogout"]
+    end
+
+    subgraph "MessageScope"
+        User["User Scope<br/>Send to specific user_id<br/>(all their connections)"]
+        Broadcast["Broadcast Scope<br/>Send to all connected users"]
+    end
+
+    Session --> User
+    Relationship --> User
+    System --> User
+    System --> Broadcast
+
+    style Session fill:#b3e5fc,stroke:#01579b,stroke-width:2px,color:#000
+    style Relationship fill:#f8bbd0,stroke:#880e4f,stroke-width:2px,color:#000
+    style System fill:#ffcdd2,stroke:#b71c1c,stroke-width:2px,color:#000
+    style User fill:#c8e6c9,stroke:#1b5e20,stroke-width:2px,color:#000
+    style Broadcast fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+```
+
+### Connection Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Connecting: User opens browser
+
+    Connecting --> Authenticating: GET /api/sse
+    Authenticating --> Registered: Session cookie valid
+    Authenticating --> [*]: Auth failed (401)
+
+    Registered --> Active: Connection in DashMap
+
+    Active --> ReceivingEvents: Listening for events
+    ReceivingEvents --> Active: Event received
+
+    Active --> KeepAlive: Every 15 seconds
+    KeepAlive --> Active: Heartbeat sent
+
+    Active --> Disconnecting: Browser closed/<br/>Network error
+    Disconnecting --> CleanedUp: unregister_connection()
+    CleanedUp --> [*]
+
+    Active --> ForceDisconnect: 24h timeout (nginx)
+    ForceDisconnect --> CleanedUp
+
+    note right of Active
+        Connection stored in DashMap:
+        • connection_id (UUID)
+        • user_id (from session)
+        • sender (Channel)
+    end note
+
+    note right of KeepAlive
+        Prevents nginx from closing
+        idle connections
+    end note
+```
+
+---
+
 ## Phase 0: Docker Compose Documentation
 
 ### 0.1 Add SSE Scaling Warning to docker-compose.yaml
@@ -962,54 +1149,6 @@ mod tests {
 7. Test with Notes, Agreements, Goals
 8. Test force logout (admin forces logout in one window, other windows redirect)
 9. Test connection reconnection (kill backend, restart, verify SSE reconnects)
-
----
-
-## Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Frontend                             │
-│  ┌──────────────────┐       ┌──────────────────┐           │
-│  │  Browser Tab 1   │       │  Browser Tab 2   │           │
-│  │  EventSource     │       │  EventSource     │           │
-│  │  (user session)  │       │  (user session)  │           │
-│  └────────┬─────────┘       └────────┬─────────┘           │
-└───────────┼──────────────────────────┼──────────────────────┘
-            │                          │
-            │ GET /sse (with cookie)   │ GET /sse (with cookie)
-            │                          │
-┌───────────┼──────────────────────────┼──────────────────────┐
-│           ▼                          ▼          Backend      │
-│  ┌────────────────────────────────────────────────┐         │
-│  │           SSE Handler (handler.rs)             │         │
-│  │  - Extract user from AuthenticatedUser         │         │
-│  │  - Create channel for connection               │         │
-│  │  - Register with SseManager                    │         │
-│  └──────────────────┬─────────────────────────────┘         │
-│                     │                                        │
-│                     ▼                                        │
-│  ┌────────────────────────────────────────────────┐         │
-│  │         SseManager (manager.rs)                │         │
-│  │  ┌──────────────────────────────────────────┐ │         │
-│  │  │  DashMap<ConnectionId, Metadata>         │ │         │
-│  │  │  - connection_1 → {user_id, sender}      │ │         │
-│  │  │  - connection_2 → {user_id, sender}      │ │         │
-│  │  └──────────────────────────────────────────┘ │         │
-│  │                                                │         │
-│  │  send_message(SseMessage)                     │         │
-│  │    → Filter connections by scope              │         │
-│  │    → Send to matching channels                │         │
-│  └──────────────────▲───────────────────────────┘          │
-│                     │                                        │
-│  ┌──────────────────┴───────────────────────────┐          │
-│  │      Action Controller (action_controller.rs) │          │
-│  │  - Create action in DB                        │          │
-│  │  - Determine OTHER user in relationship       │          │
-│  │  - Send User-scoped SseMessage                │          │
-│  └───────────────────────────────────────────────┘          │
-└─────────────────────────────────────────────────────────────┘
-```
 
 ---
 
