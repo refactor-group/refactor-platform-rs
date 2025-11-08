@@ -110,13 +110,8 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
 
 async fn by_user(query: Select<Organizations>, user_id: Id) -> Select<Organizations> {
     query
-        .join_as(
-            JoinType::InnerJoin,
-            user_roles::Relation::Organizations.def().rev(),
-            user_roles::Entity,
-        )
+        .join(JoinType::InnerJoin, Relation::UserRoles.def())
         .filter(user_roles::Column::UserId.eq(user_id))
-        .filter(user_roles::Column::OrganizationId.is_not_null())
         .distinct()
 }
 
@@ -182,7 +177,7 @@ mod tests {
                 ),
                 Transaction::from_sql_and_values(
                     DatabaseBackend::Postgres,
-                    r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."user_roles" AS "user_roles" ON "organizations"."id" = "user_roles"."organization_id" WHERE "user_roles"."user_id" = $1 AND "user_roles"."organization_id" IS NOT NULL"#,
+                    r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."user_roles" ON "organizations"."id" = "user_roles"."organization_id" WHERE "user_roles"."user_id" = $1"#,
                     [user_id.into()]
                 )
             ]
