@@ -450,7 +450,7 @@ fn user_organizations_routes(app_state: AppState) -> Router {
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
-                    protect::users::organizations,
+                    protect::users::organizations::index,
                 )),
         )
         .route_layer(from_fn(require_auth))
@@ -467,7 +467,7 @@ fn user_actions_routes(app_state: AppState) -> Router {
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
-                    protect::users::actions,
+                    protect::users::actions::index,
                 )),
         )
         .route_layer(from_fn(require_auth))
@@ -484,7 +484,7 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
-                    protect::users::coaching_sessions,
+                    protect::users::coaching_sessions::index,
                 )),
         )
         .route_layer(from_fn(require_auth))
@@ -501,7 +501,7 @@ fn user_overarching_goals_routes(app_state: AppState) -> Router {
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
-                    protect::users::overarching_goals,
+                    protect::users::overarching_goals::index,
                 )),
         )
         .route_layer(from_fn(require_auth))
