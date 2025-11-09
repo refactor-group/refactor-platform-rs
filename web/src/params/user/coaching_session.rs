@@ -76,37 +76,6 @@ where
 }
 
 impl IndexParams {
-    /// Creates params with only user_id set (all filters empty, no includes).
-    #[allow(dead_code)]
-    pub fn new(user_id: Id) -> Self {
-        Self {
-            user_id,
-            from_date: None,
-            to_date: None,
-            sort_by: None,
-            sort_order: None,
-            include: Vec::new(),
-        }
-    }
-
-    /// Builder method to add date range filtering and sorting.
-    ///
-    /// Note: Does not set `include` - use field access to add related resources.
-    #[allow(dead_code)]
-    pub fn with_filters(
-        mut self,
-        from_date: Option<NaiveDate>,
-        to_date: Option<NaiveDate>,
-        sort_by: Option<SortField>,
-        sort_order: Option<SortOrder>,
-    ) -> Self {
-        self.from_date = from_date;
-        self.to_date = to_date;
-        self.sort_by = sort_by;
-        self.sort_order = sort_order;
-        self
-    }
-
     /// Applies default sorting parameters if any sort parameter is provided.
     ///
     /// Uses `Date` as the default sort field for coaching sessions.
