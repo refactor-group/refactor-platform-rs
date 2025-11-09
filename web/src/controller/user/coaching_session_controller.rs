@@ -2,9 +2,7 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::coaching_session::SortField;
 use crate::params::user::coaching_session::{IncludeParam, IndexParams};
-use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -45,7 +43,7 @@ pub async fn index(
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
-    Query(mut params): Query<IndexParams>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
@@ -58,14 +56,8 @@ pub async fn index(
         agreements: params.include.contains(&IncludeParam::Agreements),
     };
 
-    // Apply sort defaults if needed
-    <IndexParams as WithSortDefaults>::apply_sort_defaults(
-        &mut params.sort_by,
-        &mut params.sort_order,
-        SortField::Date,
-    );
-
-    // Use QuerySort trait to get SeaORM types
+    // Apply defaults and get SeaORM types for sorting
+    let params = params.apply_defaults();
     let sort_column = params.get_sort_column();
     let sort_order = params.get_sort_order();
 

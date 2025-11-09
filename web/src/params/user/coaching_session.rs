@@ -106,6 +106,19 @@ impl IndexParams {
         self.sort_order = sort_order;
         self
     }
+
+    /// Applies default sorting parameters if any sort parameter is provided.
+    ///
+    /// Uses `Date` as the default sort field for coaching sessions.
+    /// This encapsulates the default field choice within the params module.
+    pub fn apply_defaults(mut self) -> Self {
+        <Self as WithSortDefaults>::apply_sort_defaults(
+            &mut self.sort_by,
+            &mut self.sort_order,
+            SortField::Date,
+        );
+        self
+    }
 }
 
 impl QuerySort<coaching_sessions::Column> for IndexParams {
