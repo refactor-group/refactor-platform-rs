@@ -40,31 +40,12 @@ pub(crate) struct IndexParams {
 }
 
 impl IndexParams {
-    /// Creates params with only user_id set (all filters empty).
-    pub fn new(user_id: Id) -> Self {
-        Self {
-            user_id,
-            coaching_session_id: None,
-            status: None,
-            sort_by: None,
-            sort_order: None,
-        }
-    }
-
-    /// Builder method to add optional filters and sorting.
+    /// Sets the user_id field (useful when user_id comes from path parameter).
     ///
-    /// Useful for programmatically constructing params in tests or internal code.
-    pub fn with_filters(
-        mut self,
-        coaching_session_id: Option<Id>,
-        status: Option<Status>,
-        sort_by: Option<SortField>,
-        sort_order: Option<SortOrder>,
-    ) -> Self {
-        self.coaching_session_id = coaching_session_id;
-        self.status = status;
-        self.sort_by = sort_by;
-        self.sort_order = sort_order;
+    /// This allows using `Query<IndexParams>` to deserialize query parameters,
+    /// then setting the path-based user_id afterward.
+    pub fn with_user_id(mut self, user_id: Id) -> Self {
+        self.user_id = user_id;
         self
     }
 }

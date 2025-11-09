@@ -9,19 +9,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{action as ActionApi, status::Status, Id};
-use serde::Deserialize;
+use domain::{action as ActionApi, Id};
 use service::config::ApiVersion;
 
 use log::*;
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct QueryParams {
-    pub(crate) coaching_session_id: Option<Id>,
-    pub(crate) status: Option<Status>,
-    pub(crate) sort_by: Option<SortField>,
-    pub(crate) sort_order: Option<crate::params::sort::SortOrder>,
-}
 
 /// GET all actions for a specific user
 #[utoipa::path(
@@ -51,18 +42,13 @@ pub async fn index(
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
-    Query(query_params): Query<QueryParams>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Actions for User: {user_id}");
-    debug!("Filter Params: {query_params:?}");
+    debug!("Filter Params: {params:?}");
 
-    // Build params with user_id from path
-    let mut params = IndexParams::new(user_id).with_filters(
-        query_params.coaching_session_id,
-        query_params.status,
-        query_params.sort_by,
-        query_params.sort_order,
-    );
+    // Set user_id from path parameter
+    let mut params = params.with_user_id(user_id);
 
     // Apply default sorting parameters
     IndexParams::apply_sort_defaults(
