@@ -38,28 +38,25 @@ pub(crate) struct IndexParams {
 }
 
 impl IndexParams {
-    /// Creates params with only user_id set (all filters empty).
-    pub fn new(user_id: Id) -> Self {
-        Self {
-            user_id,
-            coaching_session_id: None,
-            sort_by: None,
-            sort_order: None,
-        }
+    /// Sets the user_id field (useful when user_id comes from path parameter).
+    ///
+    /// This allows using `Query<IndexParams>` to deserialize query parameters,
+    /// then setting the path-based user_id afterward.
+    pub fn with_user_id(mut self, user_id: Id) -> Self {
+        self.user_id = user_id;
+        self
     }
 
-    /// Builder method to add optional coaching session filter and sorting.
+    /// Applies default sorting parameters if any sort parameter is provided.
     ///
-    /// Useful for programmatically constructing params in tests or internal code.
-    pub fn with_filters(
-        mut self,
-        coaching_session_id: Option<Id>,
-        sort_by: Option<SortField>,
-        sort_order: Option<SortOrder>,
-    ) -> Self {
-        self.coaching_session_id = coaching_session_id;
-        self.sort_by = sort_by;
-        self.sort_order = sort_order;
+    /// Uses `Title` as the default sort field for overarching goals.
+    /// This encapsulates the default field choice within the params module.
+    pub fn apply_defaults(mut self) -> Self {
+        <Self as WithSortDefaults>::apply_sort_defaults(
+            &mut self.sort_by,
+            &mut self.sort_order,
+            SortField::Title,
+        );
         self
     }
 }

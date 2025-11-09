@@ -2,25 +2,16 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::user::overarching_goal::{IndexParams, SortField};
-use crate::params::WithSortDefaults;
+use crate::params::user::overarching_goal::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::{overarching_goal as OverarchingGoalApi, Id};
-use serde::Deserialize;
 use service::config::ApiVersion;
 
 use log::*;
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct QueryParams {
-    pub(crate) coaching_session_id: Option<Id>,
-    pub(crate) sort_by: Option<SortField>,
-    pub(crate) sort_order: Option<crate::params::sort::SortOrder>,
-}
 
 /// GET all overarching goals for a specific user
 #[utoipa::path(
@@ -49,24 +40,13 @@ pub async fn index(
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
-    Query(query_params): Query<QueryParams>,
+    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Overarching Goals for User: {user_id}");
-    debug!("Filter Params: {query_params:?}");
+    debug!("Filter Params: {params:?}");
 
-    // Build params with user_id from path
-    let mut params = IndexParams::new(user_id).with_filters(
-        query_params.coaching_session_id,
-        query_params.sort_by,
-        query_params.sort_order,
-    );
-
-    // Apply default sorting parameters
-    IndexParams::apply_sort_defaults(
-        &mut params.sort_by,
-        &mut params.sort_order,
-        SortField::Title,
-    );
+    // Set user_id from path parameter and apply default sorting
+    let params = params.with_user_id(user_id).apply_defaults();
 
     let overarching_goals = OverarchingGoalApi::find_by(app_state.db_conn_ref(), params).await?;
 
