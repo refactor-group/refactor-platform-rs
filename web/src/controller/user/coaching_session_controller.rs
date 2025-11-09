@@ -48,6 +48,9 @@ pub async fn index(
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
 
+    // Set user_id from path parameter and apply defaults
+    let params = params.with_user_id(user_id).apply_defaults();
+
     // Build include options from parameters
     let includes = CoachingSessionApi::IncludeOptions {
         relationship: params.include.contains(&IncludeParam::Relationship),
@@ -55,9 +58,6 @@ pub async fn index(
         goal: params.include.contains(&IncludeParam::Goal),
         agreements: params.include.contains(&IncludeParam::Agreements),
     };
-
-    // Apply defaults and get SeaORM types for sorting
-    let params = params.apply_defaults();
     let sort_column = params.get_sort_column();
     let sort_order = params.get_sort_order();
 

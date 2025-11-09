@@ -35,7 +35,6 @@ pub enum IncludeParam {
 pub(crate) struct IndexParams {
     /// User ID from URL path (not a query parameter)
     #[serde(skip)]
-    #[allow(dead_code)]
     pub(crate) user_id: Id,
     /// Optional: filter sessions starting from this date (inclusive)
     pub(crate) from_date: Option<NaiveDate>,
@@ -76,6 +75,16 @@ where
 }
 
 impl IndexParams {
+    /// Sets the user_id field (useful when user_id comes from path parameter).
+    ///
+    /// This allows using `Query<IndexParams>` to deserialize query parameters,
+    /// then setting the path-based user_id afterward for consistency with other
+    /// user sub-resource endpoints.
+    pub fn with_user_id(mut self, user_id: Id) -> Self {
+        self.user_id = user_id;
+        self
+    }
+
     /// Applies default sorting parameters if any sort parameter is provided.
     ///
     /// Uses `Date` as the default sort field for coaching sessions.

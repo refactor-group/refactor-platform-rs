@@ -2,8 +2,7 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::user::action::{IndexParams, SortField};
-use crate::params::WithSortDefaults;
+use crate::params::user::action::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -47,15 +46,8 @@ pub async fn index(
     debug!("GET Actions for User: {user_id}");
     debug!("Filter Params: {params:?}");
 
-    // Set user_id from path parameter
-    let mut params = params.with_user_id(user_id);
-
-    // Apply default sorting parameters
-    IndexParams::apply_sort_defaults(
-        &mut params.sort_by,
-        &mut params.sort_order,
-        SortField::CreatedAt,
-    );
+    // Set user_id from path parameter and apply default sorting
+    let params = params.with_user_id(user_id).apply_defaults();
 
     let actions = ActionApi::find_by(app_state.db_conn_ref(), params).await?;
 

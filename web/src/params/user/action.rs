@@ -48,6 +48,19 @@ impl IndexParams {
         self.user_id = user_id;
         self
     }
+
+    /// Applies default sorting parameters if any sort parameter is provided.
+    ///
+    /// Uses `CreatedAt` as the default sort field for actions.
+    /// This encapsulates the default field choice within the params module.
+    pub fn apply_defaults(mut self) -> Self {
+        <Self as WithSortDefaults>::apply_sort_defaults(
+            &mut self.sort_by,
+            &mut self.sort_order,
+            SortField::CreatedAt,
+        );
+        self
+    }
 }
 
 impl IntoQueryFilterMap for IndexParams {
