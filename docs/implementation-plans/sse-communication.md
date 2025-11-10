@@ -323,7 +323,7 @@ dashmap = "6.1"
 ---
 
 ### 2.3 Define Message Types
-**File:** `web/src/sse/messages.rs`
+**File:** `web/src/sse/message.rs`
 
 **Purpose:** Define strongly-typed event messages that can be sent over SSE
 
@@ -339,7 +339,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
-pub enum SseEvent {
+pub enum Event {
     // Actions (session-scoped)
     #[serde(rename = "action_created")]
     ActionCreated {
@@ -355,23 +355,6 @@ pub enum SseEvent {
     ActionDeleted {
         coaching_session_id: Id,
         action_id: Id,
-    },
-
-    // Notes (session-scoped)
-    #[serde(rename = "note_created")]
-    NoteCreated {
-        coaching_session_id: Id,
-        note: notes::Model,
-    },
-    #[serde(rename = "note_updated")]
-    NoteUpdated {
-        coaching_session_id: Id,
-        note: notes::Model,
-    },
-    #[serde(rename = "note_deleted")]
-    NoteDeleted {
-        coaching_session_id: Id,
-        note_id: Id,
     },
 
     // Agreements (relationship-scoped)
@@ -414,7 +397,7 @@ pub enum SseEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct SseMessage {
+pub struct Message {
     pub event: SseEvent,
     pub scope: MessageScope,
 }
@@ -443,7 +426,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use axum::response::sse::Event;
 
 #[derive(Debug)]
-pub struct ConnectionMetadata {
+pub struct Metadata {
     /// Unique identifier for this connection (generated server-side)
     pub connection_id: String,
     /// The authenticated user for this connection
@@ -452,7 +435,7 @@ pub struct ConnectionMetadata {
     pub sender: UnboundedSender<Result<Event, Infallible>>,
 }
 
-impl ConnectionMetadata {
+impl Metadata {
     pub fn new(user_id: Id, sender: UnboundedSender<Result<Event, Infallible>>) -> Self {
         Self {
             connection_id: domain::Id::new_v4().to_string(),
@@ -477,19 +460,19 @@ impl ConnectionMetadata {
 
 **Key struct:**
 ```rust
-use crate::sse::connection::ConnectionMetadata;
-use crate::sse::messages::{MessageScope, SseEvent, SseMessage};
+use crate::sse::connection::Metadata as ConnectionMetadata;
+use crate::sse::message::{MessageScope, Event as SseEvent, Message as SseMessage};
 use axum::response::sse::Event;
 use dashmap::DashMap;
 use domain::Id;
 use log::*;
 use std::sync::Arc;
 
-pub struct SseManager {
+pub struct Manager {
     connections: Arc<DashMap<String, ConnectionMetadata>>,
 }
 
-impl SseManager {
+impl Manager {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(DashMap::new()),
@@ -507,7 +490,11 @@ impl SseManager {
 
     pub fn unregister_connection(&self, connection_id: &str) {
         debug!("Unregistering SSE connection {}", connection_id);
-        self.connections.remove(connection_id);
+        let connection = self.connections.remove(connection_id);
+
+        if connection.is_none() {
+            warn!("Attempted to remove SSE Connection {} but connection did not exist", connection_id);
+        }
     }
 
     pub fn send_message(&self, message: SseMessage) {
@@ -552,7 +539,7 @@ impl SseManager {
     }
 }
 
-impl Default for SseManager {
+impl Default for Manager {
     fn default() -> Self {
         Self::new()
     }
@@ -649,7 +636,7 @@ pub async fn sse_handler(
 //!
 //! 1. Frontend establishes SSE connection via `/sse` endpoint
 //! 2. Backend extracts user from session cookie (AuthenticatedUser)
-//! 3. Connection registered in SseManager with user_id
+//! 3. Connection registered in Manager with user_id
 //! 4. When a resource changes (e.g., action created):
 //!    - Controller determines recipient (e.g., other user in relationship)
 //!    - Controller sends message via `app_state.sse_manager.send_message()`
@@ -659,7 +646,7 @@ pub async fn sse_handler(
 //! # Example: Sending an event
 //!
 //! ```rust,ignore
-//! use web::sse::messages::{MessageScope, SseEvent, SseMessage};
+//! use web::sse::messages::{MessageScope, Event as SseEvent, Message as SseMessage};
 //!
 //! // In a controller after creating an action
 //! app_state.sse_manager.send_message(SseMessage {
@@ -696,14 +683,14 @@ pub async fn sse_handler(
 //! - `connection`: Connection metadata and tracking
 //! - `handler`: Axum SSE endpoint handler
 //! - `manager`: Central connection registry and message routing
-//! - `messages`: Type-safe event and scope definitions
+//! - `message`: Type-safe event and scope definitions
 
 pub mod connection;
 pub mod handler;
 pub mod manager;
-pub mod messages;
+pub mod message;
 
-pub use manager::SseManager;
+pub use manager::Manager;
 ```
 
 ---
@@ -718,11 +705,11 @@ use std::sync::Arc;
 pub struct AppState {
     pub database_connection: Arc<DatabaseConnection>,
     pub config: Config,
-    pub sse_manager: Arc<web::sse::SseManager>,  // NEW
+    pub sse_manager: Arc<web::sse::Manager>,  // NEW
 }
 ```
 
-**Note:** This requires making `SseManager` public in the web crate.
+**Note:** This requires making `Manager` public in the web crate.
 
 ---
 
@@ -752,11 +739,11 @@ pub fn define_routes(app_state: AppState) -> Router {
 
 ---
 
-### 2.10 Initialize SseManager
+### 2.10 Initialize SSE Manager
 **File:** `src/main.rs`
 
 ```rust
-let sse_manager = Arc::new(web::sse::SseManager::new());
+let sse_manager = Arc::new(web::sse::Manager::new());
 let app_state = AppState {
     database_connection: db,
     config,
@@ -774,7 +761,7 @@ let app_state = AppState {
 **After creating an action, send SSE event to the other user in the coaching relationship:**
 
 ```rust
-use crate::sse::messages::{MessageScope, SseEvent, SseMessage};
+use crate::sse::message::{MessageScope, Event as SseEvent, Message as SseMessage};
 
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
@@ -788,7 +775,7 @@ pub async fn create(
 
     // Send SSE notification to other user in coaching relationship
     if let Some(coaching_session_id) = action.coaching_session_id {
-        if let Ok(recipient_id) = determine_other_user_in_session(
+        if let Ok(recipient_id) = determine_other_user_in_coaching_session(
             app_state.db_conn_ref(),
             coaching_session_id,
             user.id,
@@ -807,7 +794,7 @@ pub async fn create(
 }
 
 // Helper function to determine the other user in a coaching session
-async fn determine_other_user_in_session(
+async fn determine_other_user_in_coaching_session(
     db: &DatabaseConnection,
     coaching_session_id: Id,
     current_user_id: Id,
@@ -833,7 +820,6 @@ async fn determine_other_user_in_session(
 - `update_status()` - Send ActionUpdated to other user
 
 **Apply same pattern to:**
-- `note_controller.rs` (NoteCreated/Updated/Deleted)
 - `agreement_controller.rs` (AgreementCreated/Updated/Deleted)
 - `overarching_goal_controller.rs` (GoalCreated/Updated/Deleted)
 
@@ -1047,11 +1033,11 @@ function CoachingSessionPage({ sessionId }: Props) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sse::messages::{MessageScope, SseEvent, SseMessage};
+    use crate::sse::messages::{MessageScope, Event as SseEvent, Message as SseMessage};
     use tokio::sync::mpsc;
 
     #[test]
-    fn test_connection_registration() {
+    fn connection_registration_adds_connection_to_manager() {
         let manager = SseManager::new();
         let (tx, _rx) = mpsc::unbounded_channel();
         let user_id = domain::Id::new_v4();
@@ -1067,7 +1053,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_user_scoped_message() {
+    async fn user_scoped_message_is_received_by_correct_user() {
         let manager = SseManager::new();
 
         let user1_id = domain::Id::new_v4();
@@ -1094,7 +1080,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_broadcast_message() {
+    async fn broadcast_message_is_received_by_all_users() {
         let manager = SseManager::new();
 
         let (tx1, mut rx1) = mpsc::unbounded_channel();
@@ -1152,23 +1138,51 @@ mod tests {
 
 ---
 
-## Key Design Decisions Summary
+## Architecture Diagram
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| **Transport** | SSE (not WebSockets) | Unidirectional, simpler, HTTP-based, automatic reconnection |
-| **Connection Scope** | App-wide per user | Simpler than per-session, works across page navigation |
-| **Connection Storage** | In-memory (DashMap) | Single instance deployment, no Redis needed yet |
-| **Message Format** | Type-safe variants | Better DX, type safety, compiler guarantees |
-| **Message Persistence** | Ephemeral | Simpler, users load fresh data from DB anyway |
-| **Auth** | Session cookie | Reuse existing auth, consistent with API |
-| **Connection ID** | Server-generated UUID | Simpler, more secure than client-generated |
-| **Message Scopes** | User + Broadcast only | Backend determines recipients via business logic |
-| **Module Location** | `web/src/sse/` | Transport layer, alongside controllers |
-| **Nginx Config** | Dedicated SSE location | Required for production reliability |
-| **Keep-Alive** | 15 seconds (default) | Prevents nginx 60s idle timeout |
-
----
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Frontend                             │
+│  ┌──────────────────┐       ┌──────────────────┐           │
+│  │  Browser Tab 1   │       │  Browser Tab 2   │           │
+│  │  EventSource     │       │  EventSource     │           │
+│  │  (user session)  │       │  (user session)  │           │
+│  └────────┬─────────┘       └────────┬─────────┘           │
+└───────────┼──────────────────────────┼──────────────────────┘
+            │                          │
+            │ GET /sse (with cookie)   │ GET /sse (with cookie)
+            │                          │
+┌───────────┼──────────────────────────┼──────────────────────┐
+│           ▼                          ▼          Backend      │
+│  ┌────────────────────────────────────────────────┐         │
+│  │           SSE Handler (handler.rs)             │         │
+│  │  - Extract user from AuthenticatedUser         │         │
+│  │  - Create channel for connection               │         │
+│  │  - Register with Manager                    │         │
+│  └──────────────────┬─────────────────────────────┘         │
+│                     │                                        │
+│                     ▼                                        │
+│  ┌────────────────────────────────────────────────┐         │
+│  │         Manager (manager.rs)                │         │
+│  │  ┌──────────────────────────────────────────┐ │         │
+│  │  │  DashMap<ConnectionId, Metadata>         │ │         │
+│  │  │  - connection_1 → {user_id, sender}      │ │         │
+│  │  │  - connection_2 → {user_id, sender}      │ │         │
+│  │  └──────────────────────────────────────────┘ │         │
+│  │                                                │         │
+│  │  send_message(Message)                     │         │
+│  │    → Filter connections by scope              │         │
+│  │    → Send to matching channels                │         │
+│  └──────────────────▲───────────────────────────┘          │
+│                     │                                        │
+│  ┌──────────────────┴───────────────────────────┐          │
+│  │      Action Controller (action_controller.rs) │          │
+│  │  - Create action in DB                        │          │
+│  │  - Determine OTHER user in relationship       │          │
+│  │  - Send User-scoped SseMessage                │          │
+│  └───────────────────────────────────────────────┘          │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Security Considerations
 
@@ -1190,214 +1204,6 @@ Migrate to multi-instance architecture when:
 - You're experiencing performance bottlenecks with single instance
 - You need high availability (failover between instances)
 
-### Current Limitation
-
-**The in-memory DashMap approach only works with a single backend instance:**
-
-```
-┌─────────────┐
-│  Instance 1 │  ← Coach connects here
-│  DashMap:   │  ← Action created here
-│  - Coach ✅ │  ← Coach gets event ✅
-│  - Coachee❌│  ← Coachee NOT in this DashMap
-└─────────────┘
-
-┌─────────────┐
-│  Instance 2 │  ← Coachee connects here
-│  DashMap:   │
-│  - Coachee✅│  ← Coachee event NEVER sent ❌
-└─────────────┘
-```
-
-**Result:** ~50% SSE event delivery failure with 2 instances, ~67% with 3 instances, etc.
-
-### Redis Pub/Sub Solution
-
-**Add Redis as a message bus between instances:**
-
-```
-┌─────────────┐         ┌─────────────┐
-│  Instance 1 │────────▶│   Redis     │◀────────│  Instance 2 │
-│  - Coach ✅ │ publish │  Pub/Sub    │subscribe│  - Coachee✅│
-└─────────────┘         │  channel    │         └─────────────┘
-                        └─────────────┘
-```
-
-**How it works:**
-1. Action created on Instance 1
-2. Instance 1 publishes `SseMessage` to Redis channel
-3. **All instances** (including Instance 1) receive from Redis
-4. Each instance checks its local DashMap
-5. Instance 2 finds Coachee in its DashMap
-6. Instance 2 sends event to Coachee ✅
-
-### Implementation Steps
-
-**1. Add Redis to docker-compose.yaml:**
-```yaml
-services:
-  redis:
-    image: redis:7-alpine
-    container_name: redis-pubsub
-    ports:
-      - "6379:6379"
-    networks:
-      - backend_network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  rust-app:
-    depends_on:
-      redis:
-        condition: service_healthy
-    environment:
-      REDIS_URL: redis://redis:6379
-```
-
-**2. Add Redis dependency to web/Cargo.toml:**
-```toml
-redis = { version = "0.24", features = ["tokio-comp", "connection-manager", "streams"] }
-```
-
-**3. Update SseManager to use Redis Pub/Sub:**
-```rust
-pub struct SseManager {
-    connections: Arc<DashMap<String, ConnectionMetadata>>,
-    redis_client: Option<redis::Client>,
-}
-
-impl SseManager {
-    pub fn new(redis_url: Option<String>) -> Self {
-        let redis_client = redis_url.map(|url| {
-            redis::Client::open(url).expect("Failed to connect to Redis")
-        });
-
-        // Start Redis subscriber in background task
-        if let Some(ref client) = redis_client {
-            tokio::spawn(start_redis_subscriber(
-                Arc::new(Self {
-                    connections: Arc::new(DashMap::new()),
-                    redis_client: None, // Subscriber doesn't need to publish
-                }),
-                client.clone(),
-            ));
-        }
-
-        Self {
-            connections: Arc::new(DashMap::new()),
-            redis_client,
-        }
-    }
-
-    pub fn send_message(&self, message: SseMessage) {
-        if let Some(redis) = &self.redis_client {
-            // Multi-instance: Publish to Redis
-            self.publish_to_redis(redis, &message);
-        } else {
-            // Single instance: Direct delivery
-            self.deliver_locally(&message);
-        }
-    }
-
-    fn publish_to_redis(&self, client: &redis::Client, message: &SseMessage) {
-        let serialized = serde_json::to_string(message)
-            .expect("Failed to serialize SSE message");
-
-        let client = client.clone();
-        tokio::spawn(async move {
-            let mut conn = client.get_async_connection().await
-                .expect("Failed to get Redis connection");
-
-            let _: () = redis::cmd("PUBLISH")
-                .arg("sse_events")
-                .arg(serialized)
-                .query_async(&mut conn)
-                .await
-                .expect("Failed to publish to Redis");
-        });
-    }
-
-    fn deliver_locally(&self, message: &SseMessage) {
-        // Existing delivery logic - unchanged
-        let event_type = format!("{:?}", message.event)
-            .split('(').next().unwrap().to_lowercase();
-
-        for entry in self.connections.iter() {
-            let metadata = entry.value();
-
-            if Self::should_receive_message(metadata, &message.scope) {
-                // ... send to connection
-            }
-        }
-    }
-}
-
-async fn start_redis_subscriber(manager: Arc<SseManager>, client: redis::Client) {
-    let mut pubsub = client.get_async_connection().await
-        .expect("Failed to get Redis pubsub connection")
-        .into_pubsub();
-
-    pubsub.subscribe("sse_events").await
-        .expect("Failed to subscribe to sse_events channel");
-
-    let mut stream = pubsub.on_message();
-
-    while let Some(msg) = stream.next().await {
-        let payload: String = msg.get_payload()
-            .expect("Failed to get Redis message payload");
-
-        let message: SseMessage = serde_json::from_str(&payload)
-            .expect("Failed to deserialize SSE message");
-
-        // Deliver to local connections
-        manager.deliver_locally(&message);
-    }
-}
-```
-
-**4. Update AppState initialization:**
-```rust
-// src/main.rs
-let redis_url = std::env::var("REDIS_URL").ok();
-let sse_manager = Arc::new(web::sse::SseManager::new(redis_url));
-```
-
-**5. Scale horizontally:**
-```yaml
-# docker-compose.yaml
-services:
-  rust-app:
-    deploy:
-      replicas: 3  # Now safe to scale!
-```
-
-### Migration Checklist
-
-- [ ] Add Redis service to docker-compose.yaml
-- [ ] Add `redis` crate dependency
-- [ ] Update `SseManager::new()` to accept optional Redis URL
-- [ ] Implement `publish_to_redis()` method
-- [ ] Implement `start_redis_subscriber()` background task
-- [ ] Update `send_message()` to publish to Redis if available
-- [ ] Add `REDIS_URL` environment variable
-- [ ] Test with 2+ replicas
-- [ ] Remove SSE scaling warning from docker-compose.yaml
-- [ ] Update this documentation
-
-### Testing Multi-Instance Setup
-
-1. Start with Redis + 2 backend replicas
-2. Connect Coach to Instance 1 (check logs)
-3. Connect Coachee to Instance 2 (check logs)
-4. Create action as Coach
-5. Verify Coachee receives event
-6. Check Redis: `redis-cli MONITOR` to see pub/sub traffic
-
----
 
 ## Future Enhancements (Not in Initial Implementation)
 
