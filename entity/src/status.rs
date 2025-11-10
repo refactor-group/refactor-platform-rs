@@ -1,23 +1,20 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Serialize, DeriveActiveEnum)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Serialize, DeriveActiveEnum, Default,
+)]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "status")]
 pub enum Status {
     #[sea_orm(string_value = "not_started")]
     NotStarted,
     #[sea_orm(string_value = "in_progress")]
+    #[default]
     InProgress,
     #[sea_orm(string_value = "completed")]
     Completed,
     #[sea_orm(string_value = "wont_do")]
     WontDo,
-}
-
-impl std::default::Default for Status {
-    fn default() -> Self {
-        Self::InProgress
-    }
 }
 
 impl From<&str> for Status {
@@ -28,6 +25,17 @@ impl From<&str> for Status {
             "completed" => Self::Completed,
             "wont_do" => Self::WontDo,
             _ => Self::InProgress,
+        }
+    }
+}
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotStarted => write!(f, "Not Started"),
+            Self::InProgress => write!(f, "In Progress"),
+            Self::Completed => write!(f, "Completed"),
+            Self::WontDo => write!(f, "Won't Do"),
         }
     }
 }
