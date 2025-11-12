@@ -70,6 +70,10 @@ use self::organization::coaching_relationship_controller;
             user_session_controller::login,
             user_session_controller::delete,
             user::password_controller::update_password,
+            user::organization_controller::index,
+            user::action_controller::index,
+            user::coaching_session_controller::index,
+            user::overarching_goal_controller::index,
             jwt_controller::generate_collab_token,
         ),
         components(
@@ -124,6 +128,10 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(overarching_goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
+        .merge(user_organizations_routes(app_state.clone()))
+        .merge(user_actions_routes(app_state.clone()))
+        .merge(user_coaching_sessions_routes(app_state.clone()))
+        .merge(user_overarching_goals_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
@@ -428,6 +436,74 @@ fn jwt_routes(app_state: AppState) -> Router {
             app_state.clone(),
             protect::jwt::generate_collab_token,
         ))
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn user_organizations_routes(app_state: AppState) -> Router {
+    Router::new()
+        .merge(
+            Router::new()
+                .route(
+                    "/users/:user_id/organizations",
+                    get(user::organization_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::organizations::index,
+                )),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn user_actions_routes(app_state: AppState) -> Router {
+    Router::new()
+        .merge(
+            Router::new()
+                .route(
+                    "/users/:user_id/actions",
+                    get(user::action_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::actions::index,
+                )),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn user_coaching_sessions_routes(app_state: AppState) -> Router {
+    Router::new()
+        .merge(
+            Router::new()
+                .route(
+                    "/users/:user_id/coaching_sessions",
+                    get(user::coaching_session_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::coaching_sessions::index,
+                )),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn user_overarching_goals_routes(app_state: AppState) -> Router {
+    Router::new()
+        .merge(
+            Router::new()
+                .route(
+                    "/users/:user_id/overarching_goals",
+                    get(user::overarching_goal_controller::index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::overarching_goals::index,
+                )),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
