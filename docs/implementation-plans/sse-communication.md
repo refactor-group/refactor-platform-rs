@@ -45,7 +45,7 @@ graph TB
     subgraph Backend["Backend (Single Instance)"]
         Handler["SSE Handler<br/>(handler.rs)<br/>• Extract AuthenticatedUser<br/>• Create channel<br/>• Register connection"]
 
-        Manager["SSE Manager<br/>(manager.rs)<br/>• DashMap connections<br/>• Filter by scope<br/>• Route messages"]
+        Manager["SSE Manager<br/>(manager.rs)<br/>• ConnectionRegistry<br/>• O(1) user lookup<br/>• Route messages"]
 
         Controller["Action Controller<br/>(action_controller.rs)<br/>• Create resource in DB<br/>• Determine recipient<br/>• Send SSE message"]
 
@@ -104,7 +104,7 @@ sequenceDiagram
     DB-->>Controller: Action saved
     Controller->>Controller: Determine recipient<br/>(Coachee)
     Controller->>Manager: send_message(SseMessage)<br/>scope: User{coachee_id}
-    Manager->>Manager: Filter connections<br/>by user_id
+    Manager->>Manager: O(1) lookup in user_index<br/>for coachee_id
     Manager-->>Handler: Send to Coachee's channel
     Handler-->>Nginx: SSE event
     Nginx-->>Coachee: event: action_created<br/>data: {action}
@@ -116,33 +116,37 @@ sequenceDiagram
 ### SSE Manager Internal Structure
 
 ```mermaid
-graph LR
-    subgraph "SseManager (In-Memory)"
-        DashMap["DashMap&lt;ConnectionId, Metadata&gt;"]
-
-        subgraph Connections["Active Connections"]
-            C1["conn_uuid_1<br/>• user_id: coach_id<br/>• sender: Channel"]
-            C2["conn_uuid_2<br/>• user_id: coachee_id<br/>• sender: Channel"]
-            C3["conn_uuid_3<br/>• user_id: coach_id<br/>• sender: Channel"]
-        end
+graph TB
+    subgraph "ConnectionRegistry (Dual-Index Architecture)"
+        Primary["Primary Index<br/>DashMap&lt;ConnectionId, ConnectionInfo&gt;<br/>• O(1) registration/cleanup"]
+        Secondary["Secondary Index<br/>DashMap&lt;UserId, HashSet&lt;ConnectionId&gt;&gt;<br/>• O(1) user lookup"]
     end
 
-    subgraph "Message Routing"
+    subgraph Connections["Active Connections"]
+        C1["conn_uuid_1<br/>• user_id: coach_id<br/>• sender: Channel"]
+        C2["conn_uuid_2<br/>• user_id: coachee_id<br/>• sender: Channel"]
+        C3["conn_uuid_3<br/>• user_id: coach_id<br/>• sender: Channel"]
+    end
+
+    subgraph "Message Routing (O(1) lookup)"
         Msg["SseMessage<br/>• event: ActionCreated<br/>• scope: User{coachee_id}"]
-        Filter{"Filter by<br/>scope"}
+        Lookup["O(1) Lookup<br/>user_index[coachee_id]"]
     end
 
-    Msg --> Filter
-    Filter -->|"user_id == coachee_id"| C2
-    Filter -.->|"Skip"| C1
-    Filter -.->|"Skip"| C3
+    Primary --> Connections
+    Secondary -->|"coach_id → {uuid_1, uuid_3}"| C1
+    Secondary -->|"coach_id → {uuid_1, uuid_3}"| C3
+    Secondary -->|"coachee_id → {uuid_2}"| C2
 
-    DashMap --- Connections
+    Msg --> Lookup
+    Lookup -->|"Direct lookup"| C2
 
     style C2 fill:#81c784,stroke:#2e7d32,stroke-width:2px,color:#000
-    style C1 fill:#ef9a9a,stroke:#c62828,stroke-width:2px,color:#000
-    style C3 fill:#ef9a9a,stroke:#c62828,stroke-width:2px,color:#000
-    style Filter fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#000
+    style C1 fill:#e0e0e0,stroke:#616161,stroke-width:1px,color:#000
+    style C3 fill:#e0e0e0,stroke:#616161,stroke-width:1px,color:#000
+    style Lookup fill:#81c784,stroke:#2e7d32,stroke-width:2px,color:#000
+    style Primary fill:#b3e5fc,stroke:#01579b,stroke-width:2px,color:#000
+    style Secondary fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
 ```
 
 ### Event Types and Scopes
@@ -332,10 +336,16 @@ dashmap = "6.1"
 - All events include context (coaching_session_id or coaching_relationship_id) for client-side filtering
 - All events are ephemeral (no persistence)
 - Two message scopes: User (specific user) and Broadcast (all users)
+- Trait-based event type extraction (no string manipulation or unwrap!)
 
 ```rust
 use domain::{actions, agreements, notes, overarching_goals, Id};
 use serde::Serialize;
+
+/// Trait for getting the SSE event type name
+pub trait EventType {
+    fn event_type(&self) -> &'static str;
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
@@ -396,9 +406,26 @@ pub enum Event {
     ForceLogout { reason: String },
 }
 
+impl SseEventType for Event {
+    fn event_type(&self) -> &'static str {
+        match self {
+            Event::ActionCreated { .. } => "action_created",
+            Event::ActionUpdated { .. } => "action_updated",
+            Event::ActionDeleted { .. } => "action_deleted",
+            Event::AgreementCreated { .. } => "agreement_created",
+            Event::AgreementUpdated { .. } => "agreement_updated",
+            Event::AgreementDeleted { .. } => "agreement_deleted",
+            Event::GoalCreated { .. } => "goal_created",
+            Event::GoalUpdated { .. } => "goal_updated",
+            Event::GoalDeleted { .. } => "goal_deleted",
+            Event::ForceLogout { .. } => "force_logout",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub event: SseEvent,
+    pub event: Event,
     pub scope: MessageScope,
 }
 
@@ -411,131 +438,258 @@ pub enum MessageScope {
 }
 ```
 
+**Why trait-based approach:**
+- No string manipulation or `unwrap()` calls
+- Compile-time enforcement: adding a new event variant will cause a compile error until `event_type()` is updated
+- Event type names match serde renames exactly (single source of truth)
+- Zero runtime overhead (returns `&'static str`)
+
 ---
 
-### 2.4 Implement Connection Metadata
+### 2.4 Implement Connection Types and Registry
 **File:** `web/src/sse/connection.rs`
 
-**Purpose:** Track metadata for each SSE connection to enable message filtering
+**Purpose:** High-performance connection registry with dual indices for O(1) lookups
 
-**Key struct:**
+**Key design decisions:**
+- Dual-index architecture: O(1) lookup by both connection_id and user_id
+- Type-safe `ConnectionId` newtype prevents string confusion
+- Eliminated redundant `connection_id` from info struct
+- Automatic cleanup of empty user indices
+
+**Implementation:**
 ```rust
 use domain::Id;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use tokio::sync::mpsc::UnboundedSender;
 use axum::response::sse::Event;
+use dashmap::DashMap;
+use log::*;
 
-#[derive(Debug)]
-pub struct Metadata {
-    /// Unique identifier for this connection (generated server-side)
-    pub connection_id: String,
-    /// The authenticated user for this connection
+/// Unique identifier for a connection (server-generated)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConnectionId(String);
+
+impl ConnectionId {
+    pub fn new() -> Self {
+        Self(Id::new_v4().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ConnectionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Connection information (no redundant connection_id)
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
     pub user_id: Id,
-    /// Channel sender for this connection
     pub sender: UnboundedSender<Result<Event, Infallible>>,
 }
 
-impl Metadata {
-    pub fn new(user_id: Id, sender: UnboundedSender<Result<Event, Infallible>>) -> Self {
+/// High-performance connection registry with dual indices for O(1) lookups
+pub struct ConnectionRegistry {
+    /// Primary storage: lookup by connection_id for registration/cleanup - O(1)
+    connections: DashMap<ConnectionId, ConnectionInfo>,
+
+    /// Secondary index: fast lookup by user_id for message routing - O(1)
+    user_index: DashMap<Id, HashSet<ConnectionId>>,
+}
+
+impl ConnectionRegistry {
+    pub fn new() -> Self {
         Self {
-            connection_id: domain::Id::new_v4().to_string(),
-            user_id,
-            sender,
+            connections: DashMap::new(),
+            user_index: DashMap::new(),
         }
+    }
+
+    /// Register a new connection - O(1)
+    pub fn register(&self, user_id: Id, sender: UnboundedSender<Result<Event, Infallible>>) -> ConnectionId {
+        let connection_id = ConnectionId::new();
+
+        // Insert into primary storage
+        self.connections.insert(
+            connection_id.clone(),
+            ConnectionInfo { user_id, sender },
+        );
+
+        // Update secondary index
+        self.user_index
+            .entry(user_id)
+            .or_insert_with(HashSet::new)
+            .insert(connection_id.clone());
+
+        connection_id
+    }
+
+    /// Unregister a connection - O(1)
+    pub fn unregister(&self, connection_id: &ConnectionId) {
+        // Remove from primary storage
+        if let Some((_, info)) = self.connections.remove(connection_id) {
+            let user_id = info.user_id;
+
+            // Update secondary index
+            if let Some(mut entry) = self.user_index.get_mut(&user_id) {
+                entry.remove(connection_id);
+
+                // Clean up empty user entries
+                if entry.is_empty() {
+                    drop(entry); // Release lock before removal
+                    self.user_index.remove(&user_id);
+                }
+            }
+        }
+    }
+
+    /// Send message to specific user - O(1) lookup + O(k) send where k = user's connections
+    pub fn send_to_user(&self, user_id: &Id, event: Event) {
+        if let Some(connection_ids) = self.user_index.get(user_id) {
+            for conn_id in connection_ids.iter() {
+                if let Some(info) = self.connections.get(conn_id) {
+                    if let Err(e) = info.sender.send(Ok(event.clone())) {
+                        warn!(
+                            "Failed to send event to connection {}: {}. Connection will be cleaned up.",
+                            conn_id.as_str(), e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Broadcast message to all connections - O(n) (unavoidable, but explicit)
+    pub fn broadcast(&self, event: Event) {
+        for entry in self.connections.iter() {
+            if let Err(e) = entry.value().sender.send(Ok(event.clone())) {
+                warn!(
+                    "Failed to send broadcast to connection {}: {}",
+                    entry.key().as_str(), e
+                );
+            }
+        }
+    }
+
+    /// Get total connection count - O(1)
+    pub fn connection_count(&self) -> usize {
+        self.connections.len()
+    }
+
+    /// Get active user count - O(1)
+    pub fn active_user_count(&self) -> usize {
+        self.user_index.len()
+    }
+
+    /// Get connections per user (for monitoring/debugging) - O(1)
+    pub fn connections_per_user(&self, user_id: &Id) -> usize {
+        self.user_index
+            .get(user_id)
+            .map(|set| set.len())
+            .unwrap_or(0)
+    }
+}
+
+impl Default for ConnectionRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 ```
 
-**Why these fields:**
-- `connection_id`: Server-generated UUID for internal tracking in DashMap
-- `user_id`: From authenticated session (via AuthenticatedUser extractor)
-- `sender`: Channel to send events to this specific connection
+**Performance characteristics:**
+- Registration: O(1)
+- Unregistration: O(1)
+- Send to specific user: O(1) + O(k) where k = user's connections (typically 1-3)
+- Broadcast: O(n) where n = total connections
+- Get active users: O(1)
 
 ---
 
 ### 2.5 Implement SSE Manager
 **File:** `web/src/sse/manager.rs`
 
-**Purpose:** Central registry for managing all SSE connections and routing messages
+**Purpose:** Central manager for routing messages to connections via the registry
 
 **Key struct:**
 ```rust
-use crate::sse::connection::Metadata as ConnectionMetadata;
+use crate::sse::connection::{ConnectionRegistry, ConnectionId};
 use crate::sse::message::{MessageScope, Event as SseEvent, Message as SseMessage};
 use axum::response::sse::Event;
-use dashmap::DashMap;
 use domain::Id;
 use log::*;
 use std::sync::Arc;
 
 pub struct Manager {
-    connections: Arc<DashMap<String, ConnectionMetadata>>,
+    registry: Arc<ConnectionRegistry>,
 }
 
 impl Manager {
     pub fn new() -> Self {
         Self {
-            connections: Arc::new(DashMap::new()),
+            registry: Arc::new(ConnectionRegistry::new()),
         }
     }
 
-    pub fn register_connection(&self, metadata: ConnectionMetadata) {
-        let connection_id = metadata.connection_id.clone();
-        debug!(
-            "Registering SSE connection {} for user {}",
-            connection_id, metadata.user_id
-        );
-        self.connections.insert(connection_id, metadata);
+    /// Register a new connection and return its unique ID
+    pub fn register_connection(
+        &self,
+        user_id: Id,
+        sender: tokio::sync::mpsc::UnboundedSender<Result<Event, std::convert::Infallible>>,
+    ) -> ConnectionId {
+        let connection_id = self.registry.register(user_id, sender);
+        debug!("Registered SSE connection {} for user {}", connection_id.as_str(), user_id);
+        connection_id
     }
 
-    pub fn unregister_connection(&self, connection_id: &str) {
-        debug!("Unregistering SSE connection {}", connection_id);
-        let connection = self.connections.remove(connection_id);
-
-        if connection.is_none() {
-            warn!("Attempted to remove SSE Connection {} but connection did not exist", connection_id);
-        }
+    /// Unregister a connection by ID
+    pub fn unregister_connection(&self, connection_id: &ConnectionId) {
+        debug!("Unregistering SSE connection {}", connection_id.as_str());
+        self.registry.unregister(connection_id);
     }
 
+    /// Send a message based on its scope
     pub fn send_message(&self, message: SseMessage) {
-        let event_type = format!("{:?}", message.event).split('(').next().unwrap().to_lowercase();
+        use crate::sse::message::EventType;
 
-        for entry in self.connections.iter() {
-            let metadata = entry.value();
+        let event_type = message.event.event_type();
 
-            if Self::should_receive_message(metadata, &message.scope) {
-                let event_data = match serde_json::to_string(&message.event) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        error!("Failed to serialize SSE event: {}", e);
-                        continue;
-                    }
-                };
+        let event_data = match serde_json::to_string(&message.event) {
+            Ok(json) => json,
+            Err(e) => {
+                error!("Failed to serialize SSE event: {}", e);
+                return;
+            }
+        };
 
-                let event = Event::default()
-                    .event(&event_type)
-                    .data(event_data);
+        let event = Event::default()
+            .event(event_type)
+            .data(event_data);
 
-                if let Err(e) = metadata.sender.send(Ok(event)) {
-                    warn!(
-                        "Failed to send SSE event to connection {}: {}",
-                        metadata.connection_id, e
-                    );
-                    // Connection is closed, will be cleaned up on next unregister
-                }
+        match message.scope {
+            MessageScope::User { user_id } => {
+                self.registry.send_to_user(&user_id, event);
+            }
+            MessageScope::Broadcast => {
+                self.registry.broadcast(event);
             }
         }
     }
 
-    fn should_receive_message(metadata: &ConnectionMetadata, scope: &MessageScope) -> bool {
-        match scope {
-            MessageScope::User { user_id } => metadata.user_id == *user_id,
-            MessageScope::Broadcast => true,
-        }
+    /// Get total connection count
+    pub fn connection_count(&self) -> usize {
+        self.registry.connection_count()
     }
 
-    pub fn connection_count(&self) -> usize {
-        self.connections.len()
+    /// Get active user count
+    pub fn active_user_count(&self) -> usize {
+        self.registry.active_user_count()
     }
 }
 
@@ -547,8 +701,8 @@ impl Default for Manager {
 ```
 
 **Message routing logic:**
-- User scope: Send to all connections where `metadata.user_id == target_user_id`
-- Broadcast: Send to all connections
+- User scope: O(1) lookup to user's connections, send to all (typically 1-3)
+- Broadcast: O(n) iteration through all connections
 - Backend determines recipients based on business logic (not client-controlled)
 
 ---
@@ -561,13 +715,11 @@ impl Default for Manager {
 **Handler signature:**
 ```rust
 use crate::extractors::authenticated_user::AuthenticatedUser;
-use crate::sse::connection::ConnectionMetadata;
 use crate::AppState;
 use async_stream::try_stream;
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use futures_util::stream::Stream;
 use log::*;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
@@ -582,10 +734,8 @@ pub async fn sse_handler(
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let metadata = ConnectionMetadata::new(user.id, tx);
-    let connection_id = metadata.connection_id.clone();
-
-    app_state.sse_manager.register_connection(metadata);
+    // Register returns the connection_id
+    let connection_id = app_state.sse_manager.register_connection(user.id, tx);
 
     let manager = app_state.sse_manager.clone();
 
@@ -605,9 +755,9 @@ pub async fn sse_handler(
 **Implementation approach:**
 1. Extract user from authenticated session (via cookie)
 2. Create channel for this connection
-3. Register connection with SseManager
+3. Register connection with Manager (returns ConnectionId)
 4. Create async stream that yields events from channel
-5. On stream drop, unregister connection
+5. On stream drop, unregister connection using ConnectionId
 6. Keep-alive every 15 seconds (default) prevents nginx timeout
 
 ---
@@ -625,6 +775,8 @@ pub async fn sse_handler(
 //!
 //! - **Single connection per user**: Each authenticated user establishes one
 //!   SSE connection that stays open across page navigation.
+//! - **Dual-index registry**: O(1) lookups for both connection management and
+//!   user-scoped message routing via separate DashMap indices.
 //! - **User and Broadcast scopes**: Messages can be sent to specific users or
 //!   broadcast to all connected users.
 //! - **Ephemeral messages**: All events are ephemeral - if a user is offline,
@@ -636,11 +788,12 @@ pub async fn sse_handler(
 //!
 //! 1. Frontend establishes SSE connection via `/sse` endpoint
 //! 2. Backend extracts user from session cookie (AuthenticatedUser)
-//! 3. Connection registered in Manager with user_id
+//! 3. Connection registered in ConnectionRegistry with dual indices
 //! 4. When a resource changes (e.g., action created):
 //!    - Controller determines recipient (e.g., other user in relationship)
 //!    - Controller sends message via `app_state.sse_manager.send_message()`
-//!    - SseManager filters connections by scope and forwards event
+//!    - Manager performs O(1) lookup in user_index to find connections
+//!    - Events sent only to matching connections
 //! 5. Frontend receives event and updates UI based on context
 //!
 //! # Example: Sending an event
@@ -680,9 +833,9 @@ pub async fn sse_handler(
 //!
 //! # Modules
 //!
-//! - `connection`: Connection metadata and tracking
+//! - `connection`: ConnectionRegistry with dual-index architecture and type-safe ConnectionId
 //! - `handler`: Axum SSE endpoint handler
-//! - `manager`: Central connection registry and message routing
+//! - `manager`: High-level message routing (delegates to ConnectionRegistry)
 //! - `message`: Type-safe event and scope definitions
 
 pub mod connection;
@@ -1020,94 +1173,112 @@ function CoachingSessionPage({ sessionId }: Props) {
 ## Phase 5: Testing
 
 ### 5.1 Backend Unit Tests
-**File:** `web/src/sse/manager.rs` (tests module)
+**File:** `web/src/sse/connection.rs` (tests module)
 
 **Test cases:**
-- Connection registration/unregistration
-- User-scoped message routing (only target user receives)
-- Broadcast message routing (all users receive)
-- Connection count tracking
-- Concurrent connection management
+- Connection registration creates both indices
+- Multiple connections for same user tracked correctly
+- Unregistration cleans up both indices
+- Empty user indices are removed
+- User-scoped send targets only correct connections
+- Broadcast sends to all connections
+- Connection count and active user count tracking
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sse::messages::{MessageScope, Event as SseEvent, Message as SseMessage};
+    use domain::Id;
     use tokio::sync::mpsc;
 
     #[test]
-    fn connection_registration_adds_connection_to_manager() {
-        let manager = SseManager::new();
+    fn registration_creates_both_indices() {
+        let registry = ConnectionRegistry::new();
+        let user_id = Id::new_v4();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let user_id = domain::Id::new_v4();
 
-        let metadata = ConnectionMetadata::new(user_id, tx);
-        let connection_id = metadata.connection_id.clone();
+        let conn_id = registry.register(user_id, tx);
 
-        manager.register_connection(metadata);
-        assert_eq!(manager.connection_count(), 1);
+        assert_eq!(registry.connection_count(), 1);
+        assert_eq!(registry.active_user_count(), 1);
+        assert_eq!(registry.connections_per_user(&user_id), 1);
+    }
 
-        manager.unregister_connection(&connection_id);
-        assert_eq!(manager.connection_count(), 0);
+    #[test]
+    fn multiple_connections_same_user() {
+        let registry = ConnectionRegistry::new();
+        let user_id = Id::new_v4();
+
+        let (tx1, _rx1) = mpsc::unbounded_channel();
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+
+        registry.register(user_id, tx1);
+        registry.register(user_id, tx2);
+
+        assert_eq!(registry.connection_count(), 2);
+        assert_eq!(registry.active_user_count(), 1); // Same user
+        assert_eq!(registry.connections_per_user(&user_id), 2);
+    }
+
+    #[test]
+    fn unregistration_cleans_up_indices() {
+        let registry = ConnectionRegistry::new();
+        let user_id = Id::new_v4();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let conn_id = registry.register(user_id, tx);
+        registry.unregister(&conn_id);
+
+        assert_eq!(registry.connection_count(), 0);
+        assert_eq!(registry.active_user_count(), 0); // Should clean up empty entry
     }
 
     #[tokio::test]
-    async fn user_scoped_message_is_received_by_correct_user() {
-        let manager = SseManager::new();
+    async fn send_to_user_only_targets_user_connections() {
+        let registry = ConnectionRegistry::new();
 
-        let user1_id = domain::Id::new_v4();
-        let user2_id = domain::Id::new_v4();
+        let user1 = Id::new_v4();
+        let user2 = Id::new_v4();
 
         let (tx1, mut rx1) = mpsc::unbounded_channel();
         let (tx2, mut rx2) = mpsc::unbounded_channel();
 
-        manager.register_connection(ConnectionMetadata::new(user1_id, tx1));
-        manager.register_connection(ConnectionMetadata::new(user2_id, tx2));
+        registry.register(user1, tx1);
+        registry.register(user2, tx2);
 
-        // Send message to user1 only
-        manager.send_message(SseMessage {
-            event: SseEvent::ForceLogout {
-                reason: "test".to_string(),
-            },
-            scope: MessageScope::User { user_id: user1_id },
-        });
+        let event = axum::response::sse::Event::default().data("test");
+        registry.send_to_user(&user1, event);
 
-        // User1 receives message
+        // User1 receives
         assert!(rx1.try_recv().is_ok());
         // User2 does not
         assert!(rx2.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn broadcast_message_is_received_by_all_users() {
-        let manager = SseManager::new();
+    async fn broadcast_sends_to_all_connections() {
+        let registry = ConnectionRegistry::new();
 
         let (tx1, mut rx1) = mpsc::unbounded_channel();
         let (tx2, mut rx2) = mpsc::unbounded_channel();
 
-        manager.register_connection(ConnectionMetadata::new(
-            domain::Id::new_v4(),
-            tx1,
-        ));
-        manager.register_connection(ConnectionMetadata::new(
-            domain::Id::new_v4(),
-            tx2,
-        ));
+        registry.register(Id::new_v4(), tx1);
+        registry.register(Id::new_v4(), tx2);
 
-        manager.send_message(SseMessage {
-            event: SseEvent::ForceLogout {
-                reason: "maintenance".to_string(),
-            },
-            scope: MessageScope::Broadcast,
-        });
+        let event = axum::response::sse::Event::default().data("broadcast");
+        registry.broadcast(event);
 
-        // Both users receive message
+        // Both users receive
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());
     }
 }
 ```
+
+**Additional Manager tests in** `web/src/sse/manager.rs`:
+- Message serialization
+- Event type extraction
+- Scope-based routing delegates correctly to registry
 
 ---
 
@@ -1165,13 +1336,13 @@ mod tests {
 │  ┌────────────────────────────────────────────────┐         │
 │  │         Manager (manager.rs)                │         │
 │  │  ┌──────────────────────────────────────────┐ │         │
-│  │  │  DashMap<ConnectionId, Metadata>         │ │         │
-│  │  │  - connection_1 → {user_id, sender}      │ │         │
-│  │  │  - connection_2 → {user_id, sender}      │ │         │
+│  │  │  ConnectionRegistry                       │ │         │
+│  │  │  • Primary: DashMap<ConnId, Info>        │ │         │
+│  │  │  • Secondary: DashMap<UserId, Set>       │ │         │
 │  │  └──────────────────────────────────────────┘ │         │
 │  │                                                │         │
 │  │  send_message(Message)                     │         │
-│  │    → Filter connections by scope              │         │
+│  │    → O(1) lookup in user_index                │         │
 │  │    → Send to matching channels                │         │
 │  └──────────────────▲───────────────────────────┘          │
 │                     │                                        │
