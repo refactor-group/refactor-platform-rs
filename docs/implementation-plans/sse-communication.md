@@ -218,9 +218,1108 @@ stateDiagram-v2
 
 ---
 
-## Phase 0: Docker Compose Documentation
+## Phase 0: SSE Integration Testing Tool
 
-### 0.1 Add SSE Scaling Warning to docker-compose.yaml
+### Overview
+A standalone Rust binary for testing SSE functionality without requiring a frontend client. The tool authenticates as two users, establishes SSE connections, triggers events via API calls, and validates that events are received correctly.
+
+**Tool Location:** `sse-test-client/` (new cargo workspace member)
+
+### 0.1 Create Workspace Structure
+
+**Add to root `Cargo.toml`:**
+```toml
+[workspace]
+members = [
+    # ... existing members
+    "sse-test-client",
+]
+```
+
+**Create `sse-test-client/Cargo.toml`:**
+```toml
+[package]
+name = "sse-test-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "cookies"] }
+
+# SSE parsing
+eventsource-client = "0.12"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Output formatting
+colored = "2.1"
+anyhow = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4", "serde"] }
+```
+
+---
+
+### 0.2 Tool Architecture
+
+**File structure:**
+```
+sse-test-client/
+├── Cargo.toml
+├── src/
+│   ├── main.rs              # CLI entry point, scenario orchestration
+│   ├── auth.rs              # Login and session management
+│   ├── sse_client.rs        # SSE connection handling
+│   ├── api_client.rs        # API calls to trigger events
+│   ├── scenarios.rs         # Test scenario definitions
+│   ├── output.rs            # Color-coded formatting
+│   └── types.rs             # Shared types (events, test data)
+```
+
+---
+
+### 0.3 Implement Authentication Module
+
+**File:** `sse-test-client/src/auth.rs`
+
+```rust
+use anyhow::{Context, Result};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone)]
+pub struct UserCredentials {
+    pub email: String,
+    pub password: String,
+}
+
+impl UserCredentials {
+    pub fn parse(input: &str) -> Result<Self> {
+        let parts: Vec<&str> = input.split(':').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Invalid credentials format. Expected email:password");
+        }
+        Ok(Self {
+            email: parts[0].to_string(),
+            password: parts[1].to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthenticatedUser {
+    pub user_id: String,
+    pub session_cookie: String,
+    pub credentials: UserCredentials,
+}
+
+#[derive(Debug, Serialize)]
+struct LoginRequest {
+    email: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginResponse {
+    user_id: String,
+}
+
+pub async fn login(
+    client: &Client,
+    base_url: &str,
+    credentials: &UserCredentials,
+) -> Result<AuthenticatedUser> {
+    let url = format!("{}/user_sessions", base_url);
+
+    let response = client
+        .post(&url)
+        .json(&LoginRequest {
+            email: credentials.email.clone(),
+            password: credentials.password.clone(),
+        })
+        .send()
+        .await
+        .context("Failed to send login request")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Login failed: {}", response.status());
+    }
+
+    // Extract session cookie
+    let session_cookie = response
+        .cookies()
+        .find(|cookie| cookie.name() == "session_id")
+        .context("No session cookie in response")?
+        .value()
+        .to_string();
+
+    let login_response: LoginResponse = response
+        .json()
+        .await
+        .context("Failed to parse login response")?;
+
+    Ok(AuthenticatedUser {
+        user_id: login_response.user_id,
+        session_cookie,
+        credentials: credentials.clone(),
+    })
+}
+```
+
+---
+
+### 0.4 Implement SSE Client Module
+
+**File:** `sse-test-client/src/sse_client.rs`
+
+```rust
+use anyhow::{Context, Result};
+use eventsource_client as es;
+use log::*;
+use serde_json::Value;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone)]
+pub struct SseEvent {
+    pub event_type: String,
+    pub data: Value,
+    pub timestamp: Instant,
+}
+
+pub struct SseConnection {
+    pub user_label: String,
+    event_rx: mpsc::UnboundedReceiver<SseEvent>,
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+impl SseConnection {
+    pub async fn establish(
+        base_url: &str,
+        session_cookie: &str,
+        user_label: String,
+    ) -> Result<Self> {
+        let url = format!("{}/sse", base_url);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let client = es::ClientBuilder::for_url(&url)?
+            .header("Cookie", &format!("session_id={}", session_cookie))?
+            .build();
+
+        let label = user_label.clone();
+        let handle = tokio::spawn(async move {
+            let mut stream = client.stream();
+
+            while let Some(event_result) = stream.next().await {
+                match event_result {
+                    Ok(es::SSE::Event(event)) => {
+                        if let Ok(data) = serde_json::from_str(&event.data) {
+                            let sse_event = SseEvent {
+                                event_type: event.event_type,
+                                data,
+                                timestamp: Instant::now(),
+                            };
+
+                            if tx.send(sse_event).is_err() {
+                                debug!("SSE receiver dropped for {}", label);
+                                break;
+                            }
+                        }
+                    }
+                    Ok(es::SSE::Comment(_)) => {
+                        // Ignore comments (keep-alive)
+                    }
+                    Err(e) => {
+                        warn!("SSE error for {}: {}", label, e);
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            user_label,
+            event_rx: rx,
+            _handle: handle,
+        })
+    }
+
+    pub async fn wait_for_event(
+        &mut self,
+        event_type: &str,
+        timeout: Duration,
+    ) -> Result<SseEvent> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!("Timeout waiting for event: {}", event_type);
+            }
+
+            match tokio::time::timeout(remaining, self.event_rx.recv()).await {
+                Ok(Some(event)) if event.event_type == event_type => {
+                    return Ok(event);
+                }
+                Ok(Some(_)) => {
+                    // Wrong event type, keep waiting
+                    continue;
+                }
+                Ok(None) => {
+                    anyhow::bail!("SSE connection closed");
+                }
+                Err(_) => {
+                    anyhow::bail!("Timeout waiting for event: {}", event_type);
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+### 0.5 Implement API Client Module
+
+**File:** `sse-test-client/src/api_client.rs`
+
+```rust
+use anyhow::{Context, Result};
+use reqwest::Client;
+use serde_json::{json, Value};
+
+pub struct ApiClient {
+    client: Client,
+    base_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestEnvironment {
+    pub relationship_id: String,
+    pub session_id: String,
+}
+
+impl ApiClient {
+    pub fn new(client: Client, base_url: String) -> Self {
+        Self { client, base_url }
+    }
+
+    pub async fn setup_test_environment(
+        &self,
+        coach_session: &str,
+        coachee_session: &str,
+        coach_id: &str,
+        coachee_id: &str,
+    ) -> Result<TestEnvironment> {
+        // Create coaching relationship
+        let relationship = self
+            .create_coaching_relationship(coach_session, coach_id, coachee_id)
+            .await?;
+
+        let relationship_id = relationship["id"]
+            .as_str()
+            .context("No relationship ID in response")?
+            .to_string();
+
+        // Create coaching session
+        let session = self
+            .create_coaching_session(coach_session, &relationship_id)
+            .await?;
+
+        let session_id = session["id"]
+            .as_str()
+            .context("No session ID in response")?
+            .to_string();
+
+        Ok(TestEnvironment {
+            relationship_id,
+            session_id,
+        })
+    }
+
+    async fn create_coaching_relationship(
+        &self,
+        session_cookie: &str,
+        coach_id: &str,
+        coachee_id: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/coaching_relationships", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Cookie", format!("session_id={}", session_cookie))
+            .json(&json!({
+                "coach_id": coach_id,
+                "coachee_id": coachee_id,
+            }))
+            .send()
+            .await
+            .context("Failed to create coaching relationship")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to create relationship: {}", response.status());
+        }
+
+        response.json().await.context("Failed to parse response")
+    }
+
+    async fn create_coaching_session(
+        &self,
+        session_cookie: &str,
+        relationship_id: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/coaching_sessions", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Cookie", format!("session_id={}", session_cookie))
+            .json(&json!({
+                "coaching_relationship_id": relationship_id,
+                "date": "2024-01-01",
+            }))
+            .send()
+            .await
+            .context("Failed to create coaching session")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to create session: {}", response.status());
+        }
+
+        response.json().await.context("Failed to parse response")
+    }
+
+    pub async fn create_action(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        title: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/actions", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Cookie", format!("session_id={}", session_cookie))
+            .json(&json!({
+                "coaching_session_id": coaching_session_id,
+                "title": title,
+                "description": "Created by SSE test tool",
+                "status": "not_started",
+            }))
+            .send()
+            .await
+            .context("Failed to create action")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to create action: {}", response.status());
+        }
+
+        response.json().await.context("Failed to parse response")
+    }
+
+    pub async fn update_action(
+        &self,
+        session_cookie: &str,
+        action_id: &str,
+        title: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/actions/{}", self.base_url, action_id);
+
+        let response = self
+            .client
+            .put(&url)
+            .header("Cookie", format!("session_id={}", session_cookie))
+            .json(&json!({
+                "title": title,
+            }))
+            .send()
+            .await
+            .context("Failed to update action")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to update action: {}", response.status());
+        }
+
+        response.json().await.context("Failed to parse response")
+    }
+
+    pub async fn delete_action(
+        &self,
+        session_cookie: &str,
+        action_id: &str,
+    ) -> Result<()> {
+        let url = format!("{}/actions/{}", self.base_url, action_id);
+
+        let response = self
+            .client
+            .delete(&url)
+            .header("Cookie", format!("session_id={}", session_cookie))
+            .send()
+            .await
+            .context("Failed to delete action")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to delete action: {}", response.status());
+        }
+
+        Ok(())
+    }
+
+    pub async fn force_logout(
+        &self,
+        admin_session_cookie: &str,
+        user_id: &str,
+    ) -> Result<()> {
+        let url = format!("{}/admin/force_logout/{}", self.base_url, user_id);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Cookie", format!("session_id={}", admin_session_cookie))
+            .send()
+            .await
+            .context("Failed to force logout")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to force logout: {}", response.status());
+        }
+
+        Ok(())
+    }
+}
+```
+
+---
+
+### 0.6 Implement Output Formatting Module
+
+**File:** `sse-test-client/src/output.rs`
+
+```rust
+use colored::*;
+use serde_json::Value;
+use std::time::Duration;
+
+use crate::sse_client::SseEvent;
+
+#[derive(Debug)]
+pub struct TestResult {
+    pub scenario: String,
+    pub passed: bool,
+    pub message: Option<String>,
+    pub duration: Duration,
+}
+
+pub fn print_sse_event(user_label: &str, event: &SseEvent) {
+    let label_colored = if user_label.contains("User 1") {
+        user_label.bright_blue()
+    } else {
+        user_label.bright_magenta()
+    };
+
+    println!(
+        "\n[{}] {} event received",
+        label_colored.bold(),
+        event.event_type.yellow()
+    );
+
+    if let Ok(pretty) = serde_json::to_string_pretty(&event.data) {
+        println!("   {}", pretty.dimmed());
+    }
+}
+
+pub fn print_test_summary(results: &[TestResult]) {
+    println!("\n{}", "=== TEST SUMMARY ===".bright_white().bold());
+
+    let total = results.len();
+    let passed = results.iter().filter(|r| r.passed).count();
+    let failed = total - passed;
+
+    for result in results {
+        let status = if result.passed {
+            "PASS".green().bold()
+        } else {
+            "FAIL".red().bold()
+        };
+
+        println!(
+            "[{}] {} ({:?})",
+            status, result.scenario, result.duration
+        );
+
+        if let Some(msg) = &result.message {
+            println!("      {}", msg.dimmed());
+        }
+    }
+
+    println!(
+        "\n{}: {} passed, {} failed",
+        "Results".bold(),
+        passed.to_string().green(),
+        failed.to_string().red()
+    );
+}
+```
+
+---
+
+### 0.7 Implement Test Scenarios Module
+
+**File:** `sse-test-client/src/scenarios.rs`
+
+```rust
+use anyhow::Result;
+use colored::*;
+use std::time::{Duration, Instant};
+
+use crate::api_client::{ApiClient, TestEnvironment};
+use crate::auth::AuthenticatedUser;
+use crate::output::{print_sse_event, TestResult};
+use crate::sse_client::SseConnection;
+
+pub async fn test_action_create(
+    user1: &AuthenticatedUser,
+    user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    sse1: &mut SseConnection,
+    sse2: &mut SseConnection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+
+    println!("\n{}", "=== TEST: Action Create ===".bright_cyan().bold());
+
+    println!("{} User 1 creating action...", "→".blue());
+
+    let action = api_client
+        .create_action(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "Test Action - Create",
+        )
+        .await?;
+
+    let action_id = action["id"].as_str().unwrap();
+    println!("{} Action created (ID: {})", "✓".green(), action_id);
+
+    println!(
+        "{} Waiting for User 2 to receive action_created event...",
+        "→".blue()
+    );
+
+    match sse2
+        .wait_for_event("action_created", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_sse_event(&sse2.user_label, &event);
+
+            let received_action_id = event.data["data"]["action"]["id"].as_str().unwrap();
+            let received_session_id = event.data["data"]["coaching_session_id"]
+                .as_str()
+                .unwrap();
+
+            if received_action_id == action_id
+                && received_session_id == test_env.session_id
+            {
+                println!("{} Event data verified correctly", "✓".green());
+                Ok(TestResult {
+                    scenario: "action_create".to_string(),
+                    passed: true,
+                    message: None,
+                    duration: start.elapsed(),
+                })
+            } else {
+                println!("{} Event data mismatch!", "✗".red());
+                Ok(TestResult {
+                    scenario: "action_create".to_string(),
+                    passed: false,
+                    message: Some(format!(
+                        "Expected action_id={}, session_id={}, got action_id={}, session_id={}",
+                        action_id, test_env.session_id, received_action_id, received_session_id
+                    )),
+                    duration: start.elapsed(),
+                })
+            }
+        }
+        Err(e) => {
+            println!("{} Timeout waiting for event: {}", "✗".red(), e);
+            Ok(TestResult {
+                scenario: "action_create".to_string(),
+                passed: false,
+                message: Some(format!("Timeout: {}", e)),
+                duration: start.elapsed(),
+            })
+        }
+    }
+}
+
+pub async fn test_action_update(
+    user1: &AuthenticatedUser,
+    user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    sse1: &mut SseConnection,
+    sse2: &mut SseConnection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+
+    println!("\n{}", "=== TEST: Action Update ===".bright_cyan().bold());
+
+    // First create an action
+    println!("{} User 1 creating action...", "→".blue());
+    let action = api_client
+        .create_action(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "Test Action - Update",
+        )
+        .await?;
+
+    let action_id = action["id"].as_str().unwrap();
+
+    // Wait for and discard the create event
+    let _ = sse2
+        .wait_for_event("action_created", Duration::from_secs(5))
+        .await?;
+
+    // Now update the action
+    println!("{} User 1 updating action...", "→".blue());
+    api_client
+        .update_action(&user1.session_cookie, action_id, "Updated Title")
+        .await?;
+
+    println!(
+        "{} Waiting for User 2 to receive action_updated event...",
+        "→".blue()
+    );
+
+    match sse2
+        .wait_for_event("action_updated", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_sse_event(&sse2.user_label, &event);
+
+            let received_title = event.data["data"]["action"]["title"].as_str().unwrap();
+
+            if received_title == "Updated Title" {
+                println!("{} Event data verified correctly", "✓".green());
+                Ok(TestResult {
+                    scenario: "action_update".to_string(),
+                    passed: true,
+                    message: None,
+                    duration: start.elapsed(),
+                })
+            } else {
+                Ok(TestResult {
+                    scenario: "action_update".to_string(),
+                    passed: false,
+                    message: Some(format!("Title mismatch: {}", received_title)),
+                    duration: start.elapsed(),
+                })
+            }
+        }
+        Err(e) => Ok(TestResult {
+            scenario: "action_update".to_string(),
+            passed: false,
+            message: Some(format!("Timeout: {}", e)),
+            duration: start.elapsed(),
+        }),
+    }
+}
+
+pub async fn test_action_delete(
+    user1: &AuthenticatedUser,
+    user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    sse1: &mut SseConnection,
+    sse2: &mut SseConnection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+
+    println!("\n{}", "=== TEST: Action Delete ===".bright_cyan().bold());
+
+    // Create action
+    let action = api_client
+        .create_action(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "Test Action - Delete",
+        )
+        .await?;
+
+    let action_id = action["id"].as_str().unwrap();
+
+    // Discard create event
+    let _ = sse2
+        .wait_for_event("action_created", Duration::from_secs(5))
+        .await?;
+
+    // Delete action
+    println!("{} User 1 deleting action...", "→".blue());
+    api_client
+        .delete_action(&user1.session_cookie, action_id)
+        .await?;
+
+    println!(
+        "{} Waiting for User 2 to receive action_deleted event...",
+        "→".blue()
+    );
+
+    match sse2
+        .wait_for_event("action_deleted", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_sse_event(&sse2.user_label, &event);
+
+            let received_action_id = event.data["data"]["action_id"].as_str().unwrap();
+
+            if received_action_id == action_id {
+                println!("{} Event data verified correctly", "✓".green());
+                Ok(TestResult {
+                    scenario: "action_delete".to_string(),
+                    passed: true,
+                    message: None,
+                    duration: start.elapsed(),
+                })
+            } else {
+                Ok(TestResult {
+                    scenario: "action_delete".to_string(),
+                    passed: false,
+                    message: Some(format!("Action ID mismatch: {}", received_action_id)),
+                    duration: start.elapsed(),
+                })
+            }
+        }
+        Err(e) => Ok(TestResult {
+            scenario: "action_delete".to_string(),
+            passed: false,
+            message: Some(format!("Timeout: {}", e)),
+            duration: start.elapsed(),
+        }),
+    }
+}
+
+pub async fn test_force_logout(
+    user1: &AuthenticatedUser,
+    user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    sse1: &mut SseConnection,
+    sse2: &mut SseConnection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+
+    println!("\n{}", "=== TEST: Force Logout ===".bright_cyan().bold());
+
+    println!("{} User 1 forcing logout of User 2...", "→".blue());
+
+    api_client
+        .force_logout(&user1.session_cookie, &user2.user_id)
+        .await?;
+
+    println!(
+        "{} Waiting for User 2 to receive force_logout event...",
+        "→".blue()
+    );
+
+    match sse2
+        .wait_for_event("force_logout", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_sse_event(&sse2.user_label, &event);
+            println!("{} Event received correctly", "✓".green());
+            Ok(TestResult {
+                scenario: "force_logout".to_string(),
+                passed: true,
+                message: None,
+                duration: start.elapsed(),
+            })
+        }
+        Err(e) => Ok(TestResult {
+            scenario: "force_logout".to_string(),
+            passed: false,
+            message: Some(format!("Timeout: {}", e)),
+            duration: start.elapsed(),
+        }),
+    }
+}
+```
+
+---
+
+### 0.8 Implement Main CLI Entry Point
+
+**File:** `sse-test-client/src/main.rs`
+
+```rust
+use anyhow::Result;
+use clap::Parser;
+use colored::*;
+
+mod api_client;
+mod auth;
+mod output;
+mod scenarios;
+mod sse_client;
+
+use api_client::ApiClient;
+use auth::{login, UserCredentials};
+use output::{print_test_summary, TestResult};
+use sse_client::SseConnection;
+
+#[derive(Parser)]
+#[command(name = "sse-test-client")]
+#[command(about = "SSE Integration Testing Tool")]
+struct Cli {
+    /// Base URL of the backend (e.g., http://localhost:4747)
+    #[arg(long)]
+    base_url: String,
+
+    /// User 1 credentials (format: email:password)
+    #[arg(long)]
+    user1: String,
+
+    /// User 2 credentials (format: email:password)
+    #[arg(long)]
+    user2: String,
+
+    /// Test scenario to run
+    #[arg(long, value_enum)]
+    scenario: ScenarioChoice,
+
+    /// Enable verbose output
+    #[arg(long, short)]
+    verbose: bool,
+}
+
+#[derive(clap::ValueEnum, Clone)]
+enum ScenarioChoice {
+    ActionCreate,
+    ActionUpdate,
+    ActionDelete,
+    ForceLogout,
+    All,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    if cli.verbose {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+    }
+
+    println!("{}", "=== SETUP PHASE ===".bright_white().bold());
+
+    // Parse credentials
+    let user1_creds = UserCredentials::parse(&cli.user1)?;
+    let user2_creds = UserCredentials::parse(&cli.user2)?;
+
+    // Authenticate users
+    println!("{} Authenticating users...", "→".blue());
+    let client = reqwest::Client::new();
+    let user1 = login(&client, &cli.base_url, &user1_creds).await?;
+    let user2 = login(&client, &cli.base_url, &user2_creds).await?;
+
+    println!("{} User 1 authenticated (ID: {})", "✓".green(), user1.user_id);
+    println!("{} User 2 authenticated (ID: {})", "✓".green(), user2.user_id);
+
+    // Set up test environment
+    println!("\n{} Creating test coaching relationship and session...", "→".blue());
+    let api_client = ApiClient::new(client.clone(), cli.base_url.clone());
+    let test_env = api_client
+        .setup_test_environment(
+            &user1.session_cookie,
+            &user2.session_cookie,
+            &user1.user_id,
+            &user2.user_id,
+        )
+        .await?;
+
+    println!(
+        "{} Coaching relationship created (ID: {})",
+        "✓".green(),
+        test_env.relationship_id
+    );
+    println!(
+        "{} Coaching session created (ID: {})",
+        "✓".green(),
+        test_env.session_id
+    );
+
+    // Establish SSE connections
+    println!("\n{} Establishing SSE connections...", "→".blue());
+    let mut sse1 = SseConnection::establish(
+        &cli.base_url,
+        &user1.session_cookie,
+        "User 1 (Coach)".to_string(),
+    )
+    .await?;
+
+    let mut sse2 = SseConnection::establish(
+        &cli.base_url,
+        &user2.session_cookie,
+        "User 2 (Coachee)".to_string(),
+    )
+    .await?;
+
+    println!("{} User 1 SSE connection established", "✓".green());
+    println!("{} User 2 SSE connection established", "✓".green());
+
+    // Run test scenarios
+    println!("\n{}", "=== TEST PHASE ===".bright_white().bold());
+
+    let mut results = Vec::new();
+
+    match cli.scenario {
+        ScenarioChoice::ActionCreate => {
+            results.push(
+                scenarios::test_action_create(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+        }
+        ScenarioChoice::ActionUpdate => {
+            results.push(
+                scenarios::test_action_update(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+        }
+        ScenarioChoice::ActionDelete => {
+            results.push(
+                scenarios::test_action_delete(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+        }
+        ScenarioChoice::ForceLogout => {
+            results.push(
+                scenarios::test_force_logout(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+        }
+        ScenarioChoice::All => {
+            results.push(
+                scenarios::test_action_create(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+            results.push(
+                scenarios::test_action_update(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+            results.push(
+                scenarios::test_action_delete(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+            results.push(
+                scenarios::test_force_logout(
+                    &user1, &user2, &test_env, &api_client, &mut sse1, &mut sse2,
+                )
+                .await?,
+            );
+        }
+    }
+
+    // Print summary
+    println!("\n{}", "=== RESULTS ===".bright_white().bold());
+    print_test_summary(&results);
+
+    let all_passed = results.iter().all(|r| r.passed);
+
+    if all_passed {
+        println!("\n{}", "All tests passed! ✓".bright_green().bold());
+    } else {
+        println!("\n{}", "Some tests failed! ✗".bright_red().bold());
+    }
+
+    std::process::exit(if all_passed { 0 } else { 1 });
+}
+```
+
+---
+
+### 0.9 Usage Examples
+
+**Run individual test scenarios:**
+```bash
+# Test action creation
+cargo run --bin sse-test-client -- \
+  --base-url http://localhost:4747 \
+  --user1 "coach@example.com:password123" \
+  --user2 "coachee@example.com:password456" \
+  --scenario action-create
+
+# Test action update
+cargo run --bin sse-test-client -- \
+  --base-url http://localhost:4747 \
+  --user1 "coach@example.com:password123" \
+  --user2 "coachee@example.com:password456" \
+  --scenario action-update
+
+# Test force logout
+cargo run --bin sse-test-client -- \
+  --base-url http://localhost:4747 \
+  --user1 "admin@example.com:adminpass" \
+  --user2 "user@example.com:userpass" \
+  --scenario force-logout
+
+# Run all tests
+cargo run --bin sse-test-client -- \
+  --base-url http://localhost:4747 \
+  --user1 "coach@example.com:password123" \
+  --user2 "coachee@example.com:password456" \
+  --scenario all
+```
+
+**With verbose logging:**
+```bash
+cargo run --bin sse-test-client -- \
+  --base-url http://localhost:4747 \
+  --user1 "coach@example.com:password123" \
+  --user2 "coachee@example.com:password456" \
+  --scenario all \
+  --verbose
+```
+
+---
+
+## Phase 1: Docker Compose Documentation
+
+### 1.1 Add SSE Scaling Warning to docker-compose.yaml
 **File:** `docker-compose.yaml`
 
 **Add a prominent comment above the rust-app service definition (before line 57):**
@@ -250,9 +1349,9 @@ stateDiagram-v2
 
 ---
 
-## Phase 1: Nginx Configuration
+## Phase 2: Nginx Configuration
 
-### 1.1 Update Nginx Configuration
+### 2.1 Update Nginx Configuration
 **File:** `nginx/conf.d/refactor-platform.conf`
 
 **Why:** SSE connections are long-lived (hours) and require special nginx configuration to prevent buffering events or timing out connections. Without these settings, SSE events would be delayed and connections would close after 60 seconds. The 15-second keep-alive from Axum ensures the connection stays healthy within the 24-hour timeout window.
@@ -297,9 +1396,9 @@ location /api/sse {
 
 ---
 
-## Phase 2: Backend Infrastructure Setup
+## Phase 3: Backend Infrastructure Setup
 
-### 2.1 Add Required Dependencies
+### 3.1 Add Required Dependencies
 **File:** `web/Cargo.toml`
 
 Add these dependencies:
@@ -316,7 +1415,7 @@ dashmap = "6.1"
 
 ---
 
-### 2.2 Create SSE Module Structure
+### 3.2 Create SSE Module Structure
 **Files to create:**
 - `web/src/sse/mod.rs`
 - `web/src/sse/manager.rs`
@@ -326,7 +1425,7 @@ dashmap = "6.1"
 
 ---
 
-### 2.3 Define Message Types
+### 3.3 Define Message Types
 **File:** `web/src/sse/message.rs`
 
 **Purpose:** Define strongly-typed event messages that can be sent over SSE
@@ -446,7 +1545,7 @@ pub enum MessageScope {
 
 ---
 
-### 2.4 Implement Connection Types and Registry
+### 3.4 Implement Connection Types and Registry
 **File:** `web/src/sse/connection.rs`
 
 **Purpose:** High-performance connection registry with dual indices for O(1) lookups
@@ -612,7 +1711,7 @@ impl Default for ConnectionRegistry {
 
 ---
 
-### 2.5 Implement SSE Manager
+### 3.5 Implement SSE Manager
 **File:** `web/src/sse/manager.rs`
 
 **Purpose:** Central manager for routing messages to connections via the registry
@@ -707,7 +1806,7 @@ impl Default for Manager {
 
 ---
 
-### 2.6 Implement SSE Handler
+### 3.6 Implement SSE Handler
 **File:** `web/src/sse/handler.rs`
 
 **Purpose:** Axum HTTP handler for SSE endpoint
@@ -762,7 +1861,7 @@ pub async fn sse_handler(
 
 ---
 
-### 2.7 Add Module Documentation
+### 3.7 Add Module Documentation
 **File:** `web/src/sse/mod.rs`
 
 ```rust
@@ -848,7 +1947,7 @@ pub use manager::Manager;
 
 ---
 
-### 2.8 Update AppState
+### 3.8 Update AppState
 **File:** `service/src/lib.rs`
 
 **Add SseManager to AppState:**
@@ -866,7 +1965,7 @@ pub struct AppState {
 
 ---
 
-### 2.9 Add SSE Route
+### 3.9 Add SSE Route
 **File:** `web/src/router.rs`
 
 **Add SSE endpoint:**
@@ -892,7 +1991,7 @@ pub fn define_routes(app_state: AppState) -> Router {
 
 ---
 
-### 2.10 Initialize SSE Manager
+### 3.10 Initialize SSE Manager
 **File:** `src/main.rs`
 
 ```rust
@@ -906,9 +2005,9 @@ let app_state = AppState {
 
 ---
 
-## Phase 3: Integration with Controllers
+## Phase 4: Integration with Controllers
 
-### 3.1 Update Action Controller
+### 4.1 Update Action Controller
 **File:** `web/src/controller/action_controller.rs`
 
 **After creating an action, send SSE event to the other user in the coaching relationship:**
@@ -983,7 +2082,7 @@ async fn determine_other_user_in_coaching_session(
 
 ---
 
-### 3.2 Handle Auth Changes (Security)
+### 4.2 Handle Auth Changes (Security)
 **File:** `web/src/controller/user_session_controller.rs`
 
 **On logout, send ForceLogout event:**
@@ -1017,9 +2116,9 @@ pub async fn delete(
 
 ---
 
-## Phase 4: Frontend Integration
+## Phase 5: Frontend Integration
 
-### 4.1 Create SSE Client Hook
+### 5.1 Create SSE Client Hook
 **File:** `~/Desktop/refactor/refactor-platform-fe/src/hooks/useSSE.ts`
 
 **Purpose:** React hook to establish and manage app-wide SSE connection
@@ -1060,7 +2159,7 @@ export function useSSE() {
 
 ---
 
-### 4.2 Create Typed Event Handler Hook
+### 5.2 Create Typed Event Handler Hook
 **File:** `~/Desktop/refactor/refactor-platform-fe/src/hooks/useSSEEventHandler.ts`
 
 **Purpose:** Type-safe event handler registration
@@ -1098,7 +2197,7 @@ export function useSSEEventHandler(
 
 ---
 
-### 4.3 Establish SSE in App Root
+### 5.3 Establish SSE in App Root
 **File:** App root component or layout
 
 ```typescript
@@ -1123,7 +2222,7 @@ function AppLayout({ children }: Props) {
 
 ---
 
-### 4.4 Use SSE in Coaching Session Page
+### 5.4 Use SSE in Coaching Session Page
 **File:** Coaching session page component
 
 ```typescript
@@ -1167,145 +2266,6 @@ function CoachingSessionPage({ sessionId }: Props) {
 - Events include context (coaching_session_id) for client-side filtering
 - Only update UI if viewing the relevant coaching session
 - Same pattern applies to Notes, Agreements, and Goals
-
----
-
-## Phase 5: Testing
-
-### 5.1 Backend Unit Tests
-**File:** `web/src/sse/connection.rs` (tests module)
-
-**Test cases:**
-- Connection registration creates both indices
-- Multiple connections for same user tracked correctly
-- Unregistration cleans up both indices
-- Empty user indices are removed
-- User-scoped send targets only correct connections
-- Broadcast sends to all connections
-- Connection count and active user count tracking
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use domain::Id;
-    use tokio::sync::mpsc;
-
-    #[test]
-    fn registration_creates_both_indices() {
-        let registry = ConnectionRegistry::new();
-        let user_id = Id::new_v4();
-        let (tx, _rx) = mpsc::unbounded_channel();
-
-        let conn_id = registry.register(user_id, tx);
-
-        assert_eq!(registry.connection_count(), 1);
-        assert_eq!(registry.active_user_count(), 1);
-        assert_eq!(registry.connections_per_user(&user_id), 1);
-    }
-
-    #[test]
-    fn multiple_connections_same_user() {
-        let registry = ConnectionRegistry::new();
-        let user_id = Id::new_v4();
-
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
-
-        registry.register(user_id, tx1);
-        registry.register(user_id, tx2);
-
-        assert_eq!(registry.connection_count(), 2);
-        assert_eq!(registry.active_user_count(), 1); // Same user
-        assert_eq!(registry.connections_per_user(&user_id), 2);
-    }
-
-    #[test]
-    fn unregistration_cleans_up_indices() {
-        let registry = ConnectionRegistry::new();
-        let user_id = Id::new_v4();
-        let (tx, _rx) = mpsc::unbounded_channel();
-
-        let conn_id = registry.register(user_id, tx);
-        registry.unregister(&conn_id);
-
-        assert_eq!(registry.connection_count(), 0);
-        assert_eq!(registry.active_user_count(), 0); // Should clean up empty entry
-    }
-
-    #[tokio::test]
-    async fn send_to_user_only_targets_user_connections() {
-        let registry = ConnectionRegistry::new();
-
-        let user1 = Id::new_v4();
-        let user2 = Id::new_v4();
-
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
-
-        registry.register(user1, tx1);
-        registry.register(user2, tx2);
-
-        let event = axum::response::sse::Event::default().data("test");
-        registry.send_to_user(&user1, event);
-
-        // User1 receives
-        assert!(rx1.try_recv().is_ok());
-        // User2 does not
-        assert!(rx2.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn broadcast_sends_to_all_connections() {
-        let registry = ConnectionRegistry::new();
-
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
-
-        registry.register(Id::new_v4(), tx1);
-        registry.register(Id::new_v4(), tx2);
-
-        let event = axum::response::sse::Event::default().data("broadcast");
-        registry.broadcast(event);
-
-        // Both users receive
-        assert!(rx1.try_recv().is_ok());
-        assert!(rx2.try_recv().is_ok());
-    }
-}
-```
-
-**Additional Manager tests in** `web/src/sse/manager.rs`:
-- Message serialization
-- Event type extraction
-- Scope-based routing delegates correctly to registry
-
----
-
-### 5.2 Backend Integration Tests
-**File:** `web/tests/sse_integration_test.rs`
-
-**Test cases:**
-- Unauthenticated requests return 401
-- SSE connection established with valid session
-- Connection metadata extracted correctly
-- Events flow correctly through the stream
-- Connection cleanup on disconnect
-- Keep-alive messages sent at correct interval
-
----
-
-### 5.3 End-to-End Test
-**Manual testing scenario:**
-1. Open two browser windows
-2. Log in as Coach in window 1, Coachee in window 2
-3. Navigate both to same coaching session
-4. Create action in window 1
-5. Verify action appears in window 2 without refresh
-6. Verify action appears immediately (not delayed)
-7. Test with Notes, Agreements, Goals
-8. Test force logout (admin forces logout in one window, other windows redirect)
-9. Test connection reconnection (kill backend, restart, verify SSE reconnects)
 
 ---
 
