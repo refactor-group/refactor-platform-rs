@@ -6,7 +6,10 @@ edition = "2021"
 default-run = "refactor_platform_rs"
 
 [workspace]
-members = [".", "entity_api", "entity", "migration", "service", "web", "domain"]
+members = [".", "entity_api", "entity", "migration", "service", "web", "domain", "sse-test-client"]
+# Exclude sse-test-client from default builds - it's a development/testing tool only
+# and should not be built or deployed in production environments
+default-members = [".", "entity_api", "entity", "migration", "service", "web", "domain"]
 
 [dependencies]
 service = { path = "service" }
