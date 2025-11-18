@@ -59,7 +59,8 @@ mod tests {
         let db = Arc::new(
             sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection(),
         );
-        let app_state = crate::AppState::new(config, &db);
+        let sse_manager = Arc::new(sse::Manager::new());
+        let app_state = crate::AppState::new(config, &db, sse_manager);
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -88,7 +89,8 @@ mod tests {
         let db = Arc::new(
             sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection(),
         );
-        let app_state = crate::AppState::new(config, &db);
+        let sse_manager = Arc::new(sse::Manager::new());
+        let app_state = crate::AppState::new(config, &db, sse_manager);
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -162,7 +164,8 @@ mod tests {
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]]) // For session user lookup
                 .into_connection(),
         );
-        let app_state = crate::AppState::new(config, &db);
+        let sse_manager = Arc::new(sse::Manager::new());
+        let app_state = crate::AppState::new(config, &db, sse_manager);
 
         // Set up session layer
         let session_store = MemoryStore::default();
