@@ -26,6 +26,7 @@ pub(crate) mod middleware;
 pub(crate) mod params;
 pub(crate) mod protect;
 mod router;
+pub mod sse;
 
 pub async fn init_server(app_state: AppState) -> Result<()> {
     // Session layer
