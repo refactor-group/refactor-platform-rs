@@ -38,6 +38,7 @@ flowchart TB
 4. **API Forwarding**: NextJS forwards API calls to Axum backend on port 4000
 5. **Backend Processing**: Axum backend handles API endpoints like `/api/login` with secure caching
 6. **Database Operations**: Backend connects to Digital Ocean Managed PostgreSQL
+7. **SSE Connections**: Long-lived `/api/sse` connections for real-time events (24h timeout, no buffering)
 
 ## Infrastructure Notes
 
@@ -49,3 +50,5 @@ flowchart TB
 - **Managed PostgreSQL**: Separate Digital Ocean managed database service, accessed over the internet with SSL
 - **SSL/TLS**: HTTPS encryption from client to Nginx using Let's Encrypt certificates managed by `certbot`, then unencrypted internal traffic within the container network
 - **Database Connection**: Axum connects to managed PostgreSQL over SSL outside the container network
+- **SSE Configuration**: Nginx configured for long-lived connections (24h timeout, proxy buffering disabled) at `/api/sse` endpoint
+- **Scaling Limitation**: SSE uses in-memory connection tracking - **single backend instance only** until Redis pub/sub is implemented
