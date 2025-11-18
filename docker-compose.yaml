@@ -54,6 +54,23 @@ services:
     networks:
       - backend_network
 
+  ######################################################
+  # CRITICAL: SSE Connection Management Limitation
+  #
+  # The rust-app service MUST run as a single instance (replicas: 1)
+  # because SSE connections are tracked in-memory using DashMap.
+  #
+  # ⚠️  DO NOT SCALE HORIZONTALLY WITHOUT REDIS PUB/SUB ⚠️
+  #
+  # If you need to scale beyond 1 replica:
+  # 1. Add Redis service to docker-compose.yaml
+  # 2. Update SseManager to use Redis Pub/Sub
+  # 3. See docs/implementation-plans/sse-communication.md
+  #    "Multi-Instance Architecture" section
+  #
+  # Symptom if misconfigured: SSE events randomly fail
+  # (~50% with 2 replicas, ~67% with 3 replicas, etc.)
+  ######################################################
   rust-app:
     image: ${BACKEND_IMAGE_NAME}
     build:
