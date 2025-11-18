@@ -10,8 +10,9 @@ async fn main() {
     info!("Seeding database [{}]...", config.database_url());
 
     let db = Arc::new(service::init_database(config.database_url()).await.unwrap());
+    let sse_manager = Arc::new(sse::Manager::new());
 
-    let app_state = AppState::new(config, &db);
+    let app_state = AppState::new(config, &db, sse_manager);
 
     entity_api::seed_database(app_state.db_conn_ref()).await;
 }

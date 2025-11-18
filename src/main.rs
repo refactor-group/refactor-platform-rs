@@ -45,7 +45,9 @@ async fn main() {
         panic!("Failed to establish a useable DBConnection and ping the DB successfully.");
     }
 
-    let app_state = AppState::new(config, &db_conn);
+    let sse_manager = Arc::new(sse::Manager::new());
+
+    let app_state = AppState::new(config, &db_conn, sse_manager);
 
     web::init_server(app_state).await.unwrap();
 }
