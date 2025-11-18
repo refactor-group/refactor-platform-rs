@@ -28,13 +28,15 @@ pub async fn init_database(database_url: &str) -> Result<DatabaseConnection, DbE
 pub struct AppState {
     pub database_connection: Arc<DatabaseConnection>,
     pub config: Config,
+    pub sse_manager: Arc<sse::Manager>,
 }
 
 impl AppState {
-    pub fn new(app_config: Config, db: &Arc<DatabaseConnection>) -> Self {
+    pub fn new(app_config: Config, db: &Arc<DatabaseConnection>, sse_manager: Arc<sse::Manager>) -> Self {
         Self {
             database_connection: Arc::clone(db),
             config: app_config,
+            sse_manager,
         }
     }
 
