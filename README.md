@@ -178,6 +178,8 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 
 `service` - CLI flags, environment variables, config handling and backend daemon setup
 
+`sse` - Server-Sent Events infrastructure for real-time notifications. In-memory connection management (single-instance only)
+
 `src` - contains a main function that initializes logging and calls all sub-services
 
 `web` - API endpoint definition, routing, handling of request/responses, controllers
