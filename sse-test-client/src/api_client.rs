@@ -253,7 +253,7 @@ impl ApiClient {
         let response = self
             .client
             .post(&url)
-            .header("Cookie", format!("session_id={}", admin_session_cookie))
+            .header("Cookie", format!("id={}", admin_session_cookie))
             .send()
             .await
             .context("Failed to force logout")?;
