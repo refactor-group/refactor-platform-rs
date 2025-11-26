@@ -7,7 +7,7 @@ A standalone Rust binary for testing Server-Sent Events (SSE) functionality with
 This tool validates the SSE infrastructure by:
 1. Authenticating two users (typically a coach and coachee)
 2. Establishing SSE connections for both users
-3. Creating a test coaching relationship and session
+3. Optionally creating a test coaching relationship and session (for action tests)
 4. Triggering events (create/update/delete actions, force logout)
 5. Verifying that the correct SSE events are received by the appropriate users
 
@@ -15,40 +15,48 @@ This tool validates the SSE infrastructure by:
 
 - Backend server running (default: `http://localhost:4000`)
 - Two valid user accounts with credentials
-- Users must have permission to create coaching relationships
+- **For action tests only**: Users must have admin permission to create coaching relationships
+- **For connection test**: No special permissions required
 
 ## Usage
 
 ### Run Individual Test Scenarios
 
 ```bash
-# Test action creation
+# Test basic SSE connection (no admin permissions required)
+cargo run -p sse-test-client -- \
+  --base-url http://localhost:4000 \
+  --user1 "user1@example.com:password123" \
+  --user2 "user2@example.com:password456" \
+  --scenario connection-test
+
+# Test action creation (requires admin permissions)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "coach@example.com:password123" \
   --user2 "coachee@example.com:password456" \
   --scenario action-create
 
-# Test action update
+# Test action update (requires admin permissions)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "coach@example.com:password123" \
   --user2 "coachee@example.com:password456" \
   --scenario action-update
 
-# Test action delete
+# Test action delete (requires admin permissions)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "coach@example.com:password123" \
   --user2 "coachee@example.com:password456" \
   --scenario action-delete
 
-# Test force logout
+# Test force logout (requires admin permissions - NOT YET IMPLEMENTED)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "admin@example.com:adminpass" \
   --user2 "user@example.com:userpass" \
-  --scenario force-logout
+  --scenario force-logout-test
 ```
 
 ### Run All Tests
@@ -74,11 +82,12 @@ cargo run -p sse-test-client -- \
 
 ## Available Scenarios
 
-- `action-create` - Tests SSE events for action creation
-- `action-update` - Tests SSE events for action updates
-- `action-delete` - Tests SSE events for action deletion
-- `force-logout` - Tests SSE events for force logout
-- `all` - Runs all test scenarios sequentially
+- `connection-test` - Tests basic SSE connectivity without creating any data (no admin permissions required)
+- `action-create` - Tests SSE events for action creation (requires admin permissions)
+- `action-update` - Tests SSE events for action updates (requires admin permissions)
+- `action-delete` - Tests SSE events for action deletion (requires admin permissions)
+- `force-logout-test` - Tests SSE events for force logout (requires admin permissions, NOT YET IMPLEMENTED)
+- `all` - Runs all test scenarios sequentially (requires admin permissions for action tests)
 
 ## Command-Line Arguments
 
@@ -94,16 +103,15 @@ cargo run -p sse-test-client -- \
 
 ### Setup Phase
 1. Authenticates both users and obtains session cookies
-2. Creates a coaching relationship between the two users
-3. Creates a coaching session within that relationship
+2. For action tests: Creates a coaching relationship and session between the users
+3. For connection test: Skips coaching data setup
 4. Establishes SSE connections for both users
 
 ### Test Phase
 For each scenario:
-1. User 1 triggers an action (e.g., creates an action)
-2. The tool waits for User 2 to receive the corresponding SSE event
-3. Validates that the event data matches expectations
-4. Records the test result (pass/fail) and duration
+1. **Connection Test**: Verifies SSE connections are established and remain stable
+2. **Action Tests**: User 1 triggers an action (e.g., creates an action), the tool waits for User 2 to receive the corresponding SSE event, and validates event data
+3. Records the test result (pass/fail) and duration
 
 ### Results Phase
 - Displays a summary of all test results
@@ -112,6 +120,40 @@ For each scenario:
 
 ## Example Output
 
+### Connection Test (No Admin Required)
+```
+=== SETUP PHASE ===
+→ Authenticating users...
+✓ User 1 authenticated (ID: 123e4567-e89b-12d3-a456-426614174000)
+✓ User 2 authenticated (ID: 234e5678-e89b-12d3-a456-426614174001)
+
+→ Skipping test environment setup (not needed for this test)
+
+→ Establishing SSE connections...
+✓ User 1 SSE connection established
+✓ User 2 SSE connection established
+
+=== TEST PHASE ===
+
+=== TEST: Connection Test ===
+Testing basic SSE connectivity without creating any data
+✓ User 1 (123e4567-e89b-12d3-a456-426614174000) SSE connection: established
+✓ User 2 (234e5678-e89b-12d3-a456-426614174001) SSE connection: established
+→ Waiting 2 seconds to verify connections stay alive...
+✓ Connections remain stable
+✓ SSE infrastructure is working correctly
+
+=== RESULTS ===
+=== TEST SUMMARY ===
+[PASS] connection_test (2.002086s)
+      SSE connections established and maintained successfully
+
+Results: 1 passed, 0 failed
+
+All tests passed! ✓
+```
+
+### Action Test (Requires Admin)
 ```
 === SETUP PHASE ===
 → Authenticating users...

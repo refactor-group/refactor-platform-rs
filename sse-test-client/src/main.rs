@@ -90,9 +90,9 @@ async fn main() -> Result<()> {
     // Set up test environment only for scenarios that need coaching data
     let api_client = ApiClient::new(client.clone(), cli.base_url.clone());
     let test_env = match cli.scenario {
-        ScenarioChoice::ConnectionTest => {
+        ScenarioChoice::ConnectionTest | ScenarioChoice::ForceLogoutTest => {
             println!(
-                "\n{} Skipping test environment setup (not needed for connection test)",
+                "\n{} Skipping test environment setup (not needed for this test)",
                 "→".blue()
             );
             None
@@ -162,12 +162,10 @@ async fn main() -> Result<()> {
             );
         }
         ScenarioChoice::ForceLogoutTest => {
-            let env = test_env.as_ref().expect("Test environment required for ForceLogoutTest");
             results.push(
                 scenarios::test_force_logout(
                     &user1,
                     &user2,
-                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
@@ -227,18 +225,17 @@ async fn main() -> Result<()> {
                 )
                 .await?,
             );
-            let env = test_env.as_ref().expect("Test environment required for All scenarios");
             results.push(
                 scenarios::test_force_logout(
                     &user1,
                     &user2,
-                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
                 )
                 .await?,
             );
+            let env = test_env.as_ref().expect("Test environment required for All scenarios");
             results.push(
                 scenarios::test_action_create(
                     &user1,
