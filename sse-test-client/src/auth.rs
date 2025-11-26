@@ -35,8 +35,13 @@ struct LoginRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct LoginResponse {
-    user_id: String,
+struct UserData {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiResponse {
+    data: UserData,
 }
 
 pub async fn login(
@@ -44,11 +49,11 @@ pub async fn login(
     base_url: &str,
     credentials: &UserCredentials,
 ) -> Result<AuthenticatedUser> {
-    let url = format!("{}/user_sessions", base_url);
+    let url = format!("{}/login", base_url);
 
     let response = client
         .post(&url)
-        .json(&LoginRequest {
+        .form(&LoginRequest {
             email: credentials.email.clone(),
             password: credentials.password.clone(),
         })
@@ -57,24 +62,26 @@ pub async fn login(
         .context("Failed to send login request")?;
 
     if !response.status().is_success() {
-        anyhow::bail!("Login failed: {}", response.status());
+        let status = response.status();
+        let body = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
+        anyhow::bail!("Login failed: {} - Response: {}", status, body);
     }
 
     // Extract session cookie
     let session_cookie = response
         .cookies()
-        .find(|cookie| cookie.name() == "session_id")
+        .find(|cookie| cookie.name() == "id")
         .context("No session cookie in response")?
         .value()
         .to_string();
 
-    let login_response: LoginResponse = response
+    let api_response: ApiResponse = response
         .json()
         .await
         .context("Failed to parse login response")?;
 
     Ok(AuthenticatedUser {
-        user_id: login_response.user_id,
+        user_id: api_response.data.id,
         session_cookie,
         credentials: credentials.clone(),
     })

@@ -29,7 +29,7 @@ impl Connection {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let client = es::ClientBuilder::for_url(&url)?
-            .header("Cookie", &format!("session_id={}", session_cookie))?
+            .header("Cookie", &format!("id={}", session_cookie))?
             .build();
 
         let label = user_label.clone();
