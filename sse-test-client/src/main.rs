@@ -40,10 +40,17 @@ struct Cli {
 
 #[derive(clap::ValueEnum, Clone)]
 enum ScenarioChoice {
+    /// Test basic SSE connection without creating any data
+    ConnectionTest,
+    /// Test force logout event (no coaching data needed)
+    ForceLogoutTest,
+    /// Test action create event (requires coaching session)
     ActionCreate,
+    /// Test action update event (requires coaching session)
     ActionUpdate,
+    /// Test action delete event (requires coaching session)
     ActionDelete,
-    ForceLogout,
+    /// Run all tests including those requiring coaching data
     All,
 }
 
@@ -80,31 +87,43 @@ async fn main() -> Result<()> {
         user2.user_id
     );
 
-    // Set up test environment
-    println!(
-        "\n{} Creating test coaching relationship and session...",
-        "→".blue()
-    );
+    // Set up test environment only for scenarios that need coaching data
     let api_client = ApiClient::new(client.clone(), cli.base_url.clone());
-    let test_env = api_client
-        .setup_test_environment(
-            &user1.session_cookie,
-            &user2.session_cookie,
-            &user1.user_id,
-            &user2.user_id,
-        )
-        .await?;
+    let test_env = match cli.scenario {
+        ScenarioChoice::ConnectionTest => {
+            println!(
+                "\n{} Skipping test environment setup (not needed for connection test)",
+                "→".blue()
+            );
+            None
+        }
+        _ => {
+            println!(
+                "\n{} Creating test coaching relationship and session...",
+                "→".blue()
+            );
+            let env = api_client
+                .setup_test_environment(
+                    &user1.session_cookie,
+                    &user2.session_cookie,
+                    &user1.user_id,
+                    &user2.user_id,
+                )
+                .await?;
 
-    println!(
-        "{} Coaching relationship created (ID: {})",
-        "✓".green(),
-        test_env.relationship_id
-    );
-    println!(
-        "{} Coaching session created (ID: {})",
-        "✓".green(),
-        test_env.session_id
-    );
+            println!(
+                "{} Coaching relationship created (ID: {})",
+                "✓".green(),
+                env.relationship_id
+            );
+            println!(
+                "{} Coaching session created (ID: {})",
+                "✓".green(),
+                env.session_id
+            );
+            Some(env)
+        }
+    };
 
     // Establish SSE connections
     println!("\n{} Establishing SSE connections...", "→".blue());
@@ -131,12 +150,38 @@ async fn main() -> Result<()> {
     let mut results = Vec::new();
 
     match cli.scenario {
+        ScenarioChoice::ConnectionTest => {
+            results.push(
+                scenarios::test_connection(
+                    &user1,
+                    &user2,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+        }
+        ScenarioChoice::ForceLogoutTest => {
+            let env = test_env.as_ref().expect("Test environment required for ForceLogoutTest");
+            results.push(
+                scenarios::test_force_logout(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+        }
         ScenarioChoice::ActionCreate => {
+            let env = test_env.as_ref().expect("Test environment required for ActionCreate");
             results.push(
                 scenarios::test_action_create(
                     &user1,
                     &user2,
-                    &test_env,
+                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
@@ -145,11 +190,12 @@ async fn main() -> Result<()> {
             );
         }
         ScenarioChoice::ActionUpdate => {
+            let env = test_env.as_ref().expect("Test environment required for ActionUpdate");
             results.push(
                 scenarios::test_action_update(
                     &user1,
                     &user2,
-                    &test_env,
+                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
@@ -158,24 +204,12 @@ async fn main() -> Result<()> {
             );
         }
         ScenarioChoice::ActionDelete => {
+            let env = test_env.as_ref().expect("Test environment required for ActionDelete");
             results.push(
                 scenarios::test_action_delete(
                     &user1,
                     &user2,
-                    &test_env,
-                    &api_client,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
-            );
-        }
-        ScenarioChoice::ForceLogout => {
-            results.push(
-                scenarios::test_force_logout(
-                    &user1,
-                    &user2,
-                    &test_env,
+                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
@@ -185,10 +219,31 @@ async fn main() -> Result<()> {
         }
         ScenarioChoice::All => {
             results.push(
+                scenarios::test_connection(
+                    &user1,
+                    &user2,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+            let env = test_env.as_ref().expect("Test environment required for All scenarios");
+            results.push(
+                scenarios::test_force_logout(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+            results.push(
                 scenarios::test_action_create(
                     &user1,
                     &user2,
-                    &test_env,
+                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
@@ -199,7 +254,7 @@ async fn main() -> Result<()> {
                 scenarios::test_action_update(
                     &user1,
                     &user2,
-                    &test_env,
+                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
@@ -210,18 +265,7 @@ async fn main() -> Result<()> {
                 scenarios::test_action_delete(
                     &user1,
                     &user2,
-                    &test_env,
-                    &api_client,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
-            );
-            results.push(
-                scenarios::test_force_logout(
-                    &user1,
-                    &user2,
-                    &test_env,
+                    env,
                     &api_client,
                     &mut sse1,
                     &mut sse2,
