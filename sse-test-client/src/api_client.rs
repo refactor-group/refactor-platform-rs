@@ -25,9 +25,15 @@ impl ApiClient {
         coach_id: &str,
         coachee_id: &str,
     ) -> Result<TestEnvironment> {
+        // Get user's organizations to find organization_id
+        let organizations = self.get_user_organizations(coach_session, coach_id).await?;
+        let organization_id = organizations[0]["id"]
+            .as_str()
+            .context("No organization ID found")?;
+
         // Create coaching relationship
         let relationship = self
-            .create_coaching_relationship(coach_session, coach_id, coachee_id)
+            .create_coaching_relationship(coach_session, organization_id, coach_id, coachee_id)
             .await?;
 
         let relationship_id = relationship["id"]
@@ -51,18 +57,54 @@ impl ApiClient {
         })
     }
 
+    async fn get_user_organizations(
+        &self,
+        session_cookie: &str,
+        user_id: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/users/{}/organizations", self.base_url, user_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .send()
+            .await
+            .context("Failed to get user organizations")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
+            anyhow::bail!("Failed to get organizations: {} - Response: {}", status, body);
+        }
+
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+
+        // Extract the data array from ApiResponse wrapper
+        api_response["data"]
+            .as_array()
+            .context("No data array in response")
+            .map(|arr| Value::Array(arr.clone()))
+    }
+
     async fn create_coaching_relationship(
         &self,
         session_cookie: &str,
+        organization_id: &str,
         coach_id: &str,
         coachee_id: &str,
     ) -> Result<Value> {
-        let url = format!("{}/coaching_relationships", self.base_url);
+        let url = format!(
+            "{}/organizations/{}/coaching_relationships",
+            self.base_url, organization_id
+        );
 
         let response = self
             .client
             .post(&url)
-            .header("Cookie", format!("session_id={}", session_cookie))
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
             .json(&json!({
                 "coach_id": coach_id,
                 "coachee_id": coachee_id,
@@ -75,7 +117,13 @@ impl ApiClient {
             anyhow::bail!("Failed to create relationship: {}", response.status());
         }
 
-        response.json().await.context("Failed to parse response")
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+
+        // Extract the data from ApiResponse wrapper
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
     }
 
     async fn create_coaching_session(
@@ -88,7 +136,8 @@ impl ApiClient {
         let response = self
             .client
             .post(&url)
-            .header("Cookie", format!("session_id={}", session_cookie))
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
             .json(&json!({
                 "coaching_relationship_id": relationship_id,
                 "date": "2024-01-01",
@@ -101,7 +150,13 @@ impl ApiClient {
             anyhow::bail!("Failed to create session: {}", response.status());
         }
 
-        response.json().await.context("Failed to parse response")
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+
+        // Extract the data from ApiResponse wrapper
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
     }
 
     pub async fn create_action(
@@ -115,7 +170,8 @@ impl ApiClient {
         let response = self
             .client
             .post(&url)
-            .header("Cookie", format!("session_id={}", session_cookie))
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
             .json(&json!({
                 "coaching_session_id": coaching_session_id,
                 "title": title,
@@ -130,7 +186,13 @@ impl ApiClient {
             anyhow::bail!("Failed to create action: {}", response.status());
         }
 
-        response.json().await.context("Failed to parse response")
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+
+        // Extract the data from ApiResponse wrapper
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
     }
 
     pub async fn update_action(
@@ -144,7 +206,8 @@ impl ApiClient {
         let response = self
             .client
             .put(&url)
-            .header("Cookie", format!("session_id={}", session_cookie))
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
             .json(&json!({
                 "title": title,
             }))
@@ -156,7 +219,13 @@ impl ApiClient {
             anyhow::bail!("Failed to update action: {}", response.status());
         }
 
-        response.json().await.context("Failed to parse response")
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+
+        // Extract the data from ApiResponse wrapper
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
     }
 
     pub async fn delete_action(&self, session_cookie: &str, action_id: &str) -> Result<()> {
@@ -165,7 +234,8 @@ impl ApiClient {
         let response = self
             .client
             .delete(&url)
-            .header("Cookie", format!("session_id={}", session_cookie))
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
             .send()
             .await
             .context("Failed to delete action")?;
