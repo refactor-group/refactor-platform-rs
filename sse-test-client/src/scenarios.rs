@@ -232,7 +232,6 @@ pub async fn test_action_delete(
 pub async fn test_force_logout(
     user1: &AuthenticatedUser,
     user2: &AuthenticatedUser,
-    _test_env: &TestEnvironment,
     api_client: &ApiClient,
     _sse1: &mut Connection,
     sse2: &mut Connection,
