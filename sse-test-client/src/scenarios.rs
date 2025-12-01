@@ -300,7 +300,10 @@ pub async fn test_connection(
     );
 
     // Wait a bit to ensure connections are stable
-    println!("{} Waiting 2 seconds to verify connections stay alive...", "→".blue());
+    println!(
+        "{} Waiting 2 seconds to verify connections stay alive...",
+        "→".blue()
+    );
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     println!("{} Connections remain stable", "✓".green());
@@ -313,4 +316,3 @@ pub async fn test_connection(
         duration: start.elapsed(),
     })
 }
-

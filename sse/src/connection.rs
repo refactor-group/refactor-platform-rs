@@ -63,7 +63,10 @@ impl ConnectionRegistry {
         // Insert into primary storage
         self.connections.insert(
             connection_id.clone(),
-            ConnectionInfo { user_id: user_id.clone(), sender },
+            ConnectionInfo {
+                user_id: user_id.clone(),
+                sender,
+            },
         );
 
         // Update secondary index
