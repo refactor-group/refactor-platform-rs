@@ -57,11 +57,7 @@ impl ApiClient {
         })
     }
 
-    async fn get_user_organizations(
-        &self,
-        session_cookie: &str,
-        user_id: &str,
-    ) -> Result<Value> {
+    async fn get_user_organizations(&self, session_cookie: &str, user_id: &str) -> Result<Value> {
         let url = format!("{}/users/{}/organizations", self.base_url, user_id);
 
         let response = self
@@ -75,8 +71,15 @@ impl ApiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
-            anyhow::bail!("Failed to get organizations: {} - Response: {}", status, body);
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response body".to_string());
+            anyhow::bail!(
+                "Failed to get organizations: {} - Response: {}",
+                status,
+                body
+            );
         }
 
         let api_response: Value = response.json().await.context("Failed to parse response")?;

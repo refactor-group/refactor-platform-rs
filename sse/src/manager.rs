@@ -32,10 +32,7 @@ impl Manager {
 
     /// Unregister a connection by ID
     pub fn unregister_connection(&self, connection_id: &ConnectionId) {
-        debug!(
-            "Unregistering SSE connection {}",
-            connection_id.as_str()
-        );
+        debug!("Unregistering SSE connection {}", connection_id.as_str());
         self.registry.unregister(connection_id);
     }
 

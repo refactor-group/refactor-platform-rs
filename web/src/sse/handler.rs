@@ -19,7 +19,9 @@ pub(crate) async fn sse_handler(
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     // Register returns the connection_id (convert domain::Id to String)
-    let connection_id = app_state.sse_manager.register_connection(user.id.to_string(), tx);
+    let connection_id = app_state
+        .sse_manager
+        .register_connection(user.id.to_string(), tx);
 
     let manager = app_state.sse_manager.clone();
     let user_id = user.id;

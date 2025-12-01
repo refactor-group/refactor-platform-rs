@@ -32,7 +32,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(app_config: Config, db: &Arc<DatabaseConnection>, sse_manager: Arc<sse::Manager>) -> Self {
+    pub fn new(
+        app_config: Config,
+        db: &Arc<DatabaseConnection>,
+        sse_manager: Arc<sse::Manager>,
+    ) -> Self {
         Self {
             database_connection: Arc::clone(db),
             config: app_config,
