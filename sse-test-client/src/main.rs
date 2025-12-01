@@ -151,30 +151,18 @@ async fn main() -> Result<()> {
 
     match cli.scenario {
         ScenarioChoice::ConnectionTest => {
-            results.push(
-                scenarios::test_connection(
-                    &user1,
-                    &user2,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
-            );
+            results.push(scenarios::test_connection(&user1, &user2, &mut sse1, &mut sse2).await?);
         }
         ScenarioChoice::ForceLogoutTest => {
             results.push(
-                scenarios::test_force_logout(
-                    &user1,
-                    &user2,
-                    &api_client,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
+                scenarios::test_force_logout(&user1, &user2, &api_client, &mut sse1, &mut sse2)
+                    .await?,
             );
         }
         ScenarioChoice::ActionCreate => {
-            let env = test_env.as_ref().expect("Test environment required for ActionCreate");
+            let env = test_env
+                .as_ref()
+                .expect("Test environment required for ActionCreate");
             results.push(
                 scenarios::test_action_create(
                     &user1,
@@ -188,7 +176,9 @@ async fn main() -> Result<()> {
             );
         }
         ScenarioChoice::ActionUpdate => {
-            let env = test_env.as_ref().expect("Test environment required for ActionUpdate");
+            let env = test_env
+                .as_ref()
+                .expect("Test environment required for ActionUpdate");
             results.push(
                 scenarios::test_action_update(
                     &user1,
@@ -202,7 +192,9 @@ async fn main() -> Result<()> {
             );
         }
         ScenarioChoice::ActionDelete => {
-            let env = test_env.as_ref().expect("Test environment required for ActionDelete");
+            let env = test_env
+                .as_ref()
+                .expect("Test environment required for ActionDelete");
             results.push(
                 scenarios::test_action_delete(
                     &user1,
@@ -216,26 +208,14 @@ async fn main() -> Result<()> {
             );
         }
         ScenarioChoice::All => {
+            results.push(scenarios::test_connection(&user1, &user2, &mut sse1, &mut sse2).await?);
             results.push(
-                scenarios::test_connection(
-                    &user1,
-                    &user2,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
+                scenarios::test_force_logout(&user1, &user2, &api_client, &mut sse1, &mut sse2)
+                    .await?,
             );
-            results.push(
-                scenarios::test_force_logout(
-                    &user1,
-                    &user2,
-                    &api_client,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
-            );
-            let env = test_env.as_ref().expect("Test environment required for All scenarios");
+            let env = test_env
+                .as_ref()
+                .expect("Test environment required for All scenarios");
             results.push(
                 scenarios::test_action_create(
                     &user1,

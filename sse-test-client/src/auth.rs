@@ -63,7 +63,10 @@ pub async fn login(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
         anyhow::bail!("Login failed: {} - Response: {}", status, body);
     }
 
