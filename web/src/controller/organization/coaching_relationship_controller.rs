@@ -115,13 +115,15 @@ pub async fn read(
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(organization_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET all CoachingRelationships");
-    let coaching_relationships = CoachingRelationshipApi::find_by_organization_with_user_names(
+    debug!("GET all CoachingRelationships for user {} in organization {}", user.id, organization_id);
+
+    let coaching_relationships = CoachingRelationshipApi::find_by_organization_for_user_with_user_names(
         app_state.db_conn_ref(),
+        user.id,
         organization_id,
     )
     .await?;
