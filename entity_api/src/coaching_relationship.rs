@@ -159,6 +159,47 @@ pub async fn find_by_organization_with_user_names(
     Ok(query.all(db).await?)
 }
 
+pub async fn find_by_user_and_organization_with_user_names(
+    db: &DatabaseConnection,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
+    let coaches = Alias::new("coaches");
+    let coachees = Alias::new("coachees");
+
+    let query = by_organization(coaching_relationships::Entity::find(), organization_id)
+        .await
+        .filter(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .join_as(
+            JoinType::Join,
+            coaches::Relation::CoachingRelationships.def().rev(),
+            coaches.clone(),
+        )
+        .join_as(
+            JoinType::Join,
+            coachees::Relation::CoachingRelationships.def().rev(),
+            coachees.clone(),
+        )
+        .select_only()
+        .column(coaching_relationships::Column::Id)
+        .column(coaching_relationships::Column::OrganizationId)
+        .column(coaching_relationships::Column::CoachId)
+        .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::CreatedAt)
+        .column(coaching_relationships::Column::UpdatedAt)
+        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
+        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
+        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
+        .into_model::<CoachingRelationshipWithUserNames>();
+
+    Ok(query.all(db).await?)
+}
+
 pub async fn get_relationship_with_user_names(
     db: &DatabaseConnection,
     relationship_id: Id,
@@ -237,7 +278,7 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
 
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids. This should be used as an implementation detail only.
-#[derive(FromQueryResult, Debug, PartialEq)]
+#[derive(FromQueryResult, Debug, PartialEq, Clone)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
