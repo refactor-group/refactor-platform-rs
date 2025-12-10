@@ -420,4 +420,160 @@ mod test {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn has_admin_access_returns_true_for_super_admin() -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let organization_id = Id::new_v4();
+        let role_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        // Create a SuperAdmin role with NULL organization_id
+        let super_admin_role = user_roles::Model {
+            id: role_id,
+            user_id,
+            role: Role::SuperAdmin,
+            organization_id: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![super_admin_role]])
+            .into_connection();
+
+        let result = has_admin_access(&db, user_id, organization_id).await?;
+
+        assert!(
+            result,
+            "SuperAdmin should have admin access to any organization"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_admin_access_returns_true_for_organization_admin() -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let organization_id = Id::new_v4();
+        let role_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        // Create an Admin role for the specific organization
+        let org_admin_role = user_roles::Model {
+            id: role_id,
+            user_id,
+            role: Role::Admin,
+            organization_id: Some(organization_id),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![org_admin_role]])
+            .into_connection();
+
+        let result = has_admin_access(&db, user_id, organization_id).await?;
+
+        assert!(
+            result,
+            "Organization Admin should have admin access to their organization"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_admin_access_returns_false_for_regular_user() -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let organization_id = Id::new_v4();
+
+        // Mock returns empty result (no admin roles found)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<user_roles::Model>::new()])
+            .into_connection();
+
+        let result = has_admin_access(&db, user_id, organization_id).await?;
+
+        assert!(!result, "Regular users should not have admin access");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_admin_access_returns_false_for_admin_of_different_organization(
+    ) -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let organization_id_a = Id::new_v4(); // Organization being queried
+        let _organization_id_b = Id::new_v4(); // Organization where user is admin
+
+        // Mock returns empty result (no matching admin role for org A)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<user_roles::Model>::new()])
+            .into_connection();
+
+        let result = has_admin_access(&db, user_id, organization_id_a).await?;
+
+        assert!(
+            !result,
+            "Admin of different organization should not have access"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_admin_access_returns_false_for_nonexistent_user() -> Result<(), Error> {
+        let nonexistent_user_id = Id::new_v4();
+        let organization_id = Id::new_v4();
+
+        // Mock returns empty result (user doesn't exist)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<user_roles::Model>::new()])
+            .into_connection();
+
+        let result = has_admin_access(&db, nonexistent_user_id, organization_id).await?;
+
+        assert!(!result, "Nonexistent user should not have admin access");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_admin_access_with_admin_role_for_multiple_organizations() -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let organization_id_a = Id::new_v4();
+        let organization_id_b = Id::new_v4();
+        let role_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        // Create an Admin role for organization A
+        let org_admin_role = user_roles::Model {
+            id: role_id,
+            user_id,
+            role: Role::Admin,
+            organization_id: Some(organization_id_a),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![org_admin_role]])
+            .into_connection();
+
+        // Should have access to organization A
+        let result_a = has_admin_access(&db, user_id, organization_id_a).await?;
+        assert!(result_a, "Should have admin access to organization A");
+
+        // Create new mock for organization B query (no matching role)
+        let db_b = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<user_roles::Model>::new()])
+            .into_connection();
+
+        // Should NOT have access to organization B
+        let result_b = has_admin_access(&db_b, user_id, organization_id_b).await?;
+        assert!(!result_b, "Should not have admin access to organization B");
+
+        Ok(())
+    }
 }
