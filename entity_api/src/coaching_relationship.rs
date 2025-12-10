@@ -125,7 +125,7 @@ pub async fn find_by_organization(
 }
 
 pub async fn find_by_organization_with_user_names(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     organization_id: Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     let coaches = Alias::new("coaches");
@@ -160,7 +160,7 @@ pub async fn find_by_organization_with_user_names(
 }
 
 pub async fn find_by_user_and_organization_with_user_names(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     user_id: Id,
     organization_id: Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
