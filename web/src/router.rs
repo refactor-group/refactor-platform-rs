@@ -276,7 +276,7 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
-                    protect::coaching_relationships::index,
+                    protect::organizations::coaching_relationships::index,
                 )),
         )
         .route(
