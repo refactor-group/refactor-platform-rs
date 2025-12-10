@@ -1,8 +1,8 @@
 use crate::coaching_relationships::Model;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
-use entity_api::{coaching_relationships, query, user_roles, Role};
-use sea_orm::{ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter};
+use entity_api::{coaching_relationships, query};
+use sea_orm::DatabaseConnection;
 
 pub use entity_api::coaching_relationship::{
     create, find_by_id, find_by_organization_with_user_names, find_by_user,
@@ -27,33 +27,13 @@ where
 /// - SuperAdmins (global role with organization_id = NULL) see all relationships in the organization
 /// - Admins (organization-specific role) see all relationships in their organization
 /// - Regular users see only relationships where they are the coach or coachee
-///
-/// Role checks are combined into a single query to improve performance and reduce the risk
-/// of race conditions between multiple separate queries.
 pub async fn find_by_organization_for_user_with_user_names(
     db: &DatabaseConnection,
     user_id: crate::Id,
     organization_id: crate::Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
-    // Check if user is a super admin OR an admin for this organization in a single query
-    let admin_role = user_roles::Entity::find()
-        .filter(user_roles::Column::UserId.eq(user_id))
-        .filter(
-            Condition::any()
-                // SuperAdmin with organization_id = NULL
-                .add(
-                    Condition::all()
-                        .add(user_roles::Column::Role.eq(Role::SuperAdmin))
-                        .add(user_roles::Column::OrganizationId.is_null()),
-                )
-                // Admin for this specific organization
-                .add(
-                    Condition::all()
-                        .add(user_roles::Column::Role.eq(Role::Admin))
-                        .add(user_roles::Column::OrganizationId.eq(organization_id)),
-                ),
-        )
-        .one(db)
+    // Check if user has admin access using entity_api layer
+    let is_admin = entity_api::user::has_admin_access(db, user_id, organization_id)
         .await
         .map_err(|e| Error {
             source: Some(Box::new(e)),
@@ -61,8 +41,6 @@ pub async fn find_by_organization_for_user_with_user_names(
                 EntityErrorKind::DbTransaction,
             )),
         })?;
-
-    let is_admin = admin_role.is_some();
 
     let coaching_relationships = if is_admin {
         // Admin users see all relationships in the organization

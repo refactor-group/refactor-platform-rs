@@ -7,7 +7,9 @@ use entity::users::{ActiveModel, Column, Entity, Model};
 use entity::{roles, user_roles, Id};
 use log::*;
 use password_auth;
-use sea_orm::{entity::prelude::*, ConnectionTrait, DatabaseConnection, Set, TransactionTrait};
+use sea_orm::{
+    entity::prelude::*, Condition, ConnectionTrait, DatabaseConnection, Set, TransactionTrait,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
@@ -125,6 +127,42 @@ pub async fn find_by_organization(
             }
         })
         .collect())
+}
+
+/// Checks if a user has admin privileges for an organization.
+///
+/// Returns `true` if the user is:
+/// - A SuperAdmin (has `SuperAdmin` role with `organization_id = NULL`), OR
+/// - An Admin for the specific organization (has `Admin` role for the given organization)
+///
+/// This function encapsulates the SeaORM query logic for role checking,
+/// keeping database-specific implementation details out of the domain layer.
+pub async fn has_admin_access(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<bool, Error> {
+    let admin_role = user_roles::Entity::find()
+        .filter(user_roles::Column::UserId.eq(user_id))
+        .filter(
+            Condition::any()
+                // SuperAdmin with organization_id = NULL
+                .add(
+                    Condition::all()
+                        .add(user_roles::Column::Role.eq(Role::SuperAdmin))
+                        .add(user_roles::Column::OrganizationId.is_null()),
+                )
+                // Admin for this specific organization
+                .add(
+                    Condition::all()
+                        .add(user_roles::Column::Role.eq(Role::Admin))
+                        .add(user_roles::Column::OrganizationId.eq(organization_id)),
+                ),
+        )
+        .one(db)
+        .await?;
+
+    Ok(admin_role.is_some())
 }
 
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
