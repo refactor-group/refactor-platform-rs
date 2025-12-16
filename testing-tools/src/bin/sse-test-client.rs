@@ -2,16 +2,11 @@ use anyhow::Result;
 use clap::Parser;
 use colored::*;
 
-mod api_client;
-mod auth;
-mod output;
-mod scenarios;
-mod sse_client;
-
-use api_client::ApiClient;
-use auth::{login, UserCredentials};
-use output::print_test_summary;
-use sse_client::Connection;
+use testing_tools::api_client::ApiClient;
+use testing_tools::auth::{login, UserCredentials};
+use testing_tools::output::print_test_summary;
+use testing_tools::scenarios;
+use testing_tools::sse_client::Connection;
 
 #[derive(Parser)]
 #[command(name = "sse-test-client")]

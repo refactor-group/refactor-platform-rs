@@ -1,11 +1,11 @@
 [package]
-name = "sse-test-client"
+name = "testing-tools"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
 name = "sse-test-client"
-path = "src/main.rs"
+path = "src/bin/sse-test-client.rs"
 
 [dependencies]
 # HTTP client

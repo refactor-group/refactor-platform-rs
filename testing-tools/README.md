@@ -1,8 +1,12 @@
-# SSE Test Client
+# Testing Tools
+
+A collection of testing utilities and tools for the Refactor Platform.
+
+## SSE Test Client
 
 A standalone Rust binary for testing Server-Sent Events (SSE) functionality without requiring a frontend client. The tool authenticates as two users, establishes SSE connections, triggers events via API calls, and validates that events are received correctly.
 
-## Overview
+### Overview
 
 This tool validates the SSE infrastructure by:
 1. Authenticating two users (typically a coach and coachee)
@@ -11,48 +15,48 @@ This tool validates the SSE infrastructure by:
 4. Triggering events (create/update/delete actions, force logout)
 5. Verifying that the correct SSE events are received by the appropriate users
 
-## Prerequisites
+### Prerequisites
 
 - Backend server running (default: `http://localhost:4000`)
 - Two valid user accounts with credentials (seeded users recommended)
 - **For action tests**: An existing coaching relationship between the users (will be created if it doesn't exist)
 - **For connection test**: No special permissions or relationships required
 
-## Usage
+### Usage
 
 ### Run Individual Test Scenarios
 
 ```bash
 # Test basic SSE connection (no admin permissions required)
-cargo run -p sse-test-client -- \
+cargo run -p testing-tools --bin sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "james.hodapp@gmail.com:password" \
   --user2 "calebbourg2@gmail.com:password" \
   --scenario connection-test
 
 # Test action creation (requires admin permissions)
-cargo run -p sse-test-client -- \
+cargo run -p testing-tools --bin sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "james.hodapp@gmail.com:password" \
   --user2 "calebbourg2@gmail.com:password" \
   --scenario action-create
 
 # Test action update (requires admin permissions)
-cargo run -p sse-test-client -- \
+cargo run -p testing-tools --bin sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "james.hodapp@gmail.com:password" \
   --user2 "calebbourg2@gmail.com:password" \
   --scenario action-update
 
 # Test action delete (requires admin permissions)
-cargo run -p sse-test-client -- \
+cargo run -p testing-tools --bin sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "james.hodapp@gmail.com:password" \
   --user2 "calebbourg2@gmail.com:password" \
   --scenario action-delete
 
 # Test force logout (requires admin permissions - NOT YET IMPLEMENTED)
-cargo run -p sse-test-client -- \
+cargo run -p testing-tools --bin sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "james.hodapp@gmail.com:password" \
   --user2 "calebbourg2@gmail.com:password" \
@@ -62,7 +66,7 @@ cargo run -p sse-test-client -- \
 ### Run All Tests
 
 ```bash
-cargo run -p sse-test-client -- \
+cargo run -p testing-tools --bin sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "james.hodapp@gmail.com:password" \
   --user2 "calebbourg2@gmail.com:password" \
@@ -72,7 +76,7 @@ cargo run -p sse-test-client -- \
 ### Enable Verbose Logging
 
 ```bash
-cargo run -p sse-test-client -- \
+cargo run -p testing-tools --bin sse-test-client -- \
   --base-url http://localhost:4000 \
   --user1 "james.hodapp@gmail.com:password" \
   --user2 "calebbourg2@gmail.com:password" \
@@ -80,7 +84,7 @@ cargo run -p sse-test-client -- \
   --verbose
 ```
 
-## Available Scenarios
+### Available Scenarios
 
 - `connection-test` - Tests basic SSE connectivity without creating any data
 - `action-create` - Tests SSE events for action creation (uses existing coaching relationship or creates one)
@@ -89,7 +93,7 @@ cargo run -p sse-test-client -- \
 - `force-logout-test` - Tests SSE events for force logout (NOT YET IMPLEMENTED)
 - `all` - Runs all test scenarios sequentially
 
-## Command-Line Arguments
+### Command-Line Arguments
 
 | Argument | Required | Description |
 |----------|----------|-------------|
@@ -99,7 +103,7 @@ cargo run -p sse-test-client -- \
 | `--scenario` | Yes | Test scenario to run (see Available Scenarios) |
 | `--verbose` or `-v` | No | Enable verbose output with debug logging |
 
-## How It Works
+### How It Works
 
 ### Setup Phase
 1. Authenticates both users and obtains session cookies
@@ -118,7 +122,7 @@ For each scenario:
 - Shows pass/fail status with durations
 - Exits with code 0 if all tests pass, 1 if any fail
 
-## Example Output
+### Example Output
 
 ### Connection Test (No Admin Required)
 ```
@@ -194,11 +198,12 @@ Results: 1 passed, 0 failed
 All tests passed! ✓
 ```
 
-## Module Structure
+### Module Structure
 
-- `main.rs` - CLI entry point and scenario orchestration
-- `auth.rs` - User authentication and session management
-- `sse_client.rs` - SSE connection handling and event listening
-- `api_client.rs` - API calls to create test data and trigger events
-- `scenarios.rs` - Test scenario implementations
-- `output.rs` - Color-coded console output formatting
+- `src/bin/sse-test-client.rs` - CLI entry point and scenario orchestration
+- `src/auth.rs` - User authentication and session management
+- `src/sse_client.rs` - SSE connection handling and event listening
+- `src/api_client.rs` - API calls to create test data and trigger events
+- `src/scenarios.rs` - Test scenario implementations
+- `src/output.rs` - Color-coded console output formatting
+- `src/lib.rs` - Library exports for testing-tools crate
