@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
         }
         _ => {
             println!(
-                "\n{} Creating test coaching relationship and session...",
+                "\n{} Setting up test coaching relationship and session...",
                 "→".blue()
             );
             let env = api_client
@@ -112,12 +112,12 @@ async fn main() -> Result<()> {
                 .await?;
 
             println!(
-                "{} Coaching relationship created (ID: {})",
+                "{} Using coaching relationship (ID: {})",
                 "✓".green(),
                 env.relationship_id
             );
             println!(
-                "{} Coaching session created (ID: {})",
+                "{} Using coaching session (ID: {})",
                 "✓".green(),
                 env.session_id
             );

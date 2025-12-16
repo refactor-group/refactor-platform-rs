@@ -7,16 +7,16 @@ A standalone Rust binary for testing Server-Sent Events (SSE) functionality with
 This tool validates the SSE infrastructure by:
 1. Authenticating two users (typically a coach and coachee)
 2. Establishing SSE connections for both users
-3. Optionally creating a test coaching relationship and session (for action tests)
+3. Using existing coaching relationships/sessions or creating them if needed (for action tests)
 4. Triggering events (create/update/delete actions, force logout)
 5. Verifying that the correct SSE events are received by the appropriate users
 
 ## Prerequisites
 
 - Backend server running (default: `http://localhost:4000`)
-- Two valid user accounts with credentials
-- **For action tests only**: Users must have admin permission to create coaching relationships
-- **For connection test**: No special permissions required
+- Two valid user accounts with credentials (seeded users recommended)
+- **For action tests**: An existing coaching relationship between the users (will be created if it doesn't exist)
+- **For connection test**: No special permissions or relationships required
 
 ## Usage
 
@@ -82,12 +82,12 @@ cargo run -p sse-test-client -- \
 
 ## Available Scenarios
 
-- `connection-test` - Tests basic SSE connectivity without creating any data (no admin permissions required)
-- `action-create` - Tests SSE events for action creation (requires admin permissions)
-- `action-update` - Tests SSE events for action updates (requires admin permissions)
-- `action-delete` - Tests SSE events for action deletion (requires admin permissions)
-- `force-logout-test` - Tests SSE events for force logout (requires admin permissions, NOT YET IMPLEMENTED)
-- `all` - Runs all test scenarios sequentially (requires admin permissions for action tests)
+- `connection-test` - Tests basic SSE connectivity without creating any data
+- `action-create` - Tests SSE events for action creation (uses existing coaching relationship or creates one)
+- `action-update` - Tests SSE events for action updates (uses existing coaching relationship or creates one)
+- `action-delete` - Tests SSE events for action deletion (uses existing coaching relationship or creates one)
+- `force-logout-test` - Tests SSE events for force logout (NOT YET IMPLEMENTED)
+- `all` - Runs all test scenarios sequentially
 
 ## Command-Line Arguments
 
@@ -103,7 +103,7 @@ cargo run -p sse-test-client -- \
 
 ### Setup Phase
 1. Authenticates both users and obtains session cookies
-2. For action tests: Creates a coaching relationship and session between the users
+2. For action tests: Finds existing coaching relationship/session or creates new ones if needed
 3. For connection test: Skips coaching data setup
 4. Establishes SSE connections for both users
 
@@ -153,16 +153,16 @@ Results: 1 passed, 0 failed
 All tests passed! ✓
 ```
 
-### Action Test (Requires Admin)
+### Action Test
 ```
 === SETUP PHASE ===
 → Authenticating users...
 ✓ User 1 authenticated (ID: 123e4567-e89b-12d3-a456-426614174000)
 ✓ User 2 authenticated (ID: 234e5678-e89b-12d3-a456-426614174001)
 
-→ Creating test coaching relationship and session...
-✓ Coaching relationship created (ID: 345e6789-e89b-12d3-a456-426614174002)
-✓ Coaching session created (ID: 456e789a-e89b-12d3-a456-426614174003)
+→ Setting up test coaching relationship and session...
+✓ Using coaching relationship (ID: 345e6789-e89b-12d3-a456-426614174002)
+✓ Using coaching session (ID: 456e789a-e89b-12d3-a456-426614174003)
 
 → Establishing SSE connections...
 ✓ User 1 SSE connection established

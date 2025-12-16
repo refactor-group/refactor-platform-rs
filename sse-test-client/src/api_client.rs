@@ -31,25 +31,56 @@ impl ApiClient {
             .as_str()
             .context("No organization ID found")?;
 
-        // Create coaching relationship
-        let relationship = self
-            .create_coaching_relationship(coach_session, organization_id, coach_id, coachee_id)
+        // Query for existing coaching relationships
+        let relationships = self
+            .get_coaching_relationships(coach_session, organization_id)
             .await?;
 
-        let relationship_id = relationship["id"]
-            .as_str()
-            .context("No relationship ID in response")?
-            .to_string();
+        // Find existing relationship or create new one
+        let relationship_id = if let Some(relationship) = relationships.as_array().and_then(|arr| {
+            arr.iter().find(|rel| {
+                rel["coach_id"].as_str() == Some(coach_id)
+                    && rel["coachee_id"].as_str() == Some(coachee_id)
+            })
+        }) {
+            relationship["id"]
+                .as_str()
+                .context("No relationship ID in existing relationship")?
+                .to_string()
+        } else {
+            // Create new coaching relationship
+            let relationship = self
+                .create_coaching_relationship(coach_session, organization_id, coach_id, coachee_id)
+                .await?;
 
-        // Create coaching session
-        let session = self
-            .create_coaching_session(coach_session, &relationship_id)
+            relationship["id"]
+                .as_str()
+                .context("No relationship ID in response")?
+                .to_string()
+        };
+
+        // Query for existing coaching sessions
+        let sessions = self
+            .get_coaching_sessions(coach_session, &relationship_id)
             .await?;
 
-        let session_id = session["id"]
-            .as_str()
-            .context("No session ID in response")?
-            .to_string();
+        // Use existing session or create new one
+        let session_id = if let Some(session) = sessions.as_array().and_then(|arr| arr.first()) {
+            session["id"]
+                .as_str()
+                .context("No session ID in existing session")?
+                .to_string()
+        } else {
+            // Create new coaching session
+            let session = self
+                .create_coaching_session(coach_session, &relationship_id)
+                .await?;
+
+            session["id"]
+                .as_str()
+                .context("No session ID in response")?
+                .to_string()
+        };
 
         Ok(TestEnvironment {
             relationship_id,
@@ -77,6 +108,88 @@ impl ApiClient {
                 .unwrap_or_else(|_| "Unable to read response body".to_string());
             anyhow::bail!(
                 "Failed to get organizations: {} - Response: {}",
+                status,
+                body
+            );
+        }
+
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+
+        // Extract the data array from ApiResponse wrapper
+        api_response["data"]
+            .as_array()
+            .context("No data array in response")
+            .map(|arr| Value::Array(arr.clone()))
+    }
+
+    async fn get_coaching_relationships(
+        &self,
+        session_cookie: &str,
+        organization_id: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/organizations/{}/coaching_relationships",
+            self.base_url, organization_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .send()
+            .await
+            .context("Failed to get coaching relationships")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response body".to_string());
+            anyhow::bail!(
+                "Failed to get coaching relationships: {} - Response: {}",
+                status,
+                body
+            );
+        }
+
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+
+        // Extract the data array from ApiResponse wrapper
+        api_response["data"]
+            .as_array()
+            .context("No data array in response")
+            .map(|arr| Value::Array(arr.clone()))
+    }
+
+    async fn get_coaching_sessions(
+        &self,
+        session_cookie: &str,
+        relationship_id: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/coaching_relationships/{}/coaching_sessions",
+            self.base_url, relationship_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .send()
+            .await
+            .context("Failed to get coaching sessions")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response body".to_string());
+            anyhow::bail!(
+                "Failed to get coaching sessions: {} - Response: {}",
                 status,
                 body
             );
