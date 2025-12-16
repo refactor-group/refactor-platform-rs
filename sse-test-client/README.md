@@ -26,36 +26,36 @@ This tool validates the SSE infrastructure by:
 # Test basic SSE connection (no admin permissions required)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
-  --user1 "user1@example.com:password123" \
-  --user2 "user2@example.com:password456" \
+  --user1 "james.hodapp@gmail.com:password" \
+  --user2 "calebbourg2@gmail.com:password" \
   --scenario connection-test
 
 # Test action creation (requires admin permissions)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
-  --user1 "coach@example.com:password123" \
-  --user2 "coachee@example.com:password456" \
+  --user1 "james.hodapp@gmail.com:password" \
+  --user2 "calebbourg2@gmail.com:password" \
   --scenario action-create
 
 # Test action update (requires admin permissions)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
-  --user1 "coach@example.com:password123" \
-  --user2 "coachee@example.com:password456" \
+  --user1 "james.hodapp@gmail.com:password" \
+  --user2 "calebbourg2@gmail.com:password" \
   --scenario action-update
 
 # Test action delete (requires admin permissions)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
-  --user1 "coach@example.com:password123" \
-  --user2 "coachee@example.com:password456" \
+  --user1 "james.hodapp@gmail.com:password" \
+  --user2 "calebbourg2@gmail.com:password" \
   --scenario action-delete
 
 # Test force logout (requires admin permissions - NOT YET IMPLEMENTED)
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
-  --user1 "admin@example.com:adminpass" \
-  --user2 "user@example.com:userpass" \
+  --user1 "james.hodapp@gmail.com:password" \
+  --user2 "calebbourg2@gmail.com:password" \
   --scenario force-logout-test
 ```
 
@@ -64,8 +64,8 @@ cargo run -p sse-test-client -- \
 ```bash
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
-  --user1 "coach@example.com:password123" \
-  --user2 "coachee@example.com:password456" \
+  --user1 "james.hodapp@gmail.com:password" \
+  --user2 "calebbourg2@gmail.com:password" \
   --scenario all
 ```
 
@@ -74,8 +74,8 @@ cargo run -p sse-test-client -- \
 ```bash
 cargo run -p sse-test-client -- \
   --base-url http://localhost:4000 \
-  --user1 "coach@example.com:password123" \
-  --user2 "coachee@example.com:password456" \
+  --user1 "james.hodapp@gmail.com:password" \
+  --user2 "calebbourg2@gmail.com:password" \
   --scenario all \
   --verbose
 ```
