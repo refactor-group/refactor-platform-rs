@@ -9,8 +9,9 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller, jwt_controller,
-    note_controller, organization, organization_controller, overarching_goal_controller, user,
+    action_controller, agreement_controller, coaching_relationship_controller,
+    coaching_session_controller, integration_controller, jwt_controller, note_controller,
+    oauth_controller, organization, organization_controller, overarching_goal_controller, user,
     user_controller, user_session_controller,
 };
 
@@ -19,8 +20,6 @@ use utoipa::{
     Modify, OpenApi,
 };
 use utoipa_rapidoc::RapiDoc;
-
-use self::organization::coaching_relationship_controller;
 
 // This is the global definition of our OpenAPI spec. To be a part
 // of the rendered spec, a path and schema must be listed here.
@@ -120,6 +119,7 @@ pub fn define_routes(app_state: AppState) -> Router {
     Router::new()
         .merge(action_routes(app_state.clone()))
         .merge(agreement_routes(app_state.clone()))
+        .merge(coaching_relationship_routes(app_state.clone()))
         .merge(health_routes())
         .merge(organization_routes(app_state.clone()))
         .merge(note_routes(app_state.clone()))
@@ -127,6 +127,8 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_user_routes(app_state.clone()))
         .merge(overarching_goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
+        .merge(user_integrations_routes(app_state.clone()))
+        .merge(oauth_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
         .merge(user_organizations_routes(app_state.clone()))
         .merge(user_actions_routes(app_state.clone()))
@@ -261,7 +263,7 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
             "/organizations/:organization_id/coaching_relationships",
-            post(coaching_relationship_controller::create),
+            post(organization::coaching_relationship_controller::create),
         )
         .route_layer(from_fn_with_state(
             app_state.clone(),
@@ -505,6 +507,56 @@ fn user_overarching_goals_routes(app_state: AppState) -> Router {
                 )),
         )
         .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for user integrations (API key management)
+fn user_integrations_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/users/:user_id/integrations",
+            get(integration_controller::read),
+        )
+        .route(
+            "/users/:user_id/integrations",
+            put(integration_controller::update),
+        )
+        .route(
+            "/users/:user_id/integrations/verify/recall-ai",
+            post(integration_controller::verify_recall_ai),
+        )
+        .route(
+            "/users/:user_id/integrations/verify/assembly-ai",
+            post(integration_controller::verify_assembly_ai),
+        )
+        .route(
+            "/users/:user_id/integrations/google",
+            delete(integration_controller::disconnect_google),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for coaching relationships (direct, non-nested operations)
+fn coaching_relationship_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_relationships/:id",
+            put(coaching_relationship_controller::update),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for Google OAuth flow
+fn oauth_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route("/oauth/google/authorize", get(oauth_controller::authorize))
+        .route_layer(from_fn(require_auth))
+        .merge(
+            // Callback doesn't require auth (user is redirected back from Google)
+            Router::new().route("/oauth/google/callback", get(oauth_controller::callback)),
+        )
         .with_state(app_state)
 }
 

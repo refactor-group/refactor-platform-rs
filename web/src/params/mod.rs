@@ -13,7 +13,9 @@
 
 pub(crate) mod action;
 pub(crate) mod agreement;
+pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
+pub(crate) mod integration;
 pub(crate) mod jwt;
 pub(crate) mod overarching_goal;
 pub(crate) mod sort;

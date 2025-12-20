@@ -89,6 +89,8 @@ pub async fn create(
         coach_last_name: coach.last_name,
         coachee_first_name: coachee.first_name,
         coachee_last_name: coachee.last_name,
+        meeting_url: inserted.meeting_url,
+        ai_privacy_level: inserted.ai_privacy_level,
         created_at: inserted.created_at,
         updated_at: inserted.updated_at,
     })
@@ -148,6 +150,8 @@ pub async fn find_by_organization_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::MeetingUrl)
+        .column(coaching_relationships::Column::AiPrivacyLevel)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -189,6 +193,8 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::MeetingUrl)
+        .column(coaching_relationships::Column::AiPrivacyLevel)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -224,6 +230,8 @@ pub async fn get_relationship_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::MeetingUrl)
+        .column(coaching_relationships::Column::AiPrivacyLevel)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -233,6 +241,39 @@ pub async fn get_relationship_with_user_names(
         .into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.one(db).await?)
+}
+
+/// Updates an existing coaching relationship
+pub async fn update(
+    db: &DatabaseConnection,
+    id: Id,
+    meeting_url: Option<String>,
+    ai_privacy_level: Option<entity::ai_privacy_level::AiPrivacyLevel>,
+) -> Result<CoachingRelationshipWithUserNames, Error> {
+    let existing = find_by_id(db, id).await?;
+
+    let now = Utc::now();
+
+    let mut active_model: ActiveModel = existing.into();
+    active_model.updated_at = Set(now.into());
+
+    if let Some(url) = meeting_url {
+        active_model.meeting_url = Set(Some(url));
+    }
+
+    if let Some(level) = ai_privacy_level {
+        active_model.ai_privacy_level = Set(level);
+    }
+
+    let _updated = active_model.update(db).await?;
+
+    // Return the full relationship with user names
+    get_relationship_with_user_names(db, id)
+        .await?
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
 }
 
 pub async fn by_coaching_relationship(
@@ -287,6 +328,8 @@ pub struct CoachingRelationshipWithUserNames {
     pub coach_last_name: String,
     pub coachee_first_name: String,
     pub coachee_last_name: String,
+    pub meeting_url: Option<String>,
+    pub ai_privacy_level: entity::ai_privacy_level::AiPrivacyLevel,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }
@@ -298,7 +341,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 7)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 11)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
@@ -306,6 +349,8 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("coach_last_name", &self.coach_last_name)?;
         state.serialize_field("coachee_first_name", &self.coachee_first_name)?;
         state.serialize_field("coachee_last_name", &self.coachee_last_name)?;
+        state.serialize_field("meeting_url", &self.meeting_url)?;
+        state.serialize_field("ai_privacy_level", &self.ai_privacy_level)?;
         state.serialize_field("created_at", &self.created_at)?;
         state.serialize_field("updated_at", &self.updated_at)?;
         state.end()

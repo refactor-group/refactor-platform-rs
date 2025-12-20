@@ -183,6 +183,39 @@ pub struct Config {
     /// Secret for validating incoming webhooks
     #[arg(long, env)]
     webhook_secret: Option<String>,
+
+    // External API Base URLs (for testing/override)
+    /// AssemblyAI API base URL
+    #[arg(long, env, default_value = "https://api.assemblyai.com/v2")]
+    assembly_ai_base_url: String,
+
+    /// Recall.ai base domain (region prefix will be added, e.g., "us-west-2.{domain}")
+    #[arg(long, env, default_value = "recall.ai")]
+    recall_ai_base_domain: String,
+
+    /// Google OAuth authorization URL
+    #[arg(
+        long,
+        env,
+        default_value = "https://accounts.google.com/o/oauth2/v2/auth"
+    )]
+    google_oauth_auth_url: String,
+
+    /// Google OAuth token URL
+    #[arg(long, env, default_value = "https://oauth2.googleapis.com/token")]
+    google_oauth_token_url: String,
+
+    /// Google user info URL
+    #[arg(
+        long,
+        env,
+        default_value = "https://www.googleapis.com/oauth2/v2/userinfo"
+    )]
+    google_userinfo_url: String,
+
+    /// Google Meet API base URL
+    #[arg(long, env, default_value = "https://meet.googleapis.com/v2")]
+    google_meet_api_url: String,
 }
 
 impl Default for Config {
@@ -284,6 +317,37 @@ impl Config {
 
     pub fn webhook_secret(&self) -> Option<String> {
         self.webhook_secret.clone()
+    }
+
+    // External API Base URL accessors
+
+    pub fn assembly_ai_base_url(&self) -> &str {
+        &self.assembly_ai_base_url
+    }
+
+    pub fn recall_ai_base_domain(&self) -> &str {
+        &self.recall_ai_base_domain
+    }
+
+    /// Constructs the full Recall.ai API URL for a given region
+    pub fn recall_ai_url_for_region(&self, region: &str) -> String {
+        format!("https://{}.{}", region, self.recall_ai_base_domain)
+    }
+
+    pub fn google_oauth_auth_url(&self) -> &str {
+        &self.google_oauth_auth_url
+    }
+
+    pub fn google_oauth_token_url(&self) -> &str {
+        &self.google_oauth_token_url
+    }
+
+    pub fn google_userinfo_url(&self) -> &str {
+        &self.google_userinfo_url
+    }
+
+    pub fn google_meet_api_url(&self) -> &str {
+        &self.google_meet_api_url
     }
 }
 
