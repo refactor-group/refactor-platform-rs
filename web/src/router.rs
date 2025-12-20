@@ -9,9 +9,9 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_relationship_controller,
-    coaching_session_controller, integration_controller, jwt_controller,
-    meeting_recording_controller, note_controller, oauth_controller, organization,
+    action_controller, agreement_controller, ai_suggestion_controller,
+    coaching_relationship_controller, coaching_session_controller, integration_controller,
+    jwt_controller, meeting_recording_controller, note_controller, oauth_controller, organization,
     organization_controller, overarching_goal_controller, transcription_controller, user,
     user_controller, user_session_controller, webhook_controller,
 };
@@ -81,6 +81,9 @@ use utoipa_rapidoc::RapiDoc;
             transcription_controller::get_transcript,
             transcription_controller::get_transcript_segments,
             transcription_controller::get_session_summary,
+            ai_suggestion_controller::get_session_suggestions,
+            ai_suggestion_controller::accept_suggestion,
+            ai_suggestion_controller::dismiss_suggestion,
         ),
         components(
             schemas(
@@ -94,6 +97,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::overarching_goals::Model,
                 domain::transcriptions::Model,
                 domain::transcript_segments::Model,
+                domain::ai_suggested_items::Model,
                 domain::users::Model,
                 domain::user::Credentials,
                 params::user::UpdateParams,
@@ -149,6 +153,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(coaching_sessions_routes(app_state.clone()))
         .merge(meeting_recording_routes(app_state.clone()))
         .merge(transcription_routes(app_state.clone()))
+        .merge(ai_suggestion_routes(app_state.clone()))
         .merge(webhook_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
@@ -606,6 +611,25 @@ fn transcription_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_sessions/:id/summary",
             get(transcription_controller::get_session_summary),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for AI suggestion operations (accept/dismiss)
+fn ai_suggestion_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:id/ai-suggestions",
+            get(ai_suggestion_controller::get_session_suggestions),
+        )
+        .route(
+            "/ai-suggestions/:id/accept",
+            post(ai_suggestion_controller::accept_suggestion),
+        )
+        .route(
+            "/ai-suggestions/:id/dismiss",
+            post(ai_suggestion_controller::dismiss_suggestion),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
