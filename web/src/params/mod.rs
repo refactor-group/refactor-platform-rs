@@ -13,8 +13,10 @@
 
 pub(crate) mod action;
 pub(crate) mod agreement;
+pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
 pub(crate) mod goal;
+pub(crate) mod integration;
 pub(crate) mod jwt;
 pub(crate) mod sort;
 pub(crate) mod user;

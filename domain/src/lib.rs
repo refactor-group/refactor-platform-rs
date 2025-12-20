@@ -19,7 +19,7 @@ pub use entity_api::{
 pub use entity_api::{
     ai_privacy_level, ai_suggested_items, ai_suggestion, meeting_recording_status,
     meeting_recordings, sentiment, transcript_segments, transcription_status, transcriptions,
-    user_integrations,
+    user_integration, user_integrations,
 };
 
 pub mod action;
@@ -35,7 +35,7 @@ pub mod note;
 pub mod organization;
 pub mod user;
 
-pub(crate) mod gateway;
+pub mod gateway;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;
