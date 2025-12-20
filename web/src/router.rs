@@ -12,8 +12,8 @@ use crate::controller::{
     action_controller, agreement_controller, coaching_relationship_controller,
     coaching_session_controller, integration_controller, jwt_controller,
     meeting_recording_controller, note_controller, oauth_controller, organization,
-    organization_controller, overarching_goal_controller, user, user_controller,
-    user_session_controller, webhook_controller,
+    organization_controller, overarching_goal_controller, transcription_controller, user,
+    user_controller, user_session_controller, webhook_controller,
 };
 
 use utoipa::{
@@ -78,6 +78,9 @@ use utoipa_rapidoc::RapiDoc;
             meeting_recording_controller::get_recording_status,
             meeting_recording_controller::start_recording,
             meeting_recording_controller::stop_recording,
+            transcription_controller::get_transcript,
+            transcription_controller::get_transcript_segments,
+            transcription_controller::get_session_summary,
         ),
         components(
             schemas(
@@ -89,6 +92,8 @@ use utoipa_rapidoc::RapiDoc;
                 domain::notes::Model,
                 domain::organizations::Model,
                 domain::overarching_goals::Model,
+                domain::transcriptions::Model,
+                domain::transcript_segments::Model,
                 domain::users::Model,
                 domain::user::Credentials,
                 params::user::UpdateParams,
@@ -143,6 +148,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
         .merge(meeting_recording_routes(app_state.clone()))
+        .merge(transcription_routes(app_state.clone()))
         .merge(webhook_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
@@ -586,10 +592,33 @@ fn meeting_recording_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+/// Routes for transcript and transcription operations
+fn transcription_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:id/transcript",
+            get(transcription_controller::get_transcript),
+        )
+        .route(
+            "/coaching_sessions/:id/transcript/segments",
+            get(transcription_controller::get_transcript_segments),
+        )
+        .route(
+            "/coaching_sessions/:id/summary",
+            get(transcription_controller::get_session_summary),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
 /// Routes for external service webhooks (no authentication - validated by webhook secret)
 fn webhook_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/webhooks/recall", post(webhook_controller::recall_webhook))
+        .route(
+            "/webhooks/assemblyai",
+            post(webhook_controller::assemblyai_webhook),
+        )
         .with_state(app_state)
 }
 

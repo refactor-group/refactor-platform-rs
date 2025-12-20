@@ -30,6 +30,7 @@ pub mod user_role;
 // AI Meeting Integration modules
 pub mod ai_suggested_item;
 pub mod meeting_recording;
+pub mod transcript_segment;
 pub mod transcription;
 pub mod user_integration;
 

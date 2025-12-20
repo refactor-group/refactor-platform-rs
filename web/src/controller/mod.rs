@@ -12,6 +12,7 @@ pub(crate) mod oauth_controller;
 pub(crate) mod organization;
 pub(crate) mod organization_controller;
 pub(crate) mod overarching_goal_controller;
+pub(crate) mod transcription_controller;
 pub(crate) mod user;
 pub(crate) mod user_controller;
 pub(crate) mod user_session_controller;
