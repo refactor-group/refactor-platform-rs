@@ -10,9 +10,10 @@ use tower_http::services::ServeDir;
 
 use crate::controller::{
     action_controller, agreement_controller, coaching_relationship_controller,
-    coaching_session_controller, integration_controller, jwt_controller, note_controller,
-    oauth_controller, organization, organization_controller, overarching_goal_controller, user,
-    user_controller, user_session_controller,
+    coaching_session_controller, integration_controller, jwt_controller,
+    meeting_recording_controller, note_controller, oauth_controller, organization,
+    organization_controller, overarching_goal_controller, user, user_controller,
+    user_session_controller, webhook_controller,
 };
 
 use utoipa::{
@@ -74,6 +75,9 @@ use utoipa_rapidoc::RapiDoc;
             user::coaching_session_controller::index,
             user::overarching_goal_controller::index,
             jwt_controller::generate_collab_token,
+            meeting_recording_controller::get_recording_status,
+            meeting_recording_controller::start_recording,
+            meeting_recording_controller::stop_recording,
         ),
         components(
             schemas(
@@ -81,6 +85,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::agreements::Model,
                 domain::coaching_sessions::Model,
                 domain::coaching_relationships::Model,
+                domain::meeting_recordings::Model,
                 domain::notes::Model,
                 domain::organizations::Model,
                 domain::overarching_goals::Model,
@@ -137,6 +142,8 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
+        .merge(meeting_recording_routes(app_state.clone()))
+        .merge(webhook_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
         .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
@@ -557,6 +564,32 @@ fn oauth_routes(app_state: AppState) -> Router {
             // Callback doesn't require auth (user is redirected back from Google)
             Router::new().route("/oauth/google/callback", get(oauth_controller::callback)),
         )
+        .with_state(app_state)
+}
+
+/// Routes for meeting recording operations
+fn meeting_recording_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:id/recording",
+            get(meeting_recording_controller::get_recording_status),
+        )
+        .route(
+            "/coaching_sessions/:id/recording/start",
+            post(meeting_recording_controller::start_recording),
+        )
+        .route(
+            "/coaching_sessions/:id/recording/stop",
+            post(meeting_recording_controller::stop_recording),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for external service webhooks (no authentication - validated by webhook secret)
+fn webhook_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route("/webhooks/recall", post(webhook_controller::recall_webhook))
         .with_state(app_state)
 }
 
