@@ -146,6 +146,43 @@ pub struct Config {
     /// Session expiry duration in seconds (default: 24 hours = 86400 seconds)
     #[arg(long, env, default_value_t = 86400)]
     pub backend_session_expiry_seconds: u64,
+
+    // AI Meeting Integration configuration
+    /// 32-byte AES encryption key for encrypting sensitive API keys in database (hex-encoded)
+    #[arg(long, env)]
+    encryption_key: Option<String>,
+
+    /// Platform-default Recall.ai API key (optional, users can configure their own)
+    #[arg(long, env)]
+    recall_ai_api_key: Option<String>,
+
+    /// Recall.ai region (default: us-west-2)
+    #[arg(long, env, default_value = "us-west-2")]
+    recall_ai_region: Option<String>,
+
+    /// Platform-default AssemblyAI API key (optional, users can configure their own)
+    #[arg(long, env)]
+    assembly_ai_api_key: Option<String>,
+
+    /// Google OAuth client ID
+    #[arg(long, env)]
+    google_client_id: Option<String>,
+
+    /// Google OAuth client secret
+    #[arg(long, env)]
+    google_client_secret: Option<String>,
+
+    /// Google OAuth redirect URI
+    #[arg(long, env)]
+    google_redirect_uri: Option<String>,
+
+    /// Base URL for webhook endpoints (e.g., https://api.refactor.coach)
+    #[arg(long, env)]
+    webhook_base_url: Option<String>,
+
+    /// Secret for validating incoming webhooks
+    #[arg(long, env)]
+    webhook_secret: Option<String>,
 }
 
 impl Default for Config {
@@ -209,6 +246,44 @@ impl Config {
     pub fn is_production(&self) -> bool {
         // This could check an environment variable, or a config field
         self.runtime_env() == RustEnv::Production
+    }
+
+    // AI Meeting Integration accessors
+
+    pub fn encryption_key(&self) -> Option<String> {
+        self.encryption_key.clone()
+    }
+
+    pub fn recall_ai_api_key(&self) -> Option<String> {
+        self.recall_ai_api_key.clone()
+    }
+
+    pub fn recall_ai_region(&self) -> Option<String> {
+        self.recall_ai_region.clone()
+    }
+
+    pub fn assembly_ai_api_key(&self) -> Option<String> {
+        self.assembly_ai_api_key.clone()
+    }
+
+    pub fn google_client_id(&self) -> Option<String> {
+        self.google_client_id.clone()
+    }
+
+    pub fn google_client_secret(&self) -> Option<String> {
+        self.google_client_secret.clone()
+    }
+
+    pub fn google_redirect_uri(&self) -> Option<String> {
+        self.google_redirect_uri.clone()
+    }
+
+    pub fn webhook_base_url(&self) -> Option<String> {
+        self.webhook_base_url.clone()
+    }
+
+    pub fn webhook_secret(&self) -> Option<String> {
+        self.webhook_secret.clone()
     }
 }
 
