@@ -9,9 +9,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 
+use domain::gateway::assembly_ai::TranscriptStatus;
 use domain::meeting_recording as MeetingRecordingApi;
 use domain::meeting_recording_status::MeetingRecordingStatus;
 use domain::meeting_recordings::Model as MeetingRecordingModel;
+use domain::transcript_segment::{self, SegmentInput};
+use domain::transcription as TranscriptionApi;
+use domain::transcription_status::TranscriptionStatus;
+use domain::transcriptions::Model as TranscriptionModel;
 use log::*;
 use serde::{Deserialize, Serialize};
 
@@ -184,6 +189,216 @@ pub async fn recall_webhook(
         }
         _ => {
             debug!("Ignoring unhandled Recall.ai event: {}", payload.event);
+        }
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(WebhookResponse {
+            status: "ok".to_string(),
+        }),
+    ))
+}
+
+/// AssemblyAI webhook payload
+/// AssemblyAI sends the full transcript response when transcription is complete
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields are part of AssemblyAI API contract
+pub struct AssemblyAiWebhookPayload {
+    /// The transcript ID
+    pub transcript_id: String,
+    /// Status: queued, processing, completed, error
+    pub status: TranscriptStatus,
+    /// Full text of the transcript (available when completed)
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Speaker-labeled utterances
+    #[serde(default)]
+    pub utterances: Option<Vec<AssemblyAiUtterance>>,
+    /// Auto-generated chapters/summary
+    #[serde(default)]
+    pub chapters: Option<Vec<AssemblyAiChapter>>,
+    /// Confidence score
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    /// Audio duration in milliseconds
+    #[serde(default)]
+    pub audio_duration: Option<i64>,
+    /// Error message if failed
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// AssemblyAI utterance (speaker segment)
+#[derive(Debug, Deserialize)]
+pub struct AssemblyAiUtterance {
+    pub text: String,
+    pub start: i64,
+    pub end: i64,
+    pub confidence: f64,
+    pub speaker: String,
+}
+
+/// AssemblyAI chapter for summary
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields are part of AssemblyAI API contract
+pub struct AssemblyAiChapter {
+    pub summary: String,
+    pub headline: String,
+    pub start: i64,
+    pub end: i64,
+    pub gist: String,
+}
+
+/// POST /webhooks/assemblyai
+///
+/// Handles webhook callbacks from AssemblyAI when transcription is complete.
+/// This endpoint validates via webhook secret header.
+pub async fn assemblyai_webhook(
+    State(app_state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<AssemblyAiWebhookPayload>,
+) -> Result<impl IntoResponse, Error> {
+    debug!(
+        "Received AssemblyAI webhook for transcript: {}",
+        payload.transcript_id
+    );
+
+    let config = &app_state.config;
+    let db = app_state.db_conn_ref();
+
+    // Validate webhook secret if configured
+    if let Some(expected_secret) = config.webhook_secret() {
+        let provided_secret = headers
+            .get("x-webhook-secret")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if provided_secret != expected_secret {
+            warn!("Invalid AssemblyAI webhook secret received");
+            return Ok((
+                StatusCode::UNAUTHORIZED,
+                Json(WebhookResponse {
+                    status: "unauthorized".to_string(),
+                }),
+            ));
+        }
+    }
+
+    // Find the transcription by AssemblyAI transcript ID
+    let transcription: Option<TranscriptionModel> =
+        TranscriptionApi::find_by_assemblyai_id(db, &payload.transcript_id).await?;
+
+    let transcription = match transcription {
+        Some(t) => t,
+        None => {
+            warn!(
+                "Received webhook for unknown AssemblyAI transcript: {}",
+                payload.transcript_id
+            );
+            return Ok((
+                StatusCode::OK,
+                Json(WebhookResponse {
+                    status: "ignored".to_string(),
+                }),
+            ));
+        }
+    };
+
+    match payload.status {
+        TranscriptStatus::Completed => {
+            info!(
+                "AssemblyAI transcription completed: {}",
+                payload.transcript_id
+            );
+
+            // Build summary from chapters if available
+            let summary = payload.chapters.as_ref().map(|chapters| {
+                chapters
+                    .iter()
+                    .map(|c| format!("**{}**\n{}", c.headline, c.summary))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            });
+
+            // Calculate word count from full text
+            let word_count = payload
+                .text
+                .as_ref()
+                .map(|t| t.split_whitespace().count() as i32);
+
+            // Update transcription with completed data
+            let mut updated = transcription.clone();
+            updated.status = TranscriptionStatus::Completed;
+            updated.full_text = payload.text.clone();
+            updated.summary = summary;
+            updated.confidence_score = payload.confidence;
+            updated.word_count = word_count;
+
+            let updated_transcription: TranscriptionModel =
+                TranscriptionApi::update(db, transcription.id, updated).await?;
+
+            // Store transcript segments (utterances) if available
+            if let Some(utterances) = payload.utterances {
+                let utterance_count = utterances.len();
+                let segments: Vec<SegmentInput> = utterances
+                    .into_iter()
+                    .map(|u| SegmentInput {
+                        speaker_label: u.speaker.clone(),
+                        text: u.text,
+                        start_time_ms: u.start,
+                        end_time_ms: u.end,
+                        confidence: Some(u.confidence),
+                        sentiment: None, // Would need sentiment_analysis_results for per-segment sentiment
+                    })
+                    .collect();
+
+                if !segments.is_empty() {
+                    let _ =
+                        transcript_segment::create_batch(db, updated_transcription.id, segments)
+                            .await?;
+                    info!(
+                        "Created {} transcript segments for transcription {}",
+                        utterance_count, updated_transcription.id
+                    );
+                }
+            }
+
+            // Update meeting recording status to completed
+            let _: MeetingRecordingModel = MeetingRecordingApi::update_status(
+                db,
+                transcription.meeting_recording_id,
+                MeetingRecordingStatus::Completed,
+                None,
+            )
+            .await?;
+        }
+        TranscriptStatus::Error => {
+            warn!("AssemblyAI transcription failed: {}", payload.transcript_id);
+
+            let _: TranscriptionModel = TranscriptionApi::update_status(
+                db,
+                transcription.id,
+                TranscriptionStatus::Failed,
+                payload.error.clone(),
+            )
+            .await?;
+
+            // Update meeting recording with error
+            let _: MeetingRecordingModel = MeetingRecordingApi::update_status(
+                db,
+                transcription.meeting_recording_id,
+                MeetingRecordingStatus::Failed,
+                payload.error,
+            )
+            .await?;
+        }
+        TranscriptStatus::Processing | TranscriptStatus::Queued => {
+            debug!(
+                "AssemblyAI transcription still processing: {}",
+                payload.transcript_id
+            );
+            // No action needed - these are status updates during processing
         }
     }
 

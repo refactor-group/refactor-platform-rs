@@ -18,8 +18,9 @@ pub use entity_api::{
 // AI Meeting Integration re-exports
 pub use entity_api::{
     ai_privacy_level, ai_suggested_items, ai_suggestion, meeting_recording,
-    meeting_recording_status, meeting_recordings, sentiment, transcript_segments,
-    transcription_status, transcriptions, user_integration, user_integrations,
+    meeting_recording_status, meeting_recordings, sentiment, transcript_segment,
+    transcript_segments, transcription, transcription_status, transcriptions, user_integration,
+    user_integrations,
 };
 
 pub mod action;
