@@ -78,21 +78,37 @@ fn internal_error(message: &str) -> Error {
 )]
 pub async fn get_recording_status(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET recording status for session: {session_id}");
 
+    let db = app_state.db_conn_ref();
+    let config = &app_state.config;
+
     let recording: Option<MeetingRecordingModel> =
-        MeetingRecordingApi::find_latest_by_coaching_session_id(
-            app_state.db_conn_ref(),
-            session_id,
-        )
-        .await?;
+        MeetingRecordingApi::find_latest_by_coaching_session_id(db, session_id).await?;
 
     match recording {
-        Some(rec) => Ok(Json(ApiResponse::new(StatusCode::OK.into(), rec))),
+        Some(rec) => {
+            // If recording is in a transitional state and has a bot ID, poll Recall.ai for updates
+            let should_poll = matches!(
+                rec.status,
+                MeetingRecordingStatus::Joining
+                    | MeetingRecordingStatus::Recording
+                    | MeetingRecordingStatus::Processing
+            ) && rec.recall_bot_id.is_some();
+
+            if should_poll {
+                // Try to poll Recall.ai for the latest status
+                if let Some(updated_rec) = poll_recall_for_status(db, config, &rec, user.id).await {
+                    return Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated_rec)));
+                }
+            }
+
+            Ok(Json(ApiResponse::new(StatusCode::OK.into(), rec)))
+        }
         None => Err(Error::Domain(domain::error::Error {
             source: None,
             error_kind: domain::error::DomainErrorKind::Internal(
@@ -347,4 +363,219 @@ pub async fn stop_recording(
             Err(internal_error("Failed to stop recording"))
         }
     }
+}
+
+/// Poll Recall.ai for the latest bot status and update our database.
+///
+/// Returns the updated recording if status changed, None otherwise.
+async fn poll_recall_for_status(
+    db: &sea_orm::DatabaseConnection,
+    config: &service::config::Config,
+    recording: &MeetingRecordingModel,
+    user_id: Id,
+) -> Option<MeetingRecordingModel> {
+    let bot_id = recording.recall_bot_id.as_ref()?;
+
+    debug!("Polling Recall.ai for bot: {}", bot_id);
+
+    // Get user's Recall.ai API key
+    let user_integrations = match user_integration::find_by_user_id(db, user_id).await {
+        Ok(Some(ui)) => ui,
+        Ok(None) => {
+            debug!("No user integrations found for user {}", user_id);
+            return None;
+        }
+        Err(e) => {
+            warn!("Error fetching user integrations: {:?}", e);
+            return None;
+        }
+    };
+
+    let api_key = match user_integrations.recall_ai_api_key.as_ref() {
+        Some(key) => key,
+        None => {
+            debug!("No Recall.ai API key configured for user {}", user_id);
+            return None;
+        }
+    };
+
+    let region_str = user_integrations
+        .recall_ai_region
+        .as_deref()
+        .unwrap_or("us-west-2");
+    let region: RecallRegion = region_str.parse().unwrap_or(RecallRegion::UsWest2);
+
+    // Create client and fetch bot status
+    let client = match RecallAiClient::new(api_key, region, config.recall_ai_base_domain()) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to create Recall.ai client: {:?}", e);
+            return None;
+        }
+    };
+
+    let status_response = match client.get_bot_status(bot_id).await {
+        Ok(r) => {
+            debug!("Recall.ai response: {:?}", r);
+            r
+        }
+        Err(e) => {
+            warn!("Failed to get bot status from Recall.ai: {:?}", e);
+            return None;
+        }
+    };
+
+    // Map Recall.ai status to our internal status
+    let latest_status_code = status_response
+        .status_changes
+        .last()
+        .map(|s| s.code.as_str())
+        .unwrap_or("unknown");
+
+    let new_status = map_recall_status_code(latest_status_code);
+
+    // Extract video URL using the helper method (handles nested structure)
+    let video_url = status_response.video_url();
+
+    debug!(
+        "Recall.ai bot {} - recordings count: {}, video_url extracted: {:?}",
+        bot_id,
+        status_response.recordings.len(),
+        video_url.as_ref().map(|u| &u[..50.min(u.len())])
+    );
+
+    // Check if status changed or video URL is now available
+    if new_status == recording.status && video_url.is_none() {
+        debug!("No status change and no video URL - skipping update");
+        return None; // No change
+    }
+
+    info!(
+        "Recall.ai bot {} status: {} -> {:?}, video_url: {}",
+        bot_id,
+        latest_status_code,
+        new_status,
+        video_url.is_some()
+    );
+
+    // Update recording with new status
+    let mut updated = recording.clone();
+    updated.status = new_status;
+
+    // If recording is complete, capture video URL and duration
+    if let Some(url) = video_url {
+        updated.recording_url = Some(url);
+        updated.status = MeetingRecordingStatus::Processing;
+        updated.ended_at = Some(chrono::Utc::now().into());
+
+        // Get duration from the recording object
+        if let Some(duration) = status_response.duration_seconds() {
+            updated.duration_seconds = Some(duration);
+        }
+    }
+
+    // Save the updated recording
+    let saved = MeetingRecordingApi::update(db, recording.id, updated)
+        .await
+        .ok()?;
+
+    // If recording is complete with video URL, trigger AssemblyAI transcription
+    if saved.status == MeetingRecordingStatus::Processing {
+        if let Some(video_url) = &saved.recording_url {
+            match trigger_assemblyai_transcription(db, config, &saved, video_url).await {
+                Ok(_) => info!(
+                    "AssemblyAI transcription triggered for recording {}",
+                    saved.id
+                ),
+                Err(e) => warn!(
+                    "Failed to trigger AssemblyAI for recording {}: {:?}",
+                    saved.id, e
+                ),
+            }
+        }
+    }
+
+    Some(saved)
+}
+
+/// Map Recall.ai status codes to our internal status
+fn map_recall_status_code(code: &str) -> MeetingRecordingStatus {
+    match code {
+        "ready" | "joining_call" => MeetingRecordingStatus::Joining,
+        "in_call_not_recording" | "in_waiting_room" => MeetingRecordingStatus::Joining,
+        "in_call_recording" => MeetingRecordingStatus::Recording,
+        "call_ended" | "done" => MeetingRecordingStatus::Processing,
+        "analysis_done" => MeetingRecordingStatus::Completed,
+        "fatal" | "error" => MeetingRecordingStatus::Failed,
+        _ => MeetingRecordingStatus::Pending,
+    }
+}
+
+/// Trigger AssemblyAI transcription for a completed recording
+async fn trigger_assemblyai_transcription(
+    db: &sea_orm::DatabaseConnection,
+    config: &service::config::Config,
+    recording: &MeetingRecordingModel,
+    video_url: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use domain::gateway::assembly_ai::{create_standard_transcript_request, AssemblyAiClient};
+    use domain::transcription as TranscriptionApi;
+    use domain::transcription_status::TranscriptionStatus;
+
+    // Check if transcription already exists for this recording
+    if let Some(existing) = TranscriptionApi::find_by_meeting_recording_id(db, recording.id).await?
+    {
+        debug!(
+            "Transcription {} already exists for recording {}",
+            existing.id, recording.id
+        );
+        return Ok(());
+    }
+
+    // Get the coaching session to find the relationship
+    let session = CoachingSessionApi::find_by_id(db, recording.coaching_session_id).await?;
+
+    // Get the coaching relationship to find the coach
+    let relationship =
+        CoachingRelationshipApi::find_by_id(db, session.coaching_relationship_id).await?;
+
+    // Get the coach's user integrations
+    let user_integrations = user_integration::find_by_user_id(db, relationship.coach_id)
+        .await?
+        .ok_or("Coach has no integrations configured")?;
+
+    // Get the AssemblyAI API key
+    let api_key = user_integrations
+        .assembly_ai_api_key
+        .as_ref()
+        .ok_or("AssemblyAI API key not configured for coach")?;
+
+    // Create a transcription record
+    let mut transcription = TranscriptionApi::create(db, recording.id).await?;
+    transcription.status = TranscriptionStatus::Processing;
+
+    // Build the webhook URL for AssemblyAI callbacks
+    let webhook_url = config
+        .webhook_base_url()
+        .map(|base| format!("{}/webhooks/assemblyai", base));
+    let webhook_secret = config.webhook_secret().map(|s| s.to_string());
+
+    // Create AssemblyAI client and send transcription request
+    let client = AssemblyAiClient::new(api_key, config.assembly_ai_base_url())?;
+
+    let request =
+        create_standard_transcript_request(video_url.to_string(), webhook_url, webhook_secret);
+
+    let response = client.create_transcript(request).await?;
+
+    // Update transcription with AssemblyAI transcript ID
+    transcription.assemblyai_transcript_id = Some(response.id.clone());
+    TranscriptionApi::update(db, transcription.id, transcription).await?;
+
+    info!(
+        "Created AssemblyAI transcript {} for recording {}",
+        response.id, recording.id
+    );
+
+    Ok(())
 }
