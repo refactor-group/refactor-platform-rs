@@ -98,11 +98,31 @@ pub struct RealtimeEndpoint {
     pub events: Vec<String>,
 }
 
+/// Meeting URL info returned by Recall.ai
+/// Note: This is an object, not a plain string URL
+#[derive(Debug, Deserialize)]
+pub struct MeetingUrlInfo {
+    /// The meeting ID extracted from the URL
+    pub meeting_id: String,
+    /// The meeting platform (e.g., "google_meet", "zoom", "teams")
+    pub platform: String,
+}
+
 /// Response from creating a bot
+/// Note: The Recall.ai API returns many fields - we only capture what we need
 #[derive(Debug, Deserialize)]
 pub struct CreateBotResponse {
+    /// Bot ID (could be "id" or "bot_id" depending on endpoint)
+    #[serde(alias = "bot_id")]
     pub id: String,
-    pub meeting_url: String,
+    /// Meeting URL info (object with meeting_id and platform)
+    #[serde(default)]
+    pub meeting_url: Option<MeetingUrlInfo>,
+    /// Bot name
+    #[serde(default)]
+    pub bot_name: Option<String>,
+    /// Status changes (empty array on creation)
+    #[serde(default)]
     pub status_changes: Vec<StatusChange>,
 }
 
@@ -110,7 +130,8 @@ pub struct CreateBotResponse {
 #[derive(Debug, Deserialize)]
 pub struct StatusChange {
     pub code: String,
-    pub created_at: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 /// Bot status response
@@ -118,10 +139,89 @@ pub struct StatusChange {
 pub struct BotStatusResponse {
     pub id: String,
     pub status_changes: Vec<StatusChange>,
+    /// Recordings array containing media artifacts
     #[serde(default)]
-    pub video_url: Option<String>,
+    pub recordings: Vec<Recording>,
     #[serde(default)]
     pub meeting_metadata: Option<MeetingMetadata>,
+}
+
+impl BotStatusResponse {
+    /// Extract the video download URL from the nested recordings structure
+    pub fn video_url(&self) -> Option<String> {
+        self.recordings
+            .first()
+            .and_then(|r| r.media_shortcuts.as_ref())
+            .and_then(|ms| ms.video_mixed.as_ref())
+            .and_then(|vm| vm.data.as_ref())
+            .map(|d| d.download_url.clone())
+    }
+
+    /// Extract duration from the first recording
+    pub fn duration_seconds(&self) -> Option<i32> {
+        self.recordings
+            .first()
+            .and_then(|r| match (&r.started_at, &r.completed_at) {
+                (Some(start), Some(end)) => {
+                    if let (Ok(s), Ok(e)) = (
+                        chrono::DateTime::parse_from_rfc3339(start),
+                        chrono::DateTime::parse_from_rfc3339(end),
+                    ) {
+                        Some((e - s).num_seconds() as i32)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+    }
+}
+
+/// Recording object from Recall.ai
+#[derive(Debug, Deserialize)]
+pub struct Recording {
+    pub id: String,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub status: Option<RecordingStatusInfo>,
+    #[serde(default)]
+    pub media_shortcuts: Option<MediaShortcuts>,
+}
+
+/// Recording status info
+#[derive(Debug, Deserialize)]
+pub struct RecordingStatusInfo {
+    pub code: String,
+    #[serde(default)]
+    pub sub_code: Option<String>,
+}
+
+/// Media shortcuts containing video/audio artifacts
+#[derive(Debug, Deserialize)]
+pub struct MediaShortcuts {
+    #[serde(default)]
+    pub video_mixed: Option<MediaArtifact>,
+}
+
+/// Individual media artifact
+#[derive(Debug, Deserialize)]
+pub struct MediaArtifact {
+    pub id: String,
+    #[serde(default)]
+    pub status: Option<RecordingStatusInfo>,
+    #[serde(default)]
+    pub data: Option<MediaData>,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Media data containing the download URL
+#[derive(Debug, Deserialize)]
+pub struct MediaData {
+    pub download_url: String,
 }
 
 /// Meeting metadata from the bot
@@ -210,23 +310,40 @@ impl RecallAiClient {
             })?;
 
         if response.status().is_success() {
-            let bot: CreateBotResponse = response.json().await.map_err(|e| {
-                warn!("Failed to parse Recall.ai response: {:?}", e);
+            // Get raw text first for debugging
+            let response_text = response.text().await.map_err(|e| {
+                warn!("Failed to read Recall.ai response body: {:?}", e);
                 Error {
                     source: Some(Box::new(e)),
-                    error_kind: DomainErrorKind::External(ExternalErrorKind::Other(
-                        "Invalid response from Recall.ai".to_string(),
-                    )),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+                }
+            })?;
+
+            debug!("Recall.ai raw response: {}", response_text);
+
+            let bot: CreateBotResponse = serde_json::from_str(&response_text).map_err(|e| {
+                let error_msg = format!("Invalid response from Recall.ai: {}", e);
+                warn!(
+                    "Failed to parse Recall.ai response: {:?}. Raw response: {}",
+                    e, response_text
+                );
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_msg)),
                 }
             })?;
             info!("Created Recall.ai bot with ID: {}", bot.id);
             Ok(bot)
         } else {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Recall.ai API error: {}", error_text);
+            warn!("Recall.ai API error ({}): {}", status, error_text);
             Err(Error {
                 source: None,
-                error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Other(format!(
+                    "Recall.ai API error ({}): {}",
+                    status, error_text
+                ))),
             })
         }
     }
@@ -313,6 +430,7 @@ pub fn create_standard_bot_request(
             endpoint_type: "webhook".to_string(),
             url,
             events: vec![
+                // Real-time transcript events (during recording)
                 "transcript.data".to_string(),
                 "transcript.partial_data".to_string(),
             ],
