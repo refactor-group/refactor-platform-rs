@@ -914,9 +914,11 @@ dependencies = [
 name = "domain"
 version = "1.0.0-beta2"
 dependencies = [
+ "async-trait",
  "chrono",
  "email_address",
  "entity_api",
+ "events",
  "jsonwebtoken",
  "log",
  "mockito",
@@ -1070,6 +1072,16 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener 5.4.0",
  "pin-project-lite",
+]
+
+[[package]]
+name = "events"
+version = "1.0.0-beta2"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -2782,6 +2794,7 @@ version = "1.0.0-beta2"
 dependencies = [
  "clap",
  "entity_api",
+ "events",
  "log",
  "openssl-sys",
  "service",
@@ -3492,7 +3505,6 @@ dependencies = [
  "serde_json",
  "simplelog",
  "sqlx",
- "sse",
  "tokio",
  "tower",
  "utoipa",
@@ -3861,9 +3873,12 @@ name = "sse"
 version = "1.0.0-beta2"
 dependencies = [
  "async-stream",
+ "async-trait",
  "axum",
  "dashmap",
+ "events",
  "log",
+ "sea-orm",
  "serde",
  "serde_json",
  "tokio",
