@@ -9,10 +9,12 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 
+use domain::ai_suggested_item as AiSuggestedItemApi;
+use domain::ai_suggestion::AiSuggestionType;
 use domain::coaching_relationship as CoachingRelationshipApi;
 use domain::coaching_session as CoachingSessionApi;
 use domain::gateway::assembly_ai::{
-    create_standard_transcript_request, AssemblyAiClient, TranscriptStatus,
+    create_standard_transcript_request, extract_action_items, AssemblyAiClient, TranscriptStatus,
 };
 use domain::meeting_recording as MeetingRecordingApi;
 use domain::meeting_recording_status::MeetingRecordingStatus;
@@ -390,13 +392,13 @@ pub async fn assemblyai_webhook(
             );
 
             // Store transcript segments (utterances) if available
-            if let Some(utterances) = full_transcript.utterances {
+            if let Some(ref utterances) = full_transcript.utterances {
                 let utterance_count = utterances.len();
                 let segments: Vec<SegmentInput> = utterances
-                    .into_iter()
+                    .iter()
                     .map(|u| SegmentInput {
                         speaker_label: u.speaker.clone(),
-                        text: u.text,
+                        text: u.text.clone(),
                         start_time_ms: u.start,
                         end_time_ms: u.end,
                         confidence: Some(u.confidence),
@@ -412,6 +414,37 @@ pub async fn assemblyai_webhook(
                         "Created {} transcript segments for transcription {}",
                         utterance_count, updated_transcription.id
                     );
+                }
+            }
+
+            // Extract action items from transcript and create AI suggestions
+            let action_items = extract_action_items(&full_transcript);
+            if !action_items.is_empty() {
+                info!(
+                    "Extracted {} action items from transcript {}",
+                    action_items.len(),
+                    updated_transcription.id
+                );
+
+                for action_text in action_items {
+                    match AiSuggestedItemApi::create(
+                        db,
+                        updated_transcription.id,
+                        AiSuggestionType::Action,
+                        action_text.clone(),
+                        Some(action_text), // source_text is the same as content for now
+                        None,              // confidence not available from simple extraction
+                    )
+                    .await
+                    {
+                        Ok(suggestion) => {
+                            debug!("Created AI suggestion: {}", suggestion.id);
+                        }
+                        Err(e) => {
+                            warn!("Failed to create AI suggestion: {:?}", e);
+                            // Don't fail the webhook - continue processing
+                        }
+                    }
                 }
             }
 
