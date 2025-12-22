@@ -15,8 +15,6 @@ features = [
 ]
 
 [dependencies]
-sse = { path = "../sse" }
-
 clap = { version = "4.5.20", features = ["cargo", "derive", "env"] }
 dotenvy = "0.15"
 log = "0.4.22"
