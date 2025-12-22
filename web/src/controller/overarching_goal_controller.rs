@@ -41,9 +41,13 @@ pub async fn create(
 ) -> Result<impl IntoResponse, Error> {
     debug!("POST Create a New Overarching Goal from: {overarching_goals_model:?}");
 
-    let overarching_goals =
-        OverarchingGoalApi::create(app_state.db_conn_ref(), overarching_goals_model, user.id)
-            .await?;
+    let overarching_goals = OverarchingGoalApi::create(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        overarching_goals_model,
+        user.id,
+    )
+    .await?;
 
     debug!("New Overarching Goal: {overarching_goals:?}");
 
@@ -114,8 +118,13 @@ pub async fn update(
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT Update Overarching Goal with id: {id}");
 
-    let overarching_goals =
-        OverarchingGoalApi::update(app_state.db_conn_ref(), id, overarching_goals_model).await?;
+    let overarching_goals = OverarchingGoalApi::update(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+        overarching_goals_model,
+    )
+    .await?;
 
     debug!("Updated Overarching Goal: {overarching_goals:?}");
 
@@ -152,9 +161,13 @@ pub async fn update_status(
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT Update Overarching Goal Status with id: {id}");
 
-    let overarching_goal =
-        OverarchingGoalApi::update_status(app_state.db_conn_ref(), id, status.as_str().into())
-            .await?;
+    let overarching_goal = OverarchingGoalApi::update_status(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+        status.as_str().into(),
+    )
+    .await?;
 
     debug!("Updated Overarching Goal: {overarching_goal:?}");
 
