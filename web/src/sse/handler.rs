@@ -4,7 +4,6 @@ use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
 use log::*;
-use service::AppState;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 
@@ -12,7 +11,7 @@ use tokio::sync::mpsc;
 /// One connection per authenticated user, stays open across page navigation.
 pub(crate) async fn sse_handler(
     AuthenticatedUser(user): AuthenticatedUser,
-    State(app_state): State<AppState>,
+    State(app_state): State<crate::AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     debug!("Establishing SSE connection for user {}", user.id);
 

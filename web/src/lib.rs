@@ -12,9 +12,11 @@ use tower_sessions_sqlx_store::PostgresStore;
 
 pub use self::error::{Error, Result};
 use log::*;
-use service::{config::ApiVersion, AppState};
+use sea_orm::DatabaseConnection;
+use service::config::{ApiVersion, Config};
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use time::Duration;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -27,6 +29,35 @@ pub(crate) mod params;
 pub(crate) mod protect;
 mod router;
 pub mod sse;
+
+/// Web-layer application state that includes both infrastructure and domain concerns.
+/// This wraps the service-level state and adds the event publisher for domain events.
+#[derive(Clone)]
+pub struct AppState {
+    pub database_connection: Arc<DatabaseConnection>,
+    pub config: Config,
+    pub sse_manager: Arc<::sse::Manager>,
+    pub event_publisher: Arc<domain::events::EventPublisher>,
+}
+
+impl AppState {
+    pub fn new(
+        service_state: service::AppState,
+        sse_manager: Arc<::sse::Manager>,
+        event_publisher: domain::events::EventPublisher,
+    ) -> Self {
+        Self {
+            database_connection: service_state.database_connection,
+            config: service_state.config,
+            sse_manager,
+            event_publisher: Arc::new(event_publisher),
+        }
+    }
+
+    pub fn db_conn_ref(&self) -> &DatabaseConnection {
+        self.database_connection.as_ref()
+    }
+}
 
 pub async fn init_server(app_state: AppState) -> Result<()> {
     // Session layer
