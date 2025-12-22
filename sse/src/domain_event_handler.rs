@@ -1,4 +1,4 @@
-use crate::message::{Event as SseEvent, Message as SseMessage, MessageScope};
+use crate::message::{Event as SseEvent, EventType, Message as SseMessage, MessageScope};
 use crate::Manager;
 use async_trait::async_trait;
 use events::{DomainEvent, EventHandler};
@@ -24,6 +24,8 @@ impl SseDomainEventHandler {
 
     /// Send an SSE message to all specified users.
     fn send_to_users(&self, sse_event: SseEvent, user_ids: &[events::Id]) {
+        let event_type = sse_event.event_type();
+
         for user_id in user_ids {
             self.sse_manager.send_message(SseMessage {
                 event: sse_event.clone(),
@@ -33,11 +35,7 @@ impl SseDomainEventHandler {
             });
         }
 
-        debug!(
-            "Sent SSE event to {} user(s): {:?}",
-            user_ids.len(),
-            user_ids
-        );
+        info!("Sent {} event to {} user(s)", event_type, user_ids.len());
     }
 }
 
@@ -50,14 +48,9 @@ impl EventHandler for SseDomainEventHandler {
                 overarching_goal,
                 notify_user_ids,
             } => {
-                debug!(
-                    "Handling OverarchingGoalCreated event for relationship {}",
-                    coaching_relationship_id
-                );
-
-                let sse_event = SseEvent::GoalCreated {
+                let sse_event = SseEvent::OverarchingGoalCreated {
                     coaching_relationship_id: coaching_relationship_id.to_string(),
-                    goal: overarching_goal.clone(),
+                    overarching_goal: overarching_goal.clone(),
                 };
 
                 self.send_to_users(sse_event, notify_user_ids);
@@ -68,14 +61,9 @@ impl EventHandler for SseDomainEventHandler {
                 overarching_goal,
                 notify_user_ids,
             } => {
-                debug!(
-                    "Handling OverarchingGoalUpdated event for relationship {}",
-                    coaching_relationship_id
-                );
-
-                let sse_event = SseEvent::GoalUpdated {
+                let sse_event = SseEvent::OverarchingGoalUpdated {
                     coaching_relationship_id: coaching_relationship_id.to_string(),
-                    goal: overarching_goal.clone(),
+                    overarching_goal: overarching_goal.clone(),
                 };
 
                 self.send_to_users(sse_event, notify_user_ids);
@@ -86,14 +74,9 @@ impl EventHandler for SseDomainEventHandler {
                 overarching_goal_id,
                 notify_user_ids,
             } => {
-                debug!(
-                    "Handling OverarchingGoalDeleted event for goal {}",
-                    overarching_goal_id
-                );
-
-                let sse_event = SseEvent::GoalDeleted {
+                let sse_event = SseEvent::OverarchingGoalDeleted {
                     coaching_relationship_id: coaching_relationship_id.to_string(),
-                    goal_id: overarching_goal_id.to_string(),
+                    overarching_goal_id: overarching_goal_id.to_string(),
                 };
 
                 self.send_to_users(sse_event, notify_user_ids);

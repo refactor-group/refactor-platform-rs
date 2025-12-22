@@ -44,20 +44,20 @@ pub enum Event {
     },
 
     // Overarching Goals (relationship-scoped)
-    #[serde(rename = "goal_created")]
-    GoalCreated {
+    #[serde(rename = "overarching_goal_created")]
+    OverarchingGoalCreated {
         coaching_relationship_id: String,
-        goal: Value,
+        overarching_goal: Value,
     },
-    #[serde(rename = "goal_updated")]
-    GoalUpdated {
+    #[serde(rename = "overarching_goal_updated")]
+    OverarchingGoalUpdated {
         coaching_relationship_id: String,
-        goal: Value,
+        overarching_goal: Value,
     },
-    #[serde(rename = "goal_deleted")]
-    GoalDeleted {
+    #[serde(rename = "overarching_goal_deleted")]
+    OverarchingGoalDeleted {
         coaching_relationship_id: String,
-        goal_id: String,
+        overarching_goal_id: String,
     },
 
     // System events
@@ -74,9 +74,9 @@ impl EventType for Event {
             Event::AgreementCreated { .. } => "agreement_created",
             Event::AgreementUpdated { .. } => "agreement_updated",
             Event::AgreementDeleted { .. } => "agreement_deleted",
-            Event::GoalCreated { .. } => "goal_created",
-            Event::GoalUpdated { .. } => "goal_updated",
-            Event::GoalDeleted { .. } => "goal_deleted",
+            Event::OverarchingGoalCreated { .. } => "overarching_goal_created",
+            Event::OverarchingGoalUpdated { .. } => "overarching_goal_updated",
+            Event::OverarchingGoalDeleted { .. } => "overarching_goal_deleted",
             Event::ForceLogout { .. } => "force_logout",
         }
     }
