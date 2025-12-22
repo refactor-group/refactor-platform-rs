@@ -58,7 +58,9 @@
 //! - `message`: Type-safe event and scope definitions
 
 pub mod connection;
+pub mod domain_event_handler;
 pub mod manager;
 pub mod message;
 
+pub use domain_event_handler::SseDomainEventHandler;
 pub use manager::Manager;
