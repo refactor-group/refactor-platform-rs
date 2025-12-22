@@ -22,17 +22,13 @@ impl Manager {
         sender: tokio::sync::mpsc::UnboundedSender<Result<Event, std::convert::Infallible>>,
     ) -> ConnectionId {
         let connection_id = self.registry.register(user_id.clone(), sender);
-        debug!(
-            "Registered SSE connection {} for user {}",
-            connection_id.as_str(),
-            user_id
-        );
+        info!("Registered new SSE connection");
         connection_id
     }
 
     /// Unregister a connection by ID
     pub fn unregister_connection(&self, connection_id: &ConnectionId) {
-        debug!("Unregistering SSE connection {}", connection_id.as_str());
+        info!("Unregistering SSE connection");
         self.registry.unregister(connection_id);
     }
 

@@ -13,7 +13,7 @@ pub(crate) async fn sse_handler(
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<crate::AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    debug!("Establishing SSE connection for user {}", user.id);
+    info!("Establishing new SSE connection");
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -23,7 +23,6 @@ pub(crate) async fn sse_handler(
         .register_connection(user.id.to_string(), tx);
 
     let manager = app_state.sse_manager.clone();
-    let user_id = user.id;
 
     // Create the stream - events arrive from the channel
     // The channel sends Result<Event, Infallible>, so we just pass them through
@@ -33,7 +32,7 @@ pub(crate) async fn sse_handler(
         }
 
         // Connection closed, clean up
-        debug!("SSE connection closed for user {}, cleaning up", user_id);
+        info!("SSE connection closed, cleaning up");
         manager.unregister_connection(&connection_id);
     };
 
