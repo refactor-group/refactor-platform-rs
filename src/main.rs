@@ -23,8 +23,9 @@
 //! and/or teams by providing a single application that facilitates and enhances
 //! your coaching practice.
 
+use events::EventPublisher;
 use log::*;
-use service::{config::Config, logging::Logger, AppState};
+use service::{config::Config, logging::Logger};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -45,11 +46,20 @@ async fn main() {
         panic!("Failed to establish a useable DBConnection and ping the DB successfully.");
     }
 
+    // Create service-level state (infrastructure only - no SSE)
+    let service_state = service::AppState::new(config, &db_conn);
+
+    // Create SSE manager (web/application layer concern)
     let sse_manager = Arc::new(sse::Manager::new());
 
-    let app_state = AppState::new(config, &db_conn, sse_manager);
+    // Create event publisher and register SSE event handler
+    let sse_event_handler = Arc::new(sse::SseDomainEventHandler::new(Arc::clone(&sse_manager)));
+    let event_publisher = EventPublisher::new().with_handler(sse_event_handler);
 
-    web::init_server(app_state).await.unwrap();
+    // Create web-level state (adds domain and SSE concerns)
+    let web_state = web::AppState::new(service_state, sse_manager, event_publisher);
+
+    web::init_server(web_state).await.unwrap();
 }
 
 fn get_config() -> Config {
