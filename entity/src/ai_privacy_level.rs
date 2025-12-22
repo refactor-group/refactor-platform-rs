@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Default, Serialize, DeriveActiveEnum,
 )]
+#[serde(rename_all = "snake_case")]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "ai_privacy_level")]
 pub enum AiPrivacyLevel {
     /// No AI recording or transcribing - for clients uncomfortable with AI
