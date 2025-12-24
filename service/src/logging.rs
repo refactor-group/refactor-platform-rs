@@ -19,9 +19,7 @@ impl Logger {
         let log_config = ConfigBuilder::new()
             .add_filter_ignore_str("sqlx")
             .add_filter_ignore_str("sea_orm")
-            .add_filter_ignore_str("tower_sessions")
-            .add_filter_ignore_str("tower_sessions_core")
-            .add_filter_ignore_str("tower_sessions_sqlx_store")
+            .add_filter_ignore_str("tower")
             .build();
 
         simplelog::TermLogger::init(
