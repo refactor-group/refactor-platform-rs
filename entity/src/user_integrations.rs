@@ -31,6 +31,12 @@ pub struct Model {
     pub assembly_ai_api_key: Option<String>,
     pub assembly_ai_verified_at: Option<DateTimeWithTimeZone>,
 
+    /// Auto-approve AI suggestions without manual review
+    /// When true, LeMUR-extracted actions/agreements are created directly
+    /// When false (default), they become AI suggestions for coach review
+    #[serde(default)]
+    pub auto_approve_ai_suggestions: bool,
+
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeWithTimeZone,

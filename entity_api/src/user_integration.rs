@@ -46,6 +46,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
                 recall_ai_verified_at: Set(model.recall_ai_verified_at),
                 assembly_ai_api_key: Set(model.assembly_ai_api_key),
                 assembly_ai_verified_at: Set(model.assembly_ai_verified_at),
+                auto_approve_ai_suggestions: Set(model.auto_approve_ai_suggestions),
                 created_at: Unchanged(existing.created_at),
                 updated_at: Set(chrono::Utc::now().into()),
             };

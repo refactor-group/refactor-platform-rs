@@ -17,6 +17,9 @@ pub struct UpdateIntegrationParams {
     /// AssemblyAI API key (encrypted at rest)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assembly_ai_api_key: Option<String>,
+    /// Whether to auto-approve AI suggestions without review
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_approve_ai_suggestions: Option<bool>,
 }
 
 /// Response for user integration status (without exposing keys)
@@ -36,6 +39,8 @@ pub struct IntegrationStatusResponse {
     pub assembly_ai_configured: bool,
     /// When AssemblyAI was last verified
     pub assembly_ai_verified_at: Option<String>,
+    /// Whether to auto-approve AI suggestions without review
+    pub auto_approve_ai_suggestions: bool,
 }
 
 impl From<user_integrations::Model> for IntegrationStatusResponse {
@@ -52,6 +57,7 @@ impl From<user_integrations::Model> for IntegrationStatusResponse {
             assembly_ai_verified_at: model
                 .assembly_ai_verified_at
                 .map(|dt: DateTime<FixedOffset>| dt.to_rfc3339()),
+            auto_approve_ai_suggestions: model.auto_approve_ai_suggestions,
         }
     }
 }

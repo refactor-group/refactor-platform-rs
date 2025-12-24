@@ -131,7 +131,13 @@ pub struct CreateBotResponse {
 pub struct StatusChange {
     pub code: String,
     #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
     pub created_at: Option<String>,
+    #[serde(default)]
+    pub sub_code: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 /// Bot status response
@@ -154,7 +160,7 @@ impl BotStatusResponse {
             .and_then(|r| r.media_shortcuts.as_ref())
             .and_then(|ms| ms.video_mixed.as_ref())
             .and_then(|vm| vm.data.as_ref())
-            .map(|d| d.download_url.clone())
+            .and_then(|d| d.download_url.clone())
     }
 
     /// Extract duration from the first recording
@@ -194,9 +200,12 @@ pub struct Recording {
 /// Recording status info
 #[derive(Debug, Deserialize)]
 pub struct RecordingStatusInfo {
-    pub code: String,
+    #[serde(default)]
+    pub code: Option<String>,
     #[serde(default)]
     pub sub_code: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 /// Media shortcuts containing video/audio artifacts
@@ -209,9 +218,18 @@ pub struct MediaShortcuts {
 /// Individual media artifact
 #[derive(Debug, Deserialize)]
 pub struct MediaArtifact {
-    pub id: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub recording_id: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
     #[serde(default)]
     pub status: Option<RecordingStatusInfo>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub data: Option<MediaData>,
     #[serde(default)]
@@ -221,7 +239,8 @@ pub struct MediaArtifact {
 /// Media data containing the download URL
 #[derive(Debug, Deserialize)]
 pub struct MediaData {
-    pub download_url: String,
+    #[serde(default)]
+    pub download_url: Option<String>,
 }
 
 /// Meeting metadata from the bot
@@ -337,11 +356,11 @@ impl RecallAiClient {
         } else {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Recall.ai API error ({}): {}", status, error_text);
+            error!("Recall.ai API ({}): {}", status, error_text);
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Other(format!(
-                    "Recall.ai API error ({}): {}",
+                    "Recall.ai API ({}): {}",
                     status, error_text
                 ))),
             })
@@ -373,7 +392,7 @@ impl RecallAiClient {
             Ok(status)
         } else {
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Recall.ai API error: {}", error_text);
+            error!("Recall.ai API: {}", error_text);
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
@@ -400,7 +419,7 @@ impl RecallAiClient {
             Ok(())
         } else {
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Failed to stop Recall.ai bot: {}", error_text);
+            error!("Recall.ai failed to stop bot: {}", error_text);
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
