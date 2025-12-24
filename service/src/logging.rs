@@ -21,6 +21,7 @@ impl Logger {
             .add_filter_ignore_str("sea_orm")
             .add_filter_ignore_str("tower")
             .add_filter_ignore_str("tracing")
+            .add_filter_ignore_str("hyper")
             .build();
 
         simplelog::TermLogger::init(
