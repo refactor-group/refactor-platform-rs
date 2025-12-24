@@ -52,6 +52,28 @@ pub struct CreateBotRequest {
     pub bot_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording_config: Option<RecordingConfig>,
+    /// Webhook configuration for bot status events
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<WebhookConfig>,
+}
+
+/// Webhook configuration for receiving bot status callbacks
+#[derive(Debug, Serialize)]
+pub struct WebhookConfig {
+    pub url: String,
+    /// Map of event types to enable (value is empty object for default config)
+    pub events: WebhookEvents,
+}
+
+/// Events to subscribe to via webhook
+#[derive(Debug, Serialize)]
+pub struct WebhookEvents {
+    #[serde(rename = "bot.status_change", skip_serializing_if = "Option::is_none")]
+    pub bot_status_change: Option<serde_json::Value>,
+    #[serde(rename = "bot.done", skip_serializing_if = "Option::is_none")]
+    pub bot_done: Option<serde_json::Value>,
+    #[serde(rename = "recording.done", skip_serializing_if = "Option::is_none")]
+    pub recording_done: Option<serde_json::Value>,
 }
 
 /// Recording configuration for the bot
@@ -434,31 +456,49 @@ pub fn create_standard_bot_request(
     bot_name: String,
     webhook_url: Option<String>,
 ) -> CreateBotRequest {
-    let recording_config = webhook_url.map(|url| RecordingConfig {
-        transcript: Some(TranscriptConfig {
-            provider: TranscriptProvider {
-                recallai_streaming: StreamingMode {
-                    mode: "prioritize_accuracy".to_string(),
+    let (recording_config, webhook_config) = match webhook_url {
+        Some(url) => {
+            let recording = RecordingConfig {
+                transcript: Some(TranscriptConfig {
+                    provider: TranscriptProvider {
+                        recallai_streaming: StreamingMode {
+                            mode: "prioritize_accuracy".to_string(),
+                        },
+                    },
+                    diarization: Some(DiarizationConfig {
+                        use_separate_streams_when_available: true,
+                    }),
+                }),
+                realtime_endpoints: Some(vec![RealtimeEndpoint {
+                    endpoint_type: "webhook".to_string(),
+                    url: url.clone(),
+                    events: vec![
+                        // Real-time transcript events (during recording)
+                        "transcript.data".to_string(),
+                        "transcript.partial_data".to_string(),
+                    ],
+                }]),
+            };
+
+            // Configure webhook for bot status events
+            let webhook = WebhookConfig {
+                url,
+                events: WebhookEvents {
+                    bot_status_change: Some(serde_json::json!({})),
+                    bot_done: Some(serde_json::json!({})),
+                    recording_done: Some(serde_json::json!({})),
                 },
-            },
-            diarization: Some(DiarizationConfig {
-                use_separate_streams_when_available: true,
-            }),
-        }),
-        realtime_endpoints: Some(vec![RealtimeEndpoint {
-            endpoint_type: "webhook".to_string(),
-            url,
-            events: vec![
-                // Real-time transcript events (during recording)
-                "transcript.data".to_string(),
-                "transcript.partial_data".to_string(),
-            ],
-        }]),
-    });
+            };
+
+            (Some(recording), Some(webhook))
+        }
+        None => (None, None),
+    };
 
     CreateBotRequest {
         meeting_url,
         bot_name,
         recording_config,
+        webhook: webhook_config,
     }
 }
