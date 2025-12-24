@@ -1,9 +1,11 @@
 //! Controller for OAuth authentication flows.
 //!
 //! Handles Google OAuth for Google Meet integration.
+//!
+//! Note: OAuth endpoints don't use CompareApiVersion because they work via
+//! browser redirects which cannot set custom headers.
 
 use crate::extractors::authenticated_user::AuthenticatedUser;
-use crate::extractors::compare_api_version::CompareApiVersion;
 use crate::{AppState, Error};
 
 use axum::extract::{Query, State};
@@ -14,7 +16,6 @@ use domain::user_integrations::Model as UserIntegrationModel;
 use domain::{user_integration, Id};
 use log::*;
 use serde::Deserialize;
-use service::config::ApiVersion;
 
 /// Query parameters for OAuth callback
 #[derive(Debug, Deserialize)]
@@ -64,11 +65,11 @@ fn bad_request_error(_message: &str) -> Error {
 /// GET /oauth/google/authorize
 ///
 /// Initiates Google OAuth flow by redirecting to Google's authorization endpoint.
+/// Note: This endpoint doesn't require x-version header as it's called via browser redirect.
 #[utoipa::path(
     get,
     path = "/oauth/google/authorize",
     params(
-        ApiVersion,
         ("user_id" = Id, Query, description = "User ID to associate with Google account"),
     ),
     responses(
@@ -81,7 +82,6 @@ fn bad_request_error(_message: &str) -> Error {
     )
 )]
 pub async fn authorize(
-    CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<OAuthStart>,
@@ -123,11 +123,11 @@ pub async fn authorize(
 /// GET /oauth/google/callback
 ///
 /// Handles the OAuth callback from Google after user authorization.
+/// Note: This endpoint doesn't require x-version header as it's called via Google's redirect.
 #[utoipa::path(
     get,
     path = "/oauth/google/callback",
     params(
-        ApiVersion,
         ("code" = String, Query, description = "Authorization code from Google"),
         ("state" = Option<String>, Query, description = "State parameter (user ID)"),
     ),
@@ -138,7 +138,6 @@ pub async fn authorize(
     )
 )]
 pub async fn callback(
-    CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     Query(params): Query<OAuthCallback>,
 ) -> Result<impl IntoResponse, Error> {
