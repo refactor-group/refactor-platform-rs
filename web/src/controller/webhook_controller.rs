@@ -9,10 +9,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 
+use domain::action as ActionApi;
+use domain::agreement as AgreementApi;
+use domain::ai_suggested_item as AiSuggestedItemApi;
+use domain::ai_suggestion::AiSuggestionType;
 use domain::coaching_relationship as CoachingRelationshipApi;
 use domain::coaching_session as CoachingSessionApi;
 use domain::gateway::assembly_ai::{
-    create_standard_transcript_request, AssemblyAiClient, TranscriptStatus,
+    create_standard_transcript_request, extract_action_items, AssemblyAiClient, TranscriptStatus,
 };
 use domain::meeting_recording as MeetingRecordingApi;
 use domain::meeting_recording_status::MeetingRecordingStatus;
@@ -21,6 +25,7 @@ use domain::transcript_segment::{self, SegmentInput};
 use domain::transcription as TranscriptionApi;
 use domain::transcription_status::TranscriptionStatus;
 use domain::transcriptions::Model as TranscriptionModel;
+use domain::user as UserApi;
 use domain::user_integration as UserIntegrationApi;
 use log::*;
 use serde::{Deserialize, Serialize};
@@ -390,13 +395,13 @@ pub async fn assemblyai_webhook(
             );
 
             // Store transcript segments (utterances) if available
-            if let Some(utterances) = full_transcript.utterances {
+            if let Some(ref utterances) = full_transcript.utterances {
                 let utterance_count = utterances.len();
                 let segments: Vec<SegmentInput> = utterances
-                    .into_iter()
+                    .iter()
                     .map(|u| SegmentInput {
                         speaker_label: u.speaker.clone(),
-                        text: u.text,
+                        text: u.text.clone(),
                         start_time_ms: u.start,
                         end_time_ms: u.end,
                         confidence: Some(u.confidence),
@@ -412,6 +417,55 @@ pub async fn assemblyai_webhook(
                         "Created {} transcript segments for transcription {}",
                         utterance_count, updated_transcription.id
                     );
+                }
+            }
+
+            // Process transcript with LeMUR for intelligent extraction
+            // Get coaching context (coach/coachee info) for LeMUR prompts
+            if let Err(e) = process_transcription_with_lemur(
+                db,
+                config,
+                &updated_transcription,
+                &payload.transcript_id,
+            )
+            .await
+            {
+                warn!(
+                    "LeMUR processing failed, falling back to keyword extraction: {:?}",
+                    e
+                );
+
+                // Fallback to simple keyword-based extraction
+                let action_items = extract_action_items(&full_transcript);
+                if !action_items.is_empty() {
+                    info!(
+                        "Extracted {} action items from transcript {} (fallback)",
+                        action_items.len(),
+                        updated_transcription.id
+                    );
+
+                    for action_text in action_items {
+                        match AiSuggestedItemApi::create(
+                            db,
+                            updated_transcription.id,
+                            AiSuggestionType::Action,
+                            action_text.clone(),
+                            Some(action_text),
+                            None, // confidence
+                            None, // stated_by_user_id
+                            None, // assigned_to_user_id
+                            None, // source_segment_id
+                        )
+                        .await
+                        {
+                            Ok(suggestion) => {
+                                debug!("Created AI suggestion (fallback): {}", suggestion.id);
+                            }
+                            Err(e) => {
+                                warn!("Failed to create AI suggestion: {:?}", e);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -559,4 +613,281 @@ async fn fetch_assemblyai_transcript(
     let transcript = client.get_transcript(transcript_id).await?;
 
     Ok(transcript)
+}
+
+/// Process transcription with LeMUR for intelligent action/agreement extraction.
+///
+/// Uses AssemblyAI's LeMUR API to:
+/// 1. Extract actions with assignees (coach or coachee)
+/// 2. Extract agreements (mutual commitments)
+/// 3. Generate coaching-focused summary
+///
+/// Respects the coach's auto_approve_ai_suggestions setting to either:
+/// - Create AI suggestions for review (auto_approve = false)
+/// - Create Actions/Agreements directly (auto_approve = true)
+async fn process_transcription_with_lemur(
+    db: &sea_orm::DatabaseConnection,
+    config: &service::config::Config,
+    transcription: &TranscriptionModel,
+    transcript_id: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("Processing transcription {} with LeMUR", transcription.id);
+
+    // 1. Get coaching context from meeting recording -> session -> relationship
+    let recording = MeetingRecordingApi::find_by_id(db, transcription.meeting_recording_id).await?;
+    let session = CoachingSessionApi::find_by_id(db, recording.coaching_session_id).await?;
+    let relationship =
+        CoachingRelationshipApi::find_by_id(db, session.coaching_relationship_id).await?;
+
+    // 2. Get coach and coachee names for LeMUR prompts
+    let coach = UserApi::find_by_id(db, relationship.coach_id).await?;
+    let coachee = UserApi::find_by_id(db, relationship.coachee_id).await?;
+
+    let coach_name = format!("{} {}", coach.first_name, coach.last_name);
+    let coachee_name = format!("{} {}", coachee.first_name, coachee.last_name);
+
+    // 3. Get coach's integration settings for auto-approve and API key
+    let user_integrations = UserIntegrationApi::find_by_user_id(db, relationship.coach_id)
+        .await?
+        .ok_or("Coach has no integrations configured")?;
+    let auto_approve = user_integrations.auto_approve_ai_suggestions;
+    let api_key = user_integrations
+        .assembly_ai_api_key
+        .as_ref()
+        .ok_or("AssemblyAI API key not configured for coach")?;
+
+    info!(
+        "LeMUR processing for coach {} (auto_approve: {})",
+        relationship.coach_id, auto_approve
+    );
+
+    // 4. Create LeMUR client
+    let client = AssemblyAiClient::new(api_key, config.assembly_ai_base_url())?;
+
+    // 5. Extract actions and agreements using LeMUR
+    let extraction = client
+        .extract_actions_and_agreements(transcript_id, &coach_name, &coachee_name)
+        .await?;
+
+    info!(
+        "LeMUR extracted {} actions and {} agreements",
+        extraction.actions.len(),
+        extraction.agreements.len()
+    );
+
+    // 6. Build speaker mapping (speaker label -> user_id)
+    // AssemblyAI uses "A", "B" etc. We'll map based on who speaks more (typically coachee)
+    // For now, use a simple heuristic - this could be improved with voice enrollment
+    let speaker_to_user = build_speaker_mapping(
+        db,
+        transcription.id,
+        relationship.coach_id,
+        relationship.coachee_id,
+    )
+    .await;
+
+    // 7. Process extracted actions
+    for action in extraction.actions {
+        let stated_by = speaker_to_user.get(&action.stated_by_speaker).copied();
+        let assigned_to = match action.assigned_to_role.to_lowercase().as_str() {
+            "coach" => Some(relationship.coach_id),
+            "coachee" => Some(relationship.coachee_id),
+            _ => None,
+        };
+
+        if auto_approve {
+            // Create Action entity directly using a partial model
+            use domain::actions::Model as ActionModel;
+            use domain::status::Status as ActionStatus;
+
+            let now = chrono::Utc::now();
+            let action_model = ActionModel {
+                id: domain::Id::default(),
+                coaching_session_id: session.id,
+                user_id: relationship.coach_id,
+                body: Some(action.content.clone()),
+                due_by: Some(now.into()),
+                status: ActionStatus::NotStarted,
+                status_changed_at: now.into(),
+                created_at: now.into(),
+                updated_at: now.into(),
+            };
+
+            match ActionApi::create(db, action_model, relationship.coach_id).await {
+                Ok(created_action) => {
+                    info!(
+                        "Auto-created Action {} from LeMUR for session {}",
+                        created_action.id, session.id
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to auto-create action: {:?}", e);
+                }
+            }
+        } else {
+            // Create AI suggestion for review
+            match AiSuggestedItemApi::create(
+                db,
+                transcription.id,
+                AiSuggestionType::Action,
+                action.content.clone(),
+                Some(action.source_text),
+                Some(action.confidence),
+                stated_by,
+                assigned_to,
+                None, // source_segment_id - TODO: map via timestamp
+            )
+            .await
+            {
+                Ok(suggestion) => {
+                    info!(
+                        "Created AI action suggestion {} for review (transcription: {})",
+                        suggestion.id, transcription.id
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to create AI action suggestion: {:?}", e);
+                }
+            }
+        }
+    }
+
+    // 8. Process extracted agreements
+    for agreement in extraction.agreements {
+        let stated_by = speaker_to_user.get(&agreement.stated_by_speaker).copied();
+
+        if auto_approve {
+            // Create Agreement entity directly using a partial model
+            use domain::agreements::Model as AgreementModel;
+
+            let agreement_model = AgreementModel {
+                id: domain::Id::default(),
+                coaching_session_id: session.id,
+                user_id: relationship.coach_id,
+                body: Some(agreement.content.clone()),
+                created_at: chrono::Utc::now().into(),
+                updated_at: chrono::Utc::now().into(),
+            };
+
+            match AgreementApi::create(db, agreement_model, relationship.coach_id).await {
+                Ok(created_agreement) => {
+                    info!(
+                        "Auto-created Agreement {} from LeMUR for session {}",
+                        created_agreement.id, session.id
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to auto-create agreement: {:?}", e);
+                }
+            }
+        } else {
+            // Create AI suggestion for review (agreements have no assignee)
+            match AiSuggestedItemApi::create(
+                db,
+                transcription.id,
+                AiSuggestionType::Agreement,
+                agreement.content.clone(),
+                Some(agreement.source_text),
+                Some(agreement.confidence),
+                stated_by,
+                None, // agreements have no single assignee
+                None, // source_segment_id
+            )
+            .await
+            {
+                Ok(suggestion) => {
+                    info!(
+                        "Created AI agreement suggestion {} for review (transcription: {})",
+                        suggestion.id, transcription.id
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to create AI agreement suggestion: {:?}", e);
+                }
+            }
+        }
+    }
+
+    // 9. Generate and store coaching summary
+    match client
+        .generate_coaching_summary(transcript_id, &coach_name, &coachee_name)
+        .await
+    {
+        Ok(summary) => {
+            // Store as JSON in the transcription summary field
+            if let Ok(summary_json) = serde_json::to_string(&summary) {
+                let mut updated_transcription = transcription.clone();
+                updated_transcription.summary = Some(summary_json);
+                if let Err(e) =
+                    TranscriptionApi::update(db, transcription.id, updated_transcription).await
+                {
+                    warn!("Failed to update transcription with LeMUR summary: {:?}", e);
+                } else {
+                    info!(
+                        "Stored LeMUR coaching summary for transcription {}",
+                        transcription.id
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to generate LeMUR coaching summary: {:?}", e);
+            // Don't fail the whole process - keep the chapter-based summary
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a mapping from speaker labels to user IDs.
+///
+/// Uses a simple heuristic: in a coaching session, the coachee typically speaks more.
+/// This could be improved with voice enrollment or explicit speaker identification.
+async fn build_speaker_mapping(
+    db: &sea_orm::DatabaseConnection,
+    transcription_id: domain::Id,
+    coach_id: domain::Id,
+    coachee_id: domain::Id,
+) -> std::collections::HashMap<String, domain::Id> {
+    let mut mapping = std::collections::HashMap::new();
+
+    // Get transcript segments to analyze speaker distribution
+    match transcript_segment::find_by_transcription_id(db, transcription_id).await {
+        Ok(segments) => {
+            // Count words per speaker
+            let mut speaker_word_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+
+            for segment in &segments {
+                let word_count = segment.text.split_whitespace().count();
+                *speaker_word_counts
+                    .entry(segment.speaker_label.clone())
+                    .or_insert(0) += word_count;
+            }
+
+            // Sort speakers by word count (descending)
+            let mut speakers: Vec<_> = speaker_word_counts.into_iter().collect();
+            speakers.sort_by(|a, b| b.1.cmp(&a.1));
+
+            // Heuristic: speaker with most words is likely the coachee
+            // (coaches typically ask questions and listen more)
+            if speakers.len() >= 2 {
+                mapping.insert(speakers[0].0.clone(), coachee_id);
+                mapping.insert(speakers[1].0.clone(), coach_id);
+            } else if speakers.len() == 1 {
+                // Only one speaker detected - unusual but possible
+                mapping.insert(speakers[0].0.clone(), coachee_id);
+            }
+
+            debug!("Built speaker mapping: {:?}", mapping);
+        }
+        Err(e) => {
+            warn!(
+                "Failed to get transcript segments for speaker mapping: {:?}",
+                e
+            );
+        }
+    }
+
+    mapping
 }

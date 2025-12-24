@@ -19,6 +19,9 @@ pub async fn create(
     content: String,
     source_text: Option<String>,
     confidence: Option<f64>,
+    stated_by_user_id: Option<Id>,
+    assigned_to_user_id: Option<Id>,
+    source_segment_id: Option<Id>,
 ) -> Result<Model, Error> {
     debug!("Creating new AI suggestion for transcription: {transcription_id}");
 
@@ -31,6 +34,9 @@ pub async fn create(
         source_text: Set(source_text),
         confidence: Set(confidence),
         status: Set(AiSuggestionStatus::Pending),
+        stated_by_user_id: Set(stated_by_user_id),
+        assigned_to_user_id: Set(assigned_to_user_id),
+        source_segment_id: Set(source_segment_id),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -60,6 +66,9 @@ pub async fn accept(
                 confidence: Unchanged(existing.confidence),
                 status: Set(AiSuggestionStatus::Accepted),
                 accepted_entity_id: Set(Some(accepted_entity_id)),
+                stated_by_user_id: Unchanged(existing.stated_by_user_id),
+                assigned_to_user_id: Unchanged(existing.assigned_to_user_id),
+                source_segment_id: Unchanged(existing.source_segment_id),
                 created_at: Unchanged(existing.created_at),
                 updated_at: Set(chrono::Utc::now().into()),
             };
@@ -93,6 +102,9 @@ pub async fn dismiss(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
                 confidence: Unchanged(existing.confidence),
                 status: Set(AiSuggestionStatus::Dismissed),
                 accepted_entity_id: Unchanged(existing.accepted_entity_id),
+                stated_by_user_id: Unchanged(existing.stated_by_user_id),
+                assigned_to_user_id: Unchanged(existing.assigned_to_user_id),
+                source_segment_id: Unchanged(existing.source_segment_id),
                 created_at: Unchanged(existing.created_at),
                 updated_at: Set(chrono::Utc::now().into()),
             };

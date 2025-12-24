@@ -97,6 +97,9 @@ pub async fn update(
         // Reset verification status when key changes
         integration.assembly_ai_verified_at = None;
     }
+    if let Some(auto_approve) = params.auto_approve_ai_suggestions {
+        integration.auto_approve_ai_suggestions = auto_approve;
+    }
 
     let updated: UserIntegrationModel =
         user_integration::update(app_state.db_conn_ref(), integration.id, integration).await?;
