@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Type of AI-suggested item extracted from transcription.
 #[derive(Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Serialize, DeriveActiveEnum)]
+#[serde(rename_all = "lowercase")]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "ai_suggestion_type")]
 pub enum AiSuggestionType {
     /// Action item extracted from conversation
@@ -26,6 +27,7 @@ impl std::fmt::Display for AiSuggestionType {
 #[derive(
     Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Default, Serialize, DeriveActiveEnum,
 )]
+#[serde(rename_all = "lowercase")]
 #[sea_orm(
     rs_type = "String",
     db_type = "Enum",

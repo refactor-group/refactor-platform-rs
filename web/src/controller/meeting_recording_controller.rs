@@ -166,10 +166,13 @@ pub async fn start_recording(
         return Err(forbidden_error("Only the coach can start recording"));
     }
 
-    // 4. Check AI privacy level
-    if relationship.ai_privacy_level == AiPrivacyLevel::None {
+    // 4. Check effective AI privacy level (minimum of coach and coachee consent)
+    let effective_level = relationship
+        .coach_ai_privacy_level
+        .min_level(relationship.coachee_ai_privacy_level);
+    if effective_level == AiPrivacyLevel::None {
         return Err(bad_request_error(
-            "AI recording is disabled for this coaching relationship",
+            "AI recording requires consent from both coach and coachee. Please check privacy settings.",
         ));
     }
 

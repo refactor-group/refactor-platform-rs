@@ -110,6 +110,112 @@ pub enum Sentiment {
     Negative,
 }
 
+// =============================================================================
+// LeMUR API Types
+// =============================================================================
+
+/// Request for LeMUR custom task
+#[derive(Debug, Serialize)]
+pub struct LemurTaskRequest {
+    /// Transcript IDs to analyze
+    pub transcript_ids: Vec<String>,
+    /// Custom prompt for the task
+    pub prompt: String,
+    /// Model to use (e.g., "anthropic/claude-sonnet-4-20250514")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_model: Option<String>,
+    /// Maximum output size in tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_size: Option<i32>,
+}
+
+/// Response from LeMUR task
+#[derive(Debug, Deserialize)]
+pub struct LemurTaskResponse {
+    /// Unique request ID
+    pub request_id: String,
+    /// The generated response text (may be JSON)
+    pub response: String,
+    /// Usage statistics (optional)
+    #[serde(default)]
+    pub usage: Option<LemurUsage>,
+}
+
+/// LeMUR usage statistics
+#[derive(Debug, Deserialize, Default)]
+pub struct LemurUsage {
+    /// Input token count
+    pub input_tokens: Option<i32>,
+    /// Output token count
+    pub output_tokens: Option<i32>,
+}
+
+/// Extracted action from LeMUR analysis
+/// Actions have a single assignee responsible for completion
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ExtractedAction {
+    /// Clear description of the action/task
+    pub content: String,
+    /// Original quote from the transcript
+    pub source_text: String,
+    /// Speaker label (e.g., "Speaker A", "Speaker B")
+    pub stated_by_speaker: String,
+    /// Who should complete: "coach" or "coachee"
+    pub assigned_to_role: String,
+    /// Confidence score (0.0 - 1.0)
+    pub confidence: f64,
+    /// Start time in milliseconds (optional)
+    #[serde(default)]
+    pub start_time_ms: Option<i64>,
+    /// End time in milliseconds (optional)
+    #[serde(default)]
+    pub end_time_ms: Option<i64>,
+}
+
+/// Extracted agreement from LeMUR analysis
+/// Agreements are mutual commitments with no single assignee
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ExtractedAgreement {
+    /// Description of what was agreed
+    pub content: String,
+    /// Original quote from the transcript
+    pub source_text: String,
+    /// Speaker who articulated the agreement
+    pub stated_by_speaker: String,
+    /// Confidence score (0.0 - 1.0)
+    pub confidence: f64,
+    /// Start time in milliseconds (optional)
+    #[serde(default)]
+    pub start_time_ms: Option<i64>,
+    /// End time in milliseconds (optional)
+    #[serde(default)]
+    pub end_time_ms: Option<i64>,
+}
+
+/// Combined LeMUR extraction response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LemurExtractionResponse {
+    /// Extracted actions with assignees
+    pub actions: Vec<ExtractedAction>,
+    /// Extracted mutual agreements
+    pub agreements: Vec<ExtractedAgreement>,
+}
+
+/// Coaching-focused summary structure
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CoachingSummary {
+    /// Goals discussed during the session
+    pub goals_discussed: Vec<String>,
+    /// Progress made on previous goals/actions
+    pub progress_made: Vec<String>,
+    /// Challenges or obstacles identified
+    pub challenges_identified: Vec<String>,
+    /// Key insights or realizations
+    pub key_insights: Vec<String>,
+    /// Next steps and action items
+    pub next_steps: Vec<String>,
+}
+
 /// AssemblyAI API client
 pub struct AssemblyAiClient {
     client: reqwest::Client,
@@ -201,7 +307,7 @@ impl AssemblyAiClient {
             Ok(transcript)
         } else {
             let error_text = response.text().await.unwrap_or_default();
-            warn!("AssemblyAI API error: {}", error_text);
+            error!("AssemblyAI API: {}", error_text);
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
@@ -234,7 +340,7 @@ impl AssemblyAiClient {
             Ok(transcript)
         } else {
             let error_text = response.text().await.unwrap_or_default();
-            warn!("AssemblyAI API error: {}", error_text);
+            error!("AssemblyAI API: {}", error_text);
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
@@ -259,12 +365,207 @@ impl AssemblyAiClient {
             Ok(())
         } else {
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Failed to delete AssemblyAI transcript: {}", error_text);
+            error!("AssemblyAI failed to delete transcript: {}", error_text);
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
             })
         }
+    }
+
+    // =========================================================================
+    // LeMUR API Methods
+    // =========================================================================
+
+    /// Execute a custom LeMUR task with the given prompt
+    pub async fn lemur_task(&self, request: LemurTaskRequest) -> Result<LemurTaskResponse, Error> {
+        // LeMUR uses a different API path structure than the transcript API.
+        // The base_url typically contains "/v2" for transcript endpoints, but
+        // LeMUR endpoints use "/lemur/v3/..." without the "/v2" prefix.
+        let lemur_base = self.base_url.trim_end_matches("/v2");
+        let url = format!("{}/lemur/v3/generate/task", lemur_base);
+
+        debug!(
+            "Executing LeMUR task for {} transcript(s)",
+            request.transcript_ids.len()
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                warn!("Failed to execute LeMUR task: {:?}", e);
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+                }
+            })?;
+
+        if response.status().is_success() {
+            let result: LemurTaskResponse = response.json().await.map_err(|e| {
+                warn!("Failed to parse LeMUR response: {:?}", e);
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Other(
+                        "Invalid response from LeMUR".to_string(),
+                    )),
+                }
+            })?;
+            debug!("LeMUR task completed: {}", result.request_id);
+            Ok(result)
+        } else {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("LeMUR API: {}", error_text);
+            Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
+            })
+        }
+    }
+
+    /// Extract actions and agreements from a transcript using LeMUR
+    ///
+    /// Actions have a single assignee (coach or coachee) responsible for completion.
+    /// Agreements are mutual commitments with no single assignee.
+    pub async fn extract_actions_and_agreements(
+        &self,
+        transcript_id: &str,
+        coach_name: &str,
+        coachee_name: &str,
+    ) -> Result<LemurExtractionResponse, Error> {
+        let prompt = format!(
+            r#"Analyze this coaching session transcript and extract ACTIONS and AGREEMENTS separately.
+
+The coach is "{}" and the coachee is "{}".
+
+## ACTIONS
+Actions are tasks with a clear owner - one person is responsible for completing it.
+- Has a concrete next step
+- Someone commits to doing something specific
+- Examples: "I'll send you that article", "Let me schedule a follow-up meeting"
+
+## AGREEMENTS
+Agreements are mutual commitments or shared understandings.
+- Both parties agree to something together
+- No single assignee - it's a shared commitment
+- Examples: "We agreed to focus on leadership skills", "We'll meet bi-weekly going forward"
+
+## Output Format
+Return a JSON object with this exact structure:
+{{
+  "actions": [
+    {{
+      "content": "Clear description of the action",
+      "source_text": "Exact quote from transcript",
+      "stated_by_speaker": "Speaker A",
+      "assigned_to_role": "coach",
+      "confidence": 0.95,
+      "start_time_ms": null,
+      "end_time_ms": null
+    }}
+  ],
+  "agreements": [
+    {{
+      "content": "Description of what was agreed",
+      "source_text": "Exact quote from transcript",
+      "stated_by_speaker": "Speaker B",
+      "confidence": 0.90,
+      "start_time_ms": null,
+      "end_time_ms": null
+    }}
+  ]
+}}
+
+For assigned_to_role, use "coach" or "coachee" based on who should complete the action.
+For stated_by_speaker, use the speaker label from the transcript (e.g., "Speaker A", "Speaker B").
+Return ONLY valid JSON, no markdown or explanation."#,
+            coach_name, coachee_name
+        );
+
+        let request = LemurTaskRequest {
+            transcript_ids: vec![transcript_id.to_string()],
+            prompt,
+            final_model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+            max_output_size: Some(4000),
+        };
+
+        let response = self.lemur_task(request).await?;
+
+        // Parse the JSON response
+        serde_json::from_str(&response.response).map_err(|e| {
+            warn!(
+                "Failed to parse LeMUR extraction response: {:?}, response: {}",
+                e, response.response
+            );
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Other(
+                    "Invalid JSON from LeMUR extraction".to_string(),
+                )),
+            }
+        })
+    }
+
+    /// Generate a coaching-focused summary using LeMUR
+    pub async fn generate_coaching_summary(
+        &self,
+        transcript_id: &str,
+        coach_name: &str,
+        coachee_name: &str,
+    ) -> Result<CoachingSummary, Error> {
+        let prompt = format!(
+            r#"Analyze this coaching session between "{}" (coach) and "{}" (coachee).
+
+Create a structured summary with these sections:
+
+1. **Goals Discussed**: What goals or objectives were talked about?
+2. **Progress Made**: Any progress on previous goals or actions?
+3. **Challenges Identified**: Obstacles, blockers, or difficulties mentioned?
+4. **Key Insights**: Important realizations, aha moments, or learnings?
+5. **Next Steps**: What happens next? Action items and plans?
+
+Return a JSON object with exactly this structure:
+{{
+  "goals_discussed": ["Goal 1", "Goal 2"],
+  "progress_made": ["Progress item 1"],
+  "challenges_identified": ["Challenge 1"],
+  "key_insights": ["Insight 1"],
+  "next_steps": ["Next step 1", "Next step 2"]
+}}
+
+Guidelines:
+- Keep each item to 1-2 concise sentences
+- Use the coachee's perspective where appropriate
+- Include 1-5 items per section (empty array if nothing applies)
+- Return ONLY valid JSON, no markdown or explanation"#,
+            coach_name, coachee_name
+        );
+
+        let request = LemurTaskRequest {
+            transcript_ids: vec![transcript_id.to_string()],
+            prompt,
+            final_model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+            max_output_size: Some(2000),
+        };
+
+        let response = self.lemur_task(request).await?;
+
+        // Parse the JSON response
+        serde_json::from_str(&response.response).map_err(|e| {
+            warn!(
+                "Failed to parse LeMUR summary response: {:?}, response: {}",
+                e, response.response
+            );
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Other(
+                    "Invalid JSON from LeMUR summary".to_string(),
+                )),
+            }
+        })
     }
 }
 
