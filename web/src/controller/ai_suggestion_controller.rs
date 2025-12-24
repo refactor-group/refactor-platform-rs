@@ -154,16 +154,17 @@ pub async fn accept_suggestion(
     // 7. Create the entity based on suggestion type
     let (entity_id, entity_type) = match suggestion.item_type {
         AiSuggestionType::Action => {
+            let now = chrono::Utc::now();
             let action_model = ActionModel {
                 id: Id::default(),
                 coaching_session_id: session.id,
                 user_id: user.id,
                 body: Some(suggestion.content.clone()),
-                due_by: None,
+                due_by: Some(now.into()),
                 status: Status::NotStarted,
-                status_changed_at: chrono::Utc::now().into(),
-                created_at: chrono::Utc::now().into(),
-                updated_at: chrono::Utc::now().into(),
+                status_changed_at: now.into(),
+                created_at: now.into(),
+                updated_at: now.into(),
             };
 
             let created_action: ActionModel = ActionApi::create(db, action_model, user.id).await?;
