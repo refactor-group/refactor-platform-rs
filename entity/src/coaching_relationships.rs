@@ -33,8 +33,12 @@ pub struct Model {
     /// Google Meet URL for this coaching relationship
     pub meeting_url: Option<String>,
 
-    /// AI privacy level for this coaching relationship
-    pub ai_privacy_level: AiPrivacyLevel,
+    /// AI privacy level set by the coach for this relationship
+    pub coach_ai_privacy_level: AiPrivacyLevel,
+
+    /// AI privacy level set by the coachee for this relationship
+    /// Both coach and coachee must consent for AI features to be available
+    pub coachee_ai_privacy_level: AiPrivacyLevel,
 
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema

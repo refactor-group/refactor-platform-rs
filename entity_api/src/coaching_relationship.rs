@@ -90,7 +90,11 @@ pub async fn create(
         coachee_first_name: coachee.first_name,
         coachee_last_name: coachee.last_name,
         meeting_url: inserted.meeting_url,
-        ai_privacy_level: inserted.ai_privacy_level,
+        coach_ai_privacy_level: inserted.coach_ai_privacy_level.clone(),
+        coachee_ai_privacy_level: inserted.coachee_ai_privacy_level.clone(),
+        effective_ai_privacy_level: inserted
+            .coach_ai_privacy_level
+            .min_level(inserted.coachee_ai_privacy_level),
         created_at: inserted.created_at,
         updated_at: inserted.updated_at,
     })
@@ -151,7 +155,8 @@ pub async fn find_by_organization_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::MeetingUrl)
-        .column(coaching_relationships::Column::AiPrivacyLevel)
+        .column(coaching_relationships::Column::CoachAiPrivacyLevel)
+        .column(coaching_relationships::Column::CoacheeAiPrivacyLevel)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -194,7 +199,8 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::MeetingUrl)
-        .column(coaching_relationships::Column::AiPrivacyLevel)
+        .column(coaching_relationships::Column::CoachAiPrivacyLevel)
+        .column(coaching_relationships::Column::CoacheeAiPrivacyLevel)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -231,7 +237,8 @@ pub async fn get_relationship_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::MeetingUrl)
-        .column(coaching_relationships::Column::AiPrivacyLevel)
+        .column(coaching_relationships::Column::CoachAiPrivacyLevel)
+        .column(coaching_relationships::Column::CoacheeAiPrivacyLevel)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -243,12 +250,15 @@ pub async fn get_relationship_with_user_names(
     Ok(query.one(db).await?)
 }
 
-/// Updates an existing coaching relationship
+/// Updates an existing coaching relationship.
+/// Supports updating by either coach (meeting_url + coach_ai_privacy_level)
+/// or by coachee (coachee_ai_privacy_level only).
 pub async fn update(
     db: &DatabaseConnection,
     id: Id,
     meeting_url: Option<String>,
-    ai_privacy_level: Option<entity::ai_privacy_level::AiPrivacyLevel>,
+    coach_ai_privacy_level: Option<entity::ai_privacy_level::AiPrivacyLevel>,
+    coachee_ai_privacy_level: Option<entity::ai_privacy_level::AiPrivacyLevel>,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
     let existing = find_by_id(db, id).await?;
 
@@ -261,8 +271,12 @@ pub async fn update(
         active_model.meeting_url = Set(Some(url));
     }
 
-    if let Some(level) = ai_privacy_level {
-        active_model.ai_privacy_level = Set(level);
+    if let Some(level) = coach_ai_privacy_level {
+        active_model.coach_ai_privacy_level = Set(level);
+    }
+
+    if let Some(level) = coachee_ai_privacy_level {
+        active_model.coachee_ai_privacy_level = Set(level);
     }
 
     let _updated = active_model.update(db).await?;
@@ -329,9 +343,25 @@ pub struct CoachingRelationshipWithUserNames {
     pub coachee_first_name: String,
     pub coachee_last_name: String,
     pub meeting_url: Option<String>,
-    pub ai_privacy_level: entity::ai_privacy_level::AiPrivacyLevel,
+    /// AI privacy level set by the coach
+    pub coach_ai_privacy_level: entity::ai_privacy_level::AiPrivacyLevel,
+    /// AI privacy level set by the coachee
+    pub coachee_ai_privacy_level: entity::ai_privacy_level::AiPrivacyLevel,
+    /// Computed effective level (minimum of coach and coachee consent)
+    /// This is computed on serialization, not stored in the database
+    #[sea_orm(skip)]
+    pub effective_ai_privacy_level: entity::ai_privacy_level::AiPrivacyLevel,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
+}
+
+impl CoachingRelationshipWithUserNames {
+    /// Computes the effective AI privacy level as the minimum of coach and coachee consent
+    pub fn compute_effective_level(&self) -> entity::ai_privacy_level::AiPrivacyLevel {
+        self.coach_ai_privacy_level
+            .clone()
+            .min_level(self.coachee_ai_privacy_level.clone())
+    }
 }
 
 // serialize the CoachingRelationshipUserWithNames struct so that it can be used in the API
@@ -341,7 +371,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 11)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 13)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
@@ -350,7 +380,13 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("coachee_first_name", &self.coachee_first_name)?;
         state.serialize_field("coachee_last_name", &self.coachee_last_name)?;
         state.serialize_field("meeting_url", &self.meeting_url)?;
-        state.serialize_field("ai_privacy_level", &self.ai_privacy_level)?;
+        state.serialize_field("coach_ai_privacy_level", &self.coach_ai_privacy_level)?;
+        state.serialize_field("coachee_ai_privacy_level", &self.coachee_ai_privacy_level)?;
+        // Compute effective level dynamically during serialization
+        state.serialize_field(
+            "effective_ai_privacy_level",
+            &self.compute_effective_level(),
+        )?;
         state.serialize_field("created_at", &self.created_at)?;
         state.serialize_field("updated_at", &self.updated_at)?;
         state.end()

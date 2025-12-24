@@ -612,6 +612,14 @@ fn transcription_routes(app_state: AppState) -> Router {
             "/coaching_sessions/:id/summary",
             get(transcription_controller::get_session_summary),
         )
+        .route(
+            "/coaching_sessions/:id/transcript/extract-actions",
+            post(transcription_controller::extract_actions),
+        )
+        .route(
+            "/coaching_sessions/:id/transcript/extract-agreements",
+            post(transcription_controller::extract_agreements),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
