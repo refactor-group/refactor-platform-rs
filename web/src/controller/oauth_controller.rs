@@ -214,8 +214,8 @@ pub async fn callback(
         user_id
     );
 
-    // Redirect to settings page
-    // The frontend URL should be configured, but we'll use a relative redirect for now
-    let redirect_url = "/settings/integrations?google=connected".to_string();
+    // Redirect to frontend settings page
+    let base_url = config.google_oauth_success_redirect_uri();
+    let redirect_url = format!("{}?google=connected", base_url);
     Ok(Redirect::temporary(&redirect_url))
 }
