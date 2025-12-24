@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Default, Serialize, DeriveActiveEnum,
 )]
+#[serde(rename_all = "lowercase")]
 #[sea_orm(
     rs_type = "String",
     db_type = "Enum",

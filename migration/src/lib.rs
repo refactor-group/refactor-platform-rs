@@ -15,6 +15,8 @@ mod m20251024_000000_remove_organizations_users_table;
 mod m20251220_000001_add_user_integrations;
 mod m20251220_000002_add_meeting_fields_to_relationships;
 mod m20251220_000003_add_meeting_recording_tables;
+mod m20251223_000001_add_coachee_ai_privacy_level;
+mod m20251224_000001_add_lemur_fields;
 
 pub struct Migrator;
 
@@ -37,6 +39,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20251220_000001_add_user_integrations::Migration),
             Box::new(m20251220_000002_add_meeting_fields_to_relationships::Migration),
             Box::new(m20251220_000003_add_meeting_recording_tables::Migration),
+            Box::new(m20251223_000001_add_coachee_ai_privacy_level::Migration),
+            Box::new(m20251224_000001_add_lemur_fields::Migration),
         ]
     }
 }

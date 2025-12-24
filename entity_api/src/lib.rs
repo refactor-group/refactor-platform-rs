@@ -139,7 +139,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
         organization_id: Set(refactor_coaching_id),
         slug: Set("jim-caleb".to_owned()),
         meeting_url: Set(None),
-        ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
+        coach_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
+        coachee_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -155,7 +156,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
         organization_id: Set(acme_corp.id.clone().unwrap()),
         slug: Set("jim-caleb".to_owned()),
         meeting_url: Set(None),
-        ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
+        coach_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
+        coachee_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -170,7 +172,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
         organization_id: Set(acme_corp.id.clone().unwrap()),
         slug: Set("jim-other".to_owned()),
         meeting_url: Set(None),
-        ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
+        coach_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
+        coachee_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
