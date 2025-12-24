@@ -4,7 +4,17 @@ use simplelog::{self, ConfigBuilder};
 
 /// Modules to filter out from logging when not in Trace mode.
 /// These are typically verbose dependencies that clutter normal log output.
-const FILTERED_MODULES: &[&str] = &["sqlx", "sea_orm", "tower", "tracing", "hyper", "axum"];
+const FILTERED_MODULES: &[&str] = &[
+    "sqlx",
+    "sea_orm",
+    "tower",
+    "tower_sessions",
+    "tower_sessions_core",
+    "tower_sessions_sqlx_store",
+    "tracing",
+    "hyper",
+    "axum",
+];
 
 pub struct Logger {}
 
