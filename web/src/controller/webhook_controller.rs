@@ -397,15 +397,37 @@ pub async fn assemblyai_webhook(
             // Store transcript segments (utterances) if available
             if let Some(ref utterances) = full_transcript.utterances {
                 let utterance_count = utterances.len();
+
+                // Get coaching context to map speaker labels to real names
+                let speaker_name_map = match get_coaching_context(db, &transcription).await {
+                    Ok(context) => build_speaker_name_mapping(
+                        utterances,
+                        &context.coach_first_name,
+                        &context.coachee_first_name,
+                    ),
+                    Err(e) => {
+                        warn!("Failed to get coaching context for speaker names: {:?}", e);
+                        std::collections::HashMap::new()
+                    }
+                };
+
                 let segments: Vec<SegmentInput> = utterances
                     .iter()
-                    .map(|u| SegmentInput {
-                        speaker_label: u.speaker.clone(),
-                        text: u.text.clone(),
-                        start_time_ms: u.start,
-                        end_time_ms: u.end,
-                        confidence: Some(u.confidence),
-                        sentiment: None, // Would need sentiment_analysis_results for per-segment sentiment
+                    .map(|u| {
+                        // Use real name if available, otherwise fall back to speaker label
+                        let speaker_label = speaker_name_map
+                            .get(&u.speaker)
+                            .cloned()
+                            .unwrap_or_else(|| u.speaker.clone());
+
+                        SegmentInput {
+                            speaker_label,
+                            text: u.text.clone(),
+                            start_time_ms: u.start,
+                            end_time_ms: u.end,
+                            confidence: Some(u.confidence),
+                            sentiment: None, // Would need sentiment_analysis_results for per-segment sentiment
+                        }
                     })
                     .collect();
 
@@ -697,6 +719,43 @@ async fn process_transcription_with_lemur(
             _ => None,
         };
 
+        // Build action content, optionally prepending assignee name if it matches coach/coachee
+        let action_content = if let Some(ref assigned_name) = action.assigned_to_name {
+            // Validate that the extracted name matches coach or coachee (case-insensitive)
+            let name_lower = assigned_name.to_lowercase();
+            let coach_first_lower = coach.first_name.to_lowercase();
+            let coach_last_lower = coach.last_name.to_lowercase();
+            let coachee_first_lower = coachee.first_name.to_lowercase();
+            let coachee_last_lower = coachee.last_name.to_lowercase();
+
+            let matches_coach = name_lower == coach_first_lower
+                || name_lower == coach_last_lower
+                || name_lower == format!("{} {}", coach_first_lower, coach_last_lower);
+            let matches_coachee = name_lower == coachee_first_lower
+                || name_lower == coachee_last_lower
+                || name_lower == format!("{} {}", coachee_first_lower, coachee_last_lower);
+
+            if matches_coach || matches_coachee {
+                format!("[{}] {}", assigned_name, action.content)
+            } else {
+                // Name doesn't match coach or coachee, don't prepend
+                action.content.clone()
+            }
+        } else {
+            action.content.clone()
+        };
+
+        // Parse due_by date if provided, otherwise use current time as fallback
+        let due_by_datetime = action
+            .due_by
+            .as_ref()
+            .and_then(|date_str| {
+                chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+                    .ok()
+                    .map(|date| date.and_hms_opt(23, 59, 59).unwrap().and_utc())
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
         if auto_approve {
             // Create Action entity directly using a partial model
             use domain::actions::Model as ActionModel;
@@ -707,8 +766,8 @@ async fn process_transcription_with_lemur(
                 id: domain::Id::default(),
                 coaching_session_id: session.id,
                 user_id: relationship.coach_id,
-                body: Some(action.content.clone()),
-                due_by: Some(now.into()),
+                body: Some(action_content.clone()),
+                due_by: Some(due_by_datetime.into()),
                 status: ActionStatus::NotStarted,
                 status_changed_at: now.into(),
                 created_at: now.into(),
@@ -733,7 +792,7 @@ async fn process_transcription_with_lemur(
                 CreateAiSuggestion {
                     transcription_id: transcription.id,
                     item_type: AiSuggestionType::Action,
-                    content: action.content.clone(),
+                    content: action_content.clone(),
                     source_text: Some(action.source_text),
                     confidence: Some(action.confidence),
                     stated_by_user_id: stated_by,
@@ -814,9 +873,28 @@ async fn process_transcription_with_lemur(
         }
     }
 
-    // 9. Generate and store coaching summary
+    // 9. Build speaker→name mapping for the summary prompt
+    // Convert speaker_to_user (speaker label → user ID) to speaker label → name
+    let speaker_to_name: std::collections::HashMap<String, String> = speaker_to_user
+        .iter()
+        .map(|(speaker_label, user_id)| {
+            let name = if *user_id == relationship.coach_id {
+                coach.first_name.clone()
+            } else {
+                coachee.first_name.clone()
+            };
+            (speaker_label.clone(), name)
+        })
+        .collect();
+
+    // 10. Generate and store coaching summary
     match client
-        .generate_coaching_summary(transcript_id, &coach_name, &coachee_name)
+        .generate_coaching_summary(
+            transcript_id,
+            &coach_name,
+            &coachee_name,
+            Some(&speaker_to_name),
+        )
         .await
     {
         Ok(summary) => {
@@ -895,5 +973,68 @@ async fn build_speaker_mapping(
         }
     }
 
+    mapping
+}
+
+/// Coaching session context for speaker identification.
+struct CoachingContext {
+    coach_first_name: String,
+    coachee_first_name: String,
+}
+
+/// Get coaching context from a transcription.
+///
+/// Traces: transcription → meeting_recording → coaching_session → relationship → users
+async fn get_coaching_context(
+    db: &sea_orm::DatabaseConnection,
+    transcription: &TranscriptionModel,
+) -> Result<CoachingContext, Box<dyn std::error::Error + Send + Sync>> {
+    let recording = MeetingRecordingApi::find_by_id(db, transcription.meeting_recording_id).await?;
+    let session = CoachingSessionApi::find_by_id(db, recording.coaching_session_id).await?;
+    let relationship =
+        CoachingRelationshipApi::find_by_id(db, session.coaching_relationship_id).await?;
+    let coach = UserApi::find_by_id(db, relationship.coach_id).await?;
+    let coachee = UserApi::find_by_id(db, relationship.coachee_id).await?;
+
+    Ok(CoachingContext {
+        coach_first_name: coach.first_name,
+        coachee_first_name: coachee.first_name,
+    })
+}
+
+/// Build a mapping from speaker labels to display names using utterances directly.
+///
+/// Uses the same heuristic as build_speaker_mapping: coachee typically speaks more.
+fn build_speaker_name_mapping(
+    utterances: &[domain::gateway::assembly_ai::Utterance],
+    coach_name: &str,
+    coachee_name: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut mapping = std::collections::HashMap::new();
+
+    // Count words per speaker
+    let mut speaker_word_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for utterance in utterances {
+        let word_count = utterance.text.split_whitespace().count();
+        *speaker_word_counts
+            .entry(utterance.speaker.clone())
+            .or_insert(0) += word_count;
+    }
+
+    // Sort speakers by word count (descending)
+    let mut speakers: Vec<_> = speaker_word_counts.into_iter().collect();
+    speakers.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Heuristic: speaker with most words is likely the coachee
+    if speakers.len() >= 2 {
+        mapping.insert(speakers[0].0.clone(), coachee_name.to_string());
+        mapping.insert(speakers[1].0.clone(), coach_name.to_string());
+    } else if speakers.len() == 1 {
+        mapping.insert(speakers[0].0.clone(), coachee_name.to_string());
+    }
+
+    debug!("Built speaker name mapping: {:?}", mapping);
     mapping
 }
