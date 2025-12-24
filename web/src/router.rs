@@ -562,6 +562,10 @@ fn coaching_relationship_routes(app_state: AppState) -> Router {
             "/coaching_relationships/:id",
             put(coaching_relationship_controller::update),
         )
+        .route(
+            "/coaching_relationships/:id/create-google-meet",
+            post(coaching_relationship_controller::create_google_meet),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
