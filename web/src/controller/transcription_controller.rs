@@ -499,16 +499,17 @@ pub async fn extract_actions(
         use domain::actions::Model as ActionModel;
         use domain::status::Status as ActionStatus;
 
+        let now = chrono::Utc::now();
         let action_model = ActionModel {
             id: domain::Id::default(),
             coaching_session_id: session.id,
             user_id: relationship.coach_id,
             body: Some(action.content.clone()),
-            due_by: None,
+            due_by: Some(now.into()),
             status: ActionStatus::NotStarted,
-            status_changed_at: chrono::Utc::now().into(),
-            created_at: chrono::Utc::now().into(),
-            updated_at: chrono::Utc::now().into(),
+            status_changed_at: now.into(),
+            created_at: now.into(),
+            updated_at: now.into(),
         };
 
         match domain::action::create(db, action_model, relationship.coach_id).await {
