@@ -20,7 +20,7 @@ impl Logger {
             .add_filter_ignore_str("sqlx")
             .add_filter_ignore_str("sea_orm")
             .add_filter_ignore_str("tower")
-            .add_filter_ignore_str("tracing::span")
+            .add_filter_ignore_str("tracing")
             .build();
 
         simplelog::TermLogger::init(
