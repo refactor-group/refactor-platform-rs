@@ -313,12 +313,16 @@ pub struct SummaryResponse {
 }
 
 /// Response for action extraction endpoint
+/// Returns immediately to indicate extraction has been triggered.
+/// Actions will be created asynchronously and can be fetched via the Actions API.
 #[derive(Debug, serde::Serialize)]
 pub struct ExtractActionsResponse {
     pub session_id: Id,
     pub transcription_id: Id,
-    pub actions: Vec<domain::gateway::assembly_ai::ExtractedAction>,
-    pub created_count: usize,
+    /// Status of the extraction request: "processing" or "error"
+    pub status: String,
+    /// Human-readable message about the extraction status
+    pub message: String,
 }
 
 /// Response for agreement extraction endpoint
@@ -333,8 +337,8 @@ pub struct ExtractAgreementsResponse {
 /// POST /coaching_sessions/{id}/transcript/extract-actions
 ///
 /// Manually trigger LeMUR to extract action items from the session's transcript.
-/// Creates Action entities directly (bypasses AI suggestions).
-/// Useful for testing or re-processing a transcript.
+/// Returns immediately and processes extraction in the background.
+/// Actions will be created asynchronously and can be fetched via the Actions API.
 #[utoipa::path(
     post,
     path = "/coaching_sessions/{id}/transcript/extract-actions",
@@ -343,11 +347,10 @@ pub struct ExtractAgreementsResponse {
         ("id" = Id, Path, description = "Coaching session ID"),
     ),
     responses(
-        (status = 200, description = "Actions extracted and created", body = ExtractActionsResponse),
+        (status = 202, description = "Extraction triggered", body = ExtractActionsResponse),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden - not a coach for this session"),
         (status = 404, description = "No transcription found for this session"),
-        (status = 503, description = "LeMUR service unavailable"),
     ),
     security(
         ("cookie_auth" = [])
@@ -362,7 +365,6 @@ pub async fn extract_actions(
     info!("POST extract-actions for session: {session_id}");
 
     let db = app_state.db_conn_ref();
-    let config = &app_state.config;
 
     // 1. Get the coaching session
     let session = CoachingSessionApi::find_by_id(db, session_id).await?;
@@ -416,16 +418,21 @@ pub async fn extract_actions(
             })?;
 
     // 4. Get AssemblyAI transcript ID
-    let transcript_id = transcription.assemblyai_transcript_id.as_ref().ok_or_else(|| {
-        Error::Domain(domain::error::Error {
-            source: None,
-            error_kind: domain::error::DomainErrorKind::Internal(
-                domain::error::InternalErrorKind::Entity(domain::error::EntityErrorKind::Other(
-                    "No AssemblyAI transcript ID found - transcription may still be processing".to_string(),
-                )),
-            ),
-        })
-    })?;
+    let assemblyai_transcript_id =
+        transcription
+            .assemblyai_transcript_id
+            .clone()
+            .ok_or_else(|| {
+                Error::Domain(domain::error::Error {
+                source: None,
+                error_kind: domain::error::DomainErrorKind::Internal(
+                    domain::error::InternalErrorKind::Entity(domain::error::EntityErrorKind::Other(
+                        "No AssemblyAI transcript ID found - transcription may still be processing"
+                            .to_string(),
+                    )),
+                ),
+            })
+            })?;
 
     // 5. Get coach's AssemblyAI API key
     let user_integrations = domain::user_integration::find_by_user_id(db, relationship.coach_id)
@@ -445,7 +452,7 @@ pub async fn extract_actions(
 
     let api_key = user_integrations
         .assembly_ai_api_key
-        .as_ref()
+        .clone()
         .ok_or_else(|| {
             Error::Domain(domain::error::Error {
                 source: None,
@@ -459,82 +466,139 @@ pub async fn extract_actions(
             })
         })?;
 
-    // 6. Get coach and coachee names for LeMUR prompts
+    // 6. Get coach and coachee for LeMUR prompts
     let coach = domain::user::find_by_id(db, relationship.coach_id).await?;
     let coachee = domain::user::find_by_id(db, relationship.coachee_id).await?;
-    let coach_name = format!("{} {}", coach.first_name, coach.last_name);
-    let coachee_name = format!("{} {}", coachee.first_name, coachee.last_name);
 
-    // 7. Call LeMUR to extract actions and agreements
-    let client =
-        domain::gateway::assembly_ai::AssemblyAiClient::new(api_key, config.assembly_ai_base_url())
-            .map_err(|e| {
-                Error::Domain(domain::error::Error {
-                    source: Some(Box::new(e)),
-                    error_kind: domain::error::DomainErrorKind::External(
-                        domain::error::ExternalErrorKind::Other(
-                            "Failed to create AssemblyAI client".to_string(),
-                        ),
-                    ),
-                })
-            })?;
+    // Clone data needed for background task
+    let db_clone = app_state.database_connection.clone();
+    let config_clone = app_state.config.clone();
+    let session_clone = session.clone();
+    let relationship_clone = relationship.clone();
+    let coach_clone = coach.clone();
+    let coachee_clone = coachee.clone();
 
-    let extraction = client
-        .extract_actions_and_agreements(transcript_id, &coach_name, &coachee_name)
-        .await
-        .map_err(|e| {
-            warn!("LeMUR extraction failed: {:?}", e);
-            Error::Domain(e)
-        })?;
+    // 7. Spawn background task to call LeMUR and create actions
+    tokio::spawn(async move {
+        let coach_name = format!("{} {}", coach_clone.first_name, coach_clone.last_name);
+        let coachee_name = format!("{} {}", coachee_clone.first_name, coachee_clone.last_name);
 
-    info!(
-        "LeMUR extracted {} actions for session {}",
-        extraction.actions.len(),
-        session_id
-    );
-
-    // 8. Create Action entities directly
-    let mut created_count = 0;
-    for action in &extraction.actions {
-        use domain::actions::Model as ActionModel;
-        use domain::status::Status as ActionStatus;
-
-        let now = chrono::Utc::now();
-        let action_model = ActionModel {
-            id: domain::Id::default(),
-            coaching_session_id: session.id,
-            user_id: relationship.coach_id,
-            body: Some(action.content.clone()),
-            due_by: Some(now.into()),
-            status: ActionStatus::NotStarted,
-            status_changed_at: now.into(),
-            created_at: now.into(),
-            updated_at: now.into(),
+        // Create AssemblyAI client
+        let client = match domain::gateway::assembly_ai::AssemblyAiClient::new(
+            &api_key,
+            config_clone.assembly_ai_base_url(),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to create AssemblyAI client: {:?}", e);
+                return;
+            }
         };
 
-        match domain::action::create(db, action_model, relationship.coach_id).await {
-            Ok(created_action) => {
-                info!(
-                    "Created Action {} from manual LeMUR extraction for session {}",
-                    created_action.id, session.id
-                );
-                created_count += 1;
-            }
+        // Call LeMUR to extract actions
+        let extraction = match client
+            .extract_actions_and_agreements(&assemblyai_transcript_id, &coach_name, &coachee_name)
+            .await
+        {
+            Ok(e) => e,
             Err(e) => {
-                warn!("Failed to create action: {:?}", e);
+                error!(
+                    "LeMUR extraction failed for session {}: {:?}",
+                    session_clone.id, e
+                );
+                return;
+            }
+        };
+
+        info!(
+            "LeMUR extracted {} actions for session {} (background)",
+            extraction.actions.len(),
+            session_clone.id
+        );
+
+        // Create Action entities
+        for action in extraction.actions {
+            use domain::actions::Model as ActionModel;
+            use domain::status::Status as ActionStatus;
+
+            // Build action content, optionally prepending assignee name if it matches coach/coachee
+            let action_content = if let Some(ref assigned_name) = action.assigned_to_name {
+                // Validate that the extracted name matches coach or coachee (case-insensitive)
+                let name_lower = assigned_name.to_lowercase();
+                let coach_first_lower = coach_clone.first_name.to_lowercase();
+                let coach_last_lower = coach_clone.last_name.to_lowercase();
+                let coachee_first_lower = coachee_clone.first_name.to_lowercase();
+                let coachee_last_lower = coachee_clone.last_name.to_lowercase();
+
+                let matches_coach = name_lower == coach_first_lower
+                    || name_lower == coach_last_lower
+                    || name_lower == format!("{} {}", coach_first_lower, coach_last_lower);
+                let matches_coachee = name_lower == coachee_first_lower
+                    || name_lower == coachee_last_lower
+                    || name_lower == format!("{} {}", coachee_first_lower, coachee_last_lower);
+
+                if matches_coach || matches_coachee {
+                    format!("[{}] {}", assigned_name, action.content)
+                } else {
+                    action.content.clone()
+                }
+            } else {
+                action.content.clone()
+            };
+
+            // Parse due_by date if provided, otherwise use current time as fallback
+            let due_by_datetime = action
+                .due_by
+                .as_ref()
+                .and_then(|date_str| {
+                    chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+                        .ok()
+                        .map(|date| date.and_hms_opt(23, 59, 59).unwrap().and_utc())
+                })
+                .unwrap_or_else(chrono::Utc::now);
+
+            let now = chrono::Utc::now();
+            let action_model = ActionModel {
+                id: domain::Id::default(),
+                coaching_session_id: session_clone.id,
+                user_id: relationship_clone.coach_id,
+                body: Some(action_content),
+                due_by: Some(due_by_datetime.into()),
+                status: ActionStatus::NotStarted,
+                status_changed_at: now.into(),
+                created_at: now.into(),
+                updated_at: now.into(),
+            };
+
+            match domain::action::create(&db_clone, action_model, relationship_clone.coach_id).await
+            {
+                Ok(created_action) => {
+                    info!(
+                        "Created Action {} from LeMUR extraction for session {}",
+                        created_action.id, session_clone.id
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to create action: {:?}", e);
+                }
             }
         }
-    }
+    });
 
-    Ok(Json(ApiResponse::new(
-        StatusCode::OK.into(),
-        ExtractActionsResponse {
-            session_id,
-            transcription_id: transcription.id,
-            actions: extraction.actions,
-            created_count,
-        },
-    )))
+    // Return immediately with 202 Accepted
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ApiResponse::new(
+            StatusCode::ACCEPTED.into(),
+            ExtractActionsResponse {
+                session_id,
+                transcription_id: transcription.id,
+                status: "processing".to_string(),
+                message: "Action extraction has been triggered. Actions will appear shortly."
+                    .to_string(),
+            },
+        )),
+    ))
 }
 
 /// POST /coaching_sessions/{id}/transcript/extract-agreements
