@@ -11,32 +11,37 @@ use sea_orm::{
     DatabaseConnection, TryIntoModel,
 };
 
+/// Parameters for creating a new AI suggested item
+pub struct CreateAiSuggestion {
+    pub transcription_id: Id,
+    pub item_type: AiSuggestionType,
+    pub content: String,
+    pub source_text: Option<String>,
+    pub confidence: Option<f64>,
+    pub stated_by_user_id: Option<Id>,
+    pub assigned_to_user_id: Option<Id>,
+    pub source_segment_id: Option<Id>,
+}
+
 /// Creates a new AI suggested item
-pub async fn create(
-    db: &DatabaseConnection,
-    transcription_id: Id,
-    item_type: AiSuggestionType,
-    content: String,
-    source_text: Option<String>,
-    confidence: Option<f64>,
-    stated_by_user_id: Option<Id>,
-    assigned_to_user_id: Option<Id>,
-    source_segment_id: Option<Id>,
-) -> Result<Model, Error> {
-    debug!("Creating new AI suggestion for transcription: {transcription_id}");
+pub async fn create(db: &DatabaseConnection, params: CreateAiSuggestion) -> Result<Model, Error> {
+    debug!(
+        "Creating new AI suggestion for transcription: {}",
+        params.transcription_id
+    );
 
     let now = chrono::Utc::now();
 
     let active_model = ActiveModel {
-        transcription_id: Set(transcription_id),
-        item_type: Set(item_type),
-        content: Set(content),
-        source_text: Set(source_text),
-        confidence: Set(confidence),
+        transcription_id: Set(params.transcription_id),
+        item_type: Set(params.item_type),
+        content: Set(params.content),
+        source_text: Set(params.source_text),
+        confidence: Set(params.confidence),
         status: Set(AiSuggestionStatus::Pending),
-        stated_by_user_id: Set(stated_by_user_id),
-        assigned_to_user_id: Set(assigned_to_user_id),
-        source_segment_id: Set(source_segment_id),
+        stated_by_user_id: Set(params.stated_by_user_id),
+        assigned_to_user_id: Set(params.assigned_to_user_id),
+        source_segment_id: Set(params.source_segment_id),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
