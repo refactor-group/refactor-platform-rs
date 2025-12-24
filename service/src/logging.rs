@@ -20,6 +20,8 @@ impl Logger {
             .add_filter_ignore_str("sqlx")
             .add_filter_ignore_str("sea_orm")
             .add_filter_ignore_str("tower_sessions")
+            .add_filter_ignore_str("tower_sessions_core")
+            .add_filter_ignore_str("tower_sessions_sqlx_store")
             .build();
 
         simplelog::TermLogger::init(
