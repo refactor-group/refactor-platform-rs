@@ -11,7 +11,7 @@ use axum::Json;
 
 use domain::action as ActionApi;
 use domain::agreement as AgreementApi;
-use domain::ai_suggested_item as AiSuggestedItemApi;
+use domain::ai_suggested_item::{self as AiSuggestedItemApi, CreateAiSuggestion};
 use domain::ai_suggestion::AiSuggestionType;
 use domain::coaching_relationship as CoachingRelationshipApi;
 use domain::coaching_session as CoachingSessionApi;
@@ -447,14 +447,16 @@ pub async fn assemblyai_webhook(
                     for action_text in action_items {
                         match AiSuggestedItemApi::create(
                             db,
-                            updated_transcription.id,
-                            AiSuggestionType::Action,
-                            action_text.clone(),
-                            Some(action_text),
-                            None, // confidence
-                            None, // stated_by_user_id
-                            None, // assigned_to_user_id
-                            None, // source_segment_id
+                            CreateAiSuggestion {
+                                transcription_id: updated_transcription.id,
+                                item_type: AiSuggestionType::Action,
+                                content: action_text.clone(),
+                                source_text: Some(action_text),
+                                confidence: None,
+                                stated_by_user_id: None,
+                                assigned_to_user_id: None,
+                                source_segment_id: None,
+                            },
                         )
                         .await
                         {
@@ -728,14 +730,16 @@ async fn process_transcription_with_lemur(
             // Create AI suggestion for review
             match AiSuggestedItemApi::create(
                 db,
-                transcription.id,
-                AiSuggestionType::Action,
-                action.content.clone(),
-                Some(action.source_text),
-                Some(action.confidence),
-                stated_by,
-                assigned_to,
-                None, // source_segment_id - TODO: map via timestamp
+                CreateAiSuggestion {
+                    transcription_id: transcription.id,
+                    item_type: AiSuggestionType::Action,
+                    content: action.content.clone(),
+                    source_text: Some(action.source_text),
+                    confidence: Some(action.confidence),
+                    stated_by_user_id: stated_by,
+                    assigned_to_user_id: assigned_to,
+                    source_segment_id: None, // TODO: map via timestamp
+                },
             )
             .await
             {
@@ -784,14 +788,16 @@ async fn process_transcription_with_lemur(
             // Create AI suggestion for review (agreements have no assignee)
             match AiSuggestedItemApi::create(
                 db,
-                transcription.id,
-                AiSuggestionType::Agreement,
-                agreement.content.clone(),
-                Some(agreement.source_text),
-                Some(agreement.confidence),
-                stated_by,
-                None, // agreements have no single assignee
-                None, // source_segment_id
+                CreateAiSuggestion {
+                    transcription_id: transcription.id,
+                    item_type: AiSuggestionType::Agreement,
+                    content: agreement.content.clone(),
+                    source_text: Some(agreement.source_text),
+                    confidence: Some(agreement.confidence),
+                    stated_by_user_id: stated_by,
+                    assigned_to_user_id: None, // agreements have no single assignee
+                    source_segment_id: None,
+                },
             )
             .await
             {
