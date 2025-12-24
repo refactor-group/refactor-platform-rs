@@ -162,6 +162,12 @@ pub struct ExtractedAction {
     pub stated_by_speaker: String,
     /// Who should complete: "coach" or "coachee"
     pub assigned_to_role: String,
+    /// Name of the person assigned (extracted from transcript, e.g., "Jim", "Sarah")
+    #[serde(default)]
+    pub assigned_to_name: Option<String>,
+    /// Due date in ISO 8601 format (e.g., "2025-01-15") if mentioned in transcript
+    #[serde(default)]
+    pub due_by: Option<String>,
     /// Confidence score (0.0 - 1.0)
     pub confidence: f64,
     /// Start time in milliseconds (optional)
@@ -436,10 +442,38 @@ impl AssemblyAiClient {
         coach_name: &str,
         coachee_name: &str,
     ) -> Result<LemurExtractionResponse, Error> {
+        // Get today's date for resolving relative dates in the transcript
+        let now = chrono::Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let day_of_week = now.format("%A").to_string(); // e.g., "Tuesday"
+
+        // Pre-calculate common relative dates to help LLM accuracy
+        let in_1_week = (now + chrono::Duration::days(7)).format("%Y-%m-%d");
+        let in_2_weeks = (now + chrono::Duration::days(14)).format("%Y-%m-%d");
+        let in_3_weeks = (now + chrono::Duration::days(21)).format("%Y-%m-%d");
+        let in_4_weeks = (now + chrono::Duration::days(28)).format("%Y-%m-%d");
+        let in_1_month = (now + chrono::Months::new(1)).format("%Y-%m-%d");
+        let in_2_months = (now + chrono::Months::new(2)).format("%Y-%m-%d");
+        let in_3_months = (now + chrono::Months::new(3)).format("%Y-%m-%d");
+        let in_6_months = (now + chrono::Months::new(6)).format("%Y-%m-%d");
+        let in_1_year = (now + chrono::Months::new(12)).format("%Y-%m-%d");
+
         let prompt = format!(
             r#"Analyze this coaching session transcript and extract ACTIONS and AGREEMENTS separately.
 
-The coach is "{}" and the coachee is "{}".
+The coach is "{coach}" and the coachee is "{coachee}".
+Today is {day_of_week}, {today}. Use these pre-calculated dates for relative deadlines:
+- "in 1 week" / "in a week" = {in_1_week}
+- "in 2 weeks" / "in two weeks" = {in_2_weeks}
+- "in 3 weeks" / "in three weeks" = {in_3_weeks}
+- "in 4 weeks" / "in four weeks" = {in_4_weeks}
+- "in 1 month" / "in a month" = {in_1_month}
+- "in 2 months" / "in two months" = {in_2_months}
+- "in 3 months" / "in three months" = {in_3_months}
+- "in 6 months" / "in six months" = {in_6_months}
+- "in 1 year" / "in 12 months" = {in_1_year}
+- "next Wednesday" = the upcoming Wednesday after today
+- "by Friday" = the upcoming Friday
 
 ## ACTIONS
 Actions are tasks with a clear owner - one person is responsible for completing it.
@@ -453,6 +487,11 @@ Agreements are mutual commitments or shared understandings.
 - No single assignee - it's a shared commitment
 - Examples: "We agreed to focus on leadership skills", "We'll meet bi-weekly going forward"
 
+## EXTRACTING NAMES AND DUE DATES
+For each action:
+- If a specific person's name is mentioned as responsible, capture it in assigned_to_name (e.g., "Jim will...", "Sarah needs to...")
+- If a due date or deadline is mentioned (e.g., "by Friday", "before January 15", "by next Wednesday"), extract it as due_by in ISO 8601 format (YYYY-MM-DD). Convert relative dates to absolute dates using today's date.
+
 ## Output Format
 Return a JSON object with this exact structure:
 {{
@@ -462,6 +501,8 @@ Return a JSON object with this exact structure:
       "source_text": "Exact quote from transcript",
       "stated_by_speaker": "Speaker A",
       "assigned_to_role": "coach",
+      "assigned_to_name": "Jim",
+      "due_by": "2025-01-15",
       "confidence": 0.95,
       "start_time_ms": null,
       "end_time_ms": null
@@ -480,9 +521,23 @@ Return a JSON object with this exact structure:
 }}
 
 For assigned_to_role, use "coach" or "coachee" based on who should complete the action.
+For assigned_to_name, use the exact name mentioned in the transcript if one was stated, otherwise null.
+For due_by, use ISO 8601 date format (YYYY-MM-DD) if a deadline was mentioned, otherwise null.
 For stated_by_speaker, use the speaker label from the transcript (e.g., "Speaker A", "Speaker B").
 Return ONLY valid JSON, no markdown or explanation."#,
-            coach_name, coachee_name
+            coach = coach_name,
+            coachee = coachee_name,
+            day_of_week = day_of_week,
+            today = today,
+            in_1_week = in_1_week,
+            in_2_weeks = in_2_weeks,
+            in_3_weeks = in_3_weeks,
+            in_4_weeks = in_4_weeks,
+            in_1_month = in_1_month,
+            in_2_months = in_2_months,
+            in_3_months = in_3_months,
+            in_6_months = in_6_months,
+            in_1_year = in_1_year
         );
 
         let request = LemurTaskRequest {
@@ -494,8 +549,22 @@ Return ONLY valid JSON, no markdown or explanation."#,
 
         let response = self.lemur_task(request).await?;
 
+        // Strip markdown code blocks if present (LeMUR sometimes wraps JSON in ```json ... ```)
+        let json_str = response.response.trim();
+        let json_str = if json_str.starts_with("```") {
+            // Find the end of the first line (after ```json or ```)
+            let start = json_str.find('\n').map(|i| i + 1).unwrap_or(0);
+            // Find the closing ```
+            let end = json_str.rfind("```").unwrap_or(json_str.len());
+            json_str[start..end].trim()
+        } else {
+            json_str
+        };
+
+        debug!("LeMUR extraction raw JSON: {}", json_str);
+
         // Parse the JSON response
-        serde_json::from_str(&response.response).map_err(|e| {
+        serde_json::from_str(json_str).map_err(|e| {
             warn!(
                 "Failed to parse LeMUR extraction response: {:?}, response: {}",
                 e, response.response
@@ -510,14 +579,33 @@ Return ONLY valid JSON, no markdown or explanation."#,
     }
 
     /// Generate a coaching-focused summary using LeMUR
+    ///
+    /// The `speaker_mapping` parameter maps speaker labels (e.g., "A", "B") to names
+    /// to help LeMUR understand who is speaking in the transcript.
     pub async fn generate_coaching_summary(
         &self,
         transcript_id: &str,
         coach_name: &str,
         coachee_name: &str,
+        speaker_mapping: Option<&std::collections::HashMap<String, String>>,
     ) -> Result<CoachingSummary, Error> {
+        // Build speaker context if mapping is provided
+        let speaker_context = speaker_mapping
+            .map(|mapping| {
+                let speaker_info: Vec<String> = mapping
+                    .iter()
+                    .map(|(label, name)| format!("Speaker {} is {}", label, name))
+                    .collect();
+                if !speaker_info.is_empty() {
+                    format!("\n\nSpeaker identification: {}", speaker_info.join(", "))
+                } else {
+                    String::new()
+                }
+            })
+            .unwrap_or_default();
+
         let prompt = format!(
-            r#"Analyze this coaching session between "{}" (coach) and "{}" (coachee).
+            r#"Analyze this coaching session between "{}" (coach) and "{}" (coachee).{}
 
 Create a structured summary with these sections:
 
@@ -541,7 +629,7 @@ Guidelines:
 - Use the coachee's perspective where appropriate
 - Include 1-5 items per section (empty array if nothing applies)
 - Return ONLY valid JSON, no markdown or explanation"#,
-            coach_name, coachee_name
+            coach_name, coachee_name, speaker_context
         );
 
         let request = LemurTaskRequest {
@@ -553,8 +641,18 @@ Guidelines:
 
         let response = self.lemur_task(request).await?;
 
+        // Strip markdown code blocks if present (LeMUR sometimes wraps JSON in ```json ... ```)
+        let json_str = response.response.trim();
+        let json_str = if json_str.starts_with("```") {
+            let start = json_str.find('\n').map(|i| i + 1).unwrap_or(0);
+            let end = json_str.rfind("```").unwrap_or(json_str.len());
+            json_str[start..end].trim()
+        } else {
+            json_str
+        };
+
         // Parse the JSON response
-        serde_json::from_str(&response.response).map_err(|e| {
+        serde_json::from_str(json_str).map_err(|e| {
             warn!(
                 "Failed to parse LeMUR summary response: {:?}, response: {}",
                 e, response.response
