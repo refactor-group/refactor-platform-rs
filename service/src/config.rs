@@ -172,9 +172,13 @@ pub struct Config {
     #[arg(long, env)]
     google_client_secret: Option<String>,
 
-    /// Google OAuth redirect URI
+    /// Google OAuth redirect URI (callback from Google to backend)
     #[arg(long, env)]
     google_redirect_uri: Option<String>,
+
+    /// URL to redirect to after successful Google OAuth (frontend settings page)
+    #[arg(long, env, default_value = "http://localhost:3000/settings")]
+    google_oauth_success_redirect_uri: String,
 
     /// Base URL for webhook endpoints (e.g., https://api.refactor.coach)
     #[arg(long, env)]
@@ -309,6 +313,10 @@ impl Config {
 
     pub fn google_redirect_uri(&self) -> Option<String> {
         self.google_redirect_uri.clone()
+    }
+
+    pub fn google_oauth_success_redirect_uri(&self) -> &str {
+        &self.google_oauth_success_redirect_uri
     }
 
     pub fn webhook_base_url(&self) -> Option<String> {
