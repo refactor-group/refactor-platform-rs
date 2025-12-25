@@ -953,14 +953,14 @@ async fn build_speaker_mapping(
             let mut speakers: Vec<_> = speaker_word_counts.into_iter().collect();
             speakers.sort_by(|a, b| b.1.cmp(&a.1));
 
-            // Heuristic: speaker with most words is likely the coachee
-            // (coaches typically ask questions and listen more)
+            // Heuristic: speaker with most words is likely the coach
+            // (coaches typically guide the conversation and explain concepts)
             if speakers.len() >= 2 {
-                mapping.insert(speakers[0].0.clone(), coachee_id);
-                mapping.insert(speakers[1].0.clone(), coach_id);
+                mapping.insert(speakers[0].0.clone(), coach_id);
+                mapping.insert(speakers[1].0.clone(), coachee_id);
             } else if speakers.len() == 1 {
                 // Only one speaker detected - unusual but possible
-                mapping.insert(speakers[0].0.clone(), coachee_id);
+                mapping.insert(speakers[0].0.clone(), coach_id);
             }
 
             debug!("Built speaker mapping: {:?}", mapping);
@@ -1004,7 +1004,7 @@ async fn get_coaching_context(
 
 /// Build a mapping from speaker labels to display names using utterances directly.
 ///
-/// Uses the same heuristic as build_speaker_mapping: coachee typically speaks more.
+/// Uses the same heuristic as build_speaker_mapping: coach typically speaks more.
 fn build_speaker_name_mapping(
     utterances: &[domain::gateway::assembly_ai::Utterance],
     coach_name: &str,
@@ -1027,12 +1027,13 @@ fn build_speaker_name_mapping(
     let mut speakers: Vec<_> = speaker_word_counts.into_iter().collect();
     speakers.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // Heuristic: speaker with most words is likely the coachee
+    // Heuristic: speaker with most words is likely the coach
+    // (coaches typically guide the conversation and explain concepts)
     if speakers.len() >= 2 {
-        mapping.insert(speakers[0].0.clone(), coachee_name.to_string());
-        mapping.insert(speakers[1].0.clone(), coach_name.to_string());
+        mapping.insert(speakers[0].0.clone(), coach_name.to_string());
+        mapping.insert(speakers[1].0.clone(), coachee_name.to_string());
     } else if speakers.len() == 1 {
-        mapping.insert(speakers[0].0.clone(), coachee_name.to_string());
+        mapping.insert(speakers[0].0.clone(), coach_name.to_string());
     }
 
     debug!("Built speaker name mapping: {:?}", mapping);
