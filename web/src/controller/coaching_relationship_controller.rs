@@ -176,8 +176,7 @@ pub async fn create_google_meet(
     }
 
     // Get the user's Google integration
-    let integration =
-        user_integration::get_or_create(app_state.db_conn_ref(), user.id).await?;
+    let integration = user_integration::get_or_create(app_state.db_conn_ref(), user.id).await?;
 
     // Check if Google is connected
     let access_token = match &integration.google_access_token {
@@ -200,19 +199,24 @@ pub async fn create_google_meet(
         if expiry < &chrono::Utc::now() {
             // Token is expired, try to refresh
             let refresh_token = integration.google_refresh_token.as_ref().ok_or_else(|| {
-                warn!("Google token expired and no refresh token available for user {}", user.id);
-                forbidden_error("Google authorization expired. Please reconnect your Google account.")
+                warn!(
+                    "Google token expired and no refresh token available for user {}",
+                    user.id
+                );
+                forbidden_error(
+                    "Google authorization expired. Please reconnect your Google account.",
+                )
             })?;
 
-            let client_id = config.google_client_id().ok_or_else(|| {
-                internal_error("Google OAuth not configured")
-            })?;
-            let client_secret = config.google_client_secret().ok_or_else(|| {
-                internal_error("Google OAuth not configured")
-            })?;
-            let redirect_uri = config.google_redirect_uri().ok_or_else(|| {
-                internal_error("Google OAuth not configured")
-            })?;
+            let client_id = config
+                .google_client_id()
+                .ok_or_else(|| internal_error("Google OAuth not configured"))?;
+            let client_secret = config
+                .google_client_secret()
+                .ok_or_else(|| internal_error("Google OAuth not configured"))?;
+            let redirect_uri = config
+                .google_redirect_uri()
+                .ok_or_else(|| internal_error("Google OAuth not configured"))?;
 
             let urls = GoogleOAuthUrls {
                 auth_url: config.google_oauth_auth_url().to_string(),
@@ -220,7 +224,8 @@ pub async fn create_google_meet(
                 userinfo_url: config.google_userinfo_url().to_string(),
             };
 
-            let oauth_client = GoogleOAuthClient::new(&client_id, &client_secret, &redirect_uri, urls)?;
+            let oauth_client =
+                GoogleOAuthClient::new(&client_id, &client_secret, &redirect_uri, urls)?;
             let token_response = oauth_client.refresh_token(refresh_token).await?;
 
             // Update stored tokens
