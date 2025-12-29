@@ -8,10 +8,13 @@ use axum::{
 use domain::Id;
 use log::*;
 
+pub(crate) mod actions;
+pub(crate) mod coaching_sessions;
+pub(crate) mod organizations;
+pub(crate) mod overarching_goals;
 pub(crate) mod passwords;
 
-// checks:
-// - that the `user_id` matches the `authenticated_user.id`
+/// Checks that the `user_id` matches the `authenticated_user.id`
 pub(crate) async fn read(
     State(_app_state): State<AppState>,
     AuthenticatedUser(authenticated_user): AuthenticatedUser,
@@ -31,8 +34,7 @@ pub(crate) async fn read(
     }
 }
 
-// checks:
-// - that the `user_id` matches the `authenticated_user.id`
+/// Checks that the `user_id` matches the `authenticated_user.id`
 pub(crate) async fn update(
     State(_app_state): State<AppState>,
     AuthenticatedUser(authenticated_user): AuthenticatedUser,

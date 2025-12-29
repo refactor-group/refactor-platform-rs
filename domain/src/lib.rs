@@ -9,10 +9,10 @@ pub use entity_api::{
     query::{FilterOnly, IntoQueryFilterMap, QueryFilterMap},
 };
 
-// Re-exports from `entity` crate
+// Re-exports from `entity` crate via `entity_api`
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
-    organizations, overarching_goals, query::QuerySort, user_roles, users, Id,
+    organizations, overarching_goals, query::QuerySort, status, user_roles, users, Id,
 };
 
 pub mod action;
