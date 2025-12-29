@@ -2,6 +2,7 @@ use uuid::Uuid;
 
 pub mod prelude;
 
+pub mod action_assignees;
 pub mod actions;
 pub mod agreements;
 pub mod coachees;

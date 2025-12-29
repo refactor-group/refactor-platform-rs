@@ -3,11 +3,13 @@ use password_auth::generate_hash;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 pub use entity::{
-    actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
-    organizations, overarching_goals, status, user_roles, users, users::Role, Id,
+    action_assignees, actions, agreements, coachees, coaches, coaching_relationships,
+    coaching_sessions, jwts, notes, organizations, overarching_goals, status, user_roles, users,
+    users::Role, Id,
 };
 
 pub mod action;
+pub mod action_assignee;
 pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;

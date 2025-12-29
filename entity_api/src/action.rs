@@ -1,13 +1,28 @@
-use super::error::{EntityApiErrorKind, Error};
-use entity::actions::{ActiveModel, Entity, Model};
-use entity::{status::Status, Id};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
     DatabaseConnection, TryIntoModel,
 };
 
+use super::action_assignee;
+use super::error::{EntityApiErrorKind, Error};
+use entity::actions::{ActiveModel, Entity, Model};
+use entity::{status::Status, Id};
 use log::*;
+
+/// An action with its associated assignee user IDs.
+///
+/// The frontend resolves the user names from the IDs using existing
+/// coach/coachee data from the coaching relationship context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActionWithAssignees {
+    #[serde(flatten)]
+    pub action: Model,
+    pub assignee_ids: Vec<Id>,
+}
 
 pub async fn create(
     db: &DatabaseConnection,
@@ -113,6 +128,96 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
+    })
+}
+
+/// Creates a new action with optional assignees.
+///
+/// # Arguments
+///
+/// * `db` - Database connection
+/// * `action_model` - The action model data
+/// * `user_id` - The user ID of the action creator
+/// * `assignee_ids` - Optional list of user IDs to assign to the action
+///
+/// # Errors
+///
+/// Returns `Error` if the database operation fails.
+pub async fn create_with_assignees(
+    db: &DatabaseConnection,
+    action_model: Model,
+    user_id: Id,
+    assignee_ids: Option<Vec<Id>>,
+) -> Result<ActionWithAssignees, Error> {
+    // Create the action first
+    let action = create(db, action_model, user_id).await?;
+
+    // Set assignees if provided
+    let assignee_ids = if let Some(ids) = assignee_ids {
+        action_assignee::set_assignees(db, action.id, ids).await?;
+        action_assignee::find_user_ids_by_action_id(db, action.id).await?
+    } else {
+        vec![]
+    };
+
+    Ok(ActionWithAssignees {
+        action,
+        assignee_ids,
+    })
+}
+
+/// Updates an existing action with optional assignee changes.
+///
+/// # Arguments
+///
+/// * `db` - Database connection
+/// * `id` - The action ID to update
+/// * `model` - The updated action model data
+/// * `assignee_ids` - Optional list of user IDs to set as assignees.
+///   If `Some`, replaces existing assignees.
+///   If `None`, assignees remain unchanged.
+///
+/// # Errors
+///
+/// Returns `Error` if the action is not found or database operation fails.
+pub async fn update_with_assignees(
+    db: &DatabaseConnection,
+    id: Id,
+    model: Model,
+    assignee_ids: Option<Vec<Id>>,
+) -> Result<ActionWithAssignees, Error> {
+    // Update the action
+    let action = update(db, id, model).await?;
+
+    // Update assignees if specified
+    if let Some(ids) = assignee_ids {
+        action_assignee::set_assignees(db, action.id, ids).await?;
+    }
+
+    // Fetch current assignees
+    let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+
+    Ok(ActionWithAssignees {
+        action,
+        assignee_ids,
+    })
+}
+
+/// Finds an action by ID and includes its assignee IDs.
+///
+/// # Errors
+///
+/// Returns `Error` if the action is not found or database operation fails.
+pub async fn find_by_id_with_assignees(
+    db: &DatabaseConnection,
+    id: Id,
+) -> Result<ActionWithAssignees, Error> {
+    let action = find_by_id(db, id).await?;
+    let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+
+    Ok(ActionWithAssignees {
+        action,
+        assignee_ids,
     })
 }
 
