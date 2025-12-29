@@ -1,4 +1,4 @@
-[![Build & Tests (backend)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml) [![Build and Deploy Containers](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_deploy_containers.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_deploy_containers.yml)
+[![Build, Test & Push](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml) [![Production Images](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml)
 
 # Refactor Coaching & Mentoring Platform
 
@@ -181,6 +181,23 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 `src` - contains a main function that initializes logging and calls all sub-services
 
 `web` - API endpoint definition, routing, handling of request/responses, controllers
+
+---
+
+## CI/CD & Deployment
+
+This project uses GitHub Actions for continuous integration, release builds, and deployment.
+
+- **Branch CI**: Automated linting, testing, and Docker builds on every push/PR
+- **Release Builds**: Multi-architecture production images triggered by GitHub releases
+- **Deployment**: Manual deployment to DigitalOcean via secure Tailscale VPN
+
+📚 **Complete Documentation:** [docs/cicd/README.md](docs/cicd/README.md)
+
+### Quick Links
+- [Release Process](docs/cicd/releases/release-workflow.md)
+- [Deployment Guide](docs/runbooks/production-deployment.md)
+- [Troubleshooting](docs/runbooks/troubleshooting.md)
 
 ---
 
