@@ -196,9 +196,9 @@ This project uses GitHub Actions for continuous integration, release builds, and
 📚 **Complete Documentation:** [docs/cicd/README.md](docs/cicd/README.md)
 
 ### Quick Links
-- [Release Process](docs/cicd/releases/release-workflow.md)
-- [Deployment Guide](docs/runbooks/production-deployment.md)
-- [Troubleshooting](docs/runbooks/troubleshooting.md)
+- [Production Deployment Guide](docs/cicd/production-deployment.md)
+- [Docker Quickstart](docs/cicd/docker-quickstart.md)
+- [PR Preview Environments](docs/cicd/pr-preview-environments.md)
 
 ---
 
@@ -261,4 +261,4 @@ This repository automatically deploys **isolated preview environments** for each
 
 **Access:** Requires Tailscale VPN connection. Access URLs are posted as a comment on your PR in the GitHub Web UI.
 
-For detailed information, see the [PR Preview Environments Runbook](docs/runbooks/pr-preview-environments.md).
+For detailed information, see the [PR Preview Environments Guide](docs/cicd/pr-preview-environments.md).

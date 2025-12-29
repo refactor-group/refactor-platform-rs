@@ -9,9 +9,10 @@
 The Refactor Platform backend uses GitHub Actions for continuous integration, release builds, and production deployment. This document provides a comprehensive overview of the CI/CD infrastructure.
 
 **Quick Stats:**
-- **3 GitHub Actions Workflows** (CI, Release, Deploy)
+- **8 GitHub Actions Workflows** (CI, Release, Deploy, PR Preview x5)
 - **Docker-based Deployment** to GitHub Container Registry (GHCR)
 - **Production Platform:** DigitalOcean (accessed via Tailscale VPN)
+- **Preview Platform:** Raspberry Pi 5 (ARM64, accessed via Tailscale VPN)
 - **Container Orchestration:** Docker Compose with Nginx reverse proxy
 - **Database:** PostgreSQL with SeaORM migrations
 
@@ -20,13 +21,14 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 ## Table of Contents
 
 1. [GitHub Actions Workflows](#github-actions-workflows)
-2. [Docker Infrastructure](#docker-infrastructure)
-3. [Database Migrations](#database-migrations)
-4. [Release Process](#release-process)
-5. [Production Deployment](#production-deployment)
-6. [Security & Secrets](#security--secrets)
-7. [Quick Reference](#quick-reference)
-8. [Gap Analysis & Future Improvements](#gap-analysis--future-improvements)
+2. [PR Preview Environments](#pr-preview-environments)
+3. [Docker Infrastructure](#docker-infrastructure)
+4. [Database Migrations](#database-migrations)
+5. [Release Process](#release-process)
+6. [Production Deployment](#production-deployment)
+7. [Security & Secrets](#security--secrets)
+8. [Quick Reference](#quick-reference)
+9. [Gap Analysis & Future Improvements](#gap-analysis--future-improvements)
 
 ---
 
@@ -89,6 +91,49 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 - ✅ Health checks and verification
 - ✅ Deploys both backend and frontend together
 - ⚠️ Manual trigger only (no auto-deploy)
+
+---
+
+## PR Preview Environments
+
+### 4. PR Preview Deployment (Backend)
+**Files:**
+- `.github/workflows/pr-preview-backend.yml` (trigger)
+- `.github/workflows/ci-deploy-pr-preview.yml` (reusable workflow)
+
+**Triggers:** Pull request opened/synchronize/reopened (backend changes)
+**Documentation:** [pr-preview-environments.md](pr-preview-environments.md)
+
+### 5. PR Preview Cleanup (Backend)
+**Files:**
+- `.github/workflows/cleanup-pr-preview-backend.yml` (trigger)
+- `.github/workflows/cleanup-pr-preview.yml` (reusable workflow)
+
+**Triggers:** Pull request closed/merged
+
+**Deployment Flow:**
+1. Backend PR opened/updated triggers deployment workflow
+2. Reusable workflow handles both backend and frontend deployments
+3. Builds native ARM64 images on Neo runner
+4. Deploys to Raspberry Pi 5 via Tailscale VPN
+5. Posts preview URLs to PR comment
+6. Cleanup on PR close/merge
+
+**Key Features:**
+- ✅ Isolated full-stack environments per PR
+- ✅ Unique port allocation (base_port + PR#)
+- ✅ Native ARM64 builds (no emulation)
+- ✅ Automatic cleanup with volume retention policies
+- ✅ Supports both backend and frontend PR triggers
+- ✅ Cross-repository workflow coordination
+
+**Port Allocation:**
+- Frontend: 3000 + PR#
+- Backend: 4000 + PR#
+- Postgres: 5432 + PR#
+
+**Frontend Integration:**
+The frontend repository uses identical workflows (`pr-preview-frontend.yml` and `cleanup-pr-preview-frontend.yml`) that call the same reusable workflows with `repo_type: 'frontend'`, ensuring parity between frontend and backend PR previews.
 
 ---
 
