@@ -10,10 +10,13 @@ use log::*;
 
 pub(crate) mod actions;
 pub(crate) mod assigned_actions;
+pub(crate) mod coach_relationships;
+pub(crate) mod coachee_relationships;
 pub(crate) mod coaching_sessions;
 pub(crate) mod organizations;
 pub(crate) mod overarching_goals;
 pub(crate) mod passwords;
+pub(crate) mod relationship_roles_summary;
 
 /// Checks that the `user_id` matches the `authenticated_user.id`
 pub(crate) async fn read(

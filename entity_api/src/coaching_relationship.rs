@@ -14,7 +14,8 @@ use sea_orm::{
     entity::prelude::*, sea_query::Alias, Condition, DatabaseConnection, FromQueryResult, JoinType,
     QuerySelect, QueryTrait, Set,
 };
-use serde::ser::{Serialize, SerializeStruct, Serializer};
+use serde::ser::{SerializeStruct, Serializer};
+use serde::Serialize;
 use slugify::slugify;
 
 pub async fn create(
@@ -276,6 +277,107 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
     Ok(())
 }
 
+/// Finds all coaching relationships where the given user is the coach.
+///
+/// Returns relationships with user names for display purposes.
+pub async fn find_by_coach_id_with_user_names(
+    db: &DatabaseConnection,
+    coach_id: Id,
+) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
+    let coaches = Alias::new("coaches");
+    let coachees = Alias::new("coachees");
+
+    let query = coaching_relationships::Entity::find()
+        .filter(coaching_relationships::Column::CoachId.eq(coach_id))
+        .join_as(
+            JoinType::Join,
+            coaches::Relation::CoachingRelationships.def().rev(),
+            coaches.clone(),
+        )
+        .join_as(
+            JoinType::Join,
+            coachees::Relation::CoachingRelationships.def().rev(),
+            coachees.clone(),
+        )
+        .select_only()
+        .column(coaching_relationships::Column::Id)
+        .column(coaching_relationships::Column::OrganizationId)
+        .column(coaching_relationships::Column::CoachId)
+        .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::CreatedAt)
+        .column(coaching_relationships::Column::UpdatedAt)
+        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
+        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
+        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
+        .into_model::<CoachingRelationshipWithUserNames>();
+
+    Ok(query.all(db).await?)
+}
+
+/// Finds all coaching relationships where the given user is the coachee.
+///
+/// Returns relationships with user names for display purposes.
+pub async fn find_by_coachee_id_with_user_names(
+    db: &DatabaseConnection,
+    coachee_id: Id,
+) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
+    let coaches = Alias::new("coaches");
+    let coachees = Alias::new("coachees");
+
+    let query = coaching_relationships::Entity::find()
+        .filter(coaching_relationships::Column::CoacheeId.eq(coachee_id))
+        .join_as(
+            JoinType::Join,
+            coaches::Relation::CoachingRelationships.def().rev(),
+            coaches.clone(),
+        )
+        .join_as(
+            JoinType::Join,
+            coachees::Relation::CoachingRelationships.def().rev(),
+            coachees.clone(),
+        )
+        .select_only()
+        .column(coaching_relationships::Column::Id)
+        .column(coaching_relationships::Column::OrganizationId)
+        .column(coaching_relationships::Column::CoachId)
+        .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::CreatedAt)
+        .column(coaching_relationships::Column::UpdatedAt)
+        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
+        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
+        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
+        .into_model::<CoachingRelationshipWithUserNames>();
+
+    Ok(query.all(db).await?)
+}
+
+/// Returns a roles summary for a user including counts and boolean flags.
+///
+/// This provides a summary of the user's coaching roles across all relationships.
+pub async fn get_roles_summary(
+    db: &DatabaseConnection,
+    user_id: Id,
+) -> Result<RolesSummary, Error> {
+    let coach_count = coaching_relationships::Entity::find()
+        .filter(coaching_relationships::Column::CoachId.eq(user_id))
+        .count(db)
+        .await?;
+
+    let coachee_count = coaching_relationships::Entity::find()
+        .filter(coaching_relationships::Column::CoacheeId.eq(user_id))
+        .count(db)
+        .await?;
+
+    Ok(RolesSummary {
+        is_coach: coach_count > 0,
+        is_coachee: coachee_count > 0,
+        coach_relationship_count: coach_count as u16,
+        coachee_relationship_count: coachee_count as u16,
+    })
+}
+
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids. This should be used as an implementation detail only.
 #[derive(FromQueryResult, Debug, PartialEq, Clone)]
@@ -310,6 +412,22 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("updated_at", &self.updated_at)?;
         state.end()
     }
+}
+
+/// Summary of a user's coaching roles across all relationships.
+///
+/// Provides boolean flags indicating whether the user is a coach or coachee,
+/// along with counts of each type of relationship.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RolesSummary {
+    /// True if the user is a coach in at least one relationship
+    pub is_coach: bool,
+    /// True if the user is a coachee in at least one relationship
+    pub is_coachee: bool,
+    /// Number of relationships where the user is the coach
+    pub coach_relationship_count: u16,
+    /// Number of relationships where the user is the coachee
+    pub coachee_relationship_count: u16,
 }
 
 #[cfg(test)]
