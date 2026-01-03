@@ -109,6 +109,38 @@ pub async fn find_user_ids_by_action_id(
     Ok(assignees.into_iter().map(|a| a.user_id).collect())
 }
 
+/// Finds all action_assignee records where a specific user is assigned.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_by_user_id(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Model>, Error> {
+    debug!("Finding assignments for user_id={user_id}");
+
+    let assignees = Entity::find()
+        .filter(Column::UserId.eq(user_id))
+        .all(db)
+        .await?;
+
+    Ok(assignees)
+}
+
+/// Returns just the action IDs assigned to a given user.
+///
+/// This is a convenience function that extracts only the action_id field
+/// from the assignee records.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_action_ids_by_user_id(
+    db: &DatabaseConnection,
+    user_id: Id,
+) -> Result<Vec<Id>, Error> {
+    let assignees = find_by_user_id(db, user_id).await?;
+    Ok(assignees.into_iter().map(|a| a.action_id).collect())
+}
+
 /// Sets the assignees for an action, replacing any existing assignments.
 ///
 /// This performs an atomic operation: deletes all existing assignees and
@@ -218,6 +250,80 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].action_id, action_id);
         assert_eq!(results[1].action_id, action_id);
+
+        Ok(())
+    }
+
+    /// Tests that find_by_user_id correctly retrieves all action assignments
+    /// for a given user, enabling lookup of all actions a user is assigned to.
+    #[tokio::test]
+    async fn find_by_user_id_returns_assignments() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+
+        let assignment1 = Model {
+            id: Id::new_v4(),
+            action_id: Id::new_v4(),
+            user_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let assignment2 = Model {
+            id: Id::new_v4(),
+            action_id: Id::new_v4(),
+            user_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![assignment1.clone(), assignment2.clone()]])
+            .into_connection();
+
+        let results = find_by_user_id(&db, user_id).await?;
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].user_id, user_id);
+        assert_eq!(results[1].user_id, user_id);
+
+        Ok(())
+    }
+
+    /// Tests that find_action_ids_by_user_id extracts only the action IDs
+    /// from assignments, useful for fetching full action details in a second query.
+    #[tokio::test]
+    async fn find_action_ids_by_user_id_returns_action_ids() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let action_id_1 = Id::new_v4();
+        let action_id_2 = Id::new_v4();
+
+        let assignment1 = Model {
+            id: Id::new_v4(),
+            action_id: action_id_1,
+            user_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let assignment2 = Model {
+            id: Id::new_v4(),
+            action_id: action_id_2,
+            user_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![assignment1.clone(), assignment2.clone()]])
+            .into_connection();
+
+        let results = find_action_ids_by_user_id(&db, user_id).await?;
+
+        assert_eq!(results.len(), 2);
+        assert!(results.contains(&action_id_1));
+        assert!(results.contains(&action_id_2));
 
         Ok(())
     }

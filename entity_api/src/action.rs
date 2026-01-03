@@ -221,6 +221,58 @@ pub async fn find_by_id_with_assignees(
     })
 }
 
+/// Finds all actions assigned to a specific user across all coaching sessions.
+///
+/// This queries the `action_assignees` junction table to find all actions
+/// where the given user is an assignee, then fetches the full action data
+/// with all assignee IDs for each action.
+///
+/// # Arguments
+///
+/// * `db` - Database connection
+/// * `user_id` - The user ID to find assigned actions for
+///
+/// # Returns
+///
+/// A vector of `ActionWithAssignees` containing each action and its assignee IDs.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_by_assignee_with_assignees(
+    db: &DatabaseConnection,
+    user_id: Id,
+) -> Result<Vec<ActionWithAssignees>, Error> {
+    debug!("Finding actions assigned to user_id={user_id}");
+
+    // Get all action IDs where this user is assigned
+    let action_ids = action_assignee::find_action_ids_by_user_id(db, user_id).await?;
+
+    if action_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Fetch all actions by their IDs
+    let actions = Entity::find()
+        .filter(entity::actions::Column::Id.is_in(action_ids))
+        .all(db)
+        .await?;
+
+    // Build ActionWithAssignees for each action
+    let mut results = Vec::with_capacity(actions.len());
+    for action in actions {
+        let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+        results.push(ActionWithAssignees {
+            action,
+            assignee_ids,
+        });
+    }
+
+    debug!("Found {} actions assigned to user {user_id}", results.len());
+
+    Ok(results)
+}
+
 #[cfg(test)]
 // We need to gate seaORM's mock feature behind conditional compilation because
 // the feature removes the Clone trait implementation from seaORM's DatabaseConnection.

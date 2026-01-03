@@ -9,6 +9,7 @@ use domain::Id;
 use log::*;
 
 pub(crate) mod actions;
+pub(crate) mod assigned_actions;
 pub(crate) mod coaching_sessions;
 pub(crate) mod organizations;
 pub(crate) mod overarching_goals;
