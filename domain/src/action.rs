@@ -6,7 +6,8 @@ use sea_orm::DatabaseConnection;
 
 pub use entity_api::action::{
     create, create_with_assignees, delete_by_id, find_by_assignee_with_assignees, find_by_id,
-    find_by_id_with_assignees, update, update_status, update_with_assignees, ActionWithAssignees,
+    find_by_id_with_assignees, find_by_user_sessions_with_assignees, update, update_status,
+    update_with_assignees, ActionWithAssignees, AssigneeFilter,
 };
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>

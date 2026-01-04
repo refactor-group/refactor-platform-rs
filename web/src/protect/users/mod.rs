@@ -17,6 +17,7 @@ pub(crate) mod organizations;
 pub(crate) mod overarching_goals;
 pub(crate) mod passwords;
 pub(crate) mod relationship_roles_summary;
+pub(crate) mod session_actions;
 
 /// Checks that the `user_id` matches the `authenticated_user.id`
 pub(crate) async fn read(

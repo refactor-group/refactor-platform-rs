@@ -4,7 +4,7 @@ use utoipa::ToSchema;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, TryIntoModel,
+    DatabaseConnection, QuerySelect, TryIntoModel,
 };
 
 use super::action_assignee;
@@ -269,6 +269,89 @@ pub async fn find_by_assignee_with_assignees(
     }
 
     debug!("Found {} actions assigned to user {user_id}", results.len());
+
+    Ok(results)
+}
+
+/// Filter for querying actions by assignee status.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AssigneeFilter {
+    /// Return all actions regardless of assignee status (default)
+    #[default]
+    All,
+    /// Return only actions that have at least one assignee
+    Assigned,
+    /// Return only actions that have no assignees
+    Unassigned,
+}
+
+/// Finds all actions from a user's coaching sessions with optional assignee filtering.
+///
+/// This finds all coaching sessions where the user is either coach or coachee,
+/// then returns all actions from those sessions. The optional filter allows
+/// narrowing results to only assigned or unassigned actions.
+///
+/// # Arguments
+///
+/// * `db` - Database connection
+/// * `user_id` - The user ID whose sessions to query
+/// * `filter` - Optional filter for assignee status
+///
+/// # Returns
+///
+/// A vector of `ActionWithAssignees` containing each action and its assignee IDs.
+pub async fn find_by_user_sessions_with_assignees(
+    db: &DatabaseConnection,
+    user_id: Id,
+    filter: AssigneeFilter,
+) -> Result<Vec<ActionWithAssignees>, Error> {
+    use entity::{actions, coaching_relationships, coaching_sessions};
+    use sea_orm::JoinType;
+
+    debug!("Finding actions from sessions for user_id={user_id} with filter={filter:?}");
+
+    // Find all actions from coaching sessions where the user is coach or coachee
+    let actions: Vec<entity::actions::Model> = actions::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            actions::Relation::CoachingSessions.def(),
+        )
+        .join(
+            JoinType::InnerJoin,
+            coaching_sessions::Relation::CoachingRelationships.def(),
+        )
+        .filter(
+            coaching_relationships::Column::CoachId
+                .eq(user_id)
+                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .all(db)
+        .await?;
+
+    // Build ActionWithAssignees and apply filter
+    let mut results = Vec::with_capacity(actions.len());
+    for action in actions {
+        let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+
+        let include = match filter {
+            AssigneeFilter::All => true,
+            AssigneeFilter::Assigned => !assignee_ids.is_empty(),
+            AssigneeFilter::Unassigned => assignee_ids.is_empty(),
+        };
+
+        if include {
+            results.push(ActionWithAssignees {
+                action,
+                assignee_ids,
+            });
+        }
+    }
+
+    debug!(
+        "Found {} actions from sessions for user {user_id} (filter={filter:?})",
+        results.len()
+    );
 
     Ok(results)
 }

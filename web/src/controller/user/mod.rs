@@ -7,3 +7,4 @@ pub(crate) mod organization_controller;
 pub(crate) mod overarching_goal_controller;
 pub(crate) mod password_controller;
 pub(crate) mod relationship_roles_summary_controller;
+pub(crate) mod session_actions_controller;
