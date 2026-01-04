@@ -7,6 +7,7 @@
 ### What You Get
 
 Every PR automatically gets:
+
 - ✅ **Isolated full-stack environment** (Postgres + Backend + Frontend)
 - ✅ **Clean path-based URLs** via NGINX routing
 - ✅ **Live database** with migrations applied
@@ -22,7 +23,8 @@ Every PR automatically gets:
 5. **Visit your preview** at the URLs provided
 
 **Example PR Comment:**
-```
+
+```bash
 🚀 PR Preview Environment Deployed!
 
 Frontend:     http://neo.rove-barbel.ts.net/pr-201/
@@ -42,12 +44,13 @@ Access Method: NGINX path-based routing (no direct port access)
 Each PR gets a unique URL path based on the PR number:
 
 | Service | URL Pattern | Example (PR #201) |
-|---------|------------|-------------------|
+| --------- | ------------ | ------------------- |
 | Frontend | `/pr-<NUM>/` | `http://neo.rove-barbel.ts.net/pr-201/` |
 | Backend API | `/pr-<NUM>/api/` | `http://neo.rove-barbel.ts.net/pr-201/api/` |
 | Health Check | `/pr-<NUM>/health` | `http://neo.rove-barbel.ts.net/pr-201/health` |
 
 **How NGINX Routes Traffic:**
+
 - All requests go through NGINX on port 80
 - NGINX uses regex to match `/pr-<NUM>/` paths
 - Routes to correct Docker containers based on PR number
@@ -56,12 +59,14 @@ Each PR gets a unique URL path based on the PR number:
 ### Deployment Flow
 
 **Backend PR:**
+
 1. PR opened → Workflow triggers
 2. Backend: Builds from **your PR branch** 📦
 3. Frontend: Uses **main-arm64** image (or builds if missing)
 4. Deploys: Full stack with your backend changes
 
 **Frontend PR:**
+
 1. PR opened → Workflow triggers
 2. Frontend: Builds from **your PR branch** 📦
 3. Backend: Uses **main-arm64** image (or builds if missing)
@@ -69,7 +74,7 @@ Each PR gets a unique URL path based on the PR number:
 
 ### Architecture
 
-```
+```bash
 ┌──────────────────────────────────────────────┐
 │  Developer (via Tailscale VPN)               │
 └────────────────┬─────────────────────────────┘
@@ -77,30 +82,31 @@ Each PR gets a unique URL path based on the PR number:
                  ↓
 ┌──────────────────────────────────────────────┐
 │  NGINX (neo.rove-barbel.ts.net:80)           │
-│  ├─ /pr-201/ → pr-201-frontend:3000         │
-│  ├─ /pr-201/api/ → pr-201-backend:3000      │
-│  └─ /pr-202/ → pr-202-frontend:3000         │
+│  ├─ /pr-201/ → pr-201-frontend:3000          │
+│  ├─ /pr-201/api/ → pr-201-backend:3000       │
+│  └─ /pr-202/ → pr-202-frontend:3000          │
 └────────────────┬─────────────────────────────┘
                  │ Docker Network: preview-ingress
                  ↓
 ┌──────────────────────────────────────────────┐
 │  Docker Containers (No Host Ports)           │
-│  ┌──────────────────────────────────────┐   │
-│  │ PR-201 Environment                   │   │
-│  │ ├─ pr-201-frontend-1 (3000)         │   │
-│  │ ├─ pr-201-backend-1 (3000)          │   │
-│  │ └─ pr-201-postgres-1 (5432, internal)│   │
-│  └──────────────────────────────────────┘   │
-│  ┌──────────────────────────────────────┐   │
-│  │ PR-202 Environment                   │   │
-│  │ ├─ pr-202-frontend-1 (3000)         │   │
-│  │ ├─ pr-202-backend-1 (3000)          │   │
-│  │ └─ pr-202-postgres-1 (5432, internal)│   │
-│  └──────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────┐    │
+│  │ PR-201 Environment                   │    │
+│  │ ├─ pr-201-frontend-1 (3000)          │    │
+│  │ ├─ pr-201-backend-1 (3000)           │    │
+│  │ └─ pr-201-postgres-1 (5432, internal)│    │
+│  └──────────────────────────────────────┘    │
+│  ┌──────────────────────────────────────┐    │
+│  │ PR-202 Environment                   │    │
+│  │ ├─ pr-202-frontend-1 (3000)          │    │
+│  │ ├─ pr-202-backend-1 (3000)           │    │
+│  │ └─ pr-202-postgres-1 (5432, internal)│    │
+│  └──────────────────────────────────────┘    │
 └──────────────────────────────────────────────┘
 ```
 
 **Security Features:**
+
 - ✅ Single ingress point (NGINX only)
 - ✅ No direct container port access
 - ✅ Postgres never exposed externally
@@ -115,11 +121,13 @@ Each PR gets a unique URL path based on the PR number:
 **All secrets are managed in ONE place:** Backend repo's `pr-preview` environment.
 
 This means:
+
 - ✅ Frontend repo needs **zero** PR preview secrets
 - ✅ No secret duplication across repos
 - ✅ Single source of truth for configuration
 
 **Backend `pr-preview` Environment Contains:**
+
 - RPi5 SSH connection details
 - Database credentials
 - TipTap API keys
@@ -129,15 +137,18 @@ This means:
 ### Workflow Files
 
 **Backend Repository:**
+
 - `.github/workflows/ci-deploy-pr-preview.yml` - Reusable workflow (does the heavy lifting)
 - `.github/workflows/pr-preview-backend.yml` - Overlay for backend PRs
 
 **Frontend Repository:**
+
 - `.github/workflows/pr-preview-frontend.yml` - Overlay for frontend PRs (calls backend reusable workflow)
 
 ### NGINX Configuration
 
 **Static Configuration:**
+
 - `/etc/nginx/sites-enabled/pr-previews.conf` - Single config handles all PRs
 - Uses regex to dynamically route based on PR number
 - No per-PR config generation needed
@@ -212,12 +223,14 @@ ssh -L 5432:localhost:5432 user@neo.rove-barbel.ts.net
 ### Preview Not Accessible
 
 1. **Verify Tailscale connection:**
+
    ```bash
    tailscale status
    # Should show you're connected to the network
    ```
 
 2. **Check NGINX routing:**
+
    ```bash
    # Test NGINX health endpoint
    curl http://neo.rove-barbel.ts.net/health
@@ -227,12 +240,14 @@ ssh -L 5432:localhost:5432 user@neo.rove-barbel.ts.net
    ```
 
 3. **Verify containers running:**
+
    ```bash
    ssh user@neo.rove-barbel.ts.net
    docker ps --filter 'name=pr-201'
    ```
 
 4. **Check container logs:**
+
    ```bash
    ssh user@neo.rove-barbel.ts.net
    docker logs pr-201-backend-1 --tail 50
@@ -249,11 +264,13 @@ ssh -L 5432:localhost:5432 user@neo.rove-barbel.ts.net
 ### NGINX Routing Issues
 
 **502 Bad Gateway:**
+
 - Container not running or name mismatch
 - Check: `docker ps --filter 'name=pr-<NUM>'`
 - Verify container names match pattern: `pr-<NUM>-frontend-1`, `pr-<NUM>-backend-1`
 
 **404 Not Found:**
+
 - Incorrect path in URL
 - Ensure path starts with `/pr-<NUM>/`
 - Check NGINX config: `cat /etc/nginx/sites-enabled/pr-previews.conf`
@@ -265,10 +282,12 @@ ssh -L 5432:localhost:5432 user@neo.rove-barbel.ts.net
 ### Automatic Cleanup
 
 Preview environments are **automatically cleaned up** when:
+
 - PR is closed
 - PR is merged
 
 The cleanup workflow removes:
+
 - Docker containers
 - Database volumes
 - Temporary files
@@ -356,6 +375,7 @@ sudo tail -f /var/log/nginx/error.log | grep 'pr-'
 ### View Logs
 
 **Real-time logs during deployment:**
+
 ```bash
 # SSH into Neo
 ssh user@neo.rove-barbel.ts.net
@@ -425,17 +445,20 @@ docker run --rm --network preview-ingress alpine ping -c 1 pr-201-postgres-1
 Want to improve the PR preview system?
 
 **Key files to modify:**
+
 - `ci-deploy-pr-preview.yml` - Main deployment logic
 - `docker-compose.pr-preview.yaml` - Service definitions and network configuration
 - `pr-preview-backend.yml` / `pr-preview-frontend.yml` - Trigger configurations
 - `nginx/conf.d/pr-previews.conf` - NGINX routing configuration (static, handles all PRs)
 
 **After changes:**
+
 1. Test in a PR first
 2. Document changes in this runbook
 3. Update PR template if user-facing changes
 
 **NGINX Configuration Changes:**
+
 - The NGINX config is static and must be manually updated on Neo if modified
 - Location: `/etc/nginx/sites-enabled/pr-previews.conf`
 - After updating: `sudo nginx -t && sudo nginx -s reload`
@@ -452,6 +475,4 @@ Want to improve the PR preview system?
 
 ---
 
-**Questions?** Ask in #engineering Slack channel or open an issue.
-
-**Happy Testing! 🚀**
+**Questions?** Ask in Levi in Slack or open an issue.
