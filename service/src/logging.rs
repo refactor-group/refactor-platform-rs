@@ -1,6 +1,6 @@
 use crate::config::Config;
 use log::LevelFilter;
-use simplelog::{self, ConfigBuilder};
+use simplelog;
 
 pub struct Logger {}
 
@@ -15,19 +15,9 @@ impl Logger {
             LevelFilter::Trace => simplelog::LevelFilter::Trace,
         };
 
-        // Configure logging to suppress verbose logs from dependencies
-        let log_config = ConfigBuilder::new()
-            .add_filter_ignore_str("sqlx")
-            .add_filter_ignore_str("sea_orm")
-            .add_filter_ignore_str("tower")
-            .add_filter_ignore_str("tracing")
-            .add_filter_ignore_str("hyper")
-            .add_filter_ignore_str("axum")
-            .build();
-
         simplelog::TermLogger::init(
             log_level_filter,
-            log_config,
+            simplelog::Config::default(),
             simplelog::TerminalMode::Mixed,
             simplelog::ColorChoice::Auto,
         )
