@@ -688,9 +688,9 @@ jobs:
                       pr.number=${{ steps.resolve.outputs.pr_number }}
                   build-args: |
                       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PROTOCOL || 'http' }}
-                      NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_HOST || 'localhost' }}
-                      NEXT_PUBLIC_BACKEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PORT || steps.resolve.outputs.backend_service_port }}
-                      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_API_PATH || 'api' }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ secrets.RPI5_TAILSCALE_NAME }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_PORT=80
+                      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=pr-${{ steps.resolve.outputs.pr_number }}/api
                       NEXT_PUBLIC_BACKEND_API_VERSION=${{ secrets.PR_PREVIEW_BACKEND_API_VERSION || 'v1' }}
                       NEXT_PUBLIC_TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
                       FRONTEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_PORT || '3000' }}
@@ -1081,8 +1081,12 @@ jobs:
                       const repoType = '${{ inputs.repo_type }}';
                       const isNativeArm64 = '${{ needs.build-arm64-image.outputs.is_native_arm64 }}' === 'true';
 
-                      const backendUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}:${backendPort}`;
-                      const frontendUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}:${frontendPort}`;
+                      // Path-based URLs (NGINX routing)
+                      const baseUrl = `http://${{ secrets.RPI5_TAILSCALE_NAME }}`;
+                      const prPath = `/pr-${prNumber}`;
+                      const frontendUrl = `${baseUrl}${prPath}/`;
+                      const backendUrl = `${baseUrl}${prPath}/api`;
+                      const healthUrl = `${baseUrl}${prPath}/health`;
 
                       const comment = `## 🚀 PR Preview Environment Deployed!
 
@@ -1091,7 +1095,8 @@ jobs:
                       |---------|-----|
                       | **Frontend** | [${frontendUrl}](${frontendUrl}) |
                       | **Backend API** | [${backendUrl}](${backendUrl}) |
-                      | **Health Check** | [${backendUrl}/health](${backendUrl}/health) |
+                      | **Health Check** | [${healthUrl}](${healthUrl}) |
+                      | **Base Path** | \`${prPath}/\` |
 
                       ### 📊 Environment Details
                       - **PR Number:** #${prNumber}
@@ -1099,21 +1104,23 @@ jobs:
                       - **Backend Branch:** \`${backendBranch}\` → [${backendImage}](https://github.com/${{ github.repository_owner }}?tab=packages)
                       - **Frontend Branch:** \`${frontendBranch}\` → [${frontendImage}](https://github.com/${{ github.repository_owner }}?tab=packages)
                       - **Commit:** \`${{ github.sha }}\`
-                      - **Ports:** Frontend: ${frontendPort} | Backend: ${backendPort} | Postgres: ${postgresPort}
+                      - **Access Method:** NGINX path-based routing (no direct port access)
                       - **Build Type:** ${isNativeArm64 ? '🚀 Native ARM64' : '⚠️ ARM64 Emulation'}
 
                       ### 🔐 Access Requirements
                       1. **Connect to Tailscale** (required)
-                      2. Access frontend: ${frontendUrl}
-                      3. Access backend: ${backendUrl}
+                      2. Access via NGINX ingress at: \`${baseUrl}${prPath}/\`
 
                       ### 🧪 Testing
                       \`\`\`bash
                       # Health check
-                      curl ${backendUrl}/health
+                      curl ${healthUrl}
 
-                      # API test  
-                      curl ${backendUrl}/api/v1/users
+                      # Frontend
+                      curl ${frontendUrl}
+
+                      # API test
+                      curl ${backendUrl}/v1/users
                       \`\`\`
 
                       ### 🧹 Cleanup

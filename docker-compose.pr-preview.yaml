@@ -97,11 +97,12 @@ services:
       # Frontend server configuration
       HOSTNAME: 0.0.0.0                  # Network interface to bind to
       PORT: ${PR_FRONTEND_CONTAINER_PORT} # Port app binds to inside container
-      # Backend connection configuration (build-time values baked into image)
+      # Backend connection configuration via NGINX path-based routing
+      # Browser makes API calls to http://neo.rove-barbel.ts.net/pr-<NUM>/api/
       NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL:-http}
-      NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${NEXT_PUBLIC_BACKEND_SERVICE_HOST:-localhost}
-      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${PR_BACKEND_PORT}
-      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${NEXT_PUBLIC_BACKEND_SERVICE_API_PATH:-api}
+      NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${NEXT_PUBLIC_BACKEND_SERVICE_HOST}
+      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${NEXT_PUBLIC_BACKEND_SERVICE_PORT:-80}
+      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${NEXT_PUBLIC_BACKEND_SERVICE_API_PATH}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${NEXT_PUBLIC_BACKEND_API_VERSION:-v1}
       NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
     # Expose port to Docker networks only (no host port binding)
