@@ -13,14 +13,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}         # Database username
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # Database password
       POSTGRES_DB: ${POSTGRES_DB}             # Database name
-    ports:
-      # Map dynamic external port to standard internal port 5432
-      - "${PR_POSTGRES_PORT}:5432"
+    # No ports exposed - postgres is internal only, accessed via Docker network
     volumes:
       # Persist database data - Docker Compose project creates unique volume automatically
       - postgres_data:/var/lib/postgresql/data
     networks:
-      # Use default network - Docker Compose project creates unique network automatically
+      # ONLY on default network - NOT on preview-ingress (security: no external access)
       - default
     healthcheck:
       # Verify database is ready before dependent services start
@@ -78,14 +76,15 @@ services:
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
       MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
       WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID}
-    ports:
-      # Map dynamic external port to container internal port
-      - "${PR_BACKEND_PORT}:${PR_BACKEND_CONTAINER_PORT}"
+    # Expose port to Docker networks only (no host port binding)
+    expose:
+      - "3000"                            # Container listens on port 3000
     depends_on:
       - migrator                          # Start after migrations complete
     networks:
-      # Use default network - Docker Compose project creates unique network automatically
+      # On BOTH networks: default (for postgres) and preview-ingress (for NGINX)
       - default
+      - preview-ingress
     restart: unless-stopped               # Restart automatically unless manually stopped
 
   # Frontend application service
@@ -105,18 +104,19 @@ services:
       NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${NEXT_PUBLIC_BACKEND_SERVICE_API_PATH:-api}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${NEXT_PUBLIC_BACKEND_API_VERSION:-v1}
       NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
-    ports:
-      # Map dynamic external port to container internal port
-      - "${PR_FRONTEND_PORT}:${PR_FRONTEND_CONTAINER_PORT}"
+    # Expose port to Docker networks only (no host port binding)
+    expose:
+      - "3000"                            # Container listens on port 3000
     depends_on:
       - backend                           # Start after backend is running
     networks:
-      # Use default network - Docker Compose project creates unique network automatically
+      # On BOTH networks: default (for service mesh) and preview-ingress (for NGINX)
       - default
+      - preview-ingress
     restart: unless-stopped               # Restart automatically unless manually stopped
 
 # Docker Compose project (-p flag) automatically creates:
-# - Unique network: {project_name}_default 
+# - Unique network: {project_name}_default
 # - Unique volume: {project_name}_postgres_data
 # - Container names: {project_name}-{service_name}-1
 # This eliminates need for manual PR-specific naming in compose file
@@ -124,3 +124,14 @@ services:
 volumes:
   # Volume automatically namespaced by Docker Compose project
   postgres_data:
+
+networks:
+  # Shared ingress network for NGINX to reach all PR containers
+  # This network is created manually and shared across all PR environments
+  preview-ingress:
+    external: true
+    name: preview-ingress
+
+  # Default network is automatically created by Docker Compose with project name
+  # Each PR gets its own isolated default network: pr-<NUM>_default
+  default:
