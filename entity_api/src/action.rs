@@ -221,58 +221,6 @@ pub async fn find_by_id_with_assignees(
     })
 }
 
-/// Finds all actions assigned to a specific user across all coaching sessions.
-///
-/// This queries the `action_assignees` junction table to find all actions
-/// where the given user is an assignee, then fetches the full action data
-/// with all assignee IDs for each action.
-///
-/// # Arguments
-///
-/// * `db` - Database connection
-/// * `user_id` - The user ID to find assigned actions for
-///
-/// # Returns
-///
-/// A vector of `ActionWithAssignees` containing each action and its assignee IDs.
-///
-/// # Errors
-///
-/// Returns `Error` if the database query fails.
-pub async fn find_by_assignee_with_assignees(
-    db: &DatabaseConnection,
-    user_id: Id,
-) -> Result<Vec<ActionWithAssignees>, Error> {
-    debug!("Finding actions assigned to user_id={user_id}");
-
-    // Get all action IDs where this user is assigned
-    let action_ids = action_assignee::find_action_ids_by_user_id(db, user_id).await?;
-
-    if action_ids.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Fetch all actions by their IDs
-    let actions = Entity::find()
-        .filter(entity::actions::Column::Id.is_in(action_ids))
-        .all(db)
-        .await?;
-
-    // Build ActionWithAssignees for each action
-    let mut results = Vec::with_capacity(actions.len());
-    for action in actions {
-        let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
-        results.push(ActionWithAssignees {
-            action,
-            assignee_ids,
-        });
-    }
-
-    debug!("Found {} actions assigned to user {user_id}", results.len());
-
-    Ok(results)
-}
-
 /// Filter for querying actions by assignee status.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -286,55 +234,109 @@ pub enum AssigneeFilter {
     Unassigned,
 }
 
-/// Finds all actions from a user's coaching sessions with optional assignee filtering.
+/// Scope for user actions query.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// Actions assigned to this user
+    Assigned,
+    /// Actions from coaching sessions where user is coach or coachee (default)
+    #[default]
+    Sessions,
+}
+
+/// Query options for the unified user actions endpoint.
+#[derive(Clone, Debug, Default)]
+pub struct UserActionsQuery {
+    pub scope: Scope,
+    pub coaching_session_id: Option<Id>,
+    pub status: Option<entity::status::Status>,
+    pub assignee_filter: AssigneeFilter,
+    pub sort_column: Option<entity::actions::Column>,
+    pub sort_order: Option<sea_orm::Order>,
+}
+
+/// Unified query for user actions with flexible filtering and sorting.
 ///
-/// This finds all coaching sessions where the user is either coach or coachee,
-/// then returns all actions from those sessions. The optional filter allows
-/// narrowing results to only assigned or unassigned actions.
+/// Supports two scopes:
+/// - `Scope::Assigned`: Actions where the user is an assignee
+/// - `Scope::Sessions`: Actions from coaching sessions where user is coach or coachee
 ///
-/// # Arguments
+/// # Example
 ///
-/// * `db` - Database connection
-/// * `user_id` - The user ID whose sessions to query
-/// * `filter` - Optional filter for assignee status
-///
-/// # Returns
-///
-/// A vector of `ActionWithAssignees` containing each action and its assignee IDs.
-pub async fn find_by_user_sessions_with_assignees(
+/// ```ignore
+/// let actions = find_by_user(db, user_id, UserActionsQuery {
+///     scope: Scope::Sessions,
+///     coaching_session_id: Some(session_id),
+///     status: Some(Status::InProgress),
+///     assignee_filter: AssigneeFilter::All,
+///     sort_column: Some(actions::Column::DueBy),
+///     sort_order: Some(Order::Asc),
+/// }).await?;
+/// ```
+pub async fn find_by_user(
     db: &DatabaseConnection,
     user_id: Id,
-    filter: AssigneeFilter,
+    query: UserActionsQuery,
 ) -> Result<Vec<ActionWithAssignees>, Error> {
     use entity::{actions, coaching_relationships, coaching_sessions};
-    use sea_orm::JoinType;
+    use sea_orm::{JoinType, QueryOrder};
 
-    debug!("Finding actions from sessions for user_id={user_id} with filter={filter:?}");
+    debug!(
+        "Finding actions for user_id={user_id} with scope={:?}, session={:?}, status={:?}, assignee={:?}",
+        query.scope, query.coaching_session_id, query.status, query.assignee_filter
+    );
 
-    // Find all actions from coaching sessions where the user is coach or coachee
-    let actions: Vec<entity::actions::Model> = actions::Entity::find()
-        .join(
-            JoinType::InnerJoin,
-            actions::Relation::CoachingSessions.def(),
-        )
-        .join(
-            JoinType::InnerJoin,
-            coaching_sessions::Relation::CoachingRelationships.def(),
-        )
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
-        .all(db)
-        .await?;
+    // Build base query based on scope
+    let base_select = match query.scope {
+        Scope::Assigned => {
+            let action_ids = action_assignee::find_action_ids_by_user_id(db, user_id).await?;
 
-    // Build ActionWithAssignees and apply filter
+            if action_ids.is_empty() {
+                return Ok(vec![]);
+            }
+
+            actions::Entity::find().filter(actions::Column::Id.is_in(action_ids))
+        }
+        Scope::Sessions => actions::Entity::find()
+            .join(
+                JoinType::InnerJoin,
+                actions::Relation::CoachingSessions.def(),
+            )
+            .join(
+                JoinType::InnerJoin,
+                coaching_sessions::Relation::CoachingRelationships.def(),
+            )
+            .filter(
+                coaching_relationships::Column::CoachId
+                    .eq(user_id)
+                    .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
+            ),
+    };
+
+    // Apply filters
+    let mut select = base_select;
+
+    if let Some(session_id) = query.coaching_session_id {
+        select = select.filter(actions::Column::CoachingSessionId.eq(session_id));
+    }
+
+    if let Some(status) = &query.status {
+        select = select.filter(actions::Column::Status.eq(status.clone()));
+    }
+
+    // Apply sorting
+    if let (Some(column), Some(order)) = (query.sort_column, query.sort_order) {
+        select = select.order_by(column, order);
+    }
+
+    let actions: Vec<entity::actions::Model> = select.all(db).await?;
+
+    // Build ActionWithAssignees and apply assignee filter
     let mut results = Vec::with_capacity(actions.len());
     for action in actions {
         let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
 
-        let include = match filter {
+        let include = match query.assignee_filter {
             AssigneeFilter::All => true,
             AssigneeFilter::Assigned => !assignee_ids.is_empty(),
             AssigneeFilter::Unassigned => assignee_ids.is_empty(),
@@ -349,8 +351,9 @@ pub async fn find_by_user_sessions_with_assignees(
     }
 
     debug!(
-        "Found {} actions from sessions for user {user_id} (filter={filter:?})",
-        results.len()
+        "Found {} actions for user {user_id} (scope={:?})",
+        results.len(),
+        query.scope
     );
 
     Ok(results)
@@ -469,6 +472,211 @@ mod tests {
         let result = update_status(&db, Id::new_v4(), Status::Completed).await;
 
         assert_eq!(result.is_err(), true);
+
+        Ok(())
+    }
+
+    /// Tests that find_by_user with Scope::Assigned returns actions assigned to the user.
+    #[tokio::test]
+    async fn find_by_user_with_scope_assigned_returns_assigned_actions() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let action_id = Id::new_v4();
+
+        let action_model = Model {
+            id: action_id,
+            user_id: Id::new_v4(),
+            coaching_session_id: Id::new_v4(),
+            body: Some("Assigned action".to_owned()),
+            due_by: Some(now.into()),
+            status_changed_at: now.into(),
+            status: Default::default(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Mock: 1) action_assignee query returns action IDs, 2) actions query, 3) assignee lookup
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![entity::action_assignees::Model {
+                id: Id::new_v4(),
+                action_id,
+                user_id,
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .append_query_results(vec![vec![action_model.clone()]])
+            .append_query_results(vec![vec![entity::action_assignees::Model {
+                id: Id::new_v4(),
+                action_id,
+                user_id,
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .into_connection();
+
+        let query = UserActionsQuery {
+            scope: Scope::Assigned,
+            assignee_filter: AssigneeFilter::All,
+            ..Default::default()
+        };
+
+        let actions = find_by_user(&db, user_id, query).await?;
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action.id, action_id);
+        assert_eq!(actions[0].assignee_ids, vec![user_id]);
+
+        Ok(())
+    }
+
+    /// Tests that find_by_user with Scope::Assigned returns empty when user has no assignments.
+    #[tokio::test]
+    async fn find_by_user_with_scope_assigned_returns_empty_when_no_assignments(
+    ) -> Result<(), Error> {
+        let user_id = Id::new_v4();
+
+        // Mock: action_assignee query returns empty
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<entity::action_assignees::Model>::new()])
+            .into_connection();
+
+        let query = UserActionsQuery {
+            scope: Scope::Assigned,
+            ..Default::default()
+        };
+
+        let actions = find_by_user(&db, user_id, query).await?;
+
+        assert!(actions.is_empty());
+
+        Ok(())
+    }
+
+    /// Tests that find_by_user with Scope::Sessions returns actions from user's coaching sessions.
+    #[tokio::test]
+    async fn find_by_user_with_scope_sessions_returns_session_actions() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let action_id = Id::new_v4();
+
+        let action_model = Model {
+            id: action_id,
+            user_id: Id::new_v4(),
+            coaching_session_id: Id::new_v4(),
+            body: Some("Session action".to_owned()),
+            due_by: Some(now.into()),
+            status_changed_at: now.into(),
+            status: Default::default(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Mock: 1) actions join query, 2) assignee lookup for each action
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![action_model.clone()]])
+            .append_query_results(vec![vec![entity::action_assignees::Model {
+                id: Id::new_v4(),
+                action_id,
+                user_id,
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .into_connection();
+
+        let query = UserActionsQuery {
+            scope: Scope::Sessions,
+            assignee_filter: AssigneeFilter::All,
+            ..Default::default()
+        };
+
+        let actions = find_by_user(&db, user_id, query).await?;
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action.body, Some("Session action".to_owned()));
+
+        Ok(())
+    }
+
+    /// Tests that AssigneeFilter::Unassigned filters out actions with assignees.
+    #[tokio::test]
+    async fn find_by_user_with_assignee_filter_unassigned_excludes_assigned() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let action_id = Id::new_v4();
+
+        let action_model = Model {
+            id: action_id,
+            user_id: Id::new_v4(),
+            coaching_session_id: Id::new_v4(),
+            body: Some("Action with assignee".to_owned()),
+            due_by: Some(now.into()),
+            status_changed_at: now.into(),
+            status: Default::default(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Mock: action has an assignee, so should be filtered out
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![action_model.clone()]])
+            .append_query_results(vec![vec![entity::action_assignees::Model {
+                id: Id::new_v4(),
+                action_id,
+                user_id: Id::new_v4(), // Has an assignee
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .into_connection();
+
+        let query = UserActionsQuery {
+            scope: Scope::Sessions,
+            assignee_filter: AssigneeFilter::Unassigned,
+            ..Default::default()
+        };
+
+        let actions = find_by_user(&db, user_id, query).await?;
+
+        // Should be empty because the action has an assignee
+        assert!(actions.is_empty());
+
+        Ok(())
+    }
+
+    /// Tests that AssigneeFilter::Assigned filters out actions without assignees.
+    #[tokio::test]
+    async fn find_by_user_with_assignee_filter_assigned_excludes_unassigned() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let action_id = Id::new_v4();
+
+        let action_model = Model {
+            id: action_id,
+            user_id: Id::new_v4(),
+            coaching_session_id: Id::new_v4(),
+            body: Some("Action without assignee".to_owned()),
+            due_by: Some(now.into()),
+            status_changed_at: now.into(),
+            status: Default::default(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Mock: action has no assignees, so should be filtered out
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![action_model.clone()]])
+            .append_query_results(vec![Vec::<entity::action_assignees::Model>::new()]) // No assignees
+            .into_connection();
+
+        let query = UserActionsQuery {
+            scope: Scope::Sessions,
+            assignee_filter: AssigneeFilter::Assigned,
+            ..Default::default()
+        };
+
+        let actions = find_by_user(&db, user_id, query).await?;
+
+        // Should be empty because the action has no assignees
+        assert!(actions.is_empty());
 
         Ok(())
     }

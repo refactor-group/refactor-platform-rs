@@ -130,13 +130,11 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_password_routes(app_state.clone()))
         .merge(user_organizations_routes(app_state.clone()))
         .merge(user_actions_routes(app_state.clone()))
-        .merge(user_assigned_actions_routes(app_state.clone()))
         .merge(user_coaching_sessions_routes(app_state.clone()))
         .merge(user_overarching_goals_routes(app_state.clone()))
         .merge(user_relationship_roles_summary_routes(app_state.clone()))
         .merge(user_coach_relationships_routes(app_state.clone()))
         .merge(user_coachee_relationships_routes(app_state.clone()))
-        .merge(user_session_actions_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
@@ -479,23 +477,6 @@ fn user_actions_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
-fn user_assigned_actions_routes(app_state: AppState) -> Router {
-    Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/assigned-actions",
-                    get(user::assigned_action_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::assigned_actions::index,
-                )),
-        )
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
-}
-
 fn user_coaching_sessions_routes(app_state: AppState) -> Router {
     Router::new()
         .merge(
@@ -575,23 +556,6 @@ fn user_coachee_relationships_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::users::coachee_relationships::index,
-                )),
-        )
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
-}
-
-fn user_session_actions_routes(app_state: AppState) -> Router {
-    Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/session-actions",
-                    get(user::session_actions_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::session_actions::index,
                 )),
         )
         .route_layer(from_fn(require_auth))
