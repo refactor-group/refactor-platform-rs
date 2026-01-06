@@ -116,6 +116,27 @@ pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Mo
     Ok(coaching_relationships)
 }
 
+/// Checks if a user is a coach of another user.
+///
+/// Returns `true` if there exists a coaching relationship where
+/// `potential_coach_id` is the coach and `potential_coachee_id` is the coachee.
+pub async fn is_coach_of(
+    db: &DatabaseConnection,
+    potential_coach_id: Id,
+    potential_coachee_id: Id,
+) -> Result<bool, Error> {
+    let relationship = coaching_relationships::Entity::find()
+        .filter(
+            Condition::all()
+                .add(coaching_relationships::Column::CoachId.eq(potential_coach_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(potential_coachee_id)),
+        )
+        .one(db)
+        .await?;
+
+    Ok(relationship.is_some())
+}
+
 pub async fn find_by_organization(
     db: &impl ConnectionTrait,
     organization_id: Id,
@@ -637,6 +658,66 @@ mod tests {
             )]
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn is_coach_of_returns_true_when_relationship_exists() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        let relationship = Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id,
+            slug: "test-relationship".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship]])
+            .into_connection();
+
+        let result = is_coach_of(&db, coach_id, coachee_id).await?;
+
+        assert!(result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn is_coach_of_returns_false_when_no_relationship() -> Result<(), Error> {
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        // Return empty result - no relationship exists
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let result = is_coach_of(&db, coach_id, coachee_id).await?;
+
+        assert!(!result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn is_coach_of_returns_false_when_roles_reversed() -> Result<(), Error> {
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        // Query with reversed roles returns no result
+        // (coachee trying to access coach's data)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        // coachee_id is passed as potential_coach, coach_id as potential_coachee
+        let result = is_coach_of(&db, coachee_id, coach_id).await?;
+
+        assert!(!result);
         Ok(())
     }
 }
