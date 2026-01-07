@@ -7,7 +7,7 @@ use sea_orm::{
     DatabaseConnection, QuerySelect, TryIntoModel,
 };
 
-use super::action_assignee;
+use super::actions_user;
 use super::error::{EntityApiErrorKind, Error};
 use entity::actions::{ActiveModel, Entity, Model};
 use entity::{status::Status, Id};
@@ -152,10 +152,11 @@ pub async fn create_with_assignees(
     // Create the action first
     let action = create(db, action_model, user_id).await?;
 
-    // Set assignees if provided
+    // Set assignees if provided, extracting user IDs from the returned models
+    // instead of making an extra DB query
     let assignee_ids = if let Some(ids) = assignee_ids {
-        action_assignee::set_assignees(db, action.id, ids).await?;
-        action_assignee::find_user_ids_by_action_id(db, action.id).await?
+        let created = actions_user::set_assignees(db, action.id, ids).await?;
+        created.into_iter().map(|m| m.user_id).collect()
     } else {
         vec![]
     };
@@ -191,11 +192,11 @@ pub async fn update_with_assignees(
 
     // Update assignees if specified
     if let Some(ids) = assignee_ids {
-        action_assignee::set_assignees(db, action.id, ids).await?;
+        actions_user::set_assignees(db, action.id, ids).await?;
     }
 
     // Fetch current assignees
-    let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+    let assignee_ids = actions_user::find_user_ids_by_action_id(db, action.id).await?;
 
     Ok(ActionWithAssignees {
         action,
@@ -213,7 +214,7 @@ pub async fn find_by_id_with_assignees(
     id: Id,
 ) -> Result<ActionWithAssignees, Error> {
     let action = find_by_id(db, id).await?;
-    let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+    let assignee_ids = actions_user::find_user_ids_by_action_id(db, action.id).await?;
 
     Ok(ActionWithAssignees {
         action,
@@ -289,7 +290,7 @@ pub async fn find_by_user(
     // Build base query based on scope
     let base_select = match query.scope {
         Scope::Assigned => {
-            let action_ids = action_assignee::find_action_ids_by_user_id(db, user_id).await?;
+            let action_ids = actions_user::find_action_ids_by_user_id(db, user_id).await?;
 
             if action_ids.is_empty() {
                 return Ok(vec![]);
@@ -331,10 +332,14 @@ pub async fn find_by_user(
 
     let actions: Vec<entity::actions::Model> = select.all(db).await?;
 
+    // Batch fetch all assignees for all actions in one query (avoids N+1 issue)
+    let action_ids = actions.iter().map(|a| a.id).collect();
+    let mut assignees_map = actions_user::find_assignees_for_actions(db, action_ids).await?;
+
     // Build ActionWithAssignees and apply assignee filter
     let mut results = Vec::with_capacity(actions.len());
     for action in actions {
-        let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+        let assignee_ids = assignees_map.remove(&action.id).unwrap_or_default();
 
         let include = match query.assignee_filter {
             AssigneeFilter::All => true,
@@ -495,9 +500,9 @@ mod tests {
             updated_at: now.into(),
         };
 
-        // Mock: 1) action_assignee query returns action IDs, 2) actions query, 3) assignee lookup
+        // Mock: 1) actions_user query returns action IDs, 2) actions query, 3) assignee lookup
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![entity::action_assignees::Model {
+            .append_query_results(vec![vec![entity::actions_users::Model {
                 id: Id::new_v4(),
                 action_id,
                 user_id,
@@ -505,7 +510,7 @@ mod tests {
                 updated_at: now.into(),
             }]])
             .append_query_results(vec![vec![action_model.clone()]])
-            .append_query_results(vec![vec![entity::action_assignees::Model {
+            .append_query_results(vec![vec![entity::actions_users::Model {
                 id: Id::new_v4(),
                 action_id,
                 user_id,
@@ -535,9 +540,9 @@ mod tests {
     ) -> Result<(), Error> {
         let user_id = Id::new_v4();
 
-        // Mock: action_assignee query returns empty
+        // Mock: actions_user query returns empty
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![Vec::<entity::action_assignees::Model>::new()])
+            .append_query_results(vec![Vec::<entity::actions_users::Model>::new()])
             .into_connection();
 
         let query = UserActionsQuery {
@@ -574,7 +579,7 @@ mod tests {
         // Mock: 1) actions join query, 2) assignee lookup for each action
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![action_model.clone()]])
-            .append_query_results(vec![vec![entity::action_assignees::Model {
+            .append_query_results(vec![vec![entity::actions_users::Model {
                 id: Id::new_v4(),
                 action_id,
                 user_id,
@@ -619,7 +624,7 @@ mod tests {
         // Mock: action has an assignee, so should be filtered out
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![action_model.clone()]])
-            .append_query_results(vec![vec![entity::action_assignees::Model {
+            .append_query_results(vec![vec![entity::actions_users::Model {
                 id: Id::new_v4(),
                 action_id,
                 user_id: Id::new_v4(), // Has an assignee
@@ -664,7 +669,7 @@ mod tests {
         // Mock: action has no assignees, so should be filtered out
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![action_model.clone()]])
-            .append_query_results(vec![Vec::<entity::action_assignees::Model>::new()]) // No assignees
+            .append_query_results(vec![Vec::<entity::actions_users::Model>::new()]) // No assignees
             .into_connection();
 
         let query = UserActionsQuery {

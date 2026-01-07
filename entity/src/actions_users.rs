@@ -1,4 +1,4 @@
-//! `SeaORM` Entity for action_assignees junction table.
+//! `SeaORM` Entity for actions_users junction table.
 //! Represents the many-to-many relationship between actions and users (assignees).
 
 use crate::Id;
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
-#[sea_orm(schema_name = "refactor_platform", table_name = "action_assignees")]
+#[sea_orm(schema_name = "refactor_platform", table_name = "actions_users")]
 pub struct Model {
     #[sea_orm(primary_key)]
     #[serde(skip_deserializing)]

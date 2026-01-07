@@ -1,7 +1,7 @@
 use crate::actions::Model;
 use crate::error::Error;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
-use entity_api::{action_assignee, actions, query};
+use entity_api::{actions, actions_user, query};
 use sea_orm::DatabaseConnection;
 
 pub use entity_api::action::{
@@ -31,9 +31,14 @@ where
 {
     let actions = query::find_by::<actions::Entity, actions::Column, P>(db, params).await?;
 
+    // Batch fetch all assignees for all actions in one query (avoids N+1 issue)
+    let action_ids = actions.iter().map(|a| a.id).collect();
+    let mut assignees_map = actions_user::find_assignees_for_actions(db, action_ids).await?;
+
+    // Build results with assignees from the map
     let mut result = Vec::with_capacity(actions.len());
     for action in actions {
-        let assignee_ids = action_assignee::find_user_ids_by_action_id(db, action.id).await?;
+        let assignee_ids = assignees_map.remove(&action.id).unwrap_or_default();
         result.push(ActionWithAssignees {
             action,
             assignee_ids,

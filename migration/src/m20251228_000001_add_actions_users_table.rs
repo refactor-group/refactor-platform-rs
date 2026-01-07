@@ -6,24 +6,24 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // Create the action_assignees junction table for many-to-many relationship
+        // Create the actions_users junction table for many-to-many relationship
         // between actions and users. This allows assigning one or more users
         // (coach and/or coachee) to an action.
         //
         // We use execute_unprepared() for consistency with other migrations and to ensure
-        // proper PostgreSQL schema qualification (refactor_platform.action_assignees)
-        let create_table_sql = "CREATE TABLE IF NOT EXISTS refactor_platform.action_assignees (
+        // proper PostgreSQL schema qualification (refactor_platform.actions_users)
+        let create_table_sql = "CREATE TABLE IF NOT EXISTS refactor_platform.actions_users (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             action_id UUID NOT NULL,
             user_id UUID NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT fk_action_assignees_action
+            CONSTRAINT fk_actions_users_action
                 FOREIGN KEY (action_id)
                 REFERENCES refactor_platform.actions(id)
                 ON DELETE CASCADE
                 ON UPDATE CASCADE,
-            CONSTRAINT fk_action_assignees_user
+            CONSTRAINT fk_actions_users_user
                 FOREIGN KEY (user_id)
                 REFERENCES refactor_platform.users(id)
                 ON DELETE CASCADE
@@ -37,8 +37,8 @@ impl MigrationTrait for Migration {
 
         // Create unique index to prevent duplicate assignments of the same user to the same action
         let create_unique_index_sql =
-            "CREATE UNIQUE INDEX IF NOT EXISTS action_assignees_action_user_unique
-            ON refactor_platform.action_assignees(action_id, user_id)";
+            "CREATE UNIQUE INDEX IF NOT EXISTS actions_users_action_user_unique
+            ON refactor_platform.actions_users(action_id, user_id)";
 
         manager
             .get_connection()
@@ -46,8 +46,8 @@ impl MigrationTrait for Migration {
             .await?;
 
         // Create index on action_id for efficient querying of assignees by action
-        let create_action_index_sql = "CREATE INDEX IF NOT EXISTS action_assignees_action_id_idx
-            ON refactor_platform.action_assignees(action_id)";
+        let create_action_index_sql = "CREATE INDEX IF NOT EXISTS actions_users_action_id_idx
+            ON refactor_platform.actions_users(action_id)";
 
         manager
             .get_connection()
@@ -58,10 +58,10 @@ impl MigrationTrait for Migration {
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // Drop the action_assignees table (this will also drop the indexes and foreign keys)
+        // Drop the actions_users table (this will also drop the indexes and foreign keys)
         manager
             .get_connection()
-            .execute_unprepared("DROP TABLE IF EXISTS refactor_platform.action_assignees")
+            .execute_unprepared("DROP TABLE IF EXISTS refactor_platform.actions_users")
             .await?;
 
         Ok(())

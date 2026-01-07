@@ -18,23 +18,14 @@ use domain::{action as ActionApi, actions::Model, Id};
 use log::*;
 use service::config::ApiVersion;
 
-/// Request body for creating a new action.
+/// Request body for creating or updating an action.
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateActionRequest {
+pub struct ActionRequest {
     #[serde(flatten)]
     pub action: Model,
     /// Optional list of user IDs to assign to this action.
-    pub assignee_ids: Option<Vec<Id>>,
-}
-
-/// Request body for updating an action.
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateActionRequest {
-    #[serde(flatten)]
-    pub action: Model,
-    /// Optional list of user IDs to set as assignees.
-    /// If provided, replaces all existing assignees.
-    /// If omitted, assignees remain unchanged.
+    /// For updates, if provided, replaces all existing assignees.
+    /// If omitted during update, assignees remain unchanged.
     pub assignee_ids: Option<Vec<Id>>,
 }
 
@@ -43,7 +34,7 @@ pub struct UpdateActionRequest {
     post,
     path = "/actions",
     params(ApiVersion),
-    request_body = CreateActionRequest,
+    request_body = ActionRequest,
     responses(
         (status = 201, description = "Successfully Created a New Action", body = [domain::action::ActionWithAssignees]),
         (status= 422, description = "Unprocessable Entity"),
@@ -60,7 +51,7 @@ pub async fn create(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Json(request): Json<CreateActionRequest>,
+    Json(request): Json<ActionRequest>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("POST Create a New Action from: {:?}", request.action);
 
@@ -112,7 +103,7 @@ pub async fn read(
         ApiVersion,
         ("id" = Id, Path, description = "Id of action to update"),
     ),
-    request_body = UpdateActionRequest,
+    request_body = ActionRequest,
     responses(
         (status = 200, description = "Successfully Updated Action", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
@@ -129,7 +120,7 @@ pub async fn update(
     // the data requested
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
-    Json(request): Json<UpdateActionRequest>,
+    Json(request): Json<ActionRequest>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT Update Action with id: {id}");
 
