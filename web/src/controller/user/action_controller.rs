@@ -55,12 +55,12 @@ pub async fn index(
     // Set user_id from path and apply defaults
     let params = params.with_user_id(user_id).apply_defaults();
 
-    // Extract sort options before moving other fields
+    // Extract sort options before partial moves
     let sort_column = params.get_sort_column();
     let sort_order = params.get_sort_order();
 
-    // Build query options
-    let query = ActionApi::UserActionsQuery {
+    // Map web layer types to domain layer types
+    let query_params = ActionApi::FindByUserParams {
         scope: match params.scope {
             Scope::Assigned => ActionApi::Scope::Assigned,
             Scope::Sessions => ActionApi::Scope::Sessions,
@@ -76,7 +76,7 @@ pub async fn index(
         sort_order,
     };
 
-    let actions = ActionApi::find_by_user(app_state.db_conn_ref(), user_id, query).await?;
+    let actions = ActionApi::find_by_user(app_state.db_conn_ref(), user_id, query_params).await?;
 
     debug!("Found {} actions for user {user_id}", actions.len());
 

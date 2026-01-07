@@ -1,7 +1,7 @@
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, QuerySelect, TryIntoModel,
+    DatabaseConnection, Order, QuerySelect, TryIntoModel,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -223,8 +223,7 @@ pub async fn find_by_id_with_assignees(
 }
 
 /// Filter for querying actions by assignee status.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AssigneeFilter {
     /// Return all actions regardless of assignee status (default)
     #[default]
@@ -245,15 +244,17 @@ pub enum Scope {
     Sessions,
 }
 
-/// Query options for the unified user actions endpoint.
+/// Query parameters for finding actions by user.
+///
+/// This is a simple data transfer struct with no web layer annotations.
 #[derive(Clone, Debug, Default)]
-pub struct UserActionsQuery {
+pub struct FindByUserParams {
     pub scope: Scope,
     pub coaching_session_id: Option<Id>,
     pub status: Option<entity::status::Status>,
     pub assignee_filter: AssigneeFilter,
     pub sort_column: Option<entity::actions::Column>,
-    pub sort_order: Option<sea_orm::Order>,
+    pub sort_order: Option<Order>,
 }
 
 /// Unified query for user actions with flexible filtering and sorting.
@@ -261,34 +262,21 @@ pub struct UserActionsQuery {
 /// Supports two scopes:
 /// - `Scope::Assigned`: Actions where the user is an assignee
 /// - `Scope::Sessions`: Actions from coaching sessions where user is coach or coachee
-///
-/// # Example
-///
-/// ```ignore
-/// let actions = find_by_user(db, user_id, UserActionsQuery {
-///     scope: Scope::Sessions,
-///     coaching_session_id: Some(session_id),
-///     status: Some(Status::InProgress),
-///     assignee_filter: AssigneeFilter::All,
-///     sort_column: Some(actions::Column::DueBy),
-///     sort_order: Some(Order::Asc),
-/// }).await?;
-/// ```
 pub async fn find_by_user(
     db: &DatabaseConnection,
     user_id: Id,
-    query: UserActionsQuery,
+    params: FindByUserParams,
 ) -> Result<Vec<ActionWithAssignees>, Error> {
     use entity::{actions, coaching_relationships, coaching_sessions};
     use sea_orm::{JoinType, QueryOrder};
 
     debug!(
         "Finding actions for user_id={user_id} with scope={:?}, session={:?}, status={:?}, assignee={:?}",
-        query.scope, query.coaching_session_id, query.status, query.assignee_filter
+        params.scope, params.coaching_session_id, params.status, params.assignee_filter
     );
 
     // Build base query based on scope
-    let base_select = match query.scope {
+    let base_select = match params.scope {
         Scope::Assigned => {
             let action_ids = actions_user::find_action_ids_by_user_id(db, user_id).await?;
 
@@ -317,16 +305,16 @@ pub async fn find_by_user(
     // Apply filters
     let mut select = base_select;
 
-    if let Some(session_id) = query.coaching_session_id {
+    if let Some(session_id) = params.coaching_session_id {
         select = select.filter(actions::Column::CoachingSessionId.eq(session_id));
     }
 
-    if let Some(status) = &query.status {
+    if let Some(status) = &params.status {
         select = select.filter(actions::Column::Status.eq(status.clone()));
     }
 
     // Apply sorting
-    if let (Some(column), Some(order)) = (query.sort_column, query.sort_order) {
+    if let (Some(column), Some(order)) = (params.sort_column, params.sort_order) {
         select = select.order_by(column, order);
     }
 
@@ -341,7 +329,7 @@ pub async fn find_by_user(
     for action in actions {
         let assignee_ids = assignees_map.remove(&action.id).unwrap_or_default();
 
-        let include = match query.assignee_filter {
+        let include = match params.assignee_filter {
             AssigneeFilter::All => true,
             AssigneeFilter::Assigned => !assignee_ids.is_empty(),
             AssigneeFilter::Unassigned => assignee_ids.is_empty(),
@@ -358,7 +346,7 @@ pub async fn find_by_user(
     debug!(
         "Found {} actions for user {user_id} (scope={:?})",
         results.len(),
-        query.scope
+        params.scope
     );
 
     Ok(results)
@@ -519,13 +507,16 @@ mod tests {
             }]])
             .into_connection();
 
-        let query = UserActionsQuery {
-            scope: Scope::Assigned,
-            assignee_filter: AssigneeFilter::All,
-            ..Default::default()
-        };
-
-        let actions = find_by_user(&db, user_id, query).await?;
+        let actions = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Assigned,
+                assignee_filter: AssigneeFilter::All,
+                ..Default::default()
+            },
+        )
+        .await?;
 
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].action.id, action_id);
@@ -545,12 +536,15 @@ mod tests {
             .append_query_results(vec![Vec::<entity::actions_users::Model>::new()])
             .into_connection();
 
-        let query = UserActionsQuery {
-            scope: Scope::Assigned,
-            ..Default::default()
-        };
-
-        let actions = find_by_user(&db, user_id, query).await?;
+        let actions = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Assigned,
+                ..Default::default()
+            },
+        )
+        .await?;
 
         assert!(actions.is_empty());
 
@@ -588,13 +582,16 @@ mod tests {
             }]])
             .into_connection();
 
-        let query = UserActionsQuery {
-            scope: Scope::Sessions,
-            assignee_filter: AssigneeFilter::All,
-            ..Default::default()
-        };
-
-        let actions = find_by_user(&db, user_id, query).await?;
+        let actions = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Sessions,
+                assignee_filter: AssigneeFilter::All,
+                ..Default::default()
+            },
+        )
+        .await?;
 
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].action.body, Some("Session action".to_owned()));
@@ -633,13 +630,16 @@ mod tests {
             }]])
             .into_connection();
 
-        let query = UserActionsQuery {
-            scope: Scope::Sessions,
-            assignee_filter: AssigneeFilter::Unassigned,
-            ..Default::default()
-        };
-
-        let actions = find_by_user(&db, user_id, query).await?;
+        let actions = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Sessions,
+                assignee_filter: AssigneeFilter::Unassigned,
+                ..Default::default()
+            },
+        )
+        .await?;
 
         // Should be empty because the action has an assignee
         assert!(actions.is_empty());
@@ -672,13 +672,16 @@ mod tests {
             .append_query_results(vec![Vec::<entity::actions_users::Model>::new()]) // No assignees
             .into_connection();
 
-        let query = UserActionsQuery {
-            scope: Scope::Sessions,
-            assignee_filter: AssigneeFilter::Assigned,
-            ..Default::default()
-        };
-
-        let actions = find_by_user(&db, user_id, query).await?;
+        let actions = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Sessions,
+                assignee_filter: AssigneeFilter::Assigned,
+                ..Default::default()
+            },
+        )
+        .await?;
 
         // Should be empty because the action has no assignees
         assert!(actions.is_empty());
