@@ -105,6 +105,19 @@ pub async fn get_user(
 }
 ```
 
+### Database Transactions
+
+Use transactions when multiple database operations must succeed or fail together (e.g., delete + insert patterns, multi-table updates). This prevents partial updates that leave data inconsistent.
+
+```rust
+use sea_orm::TransactionTrait;
+
+let txn = db.begin().await?;
+delete_all(&txn, id).await?;
+insert_new(&txn, items).await?;
+txn.commit().await?;  // Rolls back automatically if we never reach here
+```
+
 ## Module Organization
 
 ### Layer Responsibilities
