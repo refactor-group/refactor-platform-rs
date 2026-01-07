@@ -7,7 +7,7 @@ use entity::actions_users::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, Condition, ConnectionTrait, DatabaseConnection,
-    TryIntoModel,
+    TransactionTrait, TryIntoModel,
 };
 
 use log::*;
@@ -180,18 +180,20 @@ pub async fn find_assignees_for_actions(
 
 /// Sets the assignees for an action, replacing any existing assignments.
 ///
-/// This performs an atomic operation: deletes all existing assignees and
-/// creates new records for the provided user IDs.
+/// This performs an atomic operation within a database transaction: deletes all
+/// existing assignees and creates new records for the provided user IDs.
+/// If any operation fails, the entire operation is rolled back.
 ///
 /// # Arguments
 ///
-/// * `db` - Database connection (should be a transaction for atomicity)
+/// * `db` - Database connection
 /// * `action_id` - The action to update assignees for
 /// * `user_ids` - The user IDs to assign (empty to remove all assignees)
 ///
 /// # Errors
 ///
-/// Returns `Error` if any database operation fails.
+/// Returns `Error` if any database operation fails. On error, the transaction
+/// is rolled back and no changes are persisted.
 pub async fn set_assignees(
     db: &DatabaseConnection,
     action_id: Id,
@@ -202,25 +204,31 @@ pub async fn set_assignees(
         user_ids
     );
 
+    // Use a transaction to ensure atomicity of delete + insert operations
+    let txn = db.begin().await?;
+
     // Delete existing assignees
-    delete_all_for_action(db, action_id).await?;
+    delete_all_for_action(&txn, action_id).await?;
 
     // Create new assignees
     let now = chrono::Utc::now();
     let mut created_assignees = Vec::with_capacity(user_ids.len());
 
-    for user_id in user_ids {
+    for user_id in &user_ids {
         let active_model = ActiveModel {
             action_id: Set(action_id),
-            user_id: Set(user_id),
+            user_id: Set(*user_id),
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
             ..Default::default()
         };
 
-        let model = active_model.insert(db).await?.try_into_model()?;
+        let model = active_model.insert(&txn).await?.try_into_model()?;
         created_assignees.push(model);
     }
+
+    // Commit the transaction
+    txn.commit().await?;
 
     Ok(created_assignees)
 }

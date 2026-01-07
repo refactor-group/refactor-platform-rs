@@ -35,6 +35,13 @@ impl MigrationTrait for Migration {
             .execute_unprepared(create_table_sql)
             .await?;
 
+        // Set table ownership to refactor user to avoid permission issues
+        // when migrations run as a different user (e.g., superuser like doadmin)
+        manager
+            .get_connection()
+            .execute_unprepared("ALTER TABLE refactor_platform.actions_users OWNER TO refactor")
+            .await?;
+
         // Create unique index to prevent duplicate assignments of the same user to the same action
         let create_unique_index_sql =
             "CREATE UNIQUE INDEX IF NOT EXISTS actions_users_action_user_unique

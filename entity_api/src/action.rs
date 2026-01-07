@@ -1,17 +1,17 @@
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
-
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
     DatabaseConnection, QuerySelect, TryIntoModel,
 };
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+use log::*;
 
 use super::actions_user;
 use super::error::{EntityApiErrorKind, Error};
 use entity::actions::{ActiveModel, Entity, Model};
 use entity::{status::Status, Id};
-use log::*;
 
 /// An action with its associated assignee user IDs.
 ///
