@@ -5,10 +5,9 @@ use entity_api::{coaching_relationships, query};
 use sea_orm::{DatabaseConnection, TransactionTrait};
 
 pub use entity_api::coaching_relationship::{
-    create, find_by_coach_id_with_user_names, find_by_coachee_id_with_user_names, find_by_id,
-    find_by_organization_with_user_names, find_by_user,
-    find_by_user_and_organization_with_user_names, get_relationship_with_user_names,
-    get_roles_summary, is_coach_of, CoachingRelationshipWithUserNames, RolesSummary,
+    create, find_by_id, find_by_organization_with_user_names, find_by_user,
+    find_by_user_and_organization_with_user_names, find_by_user_id_with_user_names,
+    get_relationship_with_user_names, is_coach_of, CoachingRelationshipWithUserNames, RoleFilter,
 };
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
