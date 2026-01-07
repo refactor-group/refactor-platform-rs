@@ -1,16 +1,23 @@
 use serde::Serialize;
 pub(crate) mod action_controller;
 pub(crate) mod agreement_controller;
+pub(crate) mod ai_suggestion_controller;
+pub(crate) mod coaching_relationship_controller;
 pub(crate) mod coaching_session_controller;
 pub(crate) mod health_check_controller;
+pub(crate) mod integration_controller;
 pub(crate) mod jwt_controller;
+pub(crate) mod meeting_recording_controller;
 pub(crate) mod note_controller;
+pub(crate) mod oauth_controller;
 pub(crate) mod organization;
 pub(crate) mod organization_controller;
 pub(crate) mod overarching_goal_controller;
+pub(crate) mod transcription_controller;
 pub(crate) mod user;
 pub(crate) mod user_controller;
 pub(crate) mod user_session_controller;
+pub(crate) mod webhook_controller;
 
 #[derive(Debug, Serialize)]
 struct ApiResponse<T: Serialize> {

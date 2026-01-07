@@ -4,16 +4,22 @@ version = "1.0.0-beta2"
 edition = "2021"
 
 [dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
 chrono = { version = "0.4.38", features = ["serde"] }
 email_address = "0.2"
 entity_api = { path = "../entity_api" }
+hex = "0.4"
 jsonwebtoken = "9"
 service = { path = "../service" }
 log = "0.4.22"
+rand = "0.8"
 reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
 serde_json = "1.0.128"
 serde = {version = "1.0.210", features = ["derive"] }
+thiserror = "2.0"
 tokio = { version = "1.0", features = ["full"] }
+urlencoding = "2.1"
 
 [dependencies.sea-orm]
 version = "1.1.0"                                                       # sea-orm version
