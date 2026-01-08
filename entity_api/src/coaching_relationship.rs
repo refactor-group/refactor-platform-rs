@@ -298,16 +298,15 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
     Ok(())
 }
 
-/// Filter for querying coaching relationships by user's role.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum RoleFilter {
-    /// Return all relationships where user is coach or coachee (default)
-    #[default]
-    All,
-    /// Return only relationships where user is the coach
-    Coach,
-    /// Return only relationships where user is the coachee
-    Coachee,
+/// Trait for filtering coaching relationships by user's role.
+///
+/// Implement this trait in the web layer to define role-based filtering
+/// while keeping the entity_api layer decoupled from web-specific types.
+pub trait RoleFilterable {
+    /// Returns true if only relationships where the user is a coach should be returned.
+    fn filter_coach_only(&self) -> bool;
+    /// Returns true if only relationships where the user is a coachee should be returned.
+    fn filter_coachee_only(&self) -> bool;
 }
 
 /// Finds coaching relationships for a user with optional role filtering.
@@ -316,21 +315,20 @@ pub enum RoleFilter {
 pub async fn find_by_user_id_with_user_names(
     db: &DatabaseConnection,
     user_id: Id,
-    role_filter: RoleFilter,
+    role_filter: impl RoleFilterable,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     let coaches = Alias::new("coaches");
     let coachees = Alias::new("coachees");
 
-    let filter = match role_filter {
-        RoleFilter::All => Condition::any()
+    let filter = if role_filter.filter_coach_only() {
+        Condition::all().add(coaching_relationships::Column::CoachId.eq(user_id))
+    } else if role_filter.filter_coachee_only() {
+        Condition::all().add(coaching_relationships::Column::CoacheeId.eq(user_id))
+    } else {
+        // Default: return all relationships where user is coach or coachee
+        Condition::any()
             .add(coaching_relationships::Column::CoachId.eq(user_id))
-            .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        RoleFilter::Coach => {
-            Condition::all().add(coaching_relationships::Column::CoachId.eq(user_id))
-        }
-        RoleFilter::Coachee => {
-            Condition::all().add(coaching_relationships::Column::CoacheeId.eq(user_id))
-        }
+            .add(coaching_relationships::Column::CoacheeId.eq(user_id))
     };
 
     let query = coaching_relationships::Entity::find()

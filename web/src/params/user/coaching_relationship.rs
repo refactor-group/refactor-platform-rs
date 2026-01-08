@@ -1,7 +1,6 @@
+use domain::{coaching_relationship::RoleFilterable, Id};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
-
-use domain::Id;
 
 /// Filter for coaching relationships by user's role.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
@@ -17,6 +16,16 @@ pub(crate) enum RoleFilter {
     /// Return only relationships where user is the coachee
     #[serde(rename = "coachee")]
     Coachee,
+}
+
+impl RoleFilterable for RoleFilter {
+    fn filter_coach_only(&self) -> bool {
+        matches!(self, RoleFilter::Coach)
+    }
+
+    fn filter_coachee_only(&self) -> bool {
+        matches!(self, RoleFilter::Coachee)
+    }
 }
 
 /// Query parameters for GET `/users/{user_id}/coaching-relationships` endpoint.

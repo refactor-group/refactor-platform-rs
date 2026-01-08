@@ -2,7 +2,7 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::user::coaching_relationship::{IndexParams, RoleFilter};
+use crate::params::user::coaching_relationship::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -44,24 +44,17 @@ pub async fn index(
 
     let params = params.with_user_id(user_id);
 
-    // Map web layer RoleFilter to domain layer RoleFilter
-    let role_filter = match params.role {
-        RoleFilter::All => CoachingRelationshipApi::RoleFilter::All,
-        RoleFilter::Coach => CoachingRelationshipApi::RoleFilter::Coach,
-        RoleFilter::Coachee => CoachingRelationshipApi::RoleFilter::Coachee,
-    };
-
+    // Web layer's RoleFilter implements RoleFilterable trait, so pass directly
     let relationships = CoachingRelationshipApi::find_by_user_id_with_user_names(
         app_state.db_conn_ref(),
         user_id,
-        role_filter,
+        params.role,
     )
     .await?;
 
     debug!(
-        "Found {} coaching relationships for user {user_id} (role filter: {:?})",
-        relationships.len(),
-        params.role
+        "Found {} coaching relationships for user {user_id}",
+        relationships.len()
     );
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), relationships)))
