@@ -126,24 +126,6 @@ impl ConnectionRegistry {
             }
         }
     }
-
-    /// Get total connection count - O(1)
-    pub fn connection_count(&self) -> usize {
-        self.connections.len()
-    }
-
-    /// Get active user count - O(1)
-    pub fn active_user_count(&self) -> usize {
-        self.user_index.len()
-    }
-
-    /// Get connections per user (for monitoring/debugging) - O(1)
-    pub fn connections_per_user(&self, user_id: &UserId) -> usize {
-        self.user_index
-            .get(user_id)
-            .map(|set| set.len())
-            .unwrap_or(0)
-    }
 }
 
 impl Default for ConnectionRegistry {

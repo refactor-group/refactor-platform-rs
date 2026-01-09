@@ -55,16 +55,6 @@ impl Manager {
             }
         }
     }
-
-    /// Get total connection count
-    pub fn connection_count(&self) -> usize {
-        self.registry.connection_count()
-    }
-
-    /// Get active user count
-    pub fn active_user_count(&self) -> usize {
-        self.registry.active_user_count()
-    }
 }
 
 impl Default for Manager {
