@@ -111,6 +111,19 @@ Table refactor_platform.actions {
   updated_at timestamptz [not null, default: `now()`]
 }
 
+Table refactor_platform.actions_users {
+  id uuid [primary key, unique, not null, default: `gen_random_uuid()`]
+  action_id uuid [not null, note: 'The action this assignment belongs to']
+  user_id uuid [not null, note: 'The user assigned to this action']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (action_id, user_id) [unique, name: "actions_users_action_user_unique"]
+    action_id [name: "actions_users_action_id_idx"]
+  }
+}
+
 enum refactor_platform.status {
   not_started
   in_progress
@@ -145,6 +158,10 @@ Ref: refactor_platform.agreements.user_id > refactor_platform.users.id
 
 // actions relationships
 Ref: refactor_platform.actions.coaching_session_id > refactor_platform.coaching_sessions.id
+
+// actions_users relationships
+Ref: refactor_platform.actions_users.action_id > refactor_platform.actions.id
+Ref: refactor_platform.actions_users.user_id > refactor_platform.users.id
 
 //user_roles relationships
 Ref: refactor_platform.user_roles.organization_id > refactor_platform.organizations.id

@@ -1,3 +1,12 @@
+use serde::Deserialize;
+use utoipa::ToSchema;
+
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::json;
+
 use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
@@ -5,25 +14,29 @@ use crate::extractors::{
 use crate::params::action::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::Json;
 use domain::{action as ActionApi, actions::Model, Id};
-
-use serde_json::json;
+use log::*;
 use service::config::ApiVersion;
 
-use log::*;
+/// Request body for creating or updating an action.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ActionRequest {
+    #[serde(flatten)]
+    pub action: Model,
+    /// Optional list of user IDs to assign to this action.
+    /// For updates, if provided, replaces all existing assignees.
+    /// If omitted during update, assignees remain unchanged.
+    pub assignee_ids: Option<Vec<Id>>,
+}
 
 /// POST create a new Action
 #[utoipa::path(
     post,
     path = "/actions",
     params(ApiVersion),
-    request_body = actions::Model,
+    request_body = ActionRequest,
     responses(
-        (status = 201, description = "Successfully Created a New Action", body = [actions::Model]),
+        (status = 201, description = "Successfully Created a New Action", body = [domain::action::ActionWithAssignees]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
@@ -38,11 +51,17 @@ pub async fn create(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Json(action_model): Json<Model>,
+    Json(request): Json<ActionRequest>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("POST Create a New Action from: {action_model:?}");
+    debug!("POST Create a New Action from: {:?}", request.action);
 
-    let action = ActionApi::create(app_state.db_conn_ref(), action_model, user.id).await?;
+    let action = ActionApi::create_with_assignees(
+        app_state.db_conn_ref(),
+        request.action,
+        user.id,
+        request.assignee_ids,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), action)))
 }
@@ -56,7 +75,7 @@ pub async fn create(
         ("id" = String, Path, description = "Action id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Action by its id", body = [notes::Model]),
+        (status = 200, description = "Successfully retrieved a specific Action by its id", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed")
@@ -72,7 +91,7 @@ pub async fn read(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Action by id: {id}");
 
-    let action = ActionApi::find_by_id(app_state.db_conn_ref(), id).await?;
+    let action = ActionApi::find_by_id_with_assignees(app_state.db_conn_ref(), id).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
@@ -84,9 +103,9 @@ pub async fn read(
         ApiVersion,
         ("id" = Id, Path, description = "Id of action to update"),
     ),
-    request_body = actions::Model,
+    request_body = ActionRequest,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [actions::Model]),
+        (status = 200, description = "Successfully Updated Action", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -101,13 +120,19 @@ pub async fn update(
     // the data requested
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
-    Json(action_model): Json<Model>,
+    Json(request): Json<ActionRequest>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT Update Action with id: {id}");
 
-    let action = ActionApi::update(app_state.db_conn_ref(), id, action_model).await?;
+    let action = ActionApi::update_with_assignees(
+        app_state.db_conn_ref(),
+        id,
+        request.action,
+        request.assignee_ids,
+    )
+    .await?;
 
-    debug!("Updated Action: {action:?}");
+    debug!("Updated Action: {:?}", action);
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
@@ -157,7 +182,7 @@ pub async fn update_status(
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Actions", body = [actions::Model]),
+        (status = 200, description = "Successfully retrieved all Actions", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed")
     ),
@@ -184,9 +209,9 @@ pub async fn index(
         SortField::DueBy,
     );
 
-    let actions = ActionApi::find_by(app_state.db_conn_ref(), params).await?;
+    let actions = ActionApi::find_by_with_assignees(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Actions: {actions:?}");
+    debug!("Found Actions: {:?}", actions);
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
