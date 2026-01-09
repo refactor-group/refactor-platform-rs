@@ -31,25 +31,43 @@ pub type Id = Uuid;
 /// the entity crate.
 #[derive(Debug, Clone)]
 pub enum DomainEvent {
-    // Overarching Goal events (relationship-scoped)
+    /// Emitted when a new overarching goal is created within a coaching session.
+    /// Triggers SSE notifications to coach and coachee for real-time UI updates.
     OverarchingGoalCreated {
+        /// Parent coaching relationship ID for context and potential scoped cache invalidation.
+        /// Currently used for event tracing and future frontend optimization.
         coaching_relationship_id: Id,
-        /// Serialized overarching goal data
+        /// Complete serialized overarching goal entity (includes id, title, details, status, etc.).
+        /// Sent to frontend for optimistic UI updates without requiring a separate API call.
         overarching_goal: Value,
-        /// Users who should be notified (typically coach and coachee)
+        /// User IDs to receive SSE notifications (determined by domain layer from relationship).
+        /// SSE manager routes events only to these users' active connections.
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when an overarching goal is modified (title, details, status, etc.).
+    /// Triggers SSE notifications to keep all participants' UIs synchronized.
     OverarchingGoalUpdated {
+        /// Parent coaching relationship ID for context and potential scoped cache invalidation.
+        /// Currently used for event tracing and future frontend optimization.
         coaching_relationship_id: Id,
-        /// Serialized overarching goal data
+        /// Complete updated overarching goal entity with all current field values.
+        /// Sent to frontend for optimistic UI updates without requiring a separate API call.
         overarching_goal: Value,
-        /// Users who should be notified (typically coach and coachee)
+        /// User IDs to receive SSE notifications (determined by domain layer from relationship).
+        /// SSE manager routes events only to these users' active connections.
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when an overarching goal is permanently removed from the system.
+    /// Triggers SSE notifications to remove the goal from all participants' UIs.
     OverarchingGoalDeleted {
+        /// Parent coaching relationship ID for context and potential scoped cache invalidation.
+        /// Currently used for event tracing and future frontend optimization.
         coaching_relationship_id: Id,
+        /// ID of the deleted goal (full entity not included since it no longer exists).
+        /// Frontend uses this to remove the goal from local cache and UI.
         overarching_goal_id: Id,
-        /// Users who should be notified (typically coach and coachee)
+        /// User IDs to receive SSE notifications (determined by domain layer from relationship).
+        /// SSE manager routes events only to these users' active connections.
         notify_user_ids: Vec<Id>,
     },
 }
