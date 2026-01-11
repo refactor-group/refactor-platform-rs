@@ -32,6 +32,10 @@ The Refactor Platform is a coaching management system built with Rust (Axum back
 - **Migration**: Database schema versioning and migrations
 - **Database**: PostgreSQL with `refactor_platform` schema
 
+### Real-Time Communication
+- **SSE (Server-Sent Events)**: Unidirectional push notifications from server to client
+- **Connection Management**: In-memory registry for active user connections (single-instance only)
+
 ### External Integrations
 - **TipTap**: Collaborative document editing service
 - **JWT**: Token generation and validation service
@@ -71,11 +75,13 @@ graph TB
     Router[Router<br/>Route Definitions & Middleware]
     Controllers[Controllers<br/>HTTP Request Handlers]
     Auth[Authentication Layer<br/>Session Management]
-    
+    SSE[SSE Handler<br/>Real-Time Events]
+
     %% Business Logic Layer
     Domain[Domain Layer<br/>Business Logic & Models]
     EntityAPI[Entity API<br/>Database Operations]
     Service[Service Layer<br/>Configuration & Utilities]
+    SSEManager[SSE Manager<br/>Connection Registry]
     
     %% Data Layer
     Entity[Entity Layer<br/>Database Models]
@@ -96,6 +102,7 @@ graph TB
     %% Router to Controllers
     Router --> Controllers
     Router --> Auth
+    Router --> SSE
     
     %% Controllers breakdown
     Controllers --> ActionCtrl[Action Controller]
@@ -123,6 +130,11 @@ graph TB
     %% Domain to Data Access
     Domain --> EntityAPI
     Domain --> Service
+
+    %% SSE Integration
+    SSE --> SSEManager
+    Service --> SSEManager
+    Domain -.->|send events| SSEManager
     
     %% Data Access Layer
     EntityAPI --> Entity
@@ -147,8 +159,8 @@ graph TB
     classDef database fill:#ffebee
     
     class Client,Nginx external
-    class Web,Router,Controllers,Auth,ActionCtrl,AgreementCtrl,CoachingCtrl,NoteCtrl,OrgCtrl,UserCtrl,GoalCtrl,SessionCtrl,JWTCtrl,HealthCtrl web
-    class Domain,EntityAPI,Service business
+    class Web,Router,Controllers,Auth,SSE,ActionCtrl,AgreementCtrl,CoachingCtrl,NoteCtrl,OrgCtrl,UserCtrl,GoalCtrl,SessionCtrl,JWTCtrl,HealthCtrl web
+    class Domain,EntityAPI,Service,SSEManager business
     class Entity,Migration data
     class DB database
 ```

@@ -13,6 +13,7 @@ use crate::controller::{
     note_controller, organization, organization_controller, overarching_goal_controller, user,
     user_controller, user_session_controller,
 };
+use crate::sse;
 
 use utoipa::{
     openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
@@ -118,6 +119,7 @@ impl Modify for SecurityAddon {
 
 pub fn define_routes(app_state: AppState) -> Router {
     Router::new()
+        .merge(sse_routes(app_state.clone()))
         .merge(action_routes(app_state.clone()))
         .merge(agreement_routes(app_state.clone()))
         .merge(health_routes())
@@ -519,6 +521,13 @@ fn user_coaching_relationships_routes(app_state: AppState) -> Router {
                 )
                 .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
         )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn sse_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route("/sse", get(sse::handler::sse_handler))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }

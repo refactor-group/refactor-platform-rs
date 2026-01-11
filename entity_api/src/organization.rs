@@ -93,8 +93,6 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
         .await?
         .is_some();
 
-    warn!("User {} is_super_admin: {}", user_id, is_super_admin);
-
     let organizations = if is_super_admin {
         // Super admins have access to all organizations
         let orgs = Entity::find().all(db).await?;

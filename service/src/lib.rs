@@ -23,6 +23,7 @@ pub async fn init_database(database_url: &str) -> Result<DatabaseConnection, DbE
     Ok(db)
 }
 
+// Service-level state containing only infrastructure concerns
 // Needs to implement Clone to be able to be passed into Router as State
 #[derive(Clone)]
 pub struct AppState {

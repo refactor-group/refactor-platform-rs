@@ -1,0 +1,15 @@
+[package]
+name = "events"
+version = "1.0.0-beta2"
+edition = "2021"
+
+[dependencies]
+# Async
+async-trait = "0.1.83"
+
+# UUID for Id type
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Serialization
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
