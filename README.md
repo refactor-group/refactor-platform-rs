@@ -172,13 +172,19 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 
 `entity` - shape of the data models and the relationships to each other
 
+`events` - Foundation layer providing domain event definitions (overarching goals, coaching sessions, etc.). No internal dependencies.
+
 `migration` - relational DB SQL migrations
 
 `scripts` - contains handy developer-related scripts that make working with this codebase more straightforward
 
 `service` - CLI flags, environment variables, config handling and backend daemon setup
 
+`sse` - Server-Sent Events infrastructure for real-time notifications. In-memory connection management (single-instance only)
+
 `src` - contains a main function that initializes logging and calls all sub-services
+
+`testing-tools` - Integration testing utilities 
 
 `web` - API endpoint definition, routing, handling of request/responses, controllers
 
