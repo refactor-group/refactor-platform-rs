@@ -43,6 +43,7 @@ mod tests {
         tower_sessions::{Expiry, MemoryStore, SessionManagerLayer},
         AuthManagerLayerBuilder,
     };
+    use domain::events::EventPublisher;
     use domain::user::Backend;
     use service::config::Config;
     use std::sync::Arc;
@@ -59,7 +60,10 @@ mod tests {
         let db = Arc::new(
             sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection(),
         );
-        let app_state = crate::AppState::new(config, &db);
+        let service_state = service::AppState::new(config, &db);
+        let sse_manager = Arc::new(sse::Manager::new());
+        let event_publisher = EventPublisher::new();
+        let app_state = crate::AppState::new(service_state, sse_manager, event_publisher);
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -88,7 +92,10 @@ mod tests {
         let db = Arc::new(
             sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection(),
         );
-        let app_state = crate::AppState::new(config, &db);
+        let service_state = service::AppState::new(config, &db);
+        let sse_manager = Arc::new(sse::Manager::new());
+        let event_publisher = EventPublisher::new();
+        let app_state = crate::AppState::new(service_state, sse_manager, event_publisher);
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -162,7 +169,10 @@ mod tests {
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]]) // For session user lookup
                 .into_connection(),
         );
-        let app_state = crate::AppState::new(config, &db);
+        let service_state = service::AppState::new(config, &db);
+        let sse_manager = Arc::new(sse::Manager::new());
+        let event_publisher = EventPublisher::new();
+        let app_state = crate::AppState::new(service_state, sse_manager, event_publisher);
 
         // Set up session layer
         let session_store = MemoryStore::default();

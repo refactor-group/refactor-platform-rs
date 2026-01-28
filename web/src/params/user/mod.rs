@@ -1,4 +1,5 @@
 pub(crate) mod action;
+pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
 pub(crate) mod overarching_goal;
 

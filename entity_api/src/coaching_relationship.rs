@@ -14,7 +14,8 @@ use sea_orm::{
     entity::prelude::*, sea_query::Alias, Condition, DatabaseConnection, FromQueryResult, JoinType,
     QuerySelect, QueryTrait, Set,
 };
-use serde::ser::{Serialize, SerializeStruct, Serializer};
+use serde::ser::{SerializeStruct, Serializer};
+use serde::Serialize;
 use slugify::slugify;
 
 pub async fn create(
@@ -113,6 +114,27 @@ pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Mo
             .await?;
 
     Ok(coaching_relationships)
+}
+
+/// Checks if a user is a coach of another user.
+///
+/// Returns `true` if there exists a coaching relationship where
+/// `potential_coach_id` is the coach and `potential_coachee_id` is the coachee.
+pub async fn is_coach_of(
+    db: &DatabaseConnection,
+    potential_coach_id: Id,
+    potential_coachee_id: Id,
+) -> Result<bool, Error> {
+    let relationship = coaching_relationships::Entity::find()
+        .filter(
+            Condition::all()
+                .add(coaching_relationships::Column::CoachId.eq(potential_coach_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(potential_coachee_id)),
+        )
+        .one(db)
+        .await?;
+
+    Ok(relationship.is_some())
 }
 
 pub async fn find_by_organization(
@@ -274,6 +296,67 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
         .exec(db)
         .await?;
     Ok(())
+}
+
+/// Trait for filtering coaching relationships by user's role.
+///
+/// Implement this trait in the web layer to define role-based filtering
+/// while keeping the entity_api layer decoupled from web-specific types.
+pub trait RoleFilterable {
+    /// Returns true if only relationships where the user is a coach should be returned.
+    fn filter_coach_only(&self) -> bool;
+    /// Returns true if only relationships where the user is a coachee should be returned.
+    fn filter_coachee_only(&self) -> bool;
+}
+
+/// Finds coaching relationships for a user with optional role filtering.
+///
+/// Returns relationships with user names for display purposes.
+pub async fn find_by_user_id_with_user_names(
+    db: &DatabaseConnection,
+    user_id: Id,
+    role_filter: impl RoleFilterable,
+) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
+    let coaches = Alias::new("coaches");
+    let coachees = Alias::new("coachees");
+
+    let filter = if role_filter.filter_coach_only() {
+        Condition::all().add(coaching_relationships::Column::CoachId.eq(user_id))
+    } else if role_filter.filter_coachee_only() {
+        Condition::all().add(coaching_relationships::Column::CoacheeId.eq(user_id))
+    } else {
+        // Default: return all relationships where user is coach or coachee
+        Condition::any()
+            .add(coaching_relationships::Column::CoachId.eq(user_id))
+            .add(coaching_relationships::Column::CoacheeId.eq(user_id))
+    };
+
+    let query = coaching_relationships::Entity::find()
+        .filter(filter)
+        .join_as(
+            JoinType::Join,
+            coaches::Relation::CoachingRelationships.def().rev(),
+            coaches.clone(),
+        )
+        .join_as(
+            JoinType::Join,
+            coachees::Relation::CoachingRelationships.def().rev(),
+            coachees.clone(),
+        )
+        .select_only()
+        .column(coaching_relationships::Column::Id)
+        .column(coaching_relationships::Column::OrganizationId)
+        .column(coaching_relationships::Column::CoachId)
+        .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::CreatedAt)
+        .column(coaching_relationships::Column::UpdatedAt)
+        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
+        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
+        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
+        .into_model::<CoachingRelationshipWithUserNames>();
+
+    Ok(query.all(db).await?)
 }
 
 // A convenient combined struct that holds the results of looking up the Users associated
@@ -519,6 +602,66 @@ mod tests {
             )]
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn is_coach_of_returns_true_when_relationship_exists() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        let relationship = Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id,
+            slug: "test-relationship".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship]])
+            .into_connection();
+
+        let result = is_coach_of(&db, coach_id, coachee_id).await?;
+
+        assert!(result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn is_coach_of_returns_false_when_no_relationship() -> Result<(), Error> {
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        // Return empty result - no relationship exists
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let result = is_coach_of(&db, coach_id, coachee_id).await?;
+
+        assert!(!result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn is_coach_of_returns_false_when_roles_reversed() -> Result<(), Error> {
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        // Query with reversed roles returns no result
+        // (coachee trying to access coach's data)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        // coachee_id is passed as potential_coach, coach_id as potential_coachee
+        let result = is_coach_of(&db, coachee_id, coach_id).await?;
+
+        assert!(!result);
         Ok(())
     }
 }

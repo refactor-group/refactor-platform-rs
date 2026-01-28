@@ -28,3 +28,6 @@ pub mod overarching_goal;
 pub mod user;
 
 pub(crate) mod gateway;
+
+// Re-export events crate as the events module to maintain existing API
+pub use events;

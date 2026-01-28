@@ -1,16 +1,47 @@
-use sea_orm::{Order, Value};
+use sea_orm::Order;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
-use domain::{actions, status::Status, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
+use domain::{actions, status::Status, Id, QuerySort};
+
+/// Scope for user actions query.
+///
+/// Determines how the user is related to the actions being queried.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[schema(example = "sessions")]
+pub(crate) enum Scope {
+    /// Actions assigned to this user
+    #[serde(rename = "assigned")]
+    Assigned,
+    /// Actions from coaching sessions where user is coach or coachee (default)
+    #[serde(rename = "sessions")]
+    #[default]
+    Sessions,
+}
+
+/// Filter for actions by assignee status.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[schema(example = "all")]
+pub(crate) enum AssigneeFilter {
+    /// Return all actions regardless of assignee status (default)
+    #[serde(rename = "all")]
+    #[default]
+    All,
+    /// Return only actions that have at least one assignee
+    #[serde(rename = "assigned")]
+    Assigned,
+    /// Return only actions that have no assignees
+    #[serde(rename = "unassigned")]
+    Unassigned,
+}
 
 /// Sortable fields for user actions endpoint.
 ///
 /// Maps query parameter values (e.g., `?sort_by=due_by`) to database columns.
-#[derive(Debug, Deserialize, ToSchema)]
-#[schema(example = "created_at")]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[schema(example = "due_by")]
 pub(crate) enum SortField {
     #[serde(rename = "due_by")]
     DueBy,
@@ -22,28 +53,34 @@ pub(crate) enum SortField {
 
 /// Query parameters for GET `/users/{user_id}/actions` endpoint.
 ///
-/// Supports filtering by coaching session and status, plus standard sorting.
-/// The `user_id` is populated from the URL path parameter, not query string.
+/// This unified endpoint supports multiple query modes via the `scope` parameter:
+/// - `scope=assigned`: Actions where the user is an assignee
+/// - `scope=sessions`: Actions from coaching sessions where user is coach or coachee (default)
+///
+/// Additional filters can be combined with the scope.
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     /// User ID from URL path (not a query parameter)
     #[serde(skip)]
     pub(crate) user_id: Id,
-    /// Optional: filter actions by coaching session
+    /// Scope: how the user relates to actions (default: sessions)
+    #[serde(default)]
+    pub(crate) scope: Scope,
+    /// Optional: filter to a specific coaching session
     pub(crate) coaching_session_id: Option<Id>,
-    /// Optional: filter actions by status (e.g., "open", "completed")
+    /// Optional: filter by assignee status (all, assigned, unassigned)
+    #[serde(default)]
+    pub(crate) assignee_filter: AssigneeFilter,
+    /// Optional: filter by action status
     pub(crate) status: Option<Status>,
-    /// Optional: field to sort by (defaults via WithSortDefaults)
+    /// Optional: field to sort by
     pub(crate) sort_by: Option<SortField>,
-    /// Optional: sort direction (defaults via WithSortDefaults)
+    /// Optional: sort direction
     pub(crate) sort_order: Option<SortOrder>,
 }
 
 impl IndexParams {
-    /// Sets the user_id field (useful when user_id comes from path parameter).
-    ///
-    /// This allows using `Query<IndexParams>` to deserialize query parameters,
-    /// then setting the path-based user_id afterward.
+    /// Sets the user_id field from the URL path parameter.
     pub fn with_user_id(mut self, user_id: Id) -> Self {
         self.user_id = user_id;
         self
@@ -51,42 +88,14 @@ impl IndexParams {
 
     /// Applies default sorting parameters if any sort parameter is provided.
     ///
-    /// Uses `CreatedAt` as the default sort field for actions.
-    /// This encapsulates the default field choice within the params module.
+    /// Uses `DueBy` as the default sort field for actions.
     pub fn apply_defaults(mut self) -> Self {
         <Self as WithSortDefaults>::apply_sort_defaults(
             &mut self.sort_by,
             &mut self.sort_order,
-            SortField::CreatedAt,
+            SortField::DueBy,
         );
         self
-    }
-}
-
-impl IntoQueryFilterMap for IndexParams {
-    fn into_query_filter_map(self) -> QueryFilterMap {
-        let mut query_filter_map = QueryFilterMap::new();
-
-        query_filter_map.insert(
-            "user_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.user_id)))),
-        );
-
-        if let Some(coaching_session_id) = self.coaching_session_id {
-            query_filter_map.insert(
-                "coaching_session_id".to_string(),
-                Some(Value::Uuid(Some(Box::new(coaching_session_id)))),
-            );
-        }
-
-        if let Some(status) = self.status {
-            query_filter_map.insert(
-                "status".to_string(),
-                Some(Value::String(Some(Box::new(status.to_string())))),
-            );
-        }
-
-        query_filter_map
     }
 }
 

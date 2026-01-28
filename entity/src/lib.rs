@@ -3,6 +3,7 @@ use uuid::Uuid;
 pub mod prelude;
 
 pub mod actions;
+pub mod actions_users;
 pub mod agreements;
 pub mod coachees;
 pub mod coaches;
