@@ -76,10 +76,15 @@ jobs:
           fi
 
           # Calculate ports for logging/verification (same formula as deployment)
-          BACKEND_CONTAINER_PORT=${{ vars.BACKEND_PORT_BASE }}
-          BACKEND_EXTERNAL_PORT=$((${{ vars.BACKEND_PORT_BASE }} + PR_NUM))
-          POSTGRES_EXTERNAL_PORT=$((${{ vars.POSTGRES_PORT_BASE }} + PR_NUM))
-          FRONTEND_EXTERNAL_PORT=$((${{ vars.FRONTEND_PORT_BASE }} + PR_NUM))
+          # Port base values must match ci-deploy-pr-preview.yml (lines 544-545)
+          BACKEND_PORT_BASE=4000
+          FRONTEND_PORT_BASE=3000
+          POSTGRES_PORT_BASE=5432
+
+          BACKEND_CONTAINER_PORT=3000
+          BACKEND_EXTERNAL_PORT=$((BACKEND_PORT_BASE + PR_NUM))
+          POSTGRES_EXTERNAL_PORT=$((POSTGRES_PORT_BASE + PR_NUM))
+          FRONTEND_EXTERNAL_PORT=$((FRONTEND_PORT_BASE + PR_NUM))
 
           # Store context for subsequent steps
           echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT

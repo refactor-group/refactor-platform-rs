@@ -581,6 +581,10 @@ jobs:
                       network=host
 
             # Check if main-arm64 backend image exists in registry
+            # IMPORTANT: Frontend deployments CANNOT build the backend image due to cross-repo
+            # permission restrictions. The frontend's GITHUB_TOKEN only has packages:write
+            # for the frontend repo, not the backend repo. If the backend main-arm64 image
+            # doesn't exist, we must fail fast with a clear error message.
             - name: Check backend image in registry
               id: backend_registry
               if: steps.resolve.outputs.backend_build_mode == 'ensure_main' && steps.resolve.outputs.backend_needs_build != 'true'
@@ -590,7 +594,18 @@ jobs:
                       echo "::notice::📦 Backend main-arm64 image already exists"
                   else
                       echo "exists=false" >> $GITHUB_OUTPUT
-                      echo "::notice::🔨 Backend main-arm64 image missing - will build"
+                      echo "::error::❌ Backend main-arm64 image does not exist!"
+                      echo "::error::The backend 'main-arm64' image must exist before frontend PRs can deploy."
+                      echo "::error::This image is created automatically when a backend PR is merged to main."
+                      echo ""
+                      echo "To resolve this issue, either:"
+                      echo "  1. Merge an open backend PR to main (this will build main-arm64 automatically)"
+                      echo "  2. Manually trigger the backend's cleanup workflow on a merged PR"
+                      echo "  3. Build and push the image manually from the backend repository"
+                      echo ""
+                      echo "Note: Frontend deployments cannot build the backend image due to cross-repo"
+                      echo "permission restrictions (GITHUB_TOKEN only has packages:write for its own repo)."
+                      exit 1
                   fi
 
             # Get backend source code if we need to build it
@@ -850,44 +865,53 @@ jobs:
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
 
                   # Execute schema preparation on remote server
+                  # Note: We use an unquoted heredoc delimiter to allow variable expansion
+                  # for PR_NUMBER, which enables explicit env file path resolution and
+                  # prevents race conditions when multiple PRs deploy simultaneously.
                   ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
-                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} << 'PREP_SCRIPT'
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} << PREP_SCRIPT
                   set -eo pipefail
 
-                  # Load environment configuration
-                  ENV_FILE=$(ls -t ~/pr-*.env 2>/dev/null | head -1)
-                  if [[ -f "$ENV_FILE" ]]; then
-                      echo "📥 Found environment file for schema prep: $ENV_FILE"
+                  # Use explicit PR-numbered env file path to prevent race conditions
+                  # when multiple PRs deploy simultaneously
+                  ENV_FILE=~/pr-${PR_NUMBER}.env
+                  if [[ -f "\$ENV_FILE" ]]; then
+                      echo "📥 Loading environment file: \$ENV_FILE"
                       set -a
-                      source "$ENV_FILE"
+                      source "\$ENV_FILE"
                       set +a
                   else
-                      echo "❌ Environment file not found during schema preparation!"
+                      echo "❌ Environment file not found: \$ENV_FILE"
                       exit 1
                   fi
 
                   # Safety check: ensure we're running on target server
-                  if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+                  if [[ "\$(hostname)" == *"runner"* ]] || [[ "\$(pwd)" == *"runner"* ]]; then
                       echo "❌ Schema preparation running on GitHub runner instead of target server!"
                       exit 1
                   fi
 
-                  cd /home/${RPI5_USERNAME}
+                  cd /home/\${RPI5_USERNAME}
+
+                  # Ensure the external preview-ingress network exists
+                  # This network is shared by all PR preview environments for NGINX routing
+                  echo "🌐 Ensuring preview-ingress network exists..."
+                  docker network create preview-ingress 2>/dev/null || true
 
                   # Clean slate: remove any previous deployment state
                   echo "🧹 Resetting previous deployment (including database volume)..."
-                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true
+                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true
 
                   # Start database for schema setup
                   echo "🐘 Starting postgres for schema preparation..."
-                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "$ENV_FILE" up -d postgres
+                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" up -d postgres
 
                   # Wait for database to be ready for connections
                   echo "⏳ Waiting for postgres to become ready..."
                   READY=""
                   for attempt in {1..30}; do
-                      if docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
-                          env PGPASSWORD="${POSTGRES_PASSWORD}" pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null 2>&1; then
+                      if docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
+                          env PGPASSWORD="\${POSTGRES_PASSWORD}" pg_isready -U "\${POSTGRES_USER}" -d "\${POSTGRES_DB}" >/dev/null 2>&1; then
                           READY="yes"
                           break
                       fi
@@ -895,19 +919,19 @@ jobs:
                   done
 
                   # Abort if database never becomes ready
-                  if [[ -z "$READY" ]]; then
+                  if [[ -z "\$READY" ]]; then
                       echo "❌ Postgres did not become ready in time"
-                      docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml logs postgres || true
+                      docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml logs postgres || true
                       exit 1
                   fi
 
                   # Create schema and set permissions for application
-                  echo "🛠 Ensuring schema ${POSTGRES_SCHEMA} exists and permissions are set..."
-                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
-                      env PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<SQL
-                  CREATE SCHEMA IF NOT EXISTS "${POSTGRES_SCHEMA}";
-                  GRANT ALL PRIVILEGES ON DATABASE "${POSTGRES_DB}" TO "${POSTGRES_USER}";
-                  ALTER ROLE "${POSTGRES_USER}" SET search_path TO "${POSTGRES_SCHEMA}";
+                  echo "🛠 Ensuring schema \${POSTGRES_SCHEMA} exists and permissions are set..."
+                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml exec -T postgres \
+                      env PGPASSWORD="\${POSTGRES_PASSWORD}" psql -U "\${POSTGRES_USER}" -d "\${POSTGRES_DB}" <<SQL
+                  CREATE SCHEMA IF NOT EXISTS "\${POSTGRES_SCHEMA}";
+                  GRANT ALL PRIVILEGES ON DATABASE "\${POSTGRES_DB}" TO "\${POSTGRES_USER}";
+                  ALTER ROLE "\${POSTGRES_USER}" SET search_path TO "\${POSTGRES_SCHEMA}";
                   SQL
 
                   echo "✅ Schema preparation completed"
@@ -968,91 +992,100 @@ jobs:
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
 
                   # Execute main deployment script on remote server
+                  # Note: We use an unquoted heredoc delimiter to allow variable expansion
+                  # for PR_NUMBER, which enables explicit env file path resolution and
+                  # prevents race conditions when multiple PRs deploy simultaneously.
                   ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
-                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} << 'DEPLOY_SCRIPT'
+                      ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} << DEPLOY_SCRIPT
                   set -eo pipefail
 
-                  # Load deployment environment configuration
-                  ENV_FILE=$(ls -t ~/pr-*.env 2>/dev/null | head -1)
-                  if [[ -f "$ENV_FILE" ]]; then
-                      echo "📥 Found environment file: $ENV_FILE"
+                  # Use explicit PR-numbered env file path to prevent race conditions
+                  # when multiple PRs deploy simultaneously
+                  ENV_FILE=~/pr-${PR_NUMBER}.env
+                  if [[ -f "\$ENV_FILE" ]]; then
+                      echo "📥 Loading environment file: \$ENV_FILE"
                       set -a
-                      source "$ENV_FILE"
+                      source "\$ENV_FILE"
                       set +a
                   else
-                      echo "❌ Environment file not found!"
+                      echo "❌ Environment file not found: \$ENV_FILE"
                       exit 1
                   fi
 
                   # Safety check: ensure we're running on target server
-                  if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+                  if [[ "\$(hostname)" == *"runner"* ]] || [[ "\$(pwd)" == *"runner"* ]]; then
                       echo "❌ Script running on GitHub runner instead of target server!"
                       exit 1
                   fi
 
-                  cd /home/${RPI5_USERNAME}
+                  cd /home/\${RPI5_USERNAME}
+
+                  # Ensure the external preview-ingress network exists
+                  # This network is shared by all PR preview environments for NGINX routing
+                  echo "🌐 Ensuring preview-ingress network exists..."
+                  docker network create preview-ingress 2>/dev/null || true
 
                   # Authenticate with container registry
                   echo "📦 Logging into GHCR..."
-                  echo "${GITHUB_TOKEN}" | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+                  echo "\${GITHUB_TOKEN}" | docker login ghcr.io -u \${GITHUB_ACTOR} --password-stdin
 
                   # Pull latest backend image
-                  echo "📥 Pulling backend image: ${BACKEND_IMAGE}..."
-                  docker pull ${BACKEND_IMAGE}
+                  echo "📥 Pulling backend image: \${BACKEND_IMAGE}..."
+                  docker pull \${BACKEND_IMAGE}
 
                   # Pull frontend image if configured
-                  if [[ -n "${FRONTEND_IMAGE}" && "${FRONTEND_IMAGE}" != "null" ]]; then
-                      echo "📥 Pulling frontend image: ${FRONTEND_IMAGE}..."
-                      docker pull ${FRONTEND_IMAGE}
+                  if [[ -n "\${FRONTEND_IMAGE}" && "\${FRONTEND_IMAGE}" != "null" ]]; then
+                      echo "📥 Pulling frontend image: \${FRONTEND_IMAGE}..."
+                      docker pull \${FRONTEND_IMAGE}
                   fi
 
                   # Start complete application stack
                   echo "🚀 Starting PR preview environment..."
-                  docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "$ENV_FILE" up -d
+                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" up -d
 
                   # Allow services time to start up
-                  echo "⏳ Waiting ${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
-                  sleep ${SERVICE_STARTUP_WAIT_SECONDS}
+                  echo "⏳ Waiting \${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
+                  sleep \${SERVICE_STARTUP_WAIT_SECONDS}
 
                   # Display deployment status
                   echo "🩺 Deployment status:"
-                  docker compose -p ${PROJECT_NAME} ps
+                  docker compose -p \${PROJECT_NAME} ps
 
                   # Verify database migrations completed successfully
                   echo "📜 Checking migration status..."
-                  MIGRATOR_EXIT_CODE=$(docker inspect ${PROJECT_NAME}-migrator-1 --format='{{.State.ExitCode}}' 2>/dev/null || echo "255")
-                  docker logs ${PROJECT_NAME}-migrator-1 2>&1 | tail -20
+                  MIGRATOR_EXIT_CODE=\$(docker inspect \${PROJECT_NAME}-migrator-1 --format='{{.State.ExitCode}}' 2>/dev/null || echo "255")
+                  docker logs \${PROJECT_NAME}-migrator-1 2>&1 | tail -20
 
-                  if [[ "${MIGRATOR_EXIT_CODE}" != "0" ]]; then
-                      echo "❌ Migration failed with exit code: ${MIGRATOR_EXIT_CODE}"
+                  if [[ "\${MIGRATOR_EXIT_CODE}" != "0" ]]; then
+                      echo "❌ Migration failed with exit code: \${MIGRATOR_EXIT_CODE}"
                       echo "📜 Full migration logs:"
-                      docker logs ${PROJECT_NAME}-migrator-1 2>&1
+                      docker logs \${PROJECT_NAME}-migrator-1 2>&1
                       exit 1
                   fi
                   echo "✅ Migrations completed successfully"
 
                   # Verify backend service is healthy
                   echo "📜 Checking backend status..."
-                  BACKEND_STATUS=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
-                  docker logs ${PROJECT_NAME}-backend-1 2>&1 | tail -20
+                  BACKEND_STATUS=\$(docker inspect \${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
+                  docker logs \${PROJECT_NAME}-backend-1 2>&1 | tail -20
 
-                  if [[ "${BACKEND_STATUS}" != "running" ]]; then
-                      echo "❌ Backend is not running (status: ${BACKEND_STATUS})"
+                  if [[ "\${BACKEND_STATUS}" != "running" ]]; then
+                      echo "❌ Backend is not running (status: \${BACKEND_STATUS})"
                       echo "📜 Full backend logs:"
-                      docker logs ${PROJECT_NAME}-backend-1 2>&1
+                      docker logs \${PROJECT_NAME}-backend-1 2>&1
                       exit 1
                   fi
 
                   # Check for crash loop (repeated restarts)
-                  BACKEND_RESTART_COUNT=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.RestartCount}}' 2>/dev/null || echo "0")
-                  if [[ "${BACKEND_RESTART_COUNT}" -gt "0" ]]; then
-                      echo "⚠️  Backend has restarted ${BACKEND_RESTART_COUNT} time(s) - checking for crash loop"
+                  BACKEND_RESTART_COUNT=\$(docker inspect \${PROJECT_NAME}-backend-1 --format='{{.State.RestartCount}}' 2>/dev/null || echo "0")
+                  if [[ "\${BACKEND_RESTART_COUNT}" -gt "0" ]]; then
+                      echo "⚠️  Backend has restarted \${BACKEND_RESTART_COUNT} time(s) - checking for crash loop"
                       sleep 5
-                      BACKEND_STATUS_RECHECK=$(docker inspect ${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
-                      if [[ "${BACKEND_STATUS_RECHECK}" != "running" ]]; then
+                      BACKEND_STATUS_RECHECK=\$(docker inspect \${PROJECT_NAME}-backend-1 --format='{{.State.Status}}' 2>/dev/null || echo "missing")
+                      if [[ "\${BACKEND_STATUS_RECHECK}" != "running" ]]; then
                           echo "❌ Backend is crash looping"
                           echo "📜 Full backend logs:"
-                          docker logs ${PROJECT_NAME}-backend-1 2>&1
+                          docker logs \${PROJECT_NAME}-backend-1 2>&1
                           exit 1
                       fi
                   fi
@@ -1061,7 +1094,7 @@ jobs:
                   echo "✅ Deployment complete!"
 
                   # Clean up transferred environment file
-                  rm -f "$ENV_FILE"
+                  rm -f "\$ENV_FILE"
                   DEPLOY_SCRIPT
 
             # Post deployment status and access URLs to PR
