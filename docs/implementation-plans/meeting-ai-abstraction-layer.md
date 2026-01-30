@@ -1,4 +1,4 @@
-# Meeting AI SDK - Abstraction Layer Design
+# Meeting AI Abstraction Layer Design
 
 **Status:** Design Phase
 **Date:** 2025-01-28
@@ -137,7 +137,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
-/// Universal error type for the SDK that abstracts provider-specific errors.
+/// Universal error type that abstracts provider-specific errors into common variants.
 /// This unified error type eliminates the need for controller-level error mapping
 /// and provides consistent error handling across all meeting AI providers.
 /// All provider implementations should map their native errors to these variants,
@@ -905,7 +905,7 @@ pub struct RecallAiProvider {
 #[async_trait]
 impl MeetingBotProvider for RecallAiProvider {
     async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo> {
-        // Map from SDK types to Recall.ai types
+        // Map from trait types to Recall.ai types
         let request = create_standard_bot_request(
             config.meeting_url,
             config.bot_name,
@@ -914,7 +914,7 @@ impl MeetingBotProvider for RecallAiProvider {
 
         let response = self.client.create_bot(request).await?;
 
-        // Map from Recall.ai types back to SDK types
+        // Map from Recall.ai types back to trait types
         Ok(BotInfo {
             id: response.id,
             meeting_url: config.meeting_url,
