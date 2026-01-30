@@ -179,6 +179,16 @@ pub enum Error {
     #[error("Rate limited: retry after {retry_after_seconds}s")]
     RateLimited { retry_after_seconds: u64 },
 
+    /// Failed to serialize data to JSON. Indicates type incompatibility or invalid data.
+    /// Usually occurs when adding custom resources to AnalysisResult.
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+
+    /// Failed to deserialize JSON data to expected type. Indicates type mismatch.
+    /// Usually occurs when extracting resources with get_resources::<T>().
+    #[error("Deserialization error: {0}")]
+    Deserialization(String),
+
     /// Catch-all for errors that don't fit other categories.
     /// Used for unexpected errors or provider-specific edge cases.
     #[error("Other error: {0}")]
@@ -552,34 +562,41 @@ pub trait TranscriptionProvider: Send + Sync {
 }
 ```
 
-### 5. AI Analysis Provider
+### 5. Resource Extraction System
+
+The crate provides a flexible trait-based system for extracting application-specific resources
+from meeting transcripts. Applications define their own resource types completely based on their
+domain needs by implementing the `ExtractedResource` trait. The crate makes no assumptions about
+what types of resources exist - enabling use cases from coaching sessions to medical consultations
+to sales calls to project meetings.
 
 ```rust
-/// Action item extracted from meeting transcript via LLM semantic analysis.
-/// Links action to source context, assignee, and optionally due date and timestamp.
-/// Confidence below 0.7 suggests ambiguous phrasing; consider manual review.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractedAction {
-    pub content: String,
-    pub source_text: String,
-    pub stated_by: String,
-    pub assigned_to: String,
-    pub assigned_to_name: Option<String>,
-    pub due_date: Option<DateTime<Utc>>,
-    pub confidence: f64,
-    pub timestamp_ms: Option<i64>,
-}
+/// Trait that all extractable resources must implement.
+/// Provides common metadata interface while allowing completely custom fields and behavior.
+/// Applications define domain-specific types (e.g., SeaORM models, DTOs, plain structs).
+/// Examples: coaching actions, sales leads, medical diagnoses, project tasks, etc.
+/// Type must be Clone, Send, Sync for async processing and Serialize/Deserialize for API responses.
+pub trait ExtractedResource: Debug + Clone + Send + Sync + Serialize + DeserializeOwned {
+    /// Unique identifier for the resource type defined by the application.
+    /// Examples: "coaching_action", "sales_lead", "diagnosis", "task", "risk", "decision"
+    /// Used for routing, storage, API responses, and distinguishing resource types.
+    /// Must be consistent across all instances of this type.
+    fn resource_type(&self) -> &'static str;
 
-/// Agreement, decision, or commitment identified in the conversation.
-/// Captures who made the statement and links back to original transcript segment.
-/// Use for tracking decisions, meeting outcomes, and accountability.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractedAgreement {
-    pub content: String,
-    pub source_text: String,
-    pub stated_by: String,
-    pub confidence: f64,
-    pub timestamp_ms: Option<i64>,
+    /// Primary text content extracted from the transcript.
+    /// Required for all resources; the core information being captured.
+    /// This is the main human-readable description of what was extracted.
+    fn content(&self) -> &str;
+
+    /// AI confidence score (0.0-1.0) indicating extraction quality.
+    /// Use to filter low-confidence extractions or flag items for human review.
+    /// Scores below 0.7 typically indicate ambiguous phrasing requiring validation.
+    fn confidence(&self) -> f64;
+
+    /// Timestamp in milliseconds from meeting start where this was mentioned.
+    /// None if resource spans multiple time ranges or timestamp unavailable.
+    /// Enables linking resources back to specific moments in recording/transcript.
+    fn timestamp_ms(&self) -> Option<i64>;
 }
 
 /// Key topic identified across the conversation with all mentions.
@@ -615,16 +632,66 @@ pub struct MeetingSummary {
     pub topics: Vec<ExtractedTopic>,
 }
 
-/// Complete result from AI analysis containing all requested extractions.
-/// Fields populate based on AnalysisConfig flags (extract_actions, generate_summary, etc.).
+/// Complete result from AI analysis with flexible resource types.
+/// Stores extracted resources grouped by type in a type-erased format for maximum flexibility.
+/// Applications can extract any number and types of resources based on domain needs.
+/// Use get_resources() for type-safe deserialization of specific resource types.
 /// Token_usage helps track LLM costs and optimize prompts for efficiency.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {
     pub request_id: String,
-    pub actions: Vec<ExtractedAction>,
-    pub agreements: Vec<ExtractedAgreement>,
+    /// Extracted resources grouped by resource_type (e.g., "coaching_action", "sales_lead").
+    /// Stored as JSON values to support any application-defined resource types.
+    /// Use get_resources::<T>() to deserialize resources of a specific type.
+    pub resources: HashMap<String, Vec<serde_json::Value>>,
     pub summary: Option<MeetingSummary>,
     pub token_usage: Option<TokenUsage>,
+}
+
+impl AnalysisResult {
+    /// Type-safe extraction of resources by type.
+    /// Deserializes all resources matching the specified type T.
+    /// Returns empty Vec if no resources of that type exist.
+    /// Returns error if deserialization fails (indicates type mismatch).
+    ///
+    /// # Example
+    /// ```
+    /// let actions: Vec<CoachingAction> = result.get_resources()?;
+    /// let leads: Vec<SalesLead> = result.get_resources()?;
+    /// ```
+    pub fn get_resources<T: ExtractedResource>(&self) -> Result<Vec<T>, Error> {
+        let type_key = std::any::type_name::<T>()
+            .split("::")
+            .last()
+            .unwrap_or("");
+
+        self.resources
+            .get(type_key)
+            .map(|values| {
+                values.iter()
+                    .map(|v| serde_json::from_value(v.clone())
+                        .map_err(|e| Error::Deserialization(e.to_string())))
+                    .collect()
+            })
+            .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    /// Add resources of a specific type to the result.
+    /// Used by provider implementations to populate the result with extracted resources.
+    pub fn add_resources<T: ExtractedResource>(&mut self, resources: Vec<T>) -> Result<(), Error> {
+        if resources.is_empty() {
+            return Ok(());
+        }
+
+        let type_key = resources[0].resource_type().to_string();
+        let values: Result<Vec<serde_json::Value>, _> = resources.iter()
+            .map(|r| serde_json::to_value(r)
+                .map_err(|e| Error::Serialization(e.to_string())))
+            .collect();
+
+        self.resources.insert(type_key, values?);
+        Ok(())
+    }
 }
 
 /// LLM token consumption metrics for cost tracking and optimization.
@@ -637,24 +704,30 @@ pub struct TokenUsage {
 }
 
 /// Configuration for LLM-powered transcript analysis.
+/// Completely domain-agnostic - applications define extraction requirements via prompts.
 /// Provide participant context to improve speaker attribution and name resolution.
-/// Enable specific extractions via flags; disable unused features to reduce cost/latency.
-/// Custom_prompt augments default prompts with domain-specific instructions.
+/// Resource_types specifies what to extract (e.g., ["coaching_action", "sales_lead"]).
+/// Custom_prompt provides detailed extraction instructions for the LLM.
 #[derive(Debug, Clone)]
 pub struct AnalysisConfig {
     pub transcript_id: String,
     pub participants: Vec<Participant>,
-    pub extract_actions: bool,
-    pub extract_agreements: bool,
+    /// Types of resources to extract (e.g., "coaching_action", "sales_lead", "diagnosis").
+    /// Provider uses these to structure extraction prompts and organize results.
+    pub resource_types: Vec<String>,
     pub generate_summary: bool,
-    pub custom_prompt: Option<String>,
+    /// Custom prompt with domain-specific extraction instructions.
+    /// Should describe what each resource type means and what fields to extract.
+    /// Example: "Extract coaching_action items with assignee, due_date, and priority fields."
+    pub extraction_prompt: String,
     pub model: Option<String>,
     pub provider_options: HashMap<String, String>,
 }
 
 /// Meeting participant with role and speaker label mapping.
 /// Speaker_label links to transcription output (e.g., "Speaker A") for name resolution.
-/// Role provides context to LLM for better action assignment (e.g., "coach", "coachee").
+/// Role provides context to LLM for better resource attribution and entity resolution.
+/// Examples: "coach"/"coachee", "doctor"/"patient", "sales_rep"/"prospect", "manager"/"employee"
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Participant {
     pub name: String,
@@ -663,14 +736,16 @@ pub struct Participant {
 }
 
 /// Abstraction for LLM-powered meeting transcript analysis.
-/// Implementations use large language models to extract actions, agreements, summaries
+/// Implementations use large language models to extract domain-specific resources
 /// from transcripts. Supports AssemblyAI LeMUR, OpenAI GPT-4, Anthropic Claude.
-/// This trait enables model comparison and cost optimization across providers.
+/// This trait enables model comparison, cost optimization, and provider switching.
+/// Completely domain-agnostic - applications define what to extract via AnalysisConfig.
 #[async_trait]
 pub trait AiAnalysisProvider: Send + Sync {
-    /// Analyze transcript and extract structured insights based on config flags.
+    /// Analyze transcript and extract structured resources based on config.
     /// Processing typically takes 10-60 seconds depending on transcript length and model.
-    /// Returns actions, agreements, summary based on enabled features in config.
+    /// Returns domain-specific resources defined by application's extraction_prompt.
+    /// Resources organized by type in AnalysisResult for type-safe deserialization.
     async fn analyze(&self, config: AnalysisConfig) -> Result<AnalysisResult, Error>;
 
     /// Run custom LLM prompt against transcript for domain-specific analysis.
@@ -689,6 +764,151 @@ pub trait AiAnalysisProvider: Send + Sync {
     async fn verify_credentials(&self) -> Result<bool, Error>;
 }
 ```
+
+#### Application Integration Example
+
+Complete example showing how applications define and extract custom resources:
+
+```rust
+// Application defines its own domain-specific resource types
+use meeting_ai::{ExtractedResource, AiAnalysisProvider, AnalysisResult, AnalysisConfig};
+use entity::actions; // SeaORM model
+
+/// Application-specific action resource for coaching sessions.
+/// Implements ExtractedResource to work with meeting-ai framework.
+/// Can be directly converted to SeaORM model for database persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoachingAction {
+    pub id: Option<Id>,
+    pub coaching_session_id: Id,
+    pub user_id: Id,
+    pub body: String,
+    pub due_by: Option<DateTimeWithTimeZone>,
+    // Fields from AI extraction
+    pub confidence: f64,
+    pub timestamp_ms: Option<i64>,
+    pub source_text: String,
+}
+
+impl ExtractedResource for CoachingAction {
+    fn resource_type(&self) -> &'static str { "coaching_action" }
+    fn content(&self) -> &str { &self.body }
+    fn confidence(&self) -> f64 { self.confidence }
+    fn timestamp_ms(&self) -> Option<i64> { self.timestamp_ms }
+}
+
+/// Application's AI provider implementation.
+/// Maps between provider's API and application's domain types.
+pub struct SkribbyProvider {
+    client: SkribbyClient,
+}
+
+#[async_trait]
+impl AiAnalysisProvider for SkribbyProvider {
+    async fn analyze(&self, config: AnalysisConfig) -> Result<AnalysisResult, Error> {
+        // Call provider API with extraction prompt
+        let response = self.client.analyze_transcript(
+            &config.transcript_id,
+            &config.extraction_prompt,
+            &config.participants,
+        ).await?;
+
+        // Create result and populate with application-specific types
+        let mut result = AnalysisResult {
+            request_id: response.request_id,
+            resources: HashMap::new(),
+            summary: response.summary,
+            token_usage: response.token_usage,
+        };
+
+        // Map provider response to application's CoachingAction type
+        let actions: Vec<CoachingAction> = response.extracted_items
+            .into_iter()
+            .filter(|item| item.item_type == "coaching_action")
+            .map(|item| CoachingAction {
+                id: None,
+                coaching_session_id: config.coaching_session_id,
+                user_id: config.user_id,
+                body: item.content,
+                due_by: item.due_date.map(parse_datetime),
+                confidence: item.confidence,
+                timestamp_ms: item.timestamp_ms,
+                source_text: item.source_text,
+            })
+            .collect();
+
+        result.add_resources(actions)?;
+        Ok(result)
+    }
+
+    fn provider_id(&self) -> &str { "skribby" }
+
+    async fn verify_credentials(&self) -> Result<bool, Error> {
+        self.client.verify_api_key().await
+    }
+
+    async fn custom_task(&self, transcript_id: &str, prompt: &str) -> Result<String, Error> {
+        self.client.custom_query(transcript_id, prompt).await
+    }
+}
+
+// Usage in controller
+pub async fn analyze_coaching_session(
+    State(app_state): State<AppState>,
+    Path(session_id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    let provider = app_state.get_analysis_provider(user.id).await?;
+
+    let config = AnalysisConfig {
+        transcript_id: session.transcript_id.clone(),
+        participants: vec![
+            Participant {
+                name: coach.full_name.clone(),
+                role: Some("coach".to_string()),
+                speaker_label: Some("Speaker A".to_string()),
+            },
+            Participant {
+                name: coachee.full_name.clone(),
+                role: Some("coachee".to_string()),
+                speaker_label: Some("Speaker B".to_string()),
+            },
+        ],
+        resource_types: vec!["coaching_action".to_string()],
+        generate_summary: true,
+        extraction_prompt: r#"
+            Extract coaching_action items from this coaching session transcript.
+            For each action:
+            - content: What needs to be done (required)
+            - assigned_to: Name of person responsible (required)
+            - due_by: When it should be completed (optional, ISO 8601 format)
+            - confidence: 0.0-1.0 score for extraction confidence
+            - timestamp_ms: When action was mentioned in meeting
+            - source_text: Exact quote from transcript
+
+            Only extract clear commitments and tasks, not general discussion.
+        "#.to_string(),
+        model: Some("gpt-4".to_string()),
+        provider_options: HashMap::new(),
+    };
+
+    // Get analysis results
+    let result = provider.analyze(config).await?;
+
+    // Type-safe extraction of application-specific resources
+    let coaching_actions: Vec<CoachingAction> = result.get_resources()?;
+
+    // Persist to database using SeaORM
+    for action in coaching_actions {
+        let active_model: actions::ActiveModel = action.into();
+        active_model.insert(&db).await?;
+    }
+
+    Ok(Json(result))
+}
+```
+
+This pattern works for any domain - medical consultations extracting diagnoses and prescriptions,
+sales calls extracting leads and objections, project meetings extracting tasks and risks, etc.
 
 ### 6. Webhook Event System
 
