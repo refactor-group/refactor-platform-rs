@@ -76,7 +76,7 @@ The current implementation in `refactor-platform-rs` follows this flow:
 
 ### Hybrid Approach
 
-**Standalone Crate** (`meeting-ai-sdk`)
+**Standalone Crate** (`meeting-ai`)
 - Core trait definitions
 - Common types and errors
 - Provider-agnostic interfaces
@@ -666,9 +666,9 @@ impl MeetingWorkflow {
 ### Phase 1: Create Standalone Crate
 
 ```toml
-# meeting-ai-sdk/Cargo.toml
+# meeting-ai/Cargo.toml
 [package]
-name = "meeting-ai-sdk"
+name = "meeting-ai"
 version = "0.1.0"
 edition = "2021"
 
@@ -682,7 +682,7 @@ thiserror = "1.0"
 
 Directory structure:
 ```
-meeting-ai-sdk/
+meeting-ai/
 ├── src/
 │   ├── lib.rs
 │   ├── error.rs
@@ -713,7 +713,7 @@ Convert existing code to implement the traits:
 
 ```rust
 // domain/src/gateway/recall_ai_provider.rs
-use meeting_ai_sdk::{MeetingBotProvider, BotConfig, BotInfo, SdkResult};
+use meeting_ai::{MeetingBotProvider, BotConfig, BotInfo, SdkResult};
 
 pub struct RecallAiProvider {
     client: RecallAiClient,
@@ -837,7 +837,7 @@ mod tests {
 ## Migration Path
 
 ### Step 1: Non-Breaking Addition
-1. Create `meeting-ai-sdk` crate alongside existing code
+1. Create `meeting-ai` crate alongside existing code
 2. Keep existing implementations working as-is
 3. Add new trait implementations that wrap existing clients
 
@@ -880,7 +880,7 @@ mod tests {
    - Service registry pattern?
    - Factory pattern?
 
-2. **State Persistence** - Should the SDK handle state persistence or leave it to applications?
+2. **State Persistence** - Should the abstraction layer handle state persistence or leave it to applications?
    - Propose: Leave to applications (use existing entity models)
 
 3. **Retry Logic** - Should providers implement retry logic internally?
@@ -901,7 +901,7 @@ mod tests {
 1. **Review this design** with team for feedback
 2. **Create PoC** - Implement one trait + one provider as proof of concept
 3. **Define interfaces** - Finalize trait signatures with input from stakeholders
-4. **Implement SDK crate** - Build out the standalone crate
+4. **Implement crate** - Build out the standalone `meeting-ai` crate
 5. **Refactor one workflow** - Migrate recording OR transcription as pilot
 6. **Document patterns** - Create guides for adding new providers
 7. **Publish to crates.io** - Make available for community use
