@@ -143,7 +143,7 @@ use thiserror::Error;
 /// All provider implementations should map their native errors to these variants,
 /// preserving context while maintaining a provider-agnostic interface.
 #[derive(Debug, Error)]
-pub enum SdkError {
+pub enum Error {
     /// OAuth or API key authentication failures. Indicates credentials are invalid,
     /// expired, or lack necessary permissions. Clients should prompt for re-authentication.
     #[error("Authentication failed: {0}")]
@@ -184,8 +184,6 @@ pub enum SdkError {
     #[error("Other error: {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
-
-pub type SdkResult<T> = Result<T, SdkError>;
 ```
 
 ### 2. Meeting Platform Provider
@@ -257,27 +255,27 @@ pub trait MeetingPlatformProvider: Send + Sync {
     /// Generate OAuth authorization URL for initiating user consent flow.
     /// The state parameter prevents CSRF attacks and should be cryptographically random.
     /// Returns URL where user grants permission to access their meeting platform account.
-    fn get_authorization_url(&self, state: &str) -> SdkResult<String>;
+    fn get_authorization_url(&self, state: &str) -> Result<String, Error>;
 
     /// Exchange OAuth authorization code for access and refresh tokens.
     /// Call this after user completes authorization and redirects back with code.
     /// Store returned tokens securely for subsequent API calls.
-    async fn exchange_code(&self, code: &str) -> SdkResult<OAuthTokens>;
+    async fn exchange_code(&self, code: &str) -> Result<OAuthTokens, Error>;
 
     /// Obtain new access token using a refresh token.
     /// Call this when access_token expires (check expires_at) to maintain
     /// uninterrupted API access without re-prompting user for authorization.
-    async fn refresh_token(&self, refresh_token: &str) -> SdkResult<OAuthTokens>;
+    async fn refresh_token(&self, refresh_token: &str) -> Result<OAuthTokens, Error>;
 
     /// Fetch user profile information from the platform.
     /// Use this to identify users, display their name/avatar, or verify
     /// account linkage during OAuth onboarding process.
-    async fn get_user_info(&self, access_token: &str) -> SdkResult<PlatformUser>;
+    async fn get_user_info(&self, access_token: &str) -> Result<PlatformUser, Error>;
 
     /// Check if access token is still valid without making a data API call.
     /// Returns false if token is expired or revoked; true otherwise.
     /// Use this to proactively refresh tokens before attempting operations.
-    async fn verify_token(&self, access_token: &str) -> SdkResult<bool>;
+    async fn verify_token(&self, access_token: &str) -> Result<bool, Error>;
 
     /// Create a new meeting space on the platform.
     /// Returns meeting URL and metadata. If config is None, creates instant meeting.
@@ -286,7 +284,7 @@ pub trait MeetingPlatformProvider: Send + Sync {
         &self,
         access_token: &str,
         config: Option<MeetingSpaceConfig>
-    ) -> SdkResult<MeetingSpace>;
+    ) -> Result<MeetingSpace, Error>;
 
     /// Return unique identifier for this platform (e.g., "google_meet", "zoom").
     /// Used for logging, metrics, and distinguishing between provider implementations
@@ -383,22 +381,22 @@ pub trait MeetingBotProvider: Send + Sync {
     /// Deploy a bot to join and record a meeting.
     /// Bot immediately begins joining process; track progress via webhooks or polling.
     /// Returns BotInfo with id for subsequent status checks and bot control.
-    async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo>;
+    async fn create_bot(&self, config: BotConfig) -> Result<BotInfo, Error>;
 
     /// Retrieve current status and available artifacts for a bot.
     /// Poll this endpoint if webhook_url was not configured during creation.
     /// Artifacts populate when status reaches Completed or Processing.
-    async fn get_bot_status(&self, bot_id: &str) -> SdkResult<BotInfo>;
+    async fn get_bot_status(&self, bot_id: &str) -> Result<BotInfo, Error>;
 
     /// Immediately remove bot from meeting and stop recording.
     /// Use when user manually ends recording early or cancels session.
     /// Partial recordings may still be available depending on provider.
-    async fn stop_bot(&self, bot_id: &str) -> SdkResult<()>;
+    async fn stop_bot(&self, bot_id: &str) -> Result<(), Error>;
 
     /// Query all bots with optional filters (status, meeting URL, date range).
     /// Useful for admin dashboards, debugging, or finding bots by meeting.
     /// Large result sets may require pagination (implement in provider_options).
-    async fn list_bots(&self, filters: Option<BotFilters>) -> SdkResult<Vec<BotInfo>>;
+    async fn list_bots(&self, filters: Option<BotFilters>) -> Result<Vec<BotInfo>, Error>;
 
     /// Return unique identifier for this provider (e.g., "recall_ai", "skribby").
     /// Used for logging, cost tracking, and selecting providers at runtime.
@@ -408,7 +406,7 @@ pub trait MeetingBotProvider: Send + Sync {
     /// Validate API credentials by making a lightweight test request.
     /// Call during user onboarding or settings updates to provide immediate feedback.
     /// Returns false if credentials are invalid, expired, or lack permissions.
-    async fn verify_credentials(&self) -> SdkResult<bool>;
+    async fn verify_credentials(&self) -> Result<bool, Error>;
 }
 ```
 
@@ -530,17 +528,17 @@ pub trait TranscriptionProvider: Send + Sync {
     /// Start async transcription job for audio/video at media_url.
     /// Returns immediately with job ID; results available via get_transcription when complete.
     /// Media must be publicly accessible or use pre-signed URL with sufficient expiry.
-    async fn create_transcription(&self, config: TranscriptionConfig) -> SdkResult<Transcription>;
+    async fn create_transcription(&self, config: TranscriptionConfig) -> Result<Transcription, Error>;
 
     /// Retrieve transcription status and results by ID.
     /// Poll until status is Completed or Failed. Rate limit polling to avoid quota waste.
     /// All fields (words, segments, etc.) populate only when status is Completed.
-    async fn get_transcription(&self, transcription_id: &str) -> SdkResult<Transcription>;
+    async fn get_transcription(&self, transcription_id: &str) -> Result<Transcription, Error>;
 
     /// Permanently delete transcription and associated data from provider storage.
     /// Use for GDPR compliance, data retention policies, or cleaning up test data.
     /// Some providers auto-delete after retention period (e.g., 30 days).
-    async fn delete_transcription(&self, transcription_id: &str) -> SdkResult<()>;
+    async fn delete_transcription(&self, transcription_id: &str) -> Result<(), Error>;
 
     /// Return unique identifier for this provider (e.g., "assemblyai", "deepgram").
     /// Used for cost tracking, feature-specific logic, and provider selection.
@@ -550,7 +548,7 @@ pub trait TranscriptionProvider: Send + Sync {
     /// Validate API credentials by making a lightweight test request.
     /// Call during user onboarding or settings updates for immediate validation feedback.
     /// Returns false if credentials invalid, expired, or lack transcription permissions.
-    async fn verify_credentials(&self) -> SdkResult<bool>;
+    async fn verify_credentials(&self) -> Result<bool, Error>;
 }
 ```
 
@@ -673,12 +671,12 @@ pub trait AiAnalysisProvider: Send + Sync {
     /// Analyze transcript and extract structured insights based on config flags.
     /// Processing typically takes 10-60 seconds depending on transcript length and model.
     /// Returns actions, agreements, summary based on enabled features in config.
-    async fn analyze(&self, config: AnalysisConfig) -> SdkResult<AnalysisResult>;
+    async fn analyze(&self, config: AnalysisConfig) -> Result<AnalysisResult, Error>;
 
     /// Run custom LLM prompt against transcript for domain-specific analysis.
     /// Use for specialized extractions not covered by standard analyze() method.
     /// Returns raw LLM response; parse result according to your prompt instructions.
-    async fn custom_task(&self, transcript_id: &str, prompt: &str) -> SdkResult<String>;
+    async fn custom_task(&self, transcript_id: &str, prompt: &str) -> Result<String, Error>;
 
     /// Return unique identifier for this provider (e.g., "lemur", "openai", "claude").
     /// Used for cost tracking, model-specific logic, and provider selection.
@@ -688,7 +686,7 @@ pub trait AiAnalysisProvider: Send + Sync {
     /// Validate API credentials by making a lightweight test request.
     /// Call during user onboarding or settings updates for immediate validation.
     /// Returns false if credentials invalid, expired, or lack analysis permissions.
-    async fn verify_credentials(&self) -> SdkResult<bool>;
+    async fn verify_credentials(&self) -> Result<bool, Error>;
 }
 ```
 
@@ -763,12 +761,12 @@ pub trait WebhookHandler: Send + Sync {
     /// Process incoming webhook event and update application state.
     /// Should be idempotent as providers retry failed deliveries.
     /// Return Ok(()) to acknowledge receipt; Err triggers provider retry.
-    async fn handle_event(&self, event: WebhookEvent) -> SdkResult<()>;
+    async fn handle_event(&self, event: WebhookEvent) -> Result<(), Error>;
 
     /// Verify webhook authenticity using provider-specific signature validation.
     /// Check HMAC signature, secret token, or provider-specific headers.
     /// Return false for invalid signatures to prevent webhook spoofing attacks.
-    fn verify_webhook(&self, headers: &HashMap<String, String>, body: &[u8]) -> SdkResult<bool>;
+    fn verify_webhook(&self, headers: &HashMap<String, String>, body: &[u8]) -> Result<bool, Error>;
 }
 ```
 
@@ -829,7 +827,7 @@ impl MeetingWorkflow {
         bot_config: BotConfig,
         transcription_config: TranscriptionConfig,
         analysis_config: AnalysisConfig,
-    ) -> SdkResult<WorkflowProgress> {
+    ) -> Result<WorkflowProgress, Error> {
         // Orchestrate the entire flow
         todo!()
     }
@@ -838,7 +836,7 @@ impl MeetingWorkflow {
     /// Checks current state and progresses workflow to next step.
     /// Use this in webhook handlers or cron jobs to drive long-running workflows.
     /// Returns updated progress; repeat until state is Completed or Failed.
-    pub async fn resume_workflow(&self, progress: WorkflowProgress) -> SdkResult<WorkflowProgress> {
+    pub async fn resume_workflow(&self, progress: WorkflowProgress) -> Result<WorkflowProgress, Error> {
         todo!()
     }
 }
@@ -896,7 +894,7 @@ Convert existing code to implement the traits:
 
 ```rust
 // domain/src/gateway/recall_ai_provider.rs
-use meeting_ai::{MeetingBotProvider, BotConfig, BotInfo, SdkResult};
+use meeting_ai::{MeetingBotProvider, BotConfig, BotInfo, Error};
 
 pub struct RecallAiProvider {
     client: RecallAiClient,
@@ -904,7 +902,7 @@ pub struct RecallAiProvider {
 
 #[async_trait]
 impl MeetingBotProvider for RecallAiProvider {
-    async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo> {
+    async fn create_bot(&self, config: BotConfig) -> Result<BotInfo, Error> {
         // Map from trait types to Recall.ai types
         let request = create_standard_bot_request(
             config.meeting_url,
@@ -973,7 +971,7 @@ pub struct SkribbyProvider {
 
 #[async_trait]
 impl MeetingBotProvider for SkribbyProvider {
-    async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo> {
+    async fn create_bot(&self, config: BotConfig) -> Result<BotInfo, Error> {
         // Skribby-specific implementation
         todo!()
     }
@@ -996,12 +994,12 @@ mod tests {
 
         #[async_trait]
         impl MeetingBotProvider for BotProvider {
-            async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo>;
-            async fn get_bot_status(&self, bot_id: &str) -> SdkResult<BotInfo>;
-            async fn stop_bot(&self, bot_id: &str) -> SdkResult<()>;
-            async fn list_bots(&self, filters: Option<BotFilters>) -> SdkResult<Vec<BotInfo>>;
+            async fn create_bot(&self, config: BotConfig) -> Result<BotInfo, Error>;
+            async fn get_bot_status(&self, bot_id: &str) -> Result<BotInfo, Error>;
+            async fn stop_bot(&self, bot_id: &str) -> Result<(), Error>;
+            async fn list_bots(&self, filters: Option<BotFilters>) -> Result<Vec<BotInfo>, Error>;
             fn provider_id(&self) -> &str;
-            async fn verify_credentials(&self) -> SdkResult<bool>;
+            async fn verify_credentials(&self) -> Result<bool, Error>;
         }
     }
 
@@ -1070,7 +1068,7 @@ mod tests {
    - Propose: Use `tower` middleware for retry/circuit breaker
 
 4. **Rate Limiting** - How to handle provider-specific rate limits?
-   - Propose: Return `SdkError::RateLimited` with retry-after info
+   - Propose: Return `Error::RateLimited` with retry-after info
 
 5. **Multi-Provider** - Should workflows support multiple providers simultaneously?
    - Example: Record with Recall.ai, transcribe with AssemblyAI AND Deepgram for comparison
