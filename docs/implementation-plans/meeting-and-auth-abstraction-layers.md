@@ -438,6 +438,78 @@ meeting-auth/
 │       └── config.rs            # recall_ai_config(), assemblyai_config()
 ```
 
+### Module Summary
+
+#### 📁 `api_key/` — API Key Authentication
+**Purpose:** Authenticate requests to services that use API keys (Recall.ai, AssemblyAI, Deepgram).
+
+| File | Responsibility |
+|------|----------------|
+| `auth.rs` | Defines `ProviderAuth` trait and `ApiKeyAuth` impl — adds API keys to request headers (e.g., `Authorization: Token xxx`) |
+| `bearer.rs` | `BearerTokenAuth` impl — standard `Authorization: Bearer xxx` pattern |
+
+**When used:** Any external API that authenticates via static API keys rather than OAuth tokens.
+
+#### 📁 `oauth/` — OAuth 2.0 Infrastructure
+**Purpose:** Complete OAuth 2.0 token lifecycle management — authorization flows, token storage, refresh, and PKCE security.
+
+| File | Responsibility |
+|------|----------------|
+| `provider.rs` | `OAuthProvider` trait — defines contract for OAuth providers (authorization URL, code exchange, token refresh, revocation) |
+| `tokens.rs` | `OAuthTokens` struct — holds access token, refresh token, expiry, scopes |
+| `storage.rs` | `TokenStorage` trait — **CRITICAL** abstraction for persisting tokens with atomic updates (essential for Zoom's rotating refresh tokens) |
+| `manager.rs` | `TokenManager` — orchestrates token retrieval and refresh with **per-user locking** to prevent race conditions |
+| `pkce.rs` | PKCE (Proof Key for Code Exchange) support — generates code verifier/challenge pairs for secure public client flows |
+| `state.rs` | CSRF state management — generates and validates OAuth state parameters to prevent cross-site request forgery |
+
+**When used:** Google Meet, Zoom, Microsoft Teams — any platform requiring user authorization.
+
+> **Note:** The `TokenManager` with per-user locks is crucial because multiple concurrent requests for the same user could trigger simultaneous token refreshes. Without locking, you'd get race conditions where both requests try to refresh, one succeeds, and the other fails with an invalid refresh token.
+
+#### 📁 `credentials/` — Credential Storage Abstraction
+**Purpose:** Generic storage interface for API credentials (keys, not OAuth tokens).
+
+| File | Responsibility |
+|------|----------------|
+| `storage.rs` | `CredentialStorage` trait — CRUD operations for storing/retrieving encrypted API keys |
+| `memory.rs` | `InMemoryStorage` — simple HashMap-based implementation for unit testing |
+
+**When used:** Storing user-provided API keys for Recall.ai, AssemblyAI, etc.
+
+#### 📁 `webhook/` — Webhook Signature Validation
+**Purpose:** Verify that incoming webhooks genuinely came from the claimed service.
+
+| File | Responsibility |
+|------|----------------|
+| `mod.rs` | `WebhookValidator` trait — interface for validating webhook signatures |
+| `hmac.rs` | `HmacWebhookValidator` — HMAC-SHA256 signature verification (used by Recall.ai, AssemblyAI) |
+
+**When used:** Receiving bot status updates, transcription completion notifications, etc.
+
+> **Note:** Webhook validation prevents attackers from spoofing callbacks. Without it, anyone could POST fake "transcription complete" events to your endpoint and potentially inject malicious data.
+
+#### 📁 `http/` — Authenticated HTTP Client Building
+**Purpose:** Construct `reqwest` clients with middleware for authentication, retries, rate limiting, and observability.
+
+| File | Responsibility |
+|------|----------------|
+| `client.rs` | `AuthenticatedClientBuilder` — fluent builder API for creating configured HTTP clients |
+| `middleware.rs` | Tower middleware composition — stacks rate limiting, timeouts, tracing |
+| `retry.rs` | `RetryAfterPolicy` — **custom retry logic** that respects `Retry-After` headers (both seconds and HTTP-date formats), falls back to exponential backoff |
+
+**When used:** Every outbound API call to external services.
+
+> **Note:** The custom `RetryAfterPolicy` is essential because the default `reqwest-retry` ignores the `Retry-After` header. If an API says "retry after 60 seconds" but your backoff says "retry in 2 seconds," you'll burn through retries and potentially get banned.
+
+#### 📁 `providers/` — Pre-defined Provider Configurations
+**Purpose:** Factory functions for common service configurations (endpoints, auth patterns, rate limits).
+
+| File | Responsibility |
+|------|----------------|
+| `config.rs` | `recall_ai_config()`, `assemblyai_config()`, etc. — pre-configured settings for known providers |
+
+**When used:** Simplifies setup — instead of manually configuring endpoints and auth headers, just call `recall_ai_config("us-west-2", "api.recall.ai")`.
+
 ### Key Traits
 
 #### API Key Authentication
