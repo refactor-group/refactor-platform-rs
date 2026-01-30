@@ -136,6 +136,14 @@ on:
                 description: "Frontend service interface"
                 required: false
 
+            # Cross-repo GHCR authentication for frontend→backend image pushes
+            GHCR_PAT:
+                description: "PAT with packages:write for cross-repo GHCR pushes"
+                required: false
+            GHCR_USERNAME:
+                description: "Username for GHCR PAT authentication"
+                required: false
+
     # Allow manual execution for testing and debugging
     workflow_dispatch:
         inputs:
@@ -572,6 +580,17 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
+            # Override GHCR login with PAT for cross-repo pushes (frontend→backend)
+            # The GITHUB_TOKEN only has packages:write for its own repo, so frontend
+            # workflows need a PAT to push backend images to the backend's GHCR package.
+            - name: Login to GHCR with PAT (cross-repo)
+              if: inputs.repo_type == 'frontend'
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ secrets.GHCR_USERNAME || github.actor }}
+                  password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+
             # Set up Docker BuildKit for advanced features and caching
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v3
@@ -581,31 +600,18 @@ jobs:
                       network=host
 
             # Check if main-arm64 backend image exists in registry
-            # IMPORTANT: Frontend deployments CANNOT build the backend image due to cross-repo
-            # permission restrictions. The frontend's GITHUB_TOKEN only has packages:write
-            # for the frontend repo, not the backend repo. If the backend main-arm64 image
-            # doesn't exist, we must fail fast with a clear error message.
+            # If missing, the subsequent checkout + build steps will build it from source.
+            # Cross-repo pushes require GHCR_PAT (handled by the PAT login step above).
             - name: Check backend image in registry
               id: backend_registry
               if: steps.resolve.outputs.backend_build_mode == 'ensure_main' && steps.resolve.outputs.backend_needs_build != 'true'
               run: |
                   if docker manifest inspect ${{ steps.resolve.outputs.backend_image }} >/dev/null 2>&1; then
                       echo "exists=true" >> $GITHUB_OUTPUT
-                      echo "::notice::📦 Backend main-arm64 image already exists"
+                      echo "::notice::Backend main-arm64 image already exists"
                   else
                       echo "exists=false" >> $GITHUB_OUTPUT
-                      echo "::error::❌ Backend main-arm64 image does not exist!"
-                      echo "::error::The backend 'main-arm64' image must exist before frontend PRs can deploy."
-                      echo "::error::This image is created automatically when a backend PR is merged to main."
-                      echo ""
-                      echo "To resolve this issue, either:"
-                      echo "  1. Merge an open backend PR to main (this will build main-arm64 automatically)"
-                      echo "  2. Manually trigger the backend's cleanup workflow on a merged PR"
-                      echo "  3. Build and push the image manually from the backend repository"
-                      echo ""
-                      echo "Note: Frontend deployments cannot build the backend image due to cross-repo"
-                      echo "permission restrictions (GITHUB_TOKEN only has packages:write for its own repo)."
-                      exit 1
+                      echo "::warning::Backend main-arm64 image not found in registry - will build from source"
                   fi
 
             # Get backend source code if we need to build it
