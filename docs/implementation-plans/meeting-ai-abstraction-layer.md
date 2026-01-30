@@ -137,30 +137,50 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
-/// Universal error type for the SDK
+/// Universal error type for the SDK that abstracts provider-specific errors.
+/// This unified error type eliminates the need for controller-level error mapping
+/// and provides consistent error handling across all meeting AI providers.
+/// All provider implementations should map their native errors to these variants,
+/// preserving context while maintaining a provider-agnostic interface.
 #[derive(Debug, Error)]
 pub enum SdkError {
+    /// OAuth or API key authentication failures. Indicates credentials are invalid,
+    /// expired, or lack necessary permissions. Clients should prompt for re-authentication.
     #[error("Authentication failed: {0}")]
     Authentication(String),
 
+    /// Network connectivity issues, DNS failures, or connection timeouts.
+    /// These errors are typically transient and may benefit from retry logic.
     #[error("Network error: {0}")]
     Network(String),
 
+    /// Invalid parameters, missing required fields, or malformed configuration.
+    /// These errors indicate a programming error and should be fixed at development time.
     #[error("Invalid configuration: {0}")]
     Configuration(String),
 
+    /// Provider-specific business logic errors (e.g., meeting not found, bot rejected).
+    /// These are provider-level failures that may require user intervention or workflow changes.
     #[error("Provider error: {0}")]
     Provider(String),
 
+    /// Operation exceeded the configured or provider-enforced timeout period.
+    /// Consider increasing timeout limits or breaking operations into smaller chunks.
     #[error("Timeout: {0}")]
     Timeout(String),
 
+    /// Requested resource (bot, transcription, meeting) does not exist.
+    /// Verify IDs are correct and the resource hasn't been deleted.
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// Provider rate limit exceeded. Clients must wait before retrying.
+    /// Respect the retry_after_seconds to avoid further rate limiting or API suspension.
     #[error("Rate limited: retry after {retry_after_seconds}s")]
     RateLimited { retry_after_seconds: u64 },
 
+    /// Catch-all for errors that don't fit other categories.
+    /// Used for unexpected errors or provider-specific edge cases.
     #[error("Other error: {0}")]
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -171,7 +191,9 @@ pub type SdkResult<T> = Result<T, SdkError>;
 ### 2. Meeting Platform Provider
 
 ```rust
-/// Configuration for OAuth authentication
+/// Configuration for OAuth 2.0 authentication flow.
+/// Provider implementations use this to construct authorization URLs
+/// and authenticate API requests on behalf of users.
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     pub client_id: String,
@@ -180,7 +202,9 @@ pub struct OAuthConfig {
     pub scopes: Vec<String>,
 }
 
-/// OAuth tokens returned from authentication
+/// OAuth tokens returned from authentication flow.
+/// Applications should persist these tokens securely (encrypted in database)
+/// and use refresh_token to obtain new access tokens before expiry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthTokens {
     pub access_token: String,
@@ -189,7 +213,9 @@ pub struct OAuthTokens {
     pub token_type: String,
 }
 
-/// User information from the platform
+/// User profile information from the meeting platform.
+/// Used to identify users, display profile info, and link platform accounts
+/// to application user records during OAuth onboarding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformUser {
     pub id: String,
@@ -198,7 +224,9 @@ pub struct PlatformUser {
     pub avatar_url: Option<String>,
 }
 
-/// A meeting space/room created on the platform
+/// A meeting space/room created on the platform.
+/// Represents a virtual meeting location with URL for participants to join.
+/// The meeting_url is passed to recording bots to join the meeting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingSpace {
     pub id: String,
@@ -208,7 +236,9 @@ pub struct MeetingSpace {
     pub metadata: HashMap<String, String>,
 }
 
-/// Configuration for creating a meeting space
+/// Configuration for creating a meeting space.
+/// All fields are optional to support instant meetings (no scheduling).
+/// When start_time is None, meeting is available immediately.
 #[derive(Debug, Clone, Default)]
 pub struct MeetingSpaceConfig {
     pub title: Option<String>,
@@ -218,32 +248,49 @@ pub struct MeetingSpaceConfig {
     pub is_public: bool,
 }
 
-/// Trait for meeting platform providers (Google Meet, Zoom, Teams, etc.)
+/// Abstraction for meeting platform OAuth and meeting creation APIs.
+/// Implementations handle OAuth 2.0 flow for user authentication and
+/// meeting space creation (Google Meet, Zoom, Microsoft Teams, etc.).
+/// This trait decouples controllers from specific platform SDKs.
 #[async_trait]
 pub trait MeetingPlatformProvider: Send + Sync {
-    /// Get the authorization URL for OAuth flow
+    /// Generate OAuth authorization URL for initiating user consent flow.
+    /// The state parameter prevents CSRF attacks and should be cryptographically random.
+    /// Returns URL where user grants permission to access their meeting platform account.
     fn get_authorization_url(&self, state: &str) -> SdkResult<String>;
 
-    /// Exchange authorization code for access tokens
+    /// Exchange OAuth authorization code for access and refresh tokens.
+    /// Call this after user completes authorization and redirects back with code.
+    /// Store returned tokens securely for subsequent API calls.
     async fn exchange_code(&self, code: &str) -> SdkResult<OAuthTokens>;
 
-    /// Refresh an expired access token
+    /// Obtain new access token using a refresh token.
+    /// Call this when access_token expires (check expires_at) to maintain
+    /// uninterrupted API access without re-prompting user for authorization.
     async fn refresh_token(&self, refresh_token: &str) -> SdkResult<OAuthTokens>;
 
-    /// Get user information using an access token
+    /// Fetch user profile information from the platform.
+    /// Use this to identify users, display their name/avatar, or verify
+    /// account linkage during OAuth onboarding process.
     async fn get_user_info(&self, access_token: &str) -> SdkResult<PlatformUser>;
 
-    /// Verify if an access token is still valid
+    /// Check if access token is still valid without making a data API call.
+    /// Returns false if token is expired or revoked; true otherwise.
+    /// Use this to proactively refresh tokens before attempting operations.
     async fn verify_token(&self, access_token: &str) -> SdkResult<bool>;
 
-    /// Create a new meeting space
+    /// Create a new meeting space on the platform.
+    /// Returns meeting URL and metadata. If config is None, creates instant meeting.
+    /// The meeting_url from response is used by bots to join the meeting.
     async fn create_meeting_space(
         &self,
         access_token: &str,
         config: Option<MeetingSpaceConfig>
     ) -> SdkResult<MeetingSpace>;
 
-    /// Get the platform identifier (e.g., "google_meet", "zoom")
+    /// Return unique identifier for this platform (e.g., "google_meet", "zoom").
+    /// Used for logging, metrics, and distinguishing between provider implementations
+    /// in multi-provider scenarios. Must be lowercase, alphanumeric with underscores.
     fn platform_id(&self) -> &str;
 }
 ```
@@ -251,7 +298,9 @@ pub trait MeetingPlatformProvider: Send + Sync {
 ### 3. Recording Bot Provider
 
 ```rust
-/// Status of a recording bot
+/// Lifecycle status of a recording bot joining and recording a meeting.
+/// Bots transition through states from Pending → Joining → InMeeting → Recording → Completed.
+/// Failed status may occur at any point due to auth issues, meeting not found, or bot rejection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BotStatus {
     Pending,
@@ -264,7 +313,9 @@ pub enum BotStatus {
     Failed,
 }
 
-/// Recording artifacts (video, audio, etc.)
+/// Media artifacts produced by a recording bot after meeting ends.
+/// URLs typically expire after 24-48 hours, so download and persist files
+/// or trigger transcription immediately. All URLs are pre-signed for direct download.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingArtifacts {
     pub video_url: Option<String>,
@@ -276,7 +327,9 @@ pub struct RecordingArtifacts {
     pub metadata: HashMap<String, String>,
 }
 
-/// Information about a recording bot
+/// Complete information about a recording bot's state and outputs.
+/// Monitor status field and artifacts become available when status reaches Completed.
+/// Check error_message when status is Failed to diagnose issues.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotInfo {
     pub id: String,
@@ -287,6 +340,9 @@ pub struct BotInfo {
     pub status_history: Vec<BotStatusChange>,
 }
 
+/// Historical record of bot status transitions.
+/// Useful for debugging, analytics, and understanding bot lifecycle.
+/// Providers send these via webhooks or return in get_bot_status calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotStatusChange {
     pub status: BotStatus,
@@ -294,7 +350,9 @@ pub struct BotStatusChange {
     pub message: Option<String>,
 }
 
-/// Configuration for creating a recording bot
+/// Configuration for deploying a recording bot to a meeting.
+/// Provider-specific options (e.g., video quality, streaming endpoints) go in provider_options.
+/// Set webhook_url to receive async status updates; without it, you must poll get_bot_status.
 #[derive(Debug, Clone)]
 pub struct BotConfig {
     pub meeting_url: String,
@@ -306,6 +364,9 @@ pub struct BotConfig {
     pub provider_options: HashMap<String, String>,
 }
 
+/// Optional filters for listing bots when querying bot history.
+/// Useful for debugging, showing user's bot history, or finding active bots.
+/// Unset fields are not applied as filters (returns all matches).
 #[derive(Debug, Clone, Default)]
 pub struct BotFilters {
     pub status: Option<BotStatus>,
@@ -313,25 +374,40 @@ pub struct BotFilters {
     pub created_after: Option<DateTime<Utc>>,
 }
 
-/// Trait for meeting bot providers (Recall.ai, Skribby, etc.)
+/// Abstraction for meeting bot services that join meetings to record.
+/// Implementations deploy virtual participants to meetings, record video/audio,
+/// and return media artifacts. Supports providers like Recall.ai, Skribby, Meeting BaaS.
+/// This trait enables cost optimization by swapping providers without code changes.
 #[async_trait]
 pub trait MeetingBotProvider: Send + Sync {
-    /// Create a new recording bot to join a meeting
+    /// Deploy a bot to join and record a meeting.
+    /// Bot immediately begins joining process; track progress via webhooks or polling.
+    /// Returns BotInfo with id for subsequent status checks and bot control.
     async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo>;
 
-    /// Get the current status of a bot
+    /// Retrieve current status and available artifacts for a bot.
+    /// Poll this endpoint if webhook_url was not configured during creation.
+    /// Artifacts populate when status reaches Completed or Processing.
     async fn get_bot_status(&self, bot_id: &str) -> SdkResult<BotInfo>;
 
-    /// Stop/remove a bot from the meeting
+    /// Immediately remove bot from meeting and stop recording.
+    /// Use when user manually ends recording early or cancels session.
+    /// Partial recordings may still be available depending on provider.
     async fn stop_bot(&self, bot_id: &str) -> SdkResult<()>;
 
-    /// List all bots (with optional filters)
+    /// Query all bots with optional filters (status, meeting URL, date range).
+    /// Useful for admin dashboards, debugging, or finding bots by meeting.
+    /// Large result sets may require pagination (implement in provider_options).
     async fn list_bots(&self, filters: Option<BotFilters>) -> SdkResult<Vec<BotInfo>>;
 
-    /// Get the provider identifier (e.g., "recall_ai", "skribby")
+    /// Return unique identifier for this provider (e.g., "recall_ai", "skribby").
+    /// Used for logging, cost tracking, and selecting providers at runtime.
+    /// Must be lowercase, alphanumeric with underscores only.
     fn provider_id(&self) -> &str;
 
-    /// Verify API credentials are valid
+    /// Validate API credentials by making a lightweight test request.
+    /// Call during user onboarding or settings updates to provide immediate feedback.
+    /// Returns false if credentials are invalid, expired, or lack permissions.
     async fn verify_credentials(&self) -> SdkResult<bool>;
 }
 ```
@@ -339,7 +415,9 @@ pub trait MeetingBotProvider: Send + Sync {
 ### 4. Transcription Provider
 
 ```rust
-/// Status of a transcription job
+/// Processing status of a speech-to-text transcription job.
+/// Jobs typically progress Queued → Processing → Completed within minutes.
+/// Poll or use webhooks to monitor progress; avoid tight loops that waste API quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TranscriptionStatus {
     Queued,
@@ -348,7 +426,9 @@ pub enum TranscriptionStatus {
     Failed,
 }
 
-/// A word in the transcript with timing
+/// Individual word with precise timing and speaker attribution.
+/// Enables word-level highlighting, search, and navigation in transcript UIs.
+/// Confidence scores help identify low-quality audio segments that may need review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptWord {
     pub text: String,
@@ -358,7 +438,9 @@ pub struct TranscriptWord {
     pub speaker: Option<String>,
 }
 
-/// A speaker segment (utterance) in the transcript
+/// Continuous speech segment (utterance) from a single speaker.
+/// Represents natural speaking turns in conversation with speaker diarization.
+/// Use segments for speaker attribution, conversation flow analysis, and UI display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptSegment {
     pub text: String,
@@ -369,7 +451,9 @@ pub struct TranscriptSegment {
     pub words: Vec<TranscriptWord>,
 }
 
-/// A chapter/section auto-detected in the transcript
+/// Auto-detected topical chapter with AI-generated summary.
+/// Providers use NLP to identify topic changes and create logical sections.
+/// Useful for long meetings to help users navigate to relevant discussions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptChapter {
     pub title: String,
@@ -379,7 +463,9 @@ pub struct TranscriptChapter {
     pub end_ms: i64,
 }
 
-/// Sentiment analysis result
+/// Emotional tone classification (positive, negative, neutral).
+/// Use for conversation quality analysis, coaching feedback, or conflict detection.
+/// Confidence below 0.7 suggests ambiguous emotional tone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sentiment {
     Positive,
@@ -387,6 +473,9 @@ pub enum Sentiment {
     Negative,
 }
 
+/// Sentiment analysis for a segment of the transcript.
+/// Links emotional tone to specific text, speaker, and timestamp for contextual analysis.
+/// Aggregate sentiment scores provide meeting mood indicators and communication insights.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SentimentAnalysis {
     pub text: String,
@@ -397,7 +486,9 @@ pub struct SentimentAnalysis {
     pub speaker: Option<String>,
 }
 
-/// Complete transcription result
+/// Complete transcription with speech-to-text results and optional enhancements.
+/// Fields populate based on enabled features in TranscriptionConfig.
+/// Poll get_transcription until status is Completed or Failed before accessing results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transcription {
     pub id: String,
@@ -414,7 +505,10 @@ pub struct Transcription {
     pub error_message: Option<String>,
 }
 
-/// Configuration for creating a transcription
+/// Configuration for creating a transcription job.
+/// Enable optional features (speaker labels, sentiment, chapters) via flags.
+/// Set webhook_url to receive completion notification; otherwise poll get_transcription.
+/// Provider_options allow vendor-specific tuning (e.g., custom vocabulary, punctuation).
 #[derive(Debug, Clone)]
 pub struct TranscriptionConfig {
     pub media_url: String,
@@ -427,22 +521,35 @@ pub struct TranscriptionConfig {
     pub provider_options: HashMap<String, String>,
 }
 
-/// Trait for transcription providers (AssemblyAI, Deepgram, etc.)
+/// Abstraction for speech-to-text transcription services.
+/// Implementations convert audio/video to text with speaker diarization, timing,
+/// and optional enhancements (sentiment, chapters). Supports AssemblyAI, Deepgram, Whisper.
+/// This trait enables provider swapping for cost optimization and feature comparison.
 #[async_trait]
 pub trait TranscriptionProvider: Send + Sync {
-    /// Create a new transcription job
+    /// Start async transcription job for audio/video at media_url.
+    /// Returns immediately with job ID; results available via get_transcription when complete.
+    /// Media must be publicly accessible or use pre-signed URL with sufficient expiry.
     async fn create_transcription(&self, config: TranscriptionConfig) -> SdkResult<Transcription>;
 
-    /// Get the status/results of a transcription
+    /// Retrieve transcription status and results by ID.
+    /// Poll until status is Completed or Failed. Rate limit polling to avoid quota waste.
+    /// All fields (words, segments, etc.) populate only when status is Completed.
     async fn get_transcription(&self, transcription_id: &str) -> SdkResult<Transcription>;
 
-    /// Delete a transcription and its data
+    /// Permanently delete transcription and associated data from provider storage.
+    /// Use for GDPR compliance, data retention policies, or cleaning up test data.
+    /// Some providers auto-delete after retention period (e.g., 30 days).
     async fn delete_transcription(&self, transcription_id: &str) -> SdkResult<()>;
 
-    /// Get the provider identifier (e.g., "assemblyai", "deepgram")
+    /// Return unique identifier for this provider (e.g., "assemblyai", "deepgram").
+    /// Used for cost tracking, feature-specific logic, and provider selection.
+    /// Must be lowercase, alphanumeric with underscores only.
     fn provider_id(&self) -> &str;
 
-    /// Verify API credentials are valid
+    /// Validate API credentials by making a lightweight test request.
+    /// Call during user onboarding or settings updates for immediate validation feedback.
+    /// Returns false if credentials invalid, expired, or lack transcription permissions.
     async fn verify_credentials(&self) -> SdkResult<bool>;
 }
 ```
@@ -450,7 +557,9 @@ pub trait TranscriptionProvider: Send + Sync {
 ### 5. AI Analysis Provider
 
 ```rust
-/// An action item extracted from a transcript
+/// Action item extracted from meeting transcript via LLM semantic analysis.
+/// Links action to source context, assignee, and optionally due date and timestamp.
+/// Confidence below 0.7 suggests ambiguous phrasing; consider manual review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedAction {
     pub content: String,
@@ -463,7 +572,9 @@ pub struct ExtractedAction {
     pub timestamp_ms: Option<i64>,
 }
 
-/// An agreement/commitment extracted from a transcript
+/// Agreement, decision, or commitment identified in the conversation.
+/// Captures who made the statement and links back to original transcript segment.
+/// Use for tracking decisions, meeting outcomes, and accountability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedAgreement {
     pub content: String,
@@ -473,7 +584,9 @@ pub struct ExtractedAgreement {
     pub timestamp_ms: Option<i64>,
 }
 
-/// Key topics/themes identified in the transcript
+/// Key topic identified across the conversation with all mentions.
+/// Relevance_score ranks topics by prominence; use for navigation and insights.
+/// Mentions provide timestamps for jumping to topic discussions in recording.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedTopic {
     pub name: String,
@@ -481,13 +594,18 @@ pub struct ExtractedTopic {
     pub mentions: Vec<TopicMention>,
 }
 
+/// Single mention of a topic with context and timestamp.
+/// Enables users to navigate to specific parts of the conversation.
+/// Text provides snippet of surrounding discussion for context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopicMention {
     pub text: String,
     pub timestamp_ms: i64,
 }
 
-/// Structured summary of a meeting/conversation
+/// Structured summary of meeting content generated by LLM.
+/// Organizes conversation into logical categories for quick review and sharing.
+/// Quality depends on transcript accuracy and prompt engineering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingSummary {
     pub overview: String,
@@ -499,7 +617,9 @@ pub struct MeetingSummary {
     pub topics: Vec<ExtractedTopic>,
 }
 
-/// Result from AI analysis
+/// Complete result from AI analysis containing all requested extractions.
+/// Fields populate based on AnalysisConfig flags (extract_actions, generate_summary, etc.).
+/// Token_usage helps track LLM costs and optimize prompts for efficiency.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {
     pub request_id: String,
@@ -509,13 +629,19 @@ pub struct AnalysisResult {
     pub token_usage: Option<TokenUsage>,
 }
 
+/// LLM token consumption metrics for cost tracking and optimization.
+/// Input_tokens = transcript + prompt; output_tokens = generated analysis.
+/// Monitor these to optimize prompt length and detect cost anomalies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
 }
 
-/// Configuration for AI analysis
+/// Configuration for LLM-powered transcript analysis.
+/// Provide participant context to improve speaker attribution and name resolution.
+/// Enable specific extractions via flags; disable unused features to reduce cost/latency.
+/// Custom_prompt augments default prompts with domain-specific instructions.
 #[derive(Debug, Clone)]
 pub struct AnalysisConfig {
     pub transcript_id: String,
@@ -528,6 +654,9 @@ pub struct AnalysisConfig {
     pub provider_options: HashMap<String, String>,
 }
 
+/// Meeting participant with role and speaker label mapping.
+/// Speaker_label links to transcription output (e.g., "Speaker A") for name resolution.
+/// Role provides context to LLM for better action assignment (e.g., "coach", "coachee").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Participant {
     pub name: String,
@@ -535,19 +664,30 @@ pub struct Participant {
     pub speaker_label: Option<String>,
 }
 
-/// Trait for AI analysis providers (AssemblyAI LeMUR, OpenAI, etc.)
+/// Abstraction for LLM-powered meeting transcript analysis.
+/// Implementations use large language models to extract actions, agreements, summaries
+/// from transcripts. Supports AssemblyAI LeMUR, OpenAI GPT-4, Anthropic Claude.
+/// This trait enables model comparison and cost optimization across providers.
 #[async_trait]
 pub trait AiAnalysisProvider: Send + Sync {
-    /// Analyze a transcript and extract insights
+    /// Analyze transcript and extract structured insights based on config flags.
+    /// Processing typically takes 10-60 seconds depending on transcript length and model.
+    /// Returns actions, agreements, summary based on enabled features in config.
     async fn analyze(&self, config: AnalysisConfig) -> SdkResult<AnalysisResult>;
 
-    /// Execute a custom analysis prompt on a transcript
+    /// Run custom LLM prompt against transcript for domain-specific analysis.
+    /// Use for specialized extractions not covered by standard analyze() method.
+    /// Returns raw LLM response; parse result according to your prompt instructions.
     async fn custom_task(&self, transcript_id: &str, prompt: &str) -> SdkResult<String>;
 
-    /// Get the provider identifier (e.g., "lemur", "openai")
+    /// Return unique identifier for this provider (e.g., "lemur", "openai", "claude").
+    /// Used for cost tracking, model-specific logic, and provider selection.
+    /// Must be lowercase, alphanumeric with underscores only.
     fn provider_id(&self) -> &str;
 
-    /// Verify API credentials are valid
+    /// Validate API credentials by making a lightweight test request.
+    /// Call during user onboarding or settings updates for immediate validation.
+    /// Returns false if credentials invalid, expired, or lack analysis permissions.
     async fn verify_credentials(&self) -> SdkResult<bool>;
 }
 ```
@@ -555,10 +695,16 @@ pub trait AiAnalysisProvider: Send + Sync {
 ### 6. Webhook Event System
 
 ```rust
-/// Type of webhook event
+/// Unified webhook event types from all providers (bots, transcription, analysis).
+/// Events enable real-time UI updates and workflow automation without polling.
+/// Applications implement WebhookHandler to process these normalized events.
+/// The type tag enables type-safe deserialization and event routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WebhookEvent {
+    /// Bot transitioned between lifecycle states (Pending → Joining → Recording → etc.).
+    /// Monitor this for UI status indicators and workflow progression triggers.
+    /// Check error_message when new_status is Failed to diagnose issues.
     BotStatusChanged {
         bot_id: String,
         old_status: BotStatus,
@@ -566,11 +712,19 @@ pub enum WebhookEvent {
         timestamp: DateTime<Utc>,
         error_message: Option<String>,
     },
+
+    /// Bot finished recording and artifacts (video/audio URLs) are ready.
+    /// Trigger transcription immediately as artifact URLs expire in 24-48 hours.
+    /// Download and persist files or pass URLs directly to transcription provider.
     BotRecordingCompleted {
         bot_id: String,
         artifacts: RecordingArtifacts,
         timestamp: DateTime<Utc>,
     },
+
+    /// Transcription job status changed (Queued → Processing → Completed/Failed).
+    /// Use this to update UI progress indicators without polling.
+    /// Check error_message when new_status is Failed for debugging.
     TranscriptionStatusChanged {
         transcription_id: String,
         old_status: TranscriptionStatus,
@@ -578,11 +732,19 @@ pub enum WebhookEvent {
         timestamp: DateTime<Utc>,
         error_message: Option<String>,
     },
+
+    /// Transcription finished and full transcript with enhancements is available.
+    /// Trigger AI analysis immediately or update database with transcript results.
+    /// All fields (words, segments, chapters) are populated in transcript.
     TranscriptionCompleted {
         transcription_id: String,
         transcript: Transcription,
         timestamp: DateTime<Utc>,
     },
+
+    /// Real-time transcript segment from streaming transcription during live meeting.
+    /// Use for live captions, real-time search, or interim meeting notes.
+    /// is_final=true means segment won't change; false means preliminary result.
     TranscriptData {
         bot_id: String,
         text: String,
@@ -592,13 +754,20 @@ pub enum WebhookEvent {
     },
 }
 
-/// Trait for handling webhook events
+/// Application-level webhook event handler for processing provider callbacks.
+/// Implementations update database state, trigger downstream workflows,
+/// and send real-time updates to connected clients via WebSockets/SSE.
+/// Handlers must be idempotent as providers may retry delivery.
 #[async_trait]
 pub trait WebhookHandler: Send + Sync {
-    /// Handle an incoming webhook event
+    /// Process incoming webhook event and update application state.
+    /// Should be idempotent as providers retry failed deliveries.
+    /// Return Ok(()) to acknowledge receipt; Err triggers provider retry.
     async fn handle_event(&self, event: WebhookEvent) -> SdkResult<()>;
 
-    /// Verify webhook authenticity (signature, secret, etc.)
+    /// Verify webhook authenticity using provider-specific signature validation.
+    /// Check HMAC signature, secret token, or provider-specific headers.
+    /// Return false for invalid signatures to prevent webhook spoofing attacks.
     fn verify_webhook(&self, headers: &HashMap<String, String>, body: &[u8]) -> SdkResult<bool>;
 }
 ```
@@ -606,7 +775,10 @@ pub trait WebhookHandler: Send + Sync {
 ### 7. Workflow Orchestrator (Optional)
 
 ```rust
-/// High-level orchestrator that coordinates the entire workflow
+/// High-level orchestrator that coordinates end-to-end meeting AI workflow.
+/// Composes all provider traits to automate: meeting creation → bot recording →
+/// transcription → AI analysis. Simplifies application code by handling complex
+/// multi-step async workflows with error recovery and state persistence.
 pub struct MeetingWorkflow {
     pub meeting_provider: Box<dyn MeetingPlatformProvider>,
     pub bot_provider: Box<dyn MeetingBotProvider>,
@@ -614,7 +786,9 @@ pub struct MeetingWorkflow {
     pub analysis_provider: Box<dyn AiAnalysisProvider>,
 }
 
-/// Workflow state machine
+/// State machine representing workflow progression through meeting AI pipeline.
+/// Enables UI progress indicators, workflow resumption, and error recovery.
+/// Failed state may occur at any step; check WorkflowProgress.error for details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkflowState {
     NotStarted,
@@ -628,7 +802,10 @@ pub enum WorkflowState {
     Failed,
 }
 
-/// Progress information for a workflow
+/// Complete workflow state for persistence and resumption.
+/// Applications serialize this to database to support workflow recovery after restarts.
+/// Fields populate progressively as workflow advances through states.
+/// Monitor updated_at to detect stalled workflows requiring intervention.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowProgress {
     pub state: WorkflowState,
@@ -642,7 +819,10 @@ pub struct WorkflowProgress {
 }
 
 impl MeetingWorkflow {
-    /// Start a complete meeting workflow
+    /// Initiate complete meeting workflow from meeting creation through AI analysis.
+    /// Orchestrates all steps automatically with error handling at each stage.
+    /// Returns progress object; use webhooks or resume_workflow to complete async operations.
+    /// Applications should persist returned progress for workflow recovery.
     pub async fn start_workflow(
         &self,
         access_token: &str,
@@ -654,7 +834,10 @@ impl MeetingWorkflow {
         todo!()
     }
 
-    /// Resume a workflow from saved state
+    /// Resume workflow from saved state after system restart or async operations.
+    /// Checks current state and progresses workflow to next step.
+    /// Use this in webhook handlers or cron jobs to drive long-running workflows.
+    /// Returns updated progress; repeat until state is Completed or Failed.
     pub async fn resume_workflow(&self, progress: WorkflowProgress) -> SdkResult<WorkflowProgress> {
         todo!()
     }
