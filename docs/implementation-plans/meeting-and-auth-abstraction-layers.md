@@ -4,11 +4,11 @@
 
 **Date:** 2026-01-30
 
-**Supersedes:** `MeetingManagerProvider` trait from `docs/implementation-plans/meeting-ai-abstraction-layer.md`
+**Supersedes:** `MeetingPlatformProvider` trait from `docs/implementation-plans/meeting-ai-abstraction-layer.md`
 
 **Decision Date:** Weekly Platform Sync Meeting, 2026-01-30
 
-> **Note:** Per the 1/30/26 weekly sync, this plan **replaces** the `MeetingManagerProvider` abstraction in `meeting-ai-abstraction-layer.md`. The `meeting-manager` crate will serve as a shared foundation for both:
+> **Note:** Per the 1/30/26 weekly sync, this plan **replaces** the `MeetingPlatformProvider` abstraction in `meeting-ai-abstraction-layer.md`. The `meeting-manager` crate will serve as a shared foundation for both:
 > 1. Meeting creation and management layer
 > 2. AI bot/transcription layers (Recall.ai, AssemblyAI, etc.)
 
