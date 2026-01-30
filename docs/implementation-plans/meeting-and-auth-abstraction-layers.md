@@ -1,8 +1,11 @@
 # Meeting Auth & Meeting Platform Crates
 
 **Status:** Ready for Review
+
 **Date:** 2026-01-30
+
 **Supersedes:** `MeetingPlatformProvider` trait from `docs/implementation-plans/meeting-ai-abstraction-layer.md`
+
 **Decision Date:** Weekly Platform Sync Meeting, 2026-01-30
 
 > **Note:** Per the 1/30/26 weekly sync, this plan **replaces** the `MeetingPlatformProvider` abstraction in `meeting-ai-abstraction-layer.md`. The `meeting-platform` crate will serve as a shared foundation for both:
