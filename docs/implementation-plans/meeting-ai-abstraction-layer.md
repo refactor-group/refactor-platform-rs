@@ -107,7 +107,7 @@ MeetingPlatformProvider     (OAuth, meeting creation)
     ├── ZoomProvider
     └── TeamsProvider
 
-RecordingBotProvider        (Meeting bots)
+MeetingBotProvider          (Meeting bots)
     ├── RecallAiProvider
     ├── SkribbyProvider
     └── MeetingBaasProvider
@@ -313,9 +313,9 @@ pub struct BotFilters {
     pub created_after: Option<DateTime<Utc>>,
 }
 
-/// Trait for recording bot providers (Recall.ai, Skribby, etc.)
+/// Trait for meeting bot providers (Recall.ai, Skribby, etc.)
 #[async_trait]
-pub trait RecordingBotProvider: Send + Sync {
+pub trait MeetingBotProvider: Send + Sync {
     /// Create a new recording bot to join a meeting
     async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo>;
 
@@ -609,7 +609,7 @@ pub trait WebhookHandler: Send + Sync {
 /// High-level orchestrator that coordinates the entire workflow
 pub struct MeetingWorkflow {
     pub meeting_provider: Box<dyn MeetingPlatformProvider>,
-    pub recording_provider: Box<dyn RecordingBotProvider>,
+    pub bot_provider: Box<dyn MeetingBotProvider>,
     pub transcription_provider: Box<dyn TranscriptionProvider>,
     pub analysis_provider: Box<dyn AiAnalysisProvider>,
 }
@@ -713,14 +713,14 @@ Convert existing code to implement the traits:
 
 ```rust
 // domain/src/gateway/recall_ai_provider.rs
-use meeting_ai_sdk::{RecordingBotProvider, BotConfig, BotInfo, SdkResult};
+use meeting_ai_sdk::{MeetingBotProvider, BotConfig, BotInfo, SdkResult};
 
 pub struct RecallAiProvider {
     client: RecallAiClient,
 }
 
 #[async_trait]
-impl RecordingBotProvider for RecallAiProvider {
+impl MeetingBotProvider for RecallAiProvider {
     async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo> {
         // Map from SDK types to Recall.ai types
         let request = create_standard_bot_request(
@@ -757,7 +757,7 @@ pub async fn start_recording(
     Path(session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
     // Get the configured provider (could be Recall.ai, Skribby, etc.)
-    let recording_provider = app_state.get_recording_provider(user.id).await?;
+    let bot_provider = app_state.get_bot_provider(user.id).await?;
 
     let bot_config = BotConfig {
         meeting_url,
@@ -770,7 +770,7 @@ pub async fn start_recording(
     };
 
     // Now provider-agnostic!
-    let bot_info = recording_provider.create_bot(bot_config).await?;
+    let bot_info = bot_provider.create_bot(bot_config).await?;
 
     // Store bot info in database
     // ...
@@ -789,7 +789,7 @@ pub struct SkribbyProvider {
 }
 
 #[async_trait]
-impl RecordingBotProvider for SkribbyProvider {
+impl MeetingBotProvider for SkribbyProvider {
     async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo> {
         // Skribby-specific implementation
         todo!()
@@ -809,10 +809,10 @@ mod tests {
     use mockall::mock;
 
     mock! {
-        pub RecordingProvider {}
+        pub BotProvider {}
 
         #[async_trait]
-        impl RecordingBotProvider for RecordingProvider {
+        impl MeetingBotProvider for BotProvider {
             async fn create_bot(&self, config: BotConfig) -> SdkResult<BotInfo>;
             async fn get_bot_status(&self, bot_id: &str) -> SdkResult<BotInfo>;
             async fn stop_bot(&self, bot_id: &str) -> SdkResult<()>;
@@ -824,7 +824,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_recording() {
-        let mut mock_provider = MockRecordingProvider::new();
+        let mut mock_provider = MockBotProvider::new();
         mock_provider
             .expect_create_bot()
             .returning(|_| Ok(BotInfo { /* ... */ }));
