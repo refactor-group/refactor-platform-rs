@@ -4,11 +4,11 @@
 
 **Date:** 2026-01-30
 
-**Supersedes:** `MeetingPlatformProvider` trait from `docs/implementation-plans/meeting-ai-abstraction-layer.md`
+**Supersedes:** `MeetingManagerProvider` trait from `docs/implementation-plans/meeting-ai-abstraction-layer.md`
 
 **Decision Date:** Weekly Platform Sync Meeting, 2026-01-30
 
-> **Note:** Per the 1/30/26 weekly sync, this plan **replaces** the `MeetingPlatformProvider` abstraction in `meeting-ai-abstraction-layer.md`. The `meeting-platform` crate will serve as a shared foundation for both:
+> **Note:** Per the 1/30/26 weekly sync, this plan **replaces** the `MeetingManagerProvider` abstraction in `meeting-ai-abstraction-layer.md`. The `meeting-manager` crate will serve as a shared foundation for both:
 > 1. Meeting creation and management layer
 > 2. AI bot/transcription layers (Recall.ai, AssemblyAI, etc.)
 
@@ -21,15 +21,16 @@ Create two new library crates with a clear separation of concerns:
 1. **`meeting-auth`** - **Single source of truth for ALL authentication**
    - API key authentication (for Recall.ai, AssemblyAI, etc.)
    - OAuth 2.0 infrastructure (tokens, storage, refresh, PKCE)
+   - **OAuth provider implementations** (Google, Zoom, Microsoft) — endpoints, scopes, token exchange
    - HTTP client building with middleware
    - Webhook signature validation
 
-2. **`meeting-platform`** - **Platform-specific meeting operations** (thin consumer of meeting-auth)
-   - Platform configurations (Google, Zoom, Teams endpoints and scopes)
-   - Meeting creation and management
-   - Implements traits defined in `meeting-auth`
+2. **`meeting-manager`** - **Meeting operations only** (receives tokens from meeting-auth)
+   - Meeting creation and management via platform APIs
+   - Uses access tokens provided by `meeting-auth` — does NOT manage OAuth flows
+   - Platform-specific API clients (Google Calendar API, Zoom API)
 
-**Key Design Principle:** `meeting-auth` owns all authentication machinery. `meeting-platform` provides platform-specific configurations and meeting operations, delegating all auth concerns to `meeting-auth`.
+**Key Design Principle:** `meeting-auth` owns **all** authentication machinery, including OAuth provider configurations. `meeting-manager` is purely about meeting operations — it receives valid access tokens and uses them to call meeting APIs.
 
 
 
@@ -39,7 +40,7 @@ Create two new library crates with a clear separation of concerns:
 
 Details how this subsystem fits into the overall backend system.
 
-**Key Change:** `meeting-auth` is the single auth foundation. `meeting-platform` is a thin layer for platform-specific operations.
+**Key Change:** `meeting-auth` contains ALL authentication including OAuth provider implementations. `meeting-manager` only handles meeting operations using tokens from `meeting-auth`.
 
 ```mermaid
 flowchart TB
@@ -69,6 +70,7 @@ flowchart TB
     subgraph SharedFoundation["SHARED FOUNDATION<br/>(this plan)"]
         subgraph MeetingAuth["meeting-auth<br/>(ALL auth lives here)"]
             ApiKeyAuth["API Key Auth"]
+            OAuthProviders["OAuth Providers<br/>(Google, Zoom, Microsoft)"]
             OAuthInfra["OAuth Infrastructure<br/>(tokens, PKCE, refresh)"]
             TokenStorage["TokenStorage trait"]
             TokenManager["TokenManager"]
@@ -76,15 +78,17 @@ flowchart TB
             WebhookValidator["WebhookValidator<br/>trait"]
         end
 
-        subgraph MeetingPlatform["meeting-platform<br/>(thin layer)"]
-            PlatformConfigs["Platform Configs<br/>(Google, Zoom)"]
-            MeetingOps["Meeting Operations"]
+        subgraph MeetingManager["meeting-manager<br/>(meeting ops only)"]
+            MeetingClients["Meeting Clients<br/>(Google, Zoom)"]
+            MeetingOps["Meeting Operations<br/>(create, delete)"]
         end
     end
 
     subgraph External["External Services"]
-        GoogleMeet["Google Meet API"]
-        Zoom["Zoom API"]
+        GoogleOAuth["Google OAuth"]
+        ZoomOAuth["Zoom OAuth"]
+        GoogleCalendar["Google Calendar API"]
+        ZoomMeetingAPI["Zoom Meeting API"]
         RecallAI["Recall.ai"]
         AssemblyAI["AssemblyAI"]
     end
@@ -95,13 +99,12 @@ flowchart TB
     WebControllers --> WebhookController
 
     OAuthController --> MeetingAuth
-    OAuthController --> MeetingPlatform
     RecordingController --> MeetingCreation
     RecordingController --> RecordingBotProvider
     TranscriptionController --> TranscriptionProvider
     WebhookController --> WebhookValidator
 
-    MeetingCreation --> MeetingPlatform
+    MeetingCreation --> MeetingManager
 
     RecordingBotProvider --> RecallAdapter
     TranscriptionProvider --> AssemblyAdapter
@@ -111,9 +114,12 @@ flowchart TB
     AssemblyAdapter --> HttpClientBuilder
     LemurAdapter --> HttpClientBuilder
 
-    MeetingPlatform --> MeetingAuth
-    PlatformConfigs --> GoogleMeet
-    PlatformConfigs --> Zoom
+    MeetingManager --> MeetingAuth
+    MeetingManager -->|"uses tokens"| MeetingClients
+    OAuthProviders --> GoogleOAuth
+    OAuthProviders --> ZoomOAuth
+    MeetingClients --> GoogleCalendar
+    MeetingClients --> ZoomMeetingAPI
     HttpClientBuilder --> RecallAI
     HttpClientBuilder --> AssemblyAI
 ```
@@ -142,6 +148,12 @@ flowchart TB
         RefreshLock["Per-User<br/>Refresh Locks"]
         PKCE["PKCE Support"]
         StateManager["CSRF State<br/>Manager"]
+    end
+
+    subgraph OAuthProviders["oauth/providers/ module<br/>(implementations)"]
+        GoogleOAuthProvider["GoogleOAuthProvider"]
+        ZoomOAuthProvider["ZoomOAuthProvider<br/>(future)"]
+        MicrosoftOAuthProvider["MicrosoftOAuthProvider<br/>(future)"]
     end
 
     subgraph Credentials["credentials/ module"]
@@ -187,6 +199,10 @@ flowchart TB
     OAuthProviderTrait --> PKCE
     OAuthProviderTrait --> StateManager
 
+    GoogleOAuthProvider -.->|"implements"| OAuthProviderTrait
+    ZoomOAuthProvider -.->|"implements"| OAuthProviderTrait
+    MicrosoftOAuthProvider -.->|"implements"| OAuthProviderTrait
+
     TokenManager --> TokenStorageTrait
     TokenManager --> RefreshLock
     TokenManager --> OAuthTokens
@@ -209,16 +225,15 @@ flowchart TB
     HmacValidator -.->|"implements"| WebhookValidatorTrait
 ```
 
-### 3. meeting-platform Crate Components (Thin Layer)
+### 3. meeting-manager Crate Components (Meeting Operations Only)
 
 ```mermaid
 flowchart TB
     subgraph PublicAPI["Public API"]
-        MeetingPlatformClient["MeetingPlatformClient"]
-        StartAuthFlow["start_auth_flow()"]
-        CompleteAuthFlow["complete_auth_flow()"]
+        MeetingManagerClient["MeetingManagerClient"]
         CreateMeeting["create_meeting()"]
-        Disconnect["disconnect()"]
+        DeleteMeeting["delete_meeting()"]
+        GetMeeting["get_meeting()"]
     end
 
     subgraph Meeting["meeting/ module"]
@@ -226,47 +241,46 @@ flowchart TB
         MeetingConfig["MeetingConfig<br/>struct"]
     end
 
-    subgraph Platforms["platforms/ module"]
-        VideoPlatformTrait["VideoPlatformProvider<br/>trait"]
-        GoogleMeetProvider["GoogleMeetProvider"]
-        ZoomProvider["ZoomProvider<br/>(Phase 4)"]
-        TeamsProvider["TeamsProvider<br/>(Future)"]
+    subgraph Clients["clients/ module"]
+        MeetingClientTrait["MeetingClient<br/>trait"]
+        GoogleMeetClient["GoogleMeetClient"]
+        ZoomMeetingClient["ZoomMeetingClient<br/>(future)"]
+        TeamsMeetingClient["TeamsMeetingClient<br/>(future)"]
     end
 
     subgraph FromMeetingAuth["Uses from meeting-auth"]
-        OAuthProvider["OAuthProvider trait"]
-        TokenStorage["TokenStorage trait"]
         TokenManager["TokenManager"]
+        OAuthProviders["OAuth Providers<br/>(Google, Zoom)"]
     end
 
-    MeetingPlatformClient --> StartAuthFlow
-    MeetingPlatformClient --> CompleteAuthFlow
-    MeetingPlatformClient --> CreateMeeting
-    MeetingPlatformClient --> Disconnect
+    MeetingManagerClient --> CreateMeeting
+    MeetingManagerClient --> DeleteMeeting
+    MeetingManagerClient --> GetMeeting
 
-    MeetingPlatformClient --> TokenManager
+    MeetingManagerClient -->|"gets tokens via"| TokenManager
+    TokenManager -->|"uses"| OAuthProviders
 
-    StartAuthFlow --> VideoPlatformTrait
-    CompleteAuthFlow --> VideoPlatformTrait
-    CreateMeeting --> VideoPlatformTrait
+    CreateMeeting --> MeetingClientTrait
+    DeleteMeeting --> MeetingClientTrait
+    GetMeeting --> MeetingClientTrait
 
-    VideoPlatformTrait --> GoogleMeetProvider
-    VideoPlatformTrait --> ZoomProvider
-    VideoPlatformTrait --> TeamsProvider
+    MeetingClientTrait --> GoogleMeetClient
+    MeetingClientTrait --> ZoomMeetingClient
+    MeetingClientTrait --> TeamsMeetingClient
 
-    GoogleMeetProvider -.->|"implements"| OAuthProvider
-    ZoomProvider -.->|"implements"| OAuthProvider
-    TeamsProvider -.->|"implements"| OAuthProvider
+    GoogleMeetClient -.->|"implements"| MeetingClientTrait
+    ZoomMeetingClient -.->|"implements"| MeetingClientTrait
+    TeamsMeetingClient -.->|"implements"| MeetingClientTrait
 
     CreateMeeting --> MeetingSpace
     CreateMeeting --> MeetingConfig
-
-    TokenManager --> TokenStorage
 ```
+
+> **Key Difference:** `MeetingClient` does NOT extend `OAuthProvider`. Meeting clients receive access tokens from `TokenManager` and use them to call platform APIs. All OAuth logic stays in `meeting-auth`.
 
 ### 4. Sequence Diagram: Google Meet OAuth Link Account Flow
 
-Shows the complete flow when a coach links their Google account for the first time.
+Shows the complete flow when a coach links their Google account for the first time. Note that `meeting-manager` is NOT involved — OAuth is handled entirely by `meeting-auth`.
 
 ```mermaid
 sequenceDiagram
@@ -275,8 +289,9 @@ sequenceDiagram
     participant Frontend as Frontend App
     participant Backend as Backend API
     participant OAuthCtrl as oauth_controller
-    participant MeetingPlatform as meeting-platform
     participant MeetingAuth as meeting-auth
+    participant GoogleOAuth as GoogleOAuthProvider
+    participant TokenMgr as TokenManager
     participant TokenStorage as TokenStorage<br/>(oauth_connections)
     participant Google as Google OAuth
 
@@ -284,12 +299,13 @@ sequenceDiagram
     Coach->>Frontend: Click "Connect Google Account"
     Frontend->>Backend: GET /api/oauth/google/authorize
     Backend->>OAuthCtrl: handle_authorize()
-    OAuthCtrl->>MeetingPlatform: start_auth_flow("google", state)
-    MeetingPlatform->>MeetingAuth: GoogleMeetProvider.authorization_url(state, pkce_challenge)
-    MeetingAuth-->>MeetingAuth: Generate PKCE verifier/challenge
-    MeetingAuth-->>MeetingAuth: Store state + PKCE verifier in session
-    MeetingAuth-->>MeetingPlatform: AuthorizationRequest { url, state }
-    MeetingPlatform-->>OAuthCtrl: AuthorizationRequest
+    OAuthCtrl->>MeetingAuth: GoogleOAuthProvider.authorization_url(state, pkce_challenge)
+    MeetingAuth->>GoogleOAuth: authorization_url()
+    GoogleOAuth-->>GoogleOAuth: Generate PKCE verifier/challenge
+    GoogleOAuth-->>GoogleOAuth: Build URL with scopes:<br/>calendar.events, userinfo.email
+    GoogleOAuth-->>MeetingAuth: AuthorizationRequest { url, state, pkce_verifier }
+    MeetingAuth-->>OAuthCtrl: AuthorizationRequest
+    OAuthCtrl-->>OAuthCtrl: Store state + PKCE verifier in session
     OAuthCtrl-->>Backend: Redirect URL
     Backend-->>Frontend: 302 Redirect to Google
     Frontend-->>Coach: Redirect to Google login
@@ -303,24 +319,27 @@ sequenceDiagram
     Frontend->>Backend: GET /api/oauth/google/callback?code=xxx&state=yyy
     Backend->>OAuthCtrl: handle_callback()
     OAuthCtrl-->>OAuthCtrl: Validate state (CSRF protection)
-    OAuthCtrl->>MeetingPlatform: complete_auth_flow("google", user_id, code, pkce_verifier)
-    MeetingPlatform->>MeetingAuth: GoogleMeetProvider.exchange_code(code, pkce_verifier)
-    MeetingAuth->>Google: POST /oauth2/v4/token (code + PKCE verifier)
-    Google-->>MeetingAuth: { access_token, refresh_token, expires_in }
-    MeetingAuth-->>MeetingPlatform: OAuthTokens
+    OAuthCtrl->>MeetingAuth: GoogleOAuthProvider.exchange_code(code, pkce_verifier)
+    MeetingAuth->>GoogleOAuth: exchange_code()
+    GoogleOAuth->>Google: POST /oauth2/v4/token (code + PKCE verifier)
+    Google-->>GoogleOAuth: { access_token, refresh_token, expires_in }
+    GoogleOAuth-->>MeetingAuth: OAuthTokens
 
     Note over Coach,Google: Phase 4: Get User Info & Store
-    MeetingPlatform->>MeetingAuth: GoogleMeetProvider.get_user_info(access_token)
-    MeetingAuth->>Google: GET /oauth2/v2/userinfo
-    Google-->>MeetingAuth: { id, email, name }
-    MeetingAuth-->>MeetingPlatform: PlatformUser
-    MeetingPlatform->>MeetingAuth: TokenManager.store_tokens(user_id, "google", tokens)
-    MeetingAuth->>TokenStorage: store_tokens()
+    OAuthCtrl->>MeetingAuth: GoogleOAuthProvider.get_user_info(access_token)
+    MeetingAuth->>GoogleOAuth: get_user_info()
+    GoogleOAuth->>Google: GET /oauth2/v2/userinfo
+    Google-->>GoogleOAuth: { id, email, name }
+    GoogleOAuth-->>MeetingAuth: OAuthUserInfo
+    MeetingAuth-->>OAuthCtrl: OAuthUserInfo { id, email, name }
+    OAuthCtrl->>MeetingAuth: TokenManager.store_tokens(user_id, "google", tokens)
+    MeetingAuth->>TokenMgr: store_tokens()
+    TokenMgr->>TokenStorage: store_tokens()
     TokenStorage-->>TokenStorage: Encrypt tokens (AES-256-GCM)
     TokenStorage->>TokenStorage: INSERT INTO oauth_connections
-    TokenStorage-->>MeetingAuth: Ok(())
-    MeetingAuth-->>MeetingPlatform: Ok(())
-    MeetingPlatform-->>OAuthCtrl: PlatformUser { email, name }
+    TokenStorage-->>TokenMgr: Ok(())
+    TokenMgr-->>MeetingAuth: Ok(())
+    MeetingAuth-->>OAuthCtrl: Ok(())
     OAuthCtrl-->>Backend: Success + user info
     Backend-->>Frontend: 200 OK { connected: true, email }
     Frontend-->>Coach: "Google account connected!"
@@ -328,7 +347,7 @@ sequenceDiagram
 
 ### 5. Sequence Diagram: Create Meeting with Linked Google Account
 
-Shows the flow when creating a Google Meet meeting using an already-linked account, including automatic token refresh.
+Shows the flow when creating a Google Meet meeting using an already-linked account. Note the clean separation: `meeting-auth` handles tokens, `meeting-manager` handles meeting creation.
 
 ```mermaid
 sequenceDiagram
@@ -337,9 +356,11 @@ sequenceDiagram
     participant Frontend as Frontend App
     participant Backend as Backend API
     participant SessionCtrl as coaching_session_controller
-    participant MeetingPlatform as meeting-platform
+    participant MeetingManager as meeting-manager
+    participant GoogleMeetClient as GoogleMeetClient
     participant MeetingAuth as meeting-auth
     participant TokenMgr as TokenManager
+    participant GoogleOAuth as GoogleOAuthProvider
     participant TokenStorage as TokenStorage<br/>(oauth_connections)
     participant Google as Google Calendar API
 
@@ -348,9 +369,9 @@ sequenceDiagram
     Frontend->>Backend: POST /api/coaching-sessions<br/>{ coachee_id, datetime, platform: "google" }
     Backend->>SessionCtrl: create_session()
 
-    Note over Coach,Google: Get valid access token (may need refresh)
-    SessionCtrl->>MeetingPlatform: create_meeting("google", coach_id, config)
-    MeetingPlatform->>MeetingAuth: TokenManager.get_valid_token(provider, coach_id)
+    Note over Coach,Google: Get valid access token from meeting-auth
+    SessionCtrl->>MeetingManager: create_meeting("google", coach_id, config)
+    MeetingManager->>MeetingAuth: TokenManager.get_valid_token("google", coach_id)
     MeetingAuth->>TokenMgr: get_valid_token()
     TokenMgr->>TokenStorage: get_tokens(coach_id, "google")
     TokenStorage->>TokenStorage: SELECT FROM oauth_connections
@@ -358,12 +379,12 @@ sequenceDiagram
     TokenStorage-->>TokenMgr: OAuthTokens { access_token, refresh_token, expires_at }
 
     alt Token is expired or expiring soon
-        Note over TokenMgr,Google: Automatic token refresh
+        Note over TokenMgr,Google: Automatic token refresh (in meeting-auth)
         TokenMgr-->>TokenMgr: Acquire per-user refresh lock
-        TokenMgr->>MeetingAuth: GoogleMeetProvider.refresh_token(refresh_token)
-        MeetingAuth->>Google: POST /oauth2/v4/token (refresh_token)
-        Google-->>MeetingAuth: { new_access_token, expires_in }
-        MeetingAuth-->>TokenMgr: TokenRefreshResult { tokens, rotated: false }
+        TokenMgr->>GoogleOAuth: refresh_token(refresh_token)
+        GoogleOAuth->>Google: POST /oauth2/v4/token (refresh_token)
+        Google-->>GoogleOAuth: { new_access_token, expires_in }
+        GoogleOAuth-->>TokenMgr: TokenRefreshResult { tokens, rotated: false }
         TokenMgr->>TokenStorage: update_tokens_atomic(coach_id, "google", old_refresh, new_tokens)
         TokenStorage->>TokenStorage: UPDATE oauth_connections<br/>SET access_token=..., last_refresh_at=now()
         TokenStorage-->>TokenMgr: Ok(())
@@ -371,14 +392,14 @@ sequenceDiagram
     end
 
     TokenMgr-->>MeetingAuth: valid access_token
-    MeetingAuth-->>MeetingPlatform: SecretString(access_token)
+    MeetingAuth-->>MeetingManager: SecretString(access_token)
 
-    Note over Coach,Google: Create the meeting
-    MeetingPlatform->>MeetingAuth: GoogleMeetProvider.create_meeting(access_token, config)
-    MeetingAuth->>Google: POST /calendar/v3/calendars/primary/events<br/>{ conferenceDataVersion: 1, ... }
-    Google-->>MeetingAuth: Event with conferenceData
-    MeetingAuth-->>MeetingPlatform: MeetingSpace { meeting_id, join_url, host_url }
-    MeetingPlatform-->>SessionCtrl: MeetingSpace
+    Note over Coach,Google: Create meeting via meeting-manager
+    MeetingManager->>GoogleMeetClient: create_meeting(access_token, config)
+    GoogleMeetClient->>Google: POST /calendar/v3/calendars/primary/events<br/>{ conferenceDataVersion: 1, ... }
+    Google-->>GoogleMeetClient: Event with conferenceData
+    GoogleMeetClient-->>MeetingManager: MeetingSpace { meeting_id, join_url, host_url }
+    MeetingManager-->>SessionCtrl: MeetingSpace
 
     Note over Coach,Google: Save session with meeting link
     SessionCtrl->>SessionCtrl: Store session + meeting_url in DB
@@ -393,7 +414,10 @@ sequenceDiagram
 
 ### Purpose
 
-**Single source of truth for ALL authentication** (except for existing TipTap JWT token handling) - both API key auth for service providers and OAuth for video meeting platforms.
+**Single source of truth for ALL authentication** (except for existing TipTap JWT token handling):
+- API key authentication for service providers (Recall.ai, AssemblyAI)
+- OAuth 2.0 infrastructure (tokens, storage, refresh, PKCE)
+- **OAuth provider implementations** (Google, Zoom, Microsoft) — including endpoints, scopes, and token exchange
 
 ### Location
 
@@ -409,14 +433,20 @@ meeting-auth/
 │   │   ├── auth.rs              # ProviderAuth trait + ApiKeyAuth
 │   │   └── bearer.rs            # BearerTokenAuth
 │   │
-│   ├── oauth/                   # OAuth 2.0 infrastructure
+│   ├── oauth/                   # OAuth 2.0 infrastructure + providers
 │   │   ├── mod.rs
 │   │   ├── provider.rs          # OAuthProvider trait
 │   │   ├── tokens.rs            # OAuthTokens struct
 │   │   ├── storage.rs           # TokenStorage trait (CRITICAL)
 │   │   ├── manager.rs           # TokenManager with refresh locks
 │   │   ├── pkce.rs              # PKCE support
-│   │   └── state.rs             # CSRF state management
+│   │   ├── state.rs             # CSRF state management
+│   │   │
+│   │   └── providers/           # OAuth provider IMPLEMENTATIONS
+│   │       ├── mod.rs
+│   │       ├── google.rs        # GoogleOAuthProvider (endpoints, scopes)
+│   │       ├── zoom.rs          # ZoomOAuthProvider (future - rotating tokens)
+│   │       └── microsoft.rs     # MicrosoftOAuthProvider (future)
 │   │
 │   ├── credentials/             # Credential storage abstraction
 │   │   ├── mod.rs
@@ -433,7 +463,7 @@ meeting-auth/
 │   │   ├── middleware.rs        # Tower middleware composition
 │   │   └── retry.rs             # Custom retry policy with Retry-After support
 │   │
-│   └── providers/               # Pre-defined provider configs
+│   └── providers/               # Pre-defined API key provider configs
 │       ├── mod.rs
 │       └── config.rs            # recall_ai_config(), assemblyai_config()
 ```
@@ -465,6 +495,19 @@ meeting-auth/
 **When used:** Google Meet, Zoom, Microsoft Teams — any platform requiring user authorization.
 
 > **Note:** The `TokenManager` with per-user locks is crucial because multiple concurrent requests for the same user could trigger simultaneous token refreshes. Without locking, you'd get race conditions where both requests try to refresh, one succeeds, and the other fails with an invalid refresh token.
+
+#### 📁 `oauth/providers/` — OAuth Provider Implementations
+**Purpose:** Concrete implementations of `OAuthProvider` for each video meeting platform. Contains platform-specific OAuth endpoints, scopes, and token handling.
+
+| File | Responsibility |
+|------|----------------|
+| `google.rs` | `GoogleOAuthProvider` — Google OAuth endpoints (`accounts.google.com`), scopes (`calendar.events`, `userinfo.email`), user info retrieval |
+| `zoom.rs` | `ZoomOAuthProvider` (future) — Zoom OAuth with **rotating refresh token** handling |
+| `microsoft.rs` | `MicrosoftOAuthProvider` (future) — Microsoft/Azure AD OAuth for Teams |
+
+**When used:** Any OAuth flow for video meeting platforms. This is where platform-specific OAuth knowledge lives.
+
+> **Key Design Decision:** OAuth provider implementations live in `meeting-auth`, NOT `meeting-manager`. This ensures all authentication logic (endpoints, scopes, token exchange) is centralized in one crate.
 
 #### 📁 `credentials/` — Credential Storage Abstraction
 **Purpose:** Generic storage interface for API credentials (keys, not OAuth tokens).
@@ -774,46 +817,44 @@ pub fn deepgram_config() -> ProviderConfig;  // future
 
 ---
 
-## Crate 2: meeting-platform
+## Crate 2: meeting-manager
 
 ### Purpose
 
-**Thin layer for platform-specific meeting operations.** Provides configurations for video platforms and meeting creation, delegating all authentication to `meeting-auth`.
+**Meeting operations only.** This crate handles creating, managing, and deleting meetings on video platforms. It receives access tokens from `meeting-auth` and uses them to call platform APIs.
+
+**What this crate does NOT do:**
+- OAuth flows (handled by `meeting-auth`)
+- Token storage or refresh (handled by `meeting-auth`)
+- Authentication of any kind (handled by `meeting-auth`)
 
 ### Location
 
 ```
-meeting-platform/
+meeting-manager/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs
 │   ├── error.rs
-│   ├── client.rs                # MeetingPlatformClient
+│   ├── client.rs                # MeetingManagerClient (high-level API)
 │   │
 │   ├── meeting/                 # Meeting types
 │   │   ├── mod.rs
 │   │   ├── space.rs             # MeetingSpace struct
 │   │   └── config.rs            # MeetingConfig struct
 │   │
-│   └── platforms/               # Platform-specific implementations
+│   └── clients/                 # Platform-specific meeting clients
 │       ├── mod.rs
-│       ├── provider.rs          # VideoPlatformProvider trait
-│       ├── google_meet.rs       # Google Meet implementation
-│       ├── zoom.rs              # Zoom implementation (future)
-│       └── teams.rs             # Microsoft Teams (future)
+│       ├── traits.rs            # MeetingClient trait
+│       ├── google_meet.rs       # GoogleMeetClient (Calendar API)
+│       ├── zoom.rs              # ZoomMeetingClient (future)
+│       └── teams.rs             # TeamsMeetingClient (future)
 ```
 
 ### Key Traits
 
 ```rust
-use meeting_auth::{OAuthProvider, TokenManager, TokenStorage, OAuthTokens};
-
-/// Platform user info retrieved after OAuth
-pub struct PlatformUser {
-    pub external_id: String,
-    pub email: Option<String>,
-    pub name: Option<String>,
-}
+use meeting_auth::TokenManager;
 
 /// Meeting space returned after creation
 pub struct MeetingSpace {
@@ -832,103 +873,127 @@ pub struct MeetingConfig {
     pub settings: PlatformSpecificSettings,
 }
 
-/// Video platform provider - extends OAuthProvider with meeting operations
+/// Meeting client trait - NO OAuth inheritance
+/// Implementations receive access tokens, they don't manage them
 #[async_trait]
-pub trait VideoPlatformProvider: OAuthProvider {
-    /// Get user info from the platform
-    async fn get_user_info(&self, access_token: &str) -> Result<PlatformUser, PlatformError>;
+pub trait MeetingClient: Send + Sync {
+    /// Platform identifier (e.g., "google", "zoom")
+    fn platform_id(&self) -> &str;
 
     /// Create a meeting on the platform
     async fn create_meeting(
         &self,
-        access_token: &str,
+        access_token: &str,  // Received from meeting-auth
         config: MeetingConfig,
-    ) -> Result<MeetingSpace, PlatformError>;
+    ) -> Result<MeetingSpace, MeetingError>;
 
     /// Delete/cancel a meeting
     async fn delete_meeting(
         &self,
         access_token: &str,
         meeting_id: &str,
-    ) -> Result<(), PlatformError>;
+    ) -> Result<(), MeetingError>;
+
+    /// Get meeting details
+    async fn get_meeting(
+        &self,
+        access_token: &str,
+        meeting_id: &str,
+    ) -> Result<MeetingSpace, MeetingError>;
 }
 ```
+
+> **Key Design Decision:** `MeetingClient` does NOT extend `OAuthProvider`. Meeting clients are pure API clients that receive tokens — they have no knowledge of OAuth flows, token refresh, or authentication.
 
 ### Main Client Interface
 
 ```rust
-use meeting_auth::{TokenManager, TokenStorage};
+use meeting_auth::{TokenManager, TokenStorage, OAuthProvider};
 
-/// High-level client for video platform operations
-pub struct MeetingPlatformClient<S: TokenStorage> {
+/// High-level client for meeting operations
+/// Coordinates between meeting-auth (tokens) and meeting clients (API calls)
+pub struct MeetingManagerClient<S: TokenStorage> {
     token_manager: TokenManager<S>,
-    platforms: HashMap<String, Arc<dyn VideoPlatformProvider>>,
+    meeting_clients: HashMap<String, Arc<dyn MeetingClient>>,
 }
 
-impl<S: TokenStorage> MeetingPlatformClient<S> {
-    /// Start OAuth flow - returns URL to redirect user to
-    pub fn start_auth_flow(
-        &self,
-        platform_id: &str,
-        state: &str,
-    ) -> Result<AuthorizationRequest, ClientError>;
-
-    /// Complete OAuth flow after user authorizes
-    pub async fn complete_auth_flow(
-        &self,
-        platform_id: &str,
-        user_id: &str,
-        code: &str,
-        pkce_verifier: Option<&str>,
-    ) -> Result<PlatformUser, ClientError>;
-
-    /// Create a meeting (handles token refresh automatically)
+impl<S: TokenStorage> MeetingManagerClient<S> {
+    /// Create a meeting (gets token from meeting-auth, calls meeting client)
     pub async fn create_meeting(
         &self,
         platform_id: &str,
         user_id: &str,
         config: MeetingConfig,
-    ) -> Result<MeetingSpace, ClientError>;
+    ) -> Result<MeetingSpace, ClientError> {
+        // 1. Get valid token from meeting-auth (handles refresh)
+        let token = self.token_manager
+            .get_valid_token(platform_id, user_id)
+            .await?;
 
-    /// Disconnect user from platform (revoke tokens)
-    pub async fn disconnect(
+        // 2. Call meeting client with token
+        let client = self.meeting_clients.get(platform_id)?;
+        client.create_meeting(token.expose_secret(), config).await
+    }
+
+    /// Delete a meeting
+    pub async fn delete_meeting(
         &self,
         platform_id: &str,
         user_id: &str,
+        meeting_id: &str,
     ) -> Result<(), ClientError>;
+
+    /// Get meeting details
+    pub async fn get_meeting(
+        &self,
+        platform_id: &str,
+        user_id: &str,
+        meeting_id: &str,
+    ) -> Result<MeetingSpace, ClientError>;
 }
 ```
 
 ### Platform Implementations
 
-Each platform provider implements both `OAuthProvider` (from meeting-auth) and `VideoPlatformProvider`:
+Each platform has a simple meeting client that knows how to call the platform's meeting API:
 
 ```rust
-// google_meet.rs
-pub struct GoogleMeetProvider {
-    client_id: String,
-    client_secret: SecretString,
-    redirect_uri: String,
+// clients/google_meet.rs
+pub struct GoogleMeetClient {
+    http_client: reqwest::Client,
 }
 
-impl OAuthProvider for GoogleMeetProvider {
-    fn provider_id(&self) -> &str { "google" }
+impl MeetingClient for GoogleMeetClient {
+    fn platform_id(&self) -> &str { "google" }
 
-    fn authorization_url(&self, state: &str, pkce_challenge: Option<&str>) -> AuthorizationRequest {
-        // Google-specific OAuth URL with calendar scopes
+    async fn create_meeting(
+        &self,
+        access_token: &str,
+        config: MeetingConfig,
+    ) -> Result<MeetingSpace, MeetingError> {
+        // Call Google Calendar API to create event with conferenceData
+        let response = self.http_client
+            .post("https://www.googleapis.com/calendar/v3/calendars/primary/events")
+            .bearer_auth(access_token)
+            .query(&[("conferenceDataVersion", "1")])
+            .json(&CalendarEvent::from(config))
+            .send()
+            .await?;
+
+        // Parse response and extract Meet link
+        let event: CalendarEventResponse = response.json().await?;
+        Ok(MeetingSpace {
+            meeting_id: event.id,
+            join_url: event.conference_data.entry_points[0].uri.clone(),
+            // ...
+        })
     }
 
-    // ... other OAuthProvider methods
-}
-
-impl VideoPlatformProvider for GoogleMeetProvider {
-    async fn create_meeting(&self, access_token: &str, config: MeetingConfig) -> Result<MeetingSpace, PlatformError> {
-        // Use Google Calendar API to create event with conferenceData
-    }
-
-    // ... other VideoPlatformProvider methods
+    // ... other MeetingClient methods
 }
 ```
+
+> **Note:** `GoogleMeetClient` has no OAuth knowledge. It simply receives a valid access token and uses it to call the Google Calendar API. Token management (including refresh) is handled by `meeting-auth` before the token reaches this client.
 
 ### Dependencies
 
@@ -1123,7 +1188,7 @@ impl CredentialStorage for ApiCredentialStorage {
 ### Migration Strategy
 
 1. **Phase 1**: Create `meeting-auth` crate with all auth infrastructure
-2. **Phase 2**: Create `meeting-platform` crate as thin consumer
+2. **Phase 2**: Create `meeting-manager` crate as thin consumer
 3. **Phase 3**: Implement database storage traits in domain crate
 4. **Phase 4**: Migrate controllers one at a time, starting with `oauth_controller.rs`
 
@@ -1136,15 +1201,16 @@ impl CredentialStorage for ApiCredentialStorage {
 - [ ] Implement `meeting-auth` API key auth (`ProviderAuth`, `ApiKeyAuth`)
 - [ ] Implement `meeting-auth` OAuth infrastructure (`OAuthProvider`, `TokenStorage`, `TokenManager`)
 - [ ] Implement PKCE and state management
+- [ ] Implement `GoogleOAuthProvider` (OAuth endpoints, scopes, token exchange)
 - [ ] Implement `AuthenticatedClientBuilder` with reqwest-middleware
 - [ ] Implement `RetryAfterPolicy` for proper 429 rate limit handling
 - [ ] Add webhook validators
 
 ### Phase 2: Meeting Platform - Google Meet (Week 3-4)
-- [ ] Implement `meeting-platform` crate structure
-- [ ] Implement `VideoPlatformProvider` trait
-- [ ] Implement `GoogleMeetProvider` (OAuth + meeting creation)
-- [ ] Implement `MeetingPlatformClient` high-level API
+- [ ] Implement `meeting-manager` crate structure
+- [ ] Implement `MeetingClient` trait (NO OAuth inheritance)
+- [ ] Implement `GoogleMeetClient` (Calendar API calls only)
+- [ ] Implement `MeetingManagerClient` high-level API
 - [ ] Create database migrations for `oauth_connections`, `api_credentials`
 
 ### Phase 3: Integration (Week 5-6)
@@ -1159,7 +1225,7 @@ impl CredentialStorage for ApiCredentialStorage {
 - [ ] Write documentation and examples
 
 ### Future Phases (Deferred)
-- [ ] Zoom integration (`ZoomProvider` with rotating refresh token handling)
+- [ ] Zoom integration (`ZoomOAuthProvider` in meeting-auth, `ZoomMeetingClient` in meeting-manager)
 - [ ] Microsoft Teams support
 - [ ] Additional transcription providers (Deepgram)
 - [ ] Additional recording bot providers (Skribby)
@@ -1171,10 +1237,10 @@ impl CredentialStorage for ApiCredentialStorage {
 | File | Action |
 |------|--------|
 | `Cargo.toml` | Add workspace members |
-| `domain/src/gateway/google_oauth.rs` | Reference for GoogleMeetProvider |
+| `domain/src/gateway/google_oauth.rs` | Reference for `GoogleOAuthProvider` (in meeting-auth) |
 | `domain/src/gateway/recall_ai.rs` | Reference for API key auth pattern |
 | `domain/src/encryption.rs` | Use for storage implementations |
-| `web/src/controller/oauth_controller.rs` | First controller to migrate |
+| `web/src/controller/oauth_controller.rs` | First controller to migrate (will use meeting-auth directly) |
 | `migration/src/` | Add migrations for new tables |
 | `entity/src/` | Add entity definitions for new tables |
 
@@ -1212,7 +1278,9 @@ impl CredentialStorage for ApiCredentialStorage {
 *From Weekly Platform Sync (2026-01-30):*
 
 - **Architecture**: `meeting-auth` is the single source of truth for ALL authentication
-- **Architecture**: `meeting-platform` is a thin layer for platform-specific operations
+- **Architecture**: `meeting-manager` handles meeting operations only — receives tokens, does NOT manage OAuth
+- **OAuth Providers**: OAuth provider implementations (`GoogleOAuthProvider`, etc.) live in `meeting-auth`, NOT `meeting-manager`
+- **No Trait Inheritance**: `MeetingClient` does NOT extend `OAuthProvider` — clean separation of concerns
 - **Shared Foundation**: Both meeting creation layer and AI bot/transcription layers will use these crates
 - **Zoom**: Deferred to future phase (after Google Meet is proven)
 - **Microsoft Teams**: Deferred to future phase
@@ -1223,7 +1291,7 @@ impl CredentialStorage for ApiCredentialStorage {
 ## Impact on meeting-ai-abstraction-layer.md
 
 The following should be updated in the existing plan:
-- **Remove**: `MeetingPlatformProvider` trait definition (replaced by `meeting-platform` crate)
+- **Remove**: `MeetingManagerProvider` trait definition (replaced by `meeting-manager` crate)
 - **Update**: Architecture diagram to show dependency on `meeting-auth` for all auth
 - **Update**: `RecordingBotProvider` and `TranscriptionProvider` to use `meeting-auth` for HTTP client building
 
