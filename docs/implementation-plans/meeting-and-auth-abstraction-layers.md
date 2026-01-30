@@ -1,4 +1,4 @@
-# Meeting Auth & Meeting Platform Crates
+# Meeting Auth & Meeting Manager Crates
 
 **Status:** Ready for Review
 
@@ -1206,7 +1206,7 @@ impl CredentialStorage for ApiCredentialStorage {
 - [ ] Implement `RetryAfterPolicy` for proper 429 rate limit handling
 - [ ] Add webhook validators
 
-### Phase 2: Meeting Platform - Google Meet (Week 3-4)
+### Phase 2: Meeting Manager - Google Meet (Week 3-4)
 - [ ] Implement `meeting-manager` crate structure
 - [ ] Implement `MeetingClient` trait (NO OAuth inheritance)
 - [ ] Implement `GoogleMeetClient` (Calendar API calls only)
