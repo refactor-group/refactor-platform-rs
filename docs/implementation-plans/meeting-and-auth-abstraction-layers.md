@@ -684,6 +684,8 @@ pub trait Storage: Send + Sync {
 }
 ```
 
+> **Implementation:** The `domain` crate will implement this trait via `OAuthConnectionStorage`, backed by a SeaORM entity mapped to the `oauth_connections` PostgreSQL table. Tokens are encrypted at rest using `domain::encryption` (AES-256-GCM). See the [Trait Implementation Mapping](#trait-implementation-mapping) section for details.
+
 ```rust
 // In oauth/token/manager.rs
 
@@ -771,6 +773,8 @@ pub trait CredentialStorage: Send + Sync {
     async fn delete(&self, user_id: &str, provider_id: &str) -> Result<(), StorageError>;
 }
 ```
+
+> **Implementation:** The `domain` crate will implement this trait via `ApiCredentialStorage`, backed by a SeaORM entity mapped to the `api_credentials` PostgreSQL table. API keys are encrypted at rest using `domain::encryption` (AES-256-GCM). See the [Trait Implementation Mapping](#trait-implementation-mapping) section for details.
 
 #### Webhook Validation
 
