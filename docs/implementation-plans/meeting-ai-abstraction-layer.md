@@ -1,13 +1,16 @@
 # Meeting AI Abstraction Layer Design
 
 **Status:** Design Phase
-**Date:** 2026-01-29
+**Date:** 2026-01-31 (Updated)
 **Author:** Caleb Bourg & Claude
 **Approach:** Hybrid (Standalone crate + Domain implementations)
+**Dependencies:** `meeting-auth`, `meeting-manager` (see `meeting-and-auth-abstraction-layers.md`)
 
 ## Executive Summary
 
-This document proposes a comprehensive abstraction layer for meeting AI workflows that decouples business logic from specific third-party providers (Recall.ai, AssemblyAI, Google OAuth, etc.). The design enables applications to build meeting recording, transcription, and AI analysis workflows without being locked into specific vendors.
+This document proposes a comprehensive abstraction layer for meeting AI workflows that decouples business logic from specific third-party AI providers (Recall.ai, AssemblyAI, etc.). The design focuses on **recording bot deployment, transcription, and AI analysis** workflows without being locked into specific vendors.
+
+**Important:** This plan depends on and integrates with the `meeting-auth` and `meeting-manager` crates defined in `meeting-and-auth-abstraction-layers.md`. OAuth authentication, meeting creation, HTTP client configuration, and webhook signature validation are handled by those crates and are **NOT** duplicated here.
 
 ## Current State Analysis
 
@@ -15,21 +18,26 @@ This document proposes a comprehensive abstraction layer for meeting AI workflow
 
 The current implementation in `refactor-platform-rs` follows this flow:
 
-1. **OAuth Authentication** (Google OAuth) → Get access token for meeting creation
-2. **Meeting Creation** (Google Meet API) → Create meeting space, get URL
-3. **Recording** (Recall.ai) → Deploy bot to join and record meeting
-4. **Transcription** (AssemblyAI) → Transcribe recording with speaker diarization
-5. **AI Analysis** (AssemblyAI LeMUR) → Extract actions, agreements, generate summaries
-6. **Webhook Processing** → Handle async status updates from providers
+1. **OAuth Authentication** (Google OAuth) → Handled by `meeting-auth` crate *(see other plan)*
+2. **Meeting Creation** (Google Meet API) → Handled by `meeting-manager` crate *(see other plan)*
+3. **Recording** (Recall.ai) → Deploy bot to join and record meeting *(this plan)*
+4. **Transcription** (AssemblyAI) → Transcribe recording with speaker diarization *(this plan)*
+5. **AI Analysis** (AssemblyAI LeMUR) → Extract actions, agreements, generate summaries *(this plan)*
+6. **Webhook Processing** → Handle async status updates from AI providers *(this plan)*
 
-### Key Files
+### Key Files for AI Workflows
 
+**This plan covers:**
 - `domain/src/gateway/recall_ai.rs` - Recall.ai bot management
 - `domain/src/gateway/assembly_ai.rs` - Transcription and LeMUR analysis
-- `domain/src/gateway/google_oauth.rs` - OAuth and Meet API
 - `web/src/controller/meeting_recording_controller.rs` - Recording endpoints
 - `web/src/controller/transcription_controller.rs` - Transcription endpoints
-- `web/src/controller/webhook_controller.rs` - Webhook handlers
+- `web/src/controller/webhook_controller.rs` - Webhook handlers (AI provider events)
+
+**Handled by meeting-auth + meeting-manager:**
+- `domain/src/gateway/google_oauth.rs` - OAuth and Meet API *(covered in other plan)*
+- OAuth token management, refresh, and storage
+- Meeting space creation APIs
 
 ### Problems with Current Design
 
@@ -101,32 +109,52 @@ The current implementation in `refactor-platform-rs` follows this flow:
 
 ### Trait Hierarchy
 
-```
-MeetingPlatformProvider     (OAuth, meeting creation)
-    ├── GoogleMeetProvider
-    ├── ZoomProvider
-    └── TeamsProvider
+**This crate provides:**
 
-MeetingBotProvider          (Meeting bots)
+```
+RecordingBotProvider          (Meeting bots - record meetings)
     ├── RecallAiProvider
     ├── SkribbyProvider
     └── MeetingBaasProvider
 
-TranscriptionProvider       (Speech-to-text)
+TranscriptionProvider         (Speech-to-text)
     ├── AssemblyAiProvider
     ├── DeepgramProvider
     └── WhisperProvider
 
-AiAnalysisProvider         (Action extraction, summaries)
+AiAnalysisProvider           (Action extraction, summaries)
     ├── LemurProvider
     ├── OpenAiProvider
     └── ClaudeProvider
 
-WebhookHandler             (Event processing)
+WebhookHandler               (Event processing)
     └── Custom implementations per app
 ```
 
+**Provided by meeting-auth + meeting-manager crates:**
+
+```
+OAuthProvider                (OAuth 2.0 authentication)
+    ├── GoogleOAuthProvider
+    ├── ZoomOAuthProvider
+    └── MicrosoftOAuthProvider
+
+MeetingClient               (Meeting space creation)
+    ├── GoogleMeetClient
+    ├── ZoomMeetingClient
+    └── TeamsMeetingClient
+
+ProviderAuth                (API key authentication)
+    ├── ApiKeyAuth
+    └── BearerTokenAuth
+
+WebhookValidator            (Webhook signature validation)
+    └── HmacWebhookValidator
+```
+
 ## Complete Trait Definitions
+
+> **Scope Note:** This section defines traits for AI-specific operations (recording bots, transcription, AI analysis). OAuth authentication, meeting creation, HTTP client building, and webhook signature validation are handled by `meeting-auth` and `meeting-manager` crates (see `meeting-and-auth-abstraction-layers.md`).
 
 ### 1. Core Types
 
@@ -196,114 +224,9 @@ pub enum Error {
 }
 ```
 
-### 2. Meeting Platform Provider
+### 2. Recording Bot Provider
 
-```rust
-/// Configuration for OAuth 2.0 authentication flow.
-/// Provider implementations use this to construct authorization URLs
-/// and authenticate API requests on behalf of users.
-#[derive(Debug, Clone)]
-pub struct OAuthConfig {
-    pub client_id: String,
-    pub client_secret: String,
-    pub redirect_uri: String,
-    pub scopes: Vec<String>,
-}
-
-/// OAuth tokens returned from authentication flow.
-/// Applications should persist these tokens securely (encrypted in database)
-/// and use refresh_token to obtain new access tokens before expiry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthTokens {
-    pub access_token: String,
-    pub refresh_token: Option<String>,
-    pub expires_at: DateTime<Utc>,
-    pub token_type: String,
-}
-
-/// User profile information from the meeting platform.
-/// Used to identify users, display profile info, and link platform accounts
-/// to application user records during OAuth onboarding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlatformUser {
-    pub id: String,
-    pub email: String,
-    pub name: Option<String>,
-    pub avatar_url: Option<String>,
-}
-
-/// A meeting space/room created on the platform.
-/// Represents a virtual meeting location with URL for participants to join.
-/// The meeting_url is passed to recording bots to join the meeting.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeetingSpace {
-    pub id: String,
-    pub meeting_url: String,
-    pub meeting_code: Option<String>,
-    pub platform: String,
-    pub metadata: HashMap<String, String>,
-}
-
-/// Configuration for creating a meeting space.
-/// All fields are optional to support instant meetings (no scheduling).
-/// When start_time is None, meeting is available immediately.
-#[derive(Debug, Clone, Default)]
-pub struct MeetingSpaceConfig {
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub start_time: Option<DateTime<Utc>>,
-    pub duration_minutes: Option<u32>,
-    pub is_public: bool,
-}
-
-/// Abstraction for meeting platform OAuth and meeting creation APIs.
-/// Implementations handle OAuth 2.0 flow for user authentication and
-/// meeting space creation (Google Meet, Zoom, Microsoft Teams, etc.).
-/// This trait decouples controllers from specific platform SDKs.
-#[async_trait]
-pub trait MeetingPlatformProvider: Send + Sync {
-    /// Generate OAuth authorization URL for initiating user consent flow.
-    /// The state parameter prevents CSRF attacks and should be cryptographically random.
-    /// Returns URL where user grants permission to access their meeting platform account.
-    fn get_authorization_url(&self, state: &str) -> Result<String, Error>;
-
-    /// Exchange OAuth authorization code for access and refresh tokens.
-    /// Call this after user completes authorization and redirects back with code.
-    /// Store returned tokens securely for subsequent API calls.
-    async fn exchange_code(&self, code: &str) -> Result<OAuthTokens, Error>;
-
-    /// Obtain new access token using a refresh token.
-    /// Call this when access_token expires (check expires_at) to maintain
-    /// uninterrupted API access without re-prompting user for authorization.
-    async fn refresh_token(&self, refresh_token: &str) -> Result<OAuthTokens, Error>;
-
-    /// Fetch user profile information from the platform.
-    /// Use this to identify users, display their name/avatar, or verify
-    /// account linkage during OAuth onboarding process.
-    async fn get_user_info(&self, access_token: &str) -> Result<PlatformUser, Error>;
-
-    /// Check if access token is still valid without making a data API call.
-    /// Returns false if token is expired or revoked; true otherwise.
-    /// Use this to proactively refresh tokens before attempting operations.
-    async fn verify_token(&self, access_token: &str) -> Result<bool, Error>;
-
-    /// Create a new meeting space on the platform.
-    /// Returns meeting URL and metadata. If config is None, creates instant meeting.
-    /// The meeting_url from response is used by bots to join the meeting.
-    async fn create_meeting_space(
-        &self,
-        access_token: &str,
-        config: Option<MeetingSpaceConfig>
-    ) -> Result<MeetingSpace, Error>;
-
-    /// Return unique identifier for this platform (e.g., "google_meet", "zoom").
-    /// Used for logging, metrics, and distinguishing between provider implementations
-    /// in multi-provider scenarios. Must be lowercase, alphanumeric with underscores.
-    fn platform_id(&self) -> &str;
-}
-```
-
-### 3. Recording Bot Provider
+> **Note:** OAuth and meeting creation are handled by the `meeting-auth` and `meeting-manager` crates (see `meeting-and-auth-abstraction-layers.md`). This crate focuses on AI-specific operations: bot deployment, transcription, and analysis.
 
 ```rust
 /// Lifecycle status of a recording bot joining and recording a meeting.
@@ -387,7 +310,7 @@ pub struct BotFilters {
 /// and return media artifacts. Supports providers like Recall.ai, Skribby, Meeting BaaS.
 /// This trait enables cost optimization by swapping providers without code changes.
 #[async_trait]
-pub trait MeetingBotProvider: Send + Sync {
+pub trait RecordingBotProvider: Send + Sync {
     /// Deploy a bot to join and record a meeting.
     /// Bot immediately begins joining process; track progress via webhooks or polling.
     /// Returns BotInfo with id for subsequent status checks and bot control.
@@ -982,11 +905,6 @@ pub trait WebhookHandler: Send + Sync {
     /// Should be idempotent as providers retry failed deliveries.
     /// Return Ok(()) to acknowledge receipt; Err triggers provider retry.
     async fn handle_event(&self, event: WebhookEvent) -> Result<(), Error>;
-
-    /// Verify webhook authenticity using provider-specific signature validation.
-    /// Check HMAC signature, secret token, or provider-specific headers.
-    /// Return false for invalid signatures to prevent webhook spoofing attacks.
-    fn verify_webhook(&self, headers: &HashMap<String, String>, body: &[u8]) -> Result<bool, Error>;
 }
 ```
 
@@ -994,12 +912,11 @@ pub trait WebhookHandler: Send + Sync {
 
 ```rust
 /// High-level orchestrator that coordinates end-to-end meeting AI workflow.
-/// Composes all provider traits to automate: meeting creation → bot recording →
-/// transcription → AI analysis. Simplifies application code by handling complex
-/// multi-step async workflows with error recovery and state persistence.
+/// Composes provider traits to automate: bot recording → transcription → AI analysis.
+/// Simplifies application code by handling complex multi-step async workflows
+/// with error recovery and state persistence.
 pub struct MeetingWorkflow {
-    pub meeting_provider: Box<dyn MeetingPlatformProvider>,
-    pub bot_provider: Box<dyn MeetingBotProvider>,
+    pub bot_provider: Box<dyn RecordingBotProvider>,
     pub transcription_provider: Box<dyn TranscriptionProvider>,
     pub analysis_provider: Box<dyn AiAnalysisProvider>,
 }
@@ -1010,7 +927,6 @@ pub struct MeetingWorkflow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkflowState {
     NotStarted,
-    MeetingCreated,
     BotJoining,
     Recording,
     ProcessingRecording,
@@ -1027,7 +943,6 @@ pub enum WorkflowState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowProgress {
     pub state: WorkflowState,
-    pub meeting_space: Option<MeetingSpace>,
     pub bot_info: Option<BotInfo>,
     pub transcription: Option<Transcription>,
     pub analysis: Option<AnalysisResult>,
@@ -1037,13 +952,12 @@ pub struct WorkflowProgress {
 }
 
 impl MeetingWorkflow {
-    /// Initiate complete meeting workflow from meeting creation through AI analysis.
-    /// Orchestrates all steps automatically with error handling at each stage.
+    /// Initiate AI workflow for an existing meeting.
+    /// Orchestrates bot deployment, transcription, and AI analysis with error handling.
     /// Returns progress object; use webhooks or resume_workflow to complete async operations.
     /// Applications should persist returned progress for workflow recovery.
     pub async fn start_workflow(
         &self,
-        access_token: &str,
         bot_config: BotConfig,
         transcription_config: TranscriptionConfig,
         analysis_config: AnalysisConfig,
@@ -1074,6 +988,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+meeting-auth = { path = "../meeting-auth" }
+meeting-manager = { path = "../meeting-manager" }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -1089,14 +1005,12 @@ meeting-ai/
 │   ├── error.rs
 │   ├── traits/
 │   │   ├── mod.rs
-│   │   ├── meeting_platform.rs
 │   │   ├── recording_bot.rs
 │   │   ├── transcription.rs
 │   │   ├── ai_analysis.rs
 │   │   └── webhook.rs
 │   ├── types/
 │   │   ├── mod.rs
-│   │   ├── meeting.rs
 │   │   ├── recording.rs
 │   │   ├── transcription.rs
 │   │   └── analysis.rs
@@ -1114,14 +1028,31 @@ Convert existing code to implement the traits:
 
 ```rust
 // domain/src/gateway/recall_ai_provider.rs
-use meeting_ai::{MeetingBotProvider, BotConfig, BotInfo, Error};
+use meeting_ai::{RecordingBotProvider, BotConfig, BotInfo, Error};
+use meeting_auth::{ProviderAuth, ApiKeyAuth, AuthenticatedClientBuilder};
 
 pub struct RecallAiProvider {
-    client: RecallAiClient,
+    client: reqwest_middleware::ClientWithMiddleware,
+    base_url: String,
+}
+
+impl RecallAiProvider {
+    pub fn new(api_key: String, region: &str) -> Result<Self, Error> {
+        let auth = Box::new(ApiKeyAuth::new("recall_ai", api_key, "Token"));
+        let client = AuthenticatedClientBuilder::new()
+            .with_auth(auth)
+            .with_retry_policy(RetryAfterPolicy::new(3))
+            .build()?;
+
+        Ok(Self {
+            client,
+            base_url: format!("https://api.recall.ai/{}", region),
+        })
+    }
 }
 
 #[async_trait]
-impl MeetingBotProvider for RecallAiProvider {
+impl RecordingBotProvider for RecallAiProvider {
     async fn create_bot(&self, config: BotConfig) -> Result<BotInfo, Error> {
         // Map from trait types to Recall.ai types
         let request = create_standard_bot_request(
@@ -1130,7 +1061,13 @@ impl MeetingBotProvider for RecallAiProvider {
             config.webhook_url,
         );
 
-        let response = self.client.create_bot(request).await?;
+        let response = self.client
+            .post(&format!("{}/bots", self.base_url))
+            .json(&request)
+            .send()
+            .await?
+            .json::<CreateBotResponse>()
+            .await?;
 
         // Map from Recall.ai types back to trait types
         Ok(BotInfo {
@@ -1184,13 +1121,26 @@ Implement new providers without touching existing code:
 
 ```rust
 // domain/src/gateway/skribby_provider.rs
+use meeting_ai::{RecordingBotProvider, BotConfig, BotInfo, Error};
+use meeting_auth::{ProviderAuth, ApiKeyAuth, AuthenticatedClientBuilder};
+
 pub struct SkribbyProvider {
-    api_key: String,
-    client: reqwest::Client,
+    client: reqwest_middleware::ClientWithMiddleware,
+}
+
+impl SkribbyProvider {
+    pub fn new(api_key: String) -> Result<Self, Error> {
+        let auth = Box::new(ApiKeyAuth::new("skribby", api_key, "Bearer"));
+        let client = AuthenticatedClientBuilder::new()
+            .with_auth(auth)
+            .build()?;
+
+        Ok(Self { client })
+    }
 }
 
 #[async_trait]
-impl MeetingBotProvider for SkribbyProvider {
+impl RecordingBotProvider for SkribbyProvider {
     async fn create_bot(&self, config: BotConfig) -> Result<BotInfo, Error> {
         // Skribby-specific implementation
         todo!()
@@ -1213,7 +1163,7 @@ mod tests {
         pub BotProvider {}
 
         #[async_trait]
-        impl MeetingBotProvider for BotProvider {
+        impl RecordingBotProvider for BotProvider {
             async fn create_bot(&self, config: BotConfig) -> Result<BotInfo, Error>;
             async fn get_bot_status(&self, bot_id: &str) -> Result<BotInfo, Error>;
             async fn stop_bot(&self, bot_id: &str) -> Result<(), Error>;
@@ -1309,6 +1259,10 @@ mod tests {
 
 ## References
 
+**Related Plans:**
+- [Meeting Auth & Meeting Manager Crates](./meeting-and-auth-abstraction-layers.md) - OAuth, meeting creation, HTTP clients, webhooks
+
+**External Resources:**
 - [Rust async abstraction patterns](https://ewus.de/en/blog/2022-11-06/rust-async-abstraction-pattern)
 - [Type-driven API design in Rust](https://willcrichton.net/rust-api-type-patterns/)
 - [Recall.ai API Documentation](https://www.recall.ai/)
