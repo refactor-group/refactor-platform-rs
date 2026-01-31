@@ -276,7 +276,7 @@ flowchart TB
     CreateMeeting --> MeetingConfig
 ```
 
-> **Key Difference:** `MeetingClient` does NOT extend `OAuthProvider`. Meeting clients receive access tokens from `TokenManager` and use them to call platform APIs. All OAuth logic stays in `meeting-auth`.
+> **Key Difference:** `MeetingClient` does NOT extend `OAuthProvider`. Meeting clients receive access tokens from `token::Manager` and use them to call platform APIs. All OAuth logic stays in `meeting-auth`.
 
 ### 4. Sequence Diagram: Google Meet OAuth Link Account Flow
 
@@ -384,7 +384,7 @@ sequenceDiagram
         TokenMgr->>GoogleOAuth: refresh_token(refresh_token)
         GoogleOAuth->>Google: POST /oauth2/v4/token (refresh_token)
         Google-->>GoogleOAuth: { new_access_token, expires_in }
-        GoogleOAuth-->>TokenMgr: TokenRefreshResult { tokens, rotated: false }
+        GoogleOAuth-->>TokenMgr: RefreshResult { tokens, rotated: false }
         TokenMgr->>TokenStorage: update_tokens_atomic(coach_id, "google", old_refresh, new_tokens)
         TokenStorage->>TokenStorage: UPDATE oauth_connections<br/>SET access_token=..., last_refresh_at=now()
         TokenStorage-->>TokenMgr: Ok(())
@@ -436,11 +436,13 @@ meeting-auth/
 │   ├── oauth/                   # OAuth 2.0 infrastructure + providers
 │   │   ├── mod.rs
 │   │   ├── provider.rs          # OAuthProvider trait
-│   │   ├── tokens.rs            # OAuthTokens struct
-│   │   ├── storage.rs           # TokenStorage trait (CRITICAL)
-│   │   ├── manager.rs           # TokenManager with refresh locks
 │   │   ├── pkce.rs              # PKCE support
 │   │   ├── state.rs             # CSRF state management
+│   │   │
+│   │   ├── token/               # Token management
+│   │   │   ├── mod.rs           # Tokens struct (access + refresh tokens)
+│   │   │   ├── storage.rs       # Storage trait (CRITICAL)
+│   │   │   └── manager.rs       # Manager with per-user refresh locks
 │   │   │
 │   │   └── providers/           # OAuth provider IMPLEMENTATIONS
 │   │       ├── mod.rs
@@ -481,20 +483,35 @@ meeting-auth/
 **When used:** Any external API that authenticates via static API keys rather than OAuth tokens.
 
 #### 📁 `oauth/` — OAuth 2.0 Infrastructure
-**Purpose:** Complete OAuth 2.0 token lifecycle management — authorization flows, token storage, refresh, and PKCE security.
+**Purpose:** OAuth 2.0 authorization flows and PKCE security.
 
 | File | Responsibility |
 |------|----------------|
 | `provider.rs` | `OAuthProvider` trait — defines contract for OAuth providers (authorization URL, code exchange, token refresh, revocation) |
-| `tokens.rs` | `OAuthTokens` struct — holds access token, refresh token, expiry, scopes |
-| `storage.rs` | `TokenStorage` trait — **CRITICAL** abstraction for persisting tokens with atomic updates (essential for Zoom's rotating refresh tokens) |
-| `manager.rs` | `TokenManager` — orchestrates token retrieval and refresh with **per-user locking** to prevent race conditions |
 | `pkce.rs` | PKCE (Proof Key for Code Exchange) support — generates code verifier/challenge pairs for secure public client flows |
 | `state.rs` | CSRF state management — generates and validates OAuth state parameters to prevent cross-site request forgery |
 
 **When used:** Google Meet, Zoom, Microsoft Teams — any platform requiring user authorization.
 
-> **Note:** The `TokenManager` with per-user locks is crucial because multiple concurrent requests for the same user could trigger simultaneous token refreshes. Without locking, you'd get race conditions where both requests try to refresh, one succeeds, and the other fails with an invalid refresh token.
+#### 📁 `oauth/token/` — Token Management
+**Purpose:** Token storage, retrieval, and refresh with proper concurrency handling.
+
+| File | Responsibility |
+|------|----------------|
+| `mod.rs` | `Tokens` struct — holds access token, refresh token, expiry, scopes |
+| `storage.rs` | `Storage` trait — **CRITICAL** abstraction for persisting tokens with atomic updates (essential for Zoom's rotating refresh tokens) |
+| `manager.rs` | `Manager` — orchestrates token retrieval and refresh with **per-user locking** to prevent race conditions |
+
+**When used:** Any code that needs to store, retrieve, or refresh OAuth tokens.
+
+**Import pattern:**
+```rust
+use meeting_auth::oauth::token::{Tokens, Storage, Manager};
+// Or with aliases for clarity:
+use meeting_auth::oauth::token::Storage as TokenStorage;
+```
+
+> **Note:** The `Manager` with per-user locks is crucial because multiple concurrent requests for the same user could trigger simultaneous token refreshes. Without locking, you'd get race conditions where both requests try to refresh, one succeeds, and the other fails with an invalid refresh token.
 
 #### 📁 `oauth/providers/` — OAuth Provider Implementations
 **Purpose:** Concrete implementations of `OAuthProvider` for each video meeting platform. Contains platform-specific OAuth endpoints, scopes, and token handling.
@@ -578,8 +595,27 @@ pub trait ProviderAuth: Send + Sync {
 #### OAuth 2.0 Infrastructure
 
 ```rust
+/// Trait for OAuth providers - implemented by platform-specific providers
+#[async_trait]
+pub trait OAuthProvider: Send + Sync {
+    fn provider_id(&self) -> &str;
+    fn authorization_url(&self, state: &str, pkce_challenge: Option<&str>) -> AuthorizationRequest;
+    async fn exchange_code(&self, code: &str, pkce_verifier: Option<&str>) -> Result<token::Tokens, OAuthError>;
+    async fn refresh_token(&self, refresh_token: &str) -> Result<token::RefreshResult, OAuthError>;
+    async fn revoke_token(&self, token: &str) -> Result<(), OAuthError>;
+
+    /// Returns true if this provider rotates refresh tokens (e.g., Zoom)
+    fn uses_rotating_refresh_tokens(&self) -> bool { false }
+}
+```
+
+#### Token Management (`oauth::token`)
+
+```rust
+// In oauth/token/mod.rs
+
 /// OAuth tokens with metadata
-pub struct OAuthTokens {
+pub struct Tokens {
     pub access_token: SecretString,
     pub refresh_token: Option<SecretString>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -588,73 +624,124 @@ pub struct OAuthTokens {
 }
 
 /// Result of a token refresh operation
-pub struct TokenRefreshResult {
-    pub tokens: OAuthTokens,
+pub struct RefreshResult {
+    pub tokens: Tokens,
     /// True if the refresh token was rotated (Zoom behavior)
     pub refresh_token_rotated: bool,
 }
+```
 
-/// Trait for OAuth providers - implemented by platform-specific providers
-#[async_trait]
-pub trait OAuthProvider: Send + Sync {
-    fn provider_id(&self) -> &str;
-    fn authorization_url(&self, state: &str, pkce_challenge: Option<&str>) -> AuthorizationRequest;
-    async fn exchange_code(&self, code: &str, pkce_verifier: Option<&str>) -> Result<OAuthTokens, OAuthError>;
-    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenRefreshResult, OAuthError>;
-    async fn revoke_token(&self, token: &str) -> Result<(), OAuthError>;
-
-    /// Returns true if this provider rotates refresh tokens (e.g., Zoom)
-    fn uses_rotating_refresh_tokens(&self) -> bool { false }
-}
+```rust
+// In oauth/token/storage.rs
 
 /// CRITICAL: Token storage with atomic updates for Zoom's rotating refresh tokens
 #[async_trait]
-pub trait TokenStorage: Send + Sync {
-    async fn store_tokens(
+pub trait Storage: Send + Sync {
+    async fn store(
         &self,
         user_id: &str,
         provider_id: &str,
-        tokens: OAuthTokens,
-    ) -> Result<(), TokenStorageError>;
+        tokens: Tokens,
+    ) -> Result<(), StorageError>;
 
-    async fn get_tokens(
+    async fn get(
         &self,
         user_id: &str,
         provider_id: &str,
-    ) -> Result<Option<OAuthTokens>, TokenStorageError>;
+    ) -> Result<Option<Tokens>, StorageError>;
 
     /// Atomic update for rotating refresh tokens (Zoom)
     /// Returns error if old_refresh doesn't match (token was already rotated)
-    async fn update_tokens_atomic(
+    async fn update_atomic(
         &self,
         user_id: &str,
         provider_id: &str,
         old_refresh: Option<&str>,
-        new_tokens: OAuthTokens,
-    ) -> Result<(), TokenStorageError>;
+        new_tokens: Tokens,
+    ) -> Result<(), StorageError>;
 
-    async fn delete_tokens(
+    async fn delete(
         &self,
         user_id: &str,
         provider_id: &str,
-    ) -> Result<(), TokenStorageError>;
+    ) -> Result<(), StorageError>;
 }
+```
+
+```rust
+// In oauth/token/manager.rs
 
 /// Token manager with per-user refresh locking
-pub struct TokenManager<S: TokenStorage> {
+pub struct Manager<S: Storage> {
     storage: S,
     refresh_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
-impl<S: TokenStorage> TokenManager<S> {
+impl<S: Storage> Manager<S> {
     /// Get a valid access token, refreshing if needed
     pub async fn get_valid_token<P: OAuthProvider>(
         &self,
         provider: &P,
         user_id: &str,
-    ) -> Result<SecretString, TokenError>;
+    ) -> Result<SecretString, ManagerError>;
+}
+
+/// Errors from token management operations
+#[derive(Debug, Error)]
+pub enum ManagerError {
+    #[error("storage error: {0}")]
+    Storage(#[from] StorageError),
+    #[error("refresh failed: {0}")]
+    Refresh(String),
+    #[error("tokens not found")]
+    NotFound,
+    #[error("token expired")]
+    Expired,
 }
 ```
+
+**Import examples:**
+```rust
+use meeting_auth::oauth::token::{Tokens, Storage, Manager, ManagerError, StorageError};
+
+// Or with aliases for external code clarity:
+use meeting_auth::oauth::token::Storage as TokenStorage;
+use meeting_auth::oauth::token::Manager as TokenManager;
+```
+
+**Error conversion to domain layer:**
+
+When the domain crate implements `Storage`, it converts `meeting-auth` errors to `domain::Error`:
+
+```rust
+// In domain crate - implements From for error conversion
+impl From<meeting_auth::oauth::token::ManagerError> for domain::Error {
+    fn from(err: ManagerError) -> Self {
+        match err {
+            ManagerError::NotFound => Error {
+                source: Some(Box::new(err)),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                    EntityErrorKind::NotFound,
+                )),
+            },
+            ManagerError::Storage(_) | ManagerError::Refresh(_) => Error {
+                source: Some(Box::new(err)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Other(
+                    err.to_string(),
+                )),
+            },
+            ManagerError::Expired => Error {
+                source: Some(Box::new(err)),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                    EntityErrorKind::Unauthenticated,
+                )),
+            },
+        }
+    }
+}
+```
+
+This follows the existing codebase pattern where errors flow: `crate error → domain::Error → web::Error → HTTP response`.
 
 #### Credential Storage (for API Keys)
 
@@ -854,7 +941,7 @@ meeting-manager/
 ### Key Traits
 
 ```rust
-use meeting_auth::TokenManager;
+use meeting_auth::oauth::token::Manager;
 
 /// Meeting space returned after creation
 pub struct MeetingSpace {
@@ -908,16 +995,17 @@ pub trait MeetingClient: Send + Sync {
 ### Main Client Interface
 
 ```rust
-use meeting_auth::{TokenManager, TokenStorage, OAuthProvider};
+use meeting_auth::oauth::token::{Manager, Storage};
+use meeting_auth::oauth::OAuthProvider;
 
 /// High-level client for meeting operations
 /// Coordinates between meeting-auth (tokens) and meeting clients (API calls)
-pub struct MeetingManagerClient<S: TokenStorage> {
-    token_manager: TokenManager<S>,
+pub struct MeetingManagerClient<S: Storage> {
+    token_manager: Manager<S>,
     meeting_clients: HashMap<String, Arc<dyn MeetingClient>>,
 }
 
-impl<S: TokenStorage> MeetingManagerClient<S> {
+impl<S: Storage> MeetingManagerClient<S> {
     /// Create a meeting (gets token from meeting-auth, calls meeting client)
     pub async fn create_meeting(
         &self,
@@ -1149,20 +1237,22 @@ Since the prototype schema hasn't been deployed to production:
 ```rust
 // In domain crate
 
-/// Implements meeting_auth::TokenStorage using oauth_connections table
+use meeting_auth::oauth::token::{Storage, Tokens};
+
+/// Implements meeting_auth::oauth::token::Storage using oauth_connections table
 pub struct OAuthConnectionStorage {
     db: DatabaseConnection,
     encryption_key: String,
 }
 
 #[async_trait]
-impl TokenStorage for OAuthConnectionStorage {
-    async fn store_tokens(&self, user_id: &str, provider_id: &str, tokens: OAuthTokens) -> Result<(), TokenStorageError> {
+impl Storage for OAuthConnectionStorage {
+    async fn store(&self, user_id: &str, provider_id: &str, tokens: Tokens) -> Result<(), StorageError> {
         // INSERT or UPDATE oauth_connections
         // Encrypt tokens using domain::encryption
     }
 
-    async fn update_tokens_atomic(&self, user_id: &str, provider_id: &str, old_refresh: Option<&str>, new_tokens: OAuthTokens) -> Result<(), TokenStorageError> {
+    async fn update_atomic(&self, user_id: &str, provider_id: &str, old_refresh: Option<&str>, new_tokens: Tokens) -> Result<(), StorageError> {
         // UPDATE oauth_connections
         // WHERE refresh_token = $old_refresh (for Zoom atomic update)
         // INCREMENT refresh_count, SET last_refresh_at
@@ -1199,7 +1289,7 @@ impl CredentialStorage for ApiCredentialStorage {
 ### Phase 1: Foundation - meeting-auth (Week 1-2)
 - [ ] Add crates to workspace in `Cargo.toml`
 - [ ] Implement `meeting-auth` API key auth (`ProviderAuth`, `ApiKeyAuth`)
-- [ ] Implement `meeting-auth` OAuth infrastructure (`OAuthProvider`, `TokenStorage`, `TokenManager`)
+- [ ] Implement `meeting-auth` OAuth infrastructure (`OAuthProvider`, `token::Storage`, `token::Manager`)
 - [ ] Implement PKCE and state management
 - [ ] Implement `GoogleOAuthProvider` (OAuth endpoints, scopes, token exchange)
 - [ ] Implement `AuthenticatedClientBuilder` with reqwest-middleware
