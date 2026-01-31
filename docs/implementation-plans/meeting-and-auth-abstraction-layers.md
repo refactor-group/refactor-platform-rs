@@ -237,8 +237,8 @@ flowchart TB
     end
 
     subgraph Meeting["meeting/ module"]
-        MeetingSpace["MeetingSpace<br/>struct"]
-        MeetingConfig["MeetingConfig<br/>struct"]
+        MeetingSpace["Space<br/>struct"]
+        MeetingConfig["Config<br/>struct"]
     end
 
     subgraph Clients["clients/ module"]
@@ -398,8 +398,8 @@ sequenceDiagram
     MeetingManager->>GoogleMeetClient: create_meeting(access_token, config)
     GoogleMeetClient->>Google: POST /calendar/v3/calendars/primary/events<br/>{ conferenceDataVersion: 1, ... }
     Google-->>GoogleMeetClient: Event with conferenceData
-    GoogleMeetClient-->>MeetingManager: MeetingSpace { meeting_id, join_url, host_url }
-    MeetingManager-->>SessionCtrl: MeetingSpace
+    GoogleMeetClient-->>MeetingManager: Space { meeting_id, join_url, host_url }
+    MeetingManager-->>SessionCtrl: Space
 
     Note over Coach,Google: Save session with meeting link
     SessionCtrl->>SessionCtrl: Store session + meeting_url in DB
@@ -947,8 +947,8 @@ meeting-manager/
 │   │
 │   ├── meeting/                 # Meeting types
 │   │   ├── mod.rs
-│   │   ├── space.rs             # MeetingSpace struct
-│   │   └── config.rs            # MeetingConfig struct
+│   │   ├── space.rs             # Space struct
+│   │   └── config.rs            # Config struct
 │   │
 │   └── clients/                 # Platform-specific meeting clients
 │       ├── mod.rs
@@ -962,9 +962,13 @@ meeting-manager/
 
 ```rust
 use meeting_auth::oauth::token::Manager;
+use meeting_manager::meeting::{Space, Config};
+// Or with aliases for external code clarity:
+use meeting_manager::meeting::Space as MeetingSpace;
+use meeting_manager::meeting::Config as MeetingConfig;
 
 /// Meeting space returned after creation
-pub struct MeetingSpace {
+pub struct Space {
     pub meeting_id: String,
     pub join_url: String,
     pub host_url: Option<String>,
@@ -973,7 +977,7 @@ pub struct MeetingSpace {
 }
 
 /// Configuration for creating a meeting
-pub struct MeetingConfig {
+pub struct Config {
     pub title: Option<String>,
     pub scheduled_start: Option<DateTime<Utc>>,
     pub duration_minutes: Option<u32>,
@@ -991,8 +995,8 @@ pub trait MeetingClient: Send + Sync {
     async fn create_meeting(
         &self,
         access_token: &str,  // Received from meeting-auth
-        config: MeetingConfig,
-    ) -> Result<MeetingSpace, MeetingError>;
+        config: Config,
+    ) -> Result<Space, MeetingError>;
 
     /// Delete/cancel a meeting
     async fn delete_meeting(
@@ -1006,7 +1010,7 @@ pub trait MeetingClient: Send + Sync {
         &self,
         access_token: &str,
         meeting_id: &str,
-    ) -> Result<MeetingSpace, MeetingError>;
+    ) -> Result<Space, MeetingError>;
 }
 ```
 
@@ -1031,8 +1035,8 @@ impl<S: Storage> MeetingManagerClient<S> {
         &self,
         platform_id: &str,
         user_id: &str,
-        config: MeetingConfig,
-    ) -> Result<MeetingSpace, ClientError> {
+        config: Config,
+    ) -> Result<Space, ClientError> {
         // 1. Get valid token from meeting-auth (handles refresh)
         let token = self.token_manager
             .get_valid_token(platform_id, user_id)
@@ -1057,7 +1061,7 @@ impl<S: Storage> MeetingManagerClient<S> {
         platform_id: &str,
         user_id: &str,
         meeting_id: &str,
-    ) -> Result<MeetingSpace, ClientError>;
+    ) -> Result<Space, ClientError>;
 }
 ```
 
@@ -1067,6 +1071,14 @@ Each platform has a simple meeting client that knows how to call the platform's 
 
 ```rust
 // clients/google_meet.rs
+
+/// Google Calendar API base URL
+const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
+
+/// Primary calendar events endpoint
+const CALENDAR_EVENTS_ENDPOINT: &str =
+    const_format::concatcp!(CALENDAR_API_BASE, "/calendars/primary/events");
+
 pub struct GoogleMeetClient {
     http_client: reqwest::Client,
 }
@@ -1077,11 +1089,11 @@ impl MeetingClient for GoogleMeetClient {
     async fn create_meeting(
         &self,
         access_token: &str,
-        config: MeetingConfig,
-    ) -> Result<MeetingSpace, MeetingError> {
+        config: Config,
+    ) -> Result<Space, MeetingError> {
         // Call Google Calendar API to create event with conferenceData
         let response = self.http_client
-            .post("https://www.googleapis.com/calendar/v3/calendars/primary/events")
+            .post(CALENDAR_EVENTS_ENDPOINT)
             .bearer_auth(access_token)
             .query(&[("conferenceDataVersion", "1")])
             .json(&CalendarEvent::from(config))
@@ -1090,7 +1102,7 @@ impl MeetingClient for GoogleMeetClient {
 
         // Parse response and extract Meet link
         let event: CalendarEventResponse = response.json().await?;
-        Ok(MeetingSpace {
+        Ok(Space {
             meeting_id: event.id,
             join_url: event.conference_data.entry_points[0].uri.clone(),
             // ...
