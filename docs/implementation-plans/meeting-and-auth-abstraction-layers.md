@@ -575,6 +575,14 @@ use meeting_auth::oauth::token::Storage as TokenStorage;
 #### API Key Authentication
 
 ```rust
+/// Known API key providers
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeyProvider {
+    RecallAi,
+    AssemblyAi,
+    Deepgram,
+}
+
 /// Authentication method enum
 pub enum AuthMethod {
     ApiKeyHeader { header_name: String, prefix: Option<String> },
@@ -585,10 +593,10 @@ pub enum AuthMethod {
 /// Trait for authenticating HTTP requests (API keys, bearer tokens)
 #[async_trait]
 pub trait ProviderAuth: Send + Sync {
+    fn provider(&self) -> ApiKeyProvider;
     fn auth_method(&self) -> AuthMethod;
     fn authenticate(&self, request: RequestBuilder) -> RequestBuilder;
     async fn verify_credentials(&self) -> Result<bool, AuthError>;
-    fn provider_id(&self) -> &str;
 }
 ```
 
