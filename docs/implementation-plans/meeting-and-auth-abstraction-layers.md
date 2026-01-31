@@ -727,39 +727,7 @@ use meeting_auth::oauth::token::Storage as TokenStorage;
 use meeting_auth::oauth::token::Manager as TokenManager;
 ```
 
-**Error conversion to domain layer:**
-
-When the domain crate implements `Storage`, it converts `meeting-auth` errors to `domain::Error`:
-
-```rust
-// In domain crate - implements From for error conversion
-impl From<meeting_auth::oauth::token::ManagerError> for domain::Error {
-    fn from(err: ManagerError) -> Self {
-        match err {
-            ManagerError::NotFound => Error {
-                source: Some(Box::new(err)),
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                    EntityErrorKind::NotFound,
-                )),
-            },
-            ManagerError::Storage(_) | ManagerError::Refresh(_) => Error {
-                source: Some(Box::new(err)),
-                error_kind: DomainErrorKind::External(ExternalErrorKind::Other(
-                    err.to_string(),
-                )),
-            },
-            ManagerError::Expired => Error {
-                source: Some(Box::new(err)),
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                    EntityErrorKind::Unauthenticated,
-                )),
-            },
-        }
-    }
-}
-```
-
-This follows the existing codebase pattern where errors flow: `crate error → domain::Error → web::Error → HTTP response`.
+> **Note:** See the [Error Handling](#error-handling) section for complete error type definitions and `From` implementations that map these errors to `domain::Error`.
 
 #### Credential Storage (for API Keys)
 
@@ -767,10 +735,10 @@ This follows the existing codebase pattern where errors flow: `crate error → d
 /// Trait for storing provider credentials (API keys)
 #[async_trait]
 pub trait CredentialStorage: Send + Sync {
-    async fn store(&self, user_id: &str, provider_id: &str, credentials: CredentialData) -> Result<(), StorageError>;
-    async fn get(&self, user_id: &str, provider_id: &str) -> Result<Option<ProviderCredentials>, StorageError>;
-    async fn update(&self, user_id: &str, provider_id: &str, credentials: CredentialData) -> Result<(), StorageError>;
-    async fn delete(&self, user_id: &str, provider_id: &str) -> Result<(), StorageError>;
+    async fn store(&self, user_id: &str, provider_id: &str, credentials: CredentialData) -> Result<(), CredentialError>;
+    async fn get(&self, user_id: &str, provider_id: &str) -> Result<Option<ProviderCredentials>, CredentialError>;
+    async fn update(&self, user_id: &str, provider_id: &str, credentials: CredentialData) -> Result<(), CredentialError>;
+    async fn delete(&self, user_id: &str, provider_id: &str) -> Result<(), CredentialError>;
 }
 ```
 
@@ -797,6 +765,338 @@ pub trait WebhookValidator: Send + Sync {
 - `thiserror` - Error types
 - `chrono` - DateTime handling
 - `httpdate` - Parse HTTP-date format in Retry-After headers
+
+### Error Handling
+
+The `meeting-auth` crate defines contextual error types that follow the codebase pattern:
+**crate error → domain::Error → web::Error → HTTP response**
+
+#### Error Type Definitions
+
+```rust
+// In meeting-auth/src/error.rs
+
+use thiserror::Error;
+
+/// Top-level error for the meeting-auth crate
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("API key authentication error: {0}")]
+    ApiKey(#[from] ApiKeyError),
+
+    #[error("OAuth error: {0}")]
+    OAuth(#[from] OAuthError),
+
+    #[error("token error: {0}")]
+    Token(#[from] token::ManagerError),
+
+    #[error("credential storage error: {0}")]
+    Credential(#[from] CredentialError),
+
+    #[error("webhook validation error: {0}")]
+    Webhook(#[from] WebhookError),
+
+    #[error("HTTP client error: {0}")]
+    Http(#[from] reqwest::Error),
+}
+
+/// Errors from API key authentication operations
+#[derive(Debug, Error)]
+pub enum ApiKeyError {
+    #[error("invalid API key format")]
+    InvalidFormat,
+
+    #[error("API key verification failed")]
+    VerificationFailed,
+
+    #[error("API key not found for provider")]
+    NotFound,
+
+    #[error("network error: {0}")]
+    Network(#[source] reqwest::Error),
+}
+
+/// Errors from OAuth operations
+#[derive(Debug, Error)]
+pub enum OAuthError {
+    #[error("authorization failed: {0}")]
+    AuthorizationFailed(String),
+
+    #[error("token exchange failed: {0}")]
+    TokenExchangeFailed(String),
+
+    #[error("token refresh failed: {0}")]
+    TokenRefreshFailed(String),
+
+    #[error("token revocation failed: {0}")]
+    RevocationFailed(String),
+
+    #[error("invalid state parameter (possible CSRF)")]
+    InvalidState,
+
+    #[error("PKCE verification failed")]
+    PkceVerificationFailed,
+
+    #[error("network error: {0}")]
+    Network(#[source] reqwest::Error),
+
+    #[error("invalid response: {0}")]
+    InvalidResponse(String),
+}
+
+/// Errors from credential storage operations
+#[derive(Debug, Error)]
+pub enum CredentialError {
+    #[error("credential not found")]
+    NotFound,
+
+    #[error("encryption failed: {0}")]
+    EncryptionFailed(String),
+
+    #[error("decryption failed: {0}")]
+    DecryptionFailed(String),
+
+    #[error("storage operation failed: {0}")]
+    StorageFailed(String),
+}
+
+/// Errors from webhook validation
+#[derive(Debug, Error)]
+pub enum WebhookError {
+    #[error("invalid signature")]
+    InvalidSignature,
+
+    #[error("missing signature header")]
+    MissingSignature,
+
+    #[error("timestamp too old (possible replay attack)")]
+    TimestampExpired,
+
+    #[error("invalid payload: {0}")]
+    InvalidPayload(String),
+}
+```
+
+```rust
+// In meeting-auth/src/oauth/token/storage.rs
+
+/// Errors from token storage operations
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("token not found")]
+    NotFound,
+
+    #[error("encryption failed: {0}")]
+    EncryptionFailed(String),
+
+    #[error("decryption failed: {0}")]
+    DecryptionFailed(String),
+
+    #[error("atomic update failed (token already rotated)")]
+    AtomicUpdateFailed,
+
+    #[error("database error: {0}")]
+    Database(String),
+}
+```
+
+#### Domain Layer Integration
+
+When the domain crate uses `meeting-auth`, it implements `From` conversions to map errors into the domain error tree:
+
+```rust
+// In domain/src/error.rs - add new variant to ExternalErrorKind
+
+#[derive(Debug, PartialEq)]
+pub enum ExternalErrorKind {
+    Network,
+    Authentication,  // NEW: OAuth/API key auth failures
+    RateLimited,     // NEW: 429 responses from external APIs
+    Other(String),
+}
+```
+
+```rust
+// In domain crate - From implementations for meeting-auth errors
+
+use meeting_auth::{Error as MeetingAuthError, ApiKeyError, OAuthError, CredentialError, WebhookError};
+use meeting_auth::oauth::token::{ManagerError, StorageError};
+
+impl From<MeetingAuthError> for domain::Error {
+    fn from(err: MeetingAuthError) -> Self {
+        match err {
+            MeetingAuthError::ApiKey(e) => e.into(),
+            MeetingAuthError::OAuth(e) => e.into(),
+            MeetingAuthError::Token(e) => e.into(),
+            MeetingAuthError::Credential(e) => e.into(),
+            MeetingAuthError::Webhook(e) => e.into(),
+            MeetingAuthError::Http(e) => e.into(),
+        }
+    }
+}
+
+impl From<ApiKeyError> for domain::Error {
+    fn from(err: ApiKeyError) -> Self {
+        let error_kind = match &err {
+            ApiKeyError::InvalidFormat | ApiKeyError::VerificationFailed => {
+                DomainErrorKind::External(ExternalErrorKind::Authentication)
+            }
+            ApiKeyError::NotFound => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            }
+            ApiKeyError::Network(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            }
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
+        }
+    }
+}
+
+impl From<OAuthError> for domain::Error {
+    fn from(err: OAuthError) -> Self {
+        let error_kind = match &err {
+            OAuthError::AuthorizationFailed(_)
+            | OAuthError::TokenExchangeFailed(_)
+            | OAuthError::TokenRefreshFailed(_)
+            | OAuthError::InvalidState
+            | OAuthError::PkceVerificationFailed => {
+                DomainErrorKind::External(ExternalErrorKind::Authentication)
+            }
+            OAuthError::RevocationFailed(_) | OAuthError::InvalidResponse(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Other(err.to_string()))
+            }
+            OAuthError::Network(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            }
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
+        }
+    }
+}
+
+impl From<ManagerError> for domain::Error {
+    fn from(err: ManagerError) -> Self {
+        let error_kind = match &err {
+            ManagerError::NotFound => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            }
+            ManagerError::Expired => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Unauthenticated))
+            }
+            ManagerError::Storage(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::DbTransaction))
+            }
+            ManagerError::Refresh(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Authentication)
+            }
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
+        }
+    }
+}
+
+impl From<StorageError> for domain::Error {
+    fn from(err: StorageError) -> Self {
+        let error_kind = match &err {
+            StorageError::NotFound => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            }
+            StorageError::AtomicUpdateFailed => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::DbTransaction))
+            }
+            StorageError::Database(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::DbTransaction))
+            }
+            StorageError::EncryptionFailed(_) | StorageError::DecryptionFailed(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Other(err.to_string()))
+            }
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
+        }
+    }
+}
+
+impl From<CredentialError> for domain::Error {
+    fn from(err: CredentialError) -> Self {
+        let error_kind = match &err {
+            CredentialError::NotFound => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            }
+            CredentialError::EncryptionFailed(_) | CredentialError::DecryptionFailed(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Other(err.to_string()))
+            }
+            CredentialError::StorageFailed(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::DbTransaction))
+            }
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
+        }
+    }
+}
+
+impl From<WebhookError> for domain::Error {
+    fn from(err: WebhookError) -> Self {
+        // Webhook validation failures are authentication issues
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::External(ExternalErrorKind::Authentication),
+        }
+    }
+}
+```
+
+#### Web Layer HTTP Status Mapping
+
+The web layer maps domain errors to HTTP responses. With the new `ExternalErrorKind::Authentication` variant:
+
+```rust
+// In web/src/error.rs - add handling for new variant
+
+fn handle_external_error(&self, external_error_kind: &ExternalErrorKind) -> Response {
+    match external_error_kind {
+        ExternalErrorKind::Network => {
+            warn!("ExternalErrorKind::Network: Responding with 502 Bad Gateway");
+            (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
+        }
+        ExternalErrorKind::Authentication => {
+            warn!("ExternalErrorKind::Authentication: Responding with 401 Unauthorized");
+            (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+        }
+        ExternalErrorKind::RateLimited => {
+            warn!("ExternalErrorKind::RateLimited: Responding with 429 Too Many Requests");
+            (StatusCode::TOO_MANY_REQUESTS, "TOO MANY REQUESTS").into_response()
+        }
+        ExternalErrorKind::Other(_description) => {
+            warn!("ExternalErrorKind::Other: Responding with 500 Internal Server Error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+        }
+    }
+}
+```
+
+#### Error Flow Summary
+
+| Crate Error | Domain Error Kind | HTTP Status |
+|-------------|-------------------|-------------|
+| `ApiKeyError::NotFound` | `Entity(NotFound)` | 404 Not Found |
+| `ApiKeyError::VerificationFailed` | `External(Authentication)` | 401 Unauthorized |
+| `OAuthError::TokenRefreshFailed` | `External(Authentication)` | 401 Unauthorized |
+| `OAuthError::Network` | `External(Network)` | 502 Bad Gateway |
+| `ManagerError::NotFound` | `Entity(NotFound)` | 404 Not Found |
+| `ManagerError::Expired` | `Entity(Unauthenticated)` | 401 Unauthorized |
+| `StorageError::Database` | `Entity(DbTransaction)` | 500 Internal Server Error |
+| `WebhookError::InvalidSignature` | `External(Authentication)` | 401 Unauthorized |
 
 ### Custom Retry Policy with `Retry-After` Header Support
 
@@ -1121,6 +1421,132 @@ impl MeetingClient for GoogleMeetClient {
 - `reqwest` - HTTP client (using meeting-auth's middleware)
 - `serde`, `serde_json` - Serialization
 - `chrono` - DateTime handling
+
+### Error Handling
+
+The `meeting-manager` crate defines contextual error types following the same pattern as `meeting-auth`:
+
+```rust
+// In meeting-manager/src/error.rs
+
+use thiserror::Error;
+use meeting_auth::oauth::token::ManagerError as TokenManagerError;
+
+/// Top-level error for the meeting-manager crate
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("meeting error: {0}")]
+    Meeting(#[from] MeetingError),
+
+    #[error("client error: {0}")]
+    Client(#[from] ClientError),
+}
+
+/// Errors from meeting operations (create, delete, get)
+#[derive(Debug, Error)]
+pub enum MeetingError {
+    #[error("meeting not found: {0}")]
+    NotFound(String),
+
+    #[error("meeting creation failed: {0}")]
+    CreationFailed(String),
+
+    #[error("meeting deletion failed: {0}")]
+    DeletionFailed(String),
+
+    #[error("invalid meeting configuration: {0}")]
+    InvalidConfig(String),
+
+    #[error("platform API error: {0}")]
+    PlatformApi(String),
+
+    #[error("network error: {0}")]
+    Network(#[source] reqwest::Error),
+
+    #[error("invalid response: {0}")]
+    InvalidResponse(String),
+}
+
+/// Errors from the high-level MeetingManagerClient
+#[derive(Debug, Error)]
+pub enum ClientError {
+    #[error("unsupported platform: {0}")]
+    UnsupportedPlatform(String),
+
+    #[error("token error: {0}")]
+    Token(#[from] TokenManagerError),
+
+    #[error("meeting error: {0}")]
+    Meeting(#[from] MeetingError),
+}
+```
+
+#### Domain Layer Integration
+
+```rust
+// In domain crate - From implementations for meeting-manager errors
+
+use meeting_manager::{Error as MeetingManagerError, MeetingError, ClientError};
+
+impl From<MeetingManagerError> for domain::Error {
+    fn from(err: MeetingManagerError) -> Self {
+        match err {
+            MeetingManagerError::Meeting(e) => e.into(),
+            MeetingManagerError::Client(e) => e.into(),
+        }
+    }
+}
+
+impl From<MeetingError> for domain::Error {
+    fn from(err: MeetingError) -> Self {
+        let error_kind = match &err {
+            MeetingError::NotFound(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            }
+            MeetingError::InvalidConfig(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Invalid))
+            }
+            MeetingError::Network(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            }
+            MeetingError::CreationFailed(_)
+            | MeetingError::DeletionFailed(_)
+            | MeetingError::PlatformApi(_)
+            | MeetingError::InvalidResponse(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Other(err.to_string()))
+            }
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
+        }
+    }
+}
+
+impl From<ClientError> for domain::Error {
+    fn from(err: ClientError) -> Self {
+        match err {
+            ClientError::UnsupportedPlatform(_) => Error {
+                source: Some(Box::new(err)),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Invalid)),
+            },
+            ClientError::Token(e) => e.into(),
+            ClientError::Meeting(e) => e.into(),
+        }
+    }
+}
+```
+
+#### Error Flow Summary (meeting-manager)
+
+| Crate Error | Domain Error Kind | HTTP Status |
+|-------------|-------------------|-------------|
+| `MeetingError::NotFound` | `Entity(NotFound)` | 404 Not Found |
+| `MeetingError::InvalidConfig` | `Entity(Invalid)` | 422 Unprocessable Entity |
+| `MeetingError::Network` | `External(Network)` | 502 Bad Gateway |
+| `MeetingError::PlatformApi` | `External(Other)` | 500 Internal Server Error |
+| `ClientError::UnsupportedPlatform` | `Entity(Invalid)` | 422 Unprocessable Entity |
+| `ClientError::Token` | *(delegates to ManagerError)* | *(varies)* |
 
 ---
 
