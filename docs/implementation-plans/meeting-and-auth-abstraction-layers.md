@@ -603,10 +603,18 @@ pub trait ProviderAuth: Send + Sync {
 #### OAuth 2.0 Infrastructure
 
 ```rust
+/// Known OAuth providers for video meetings
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthProviderKind {
+    Google,
+    Zoom,
+    Microsoft,
+}
+
 /// Trait for OAuth providers - implemented by platform-specific providers
 #[async_trait]
 pub trait OAuthProvider: Send + Sync {
-    fn provider_id(&self) -> &str;
+    fn provider(&self) -> OAuthProviderKind;
     fn authorization_url(&self, state: &str, pkce_challenge: Option<&str>) -> AuthorizationRequest;
     async fn exchange_code(&self, code: &str, pkce_verifier: Option<&str>) -> Result<token::Tokens, OAuthError>;
     async fn refresh_token(&self, refresh_token: &str) -> Result<token::RefreshResult, OAuthError>;
