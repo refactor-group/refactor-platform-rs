@@ -415,8 +415,9 @@ jobs:
     build-arm64-image:
         name: Build ARM64 Images
         runs-on: [self-hosted, Linux, ARM64, neo]
-        # Use pr-preview environment from calling repository
-        environment: pr-preview
+        # Use pr-preview environment only for backend calls (has all env secrets).
+        # Frontend calls skip environment so org/repo secrets flow through via secrets: inherit.
+        environment: ${{ inputs.repo_type != 'frontend' && 'pr-preview' || '' }}
         # Wait for quality checks to pass before building
         needs:
             - lint-backend
@@ -753,8 +754,9 @@ jobs:
             always() &&
             !cancelled() &&
             needs.build-arm64-image.result == 'success'
-        # Use pr-preview environment from calling repository
-        environment: pr-preview
+        # Use pr-preview environment only for backend calls (has all env secrets).
+        # Frontend calls skip environment so org/repo secrets flow through via secrets: inherit.
+        environment: ${{ inputs.repo_type != 'frontend' && 'pr-preview' || '' }}
 
         steps:
             # Calculate unique ports for this PR deployment
@@ -803,6 +805,20 @@ jobs:
                   chmod 600 ~/.ssh/id_ed25519
                   echo "${{ secrets.RPI5_HOST_KEY }}" >> ~/.ssh/known_hosts
                   chmod 644 ~/.ssh/known_hosts
+
+            - name: Validate Required Secrets
+              run: |
+                  MISSING=""
+                  if [[ -z "$RPI5_USER" ]]; then MISSING="${MISSING} RPI5_USERNAME"; fi
+                  if [[ -z "$RPI5_HOST" ]]; then MISSING="${MISSING} RPI5_TAILSCALE_NAME"; fi
+                  if [[ -n "${MISSING}" ]]; then
+                      echo "::error::Missing required secrets:${MISSING}"
+                      echo "::error::For cross-repo calls, ensure secrets exist at org level or in the calling repo's pr-preview environment"
+                      exit 1
+                  fi
+              env:
+                  RPI5_USER: ${{ secrets.RPI5_USERNAME }}
+                  RPI5_HOST: ${{ secrets.RPI5_TAILSCALE_NAME }}
 
             # Test SSH connectivity before attempting deployment
             - name: Test SSH Connection

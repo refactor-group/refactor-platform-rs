@@ -54,7 +54,9 @@ jobs:
   cleanup-preview:
     name: Cleanup PR Preview on RPi5
     runs-on: [self-hosted, Linux, ARM64, neo]
-    environment: pr-preview
+    # Use pr-preview environment only for backend/direct calls.
+    # Frontend calls skip environment so org/repo secrets flow through.
+    environment: ${{ inputs.repo_type != 'frontend' && 'pr-preview' || '' }}
 
     outputs:
       pr_number: ${{ steps.context.outputs.pr_number }}
