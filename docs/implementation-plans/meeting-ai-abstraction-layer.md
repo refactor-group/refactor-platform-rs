@@ -122,7 +122,7 @@ TranscriptionProvider         (Speech-to-text)
     ├── DeepgramProvider
     └── WhisperProvider
 
-AiAnalysisProvider           (Action extraction, summaries)
+AnalysisProvider           (Action extraction, summaries)
     ├── LemurProvider
     ├── OpenAiProvider
     └── ClaudeProvider
@@ -664,7 +664,7 @@ pub struct Participant {
 /// This trait enables model comparison, cost optimization, and provider switching.
 /// Completely domain-agnostic - applications define what to extract via AnalysisConfig.
 #[async_trait]
-pub trait AiAnalysisProvider: Send + Sync {
+pub trait AnalysisProvider: Send + Sync {
     /// Analyze transcript and extract structured resources based on config.
     /// Processing typically takes 10-60 seconds depending on transcript length and model.
     /// Returns domain-specific resources defined by application's extraction_prompt.
@@ -694,7 +694,7 @@ Complete example showing how applications define and extract custom resources:
 
 ```rust
 // Application defines its own domain-specific resource types
-use meeting_ai::{ExtractedResource, AiAnalysisProvider, AnalysisResult, AnalysisConfig};
+use meeting_ai::{ExtractedResource, AnalysisProvider, AnalysisResult, AnalysisConfig};
 use entity::actions; // SeaORM model
 
 /// Application-specific action resource for coaching sessions.
@@ -727,7 +727,7 @@ pub struct SkribbyProvider {
 }
 
 #[async_trait]
-impl AiAnalysisProvider for SkribbyProvider {
+impl AnalysisProvider for SkribbyProvider {
     async fn analyze(&self, config: AnalysisConfig) -> Result<AnalysisResult, Error> {
         // Call provider API with extraction prompt
         let response = self.client.analyze_transcript(
@@ -918,7 +918,7 @@ pub trait WebhookHandler: Send + Sync {
 pub struct MeetingWorkflow {
     pub bot_provider: Box<dyn RecordingBotProvider>,
     pub transcription_provider: Box<dyn TranscriptionProvider>,
-    pub analysis_provider: Box<dyn AiAnalysisProvider>,
+    pub analysis_provider: Box<dyn AnalysisProvider>,
 }
 
 /// State machine representing workflow progression through meeting AI pipeline.
