@@ -5,7 +5,7 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use domain::{coaching_session, Id};
+use domain::{coaching_session, EntityApiErrorKind, Id};
 use log::*;
 use serde::Deserialize;
 
@@ -42,9 +42,13 @@ pub(crate) async fn index(
             }
         }
         Err(e) => {
-            error!("Error authorizing overarching goals index{e:?}");
+            error!("Error authorizing overarching goals index: {e:?}");
 
-            (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+            if e.error_kind == EntityApiErrorKind::SystemError {
+                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE").into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+            }
         }
     }
 }

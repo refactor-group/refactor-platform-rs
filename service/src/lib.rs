@@ -12,8 +12,8 @@ pub async fn init_database(database_url: &str) -> Result<DatabaseConnection, DbE
         .min_connections(5)
         .connect_timeout(Duration::from_secs(8))
         .acquire_timeout(Duration::from_secs(8))
-        .idle_timeout(Duration::from_secs(8))
-        .max_lifetime(Duration::from_secs(8))
+        .idle_timeout(Duration::from_secs(600))
+        .max_lifetime(Duration::from_secs(1800))
         .sqlx_logging(true)
         .sqlx_logging_level(log::LevelFilter::Info)
         .set_schema_search_path("refactor_platform"); // Setting default PostgreSQL schema

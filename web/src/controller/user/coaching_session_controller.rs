@@ -20,6 +20,7 @@ use log::*;
     params(
         ApiVersion,
         ("user_id" = Id, Path, description = "User ID to retrieve coaching sessions for"),
+        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter sessions to only those in this coaching relationship"),
         ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive, UTC)"),
         ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive, UTC)"),
         ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements'. Example: 'relationship,organization,goal'"),
@@ -65,6 +66,7 @@ pub async fn index(
     let enriched_sessions = CoachingSessionApi::find_by_user_with_includes(
         app_state.db_conn_ref(),
         user_id,
+        params.coaching_relationship_id,
         params.from_date,
         params.to_date,
         sort_column,

@@ -101,6 +101,12 @@ impl Error {
                 );
                 (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
             }
+            EntityErrorKind::ServiceUnavailable => {
+                warn!(
+                    "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"
+                );
+                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE").into_response()
+            }
             EntityErrorKind::Other(_description) => {
                 warn!(
                     "EntityErrorKind::Other: Responding with 500 Internal Server Error. Error: {self:?}"

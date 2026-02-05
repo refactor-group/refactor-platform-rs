@@ -218,9 +218,11 @@ impl IncludeOptions {
     }
 }
 /// Find sessions by user with optional date filtering, sorting, and related data includes
+#[allow(clippy::too_many_arguments)]
 pub async fn find_by_user_with_includes(
     db: &impl ConnectionTrait,
     user_id: Id,
+    coaching_relationship_id: Option<Id>,
     from_date: Option<chrono::NaiveDate>,
     to_date: Option<chrono::NaiveDate>,
     sort_column: Option<coaching_sessions::Column>,
@@ -238,6 +240,11 @@ pub async fn find_by_user_with_includes(
                 .eq(user_id)
                 .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
         );
+
+    // Apply coaching relationship filter
+    if let Some(relationship_id) = coaching_relationship_id {
+        query = query.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
+    }
 
     // Apply date filtering
     if let Some(from) = from_date {
@@ -625,7 +632,8 @@ mod tests {
 
         let includes = IncludeOptions::none();
         let results =
-            find_by_user_with_includes(&db, user_id, None, None, None, None, includes).await?;
+            find_by_user_with_includes(&db, user_id, None, None, None, None, None, includes)
+                .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session_id);
@@ -662,6 +670,7 @@ mod tests {
         let results = find_by_user_with_includes(
             &db,
             user_id,
+            None,
             Some(from_date),
             Some(to_date),
             None,

@@ -36,6 +36,8 @@ pub(crate) struct IndexParams {
     /// User ID from URL path (not a query parameter)
     #[serde(skip)]
     pub(crate) user_id: Id,
+    /// Optional: filter sessions to only those in this coaching relationship
+    pub(crate) coaching_relationship_id: Option<Id>,
     /// Optional: filter sessions starting from this date (inclusive)
     pub(crate) from_date: Option<NaiveDate>,
     /// Optional: filter sessions up to this date (inclusive)
