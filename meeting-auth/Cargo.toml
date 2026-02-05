@@ -1,0 +1,59 @@
+[package]
+name = "meeting-auth"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# OAuth 2.0 flows with PKCE support
+oauth2 = "4.4"
+
+# HTTP client with middleware
+reqwest = { version = "0.12", features = ["json"] }
+reqwest-middleware = "0.3"
+reqwest-retry = "0.6"
+
+# Tower middleware for rate limiting, timeout, etc.
+tower = { version = "0.5", features = ["limit", "timeout", "buffer"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# Async runtime
+tokio = { version = "1.44", features = ["sync"] }
+
+# Secure handling of secrets in memory
+secrecy = { version = "0.8", features = ["serde"] }
+
+# Concurrent HashMap for refresh locks
+dashmap = "6.0"
+
+# DateTime handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP date parsing for Retry-After headers
+httpdate = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HMAC for webhook validation
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# Base64 for encoding
+base64 = "0.22"
+
+# Random generation for PKCE
+rand = "0.8"
+
+# URL parsing
+url = "2.5"
+
+# Tracing
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.44", features = ["full"] }
+mockito = "1.5"
