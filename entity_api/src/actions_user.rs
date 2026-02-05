@@ -199,10 +199,7 @@ pub async fn set_assignees(
     action_id: Id,
     user_ids: Vec<Id>,
 ) -> Result<Vec<Model>, Error> {
-    debug!(
-        "Setting assignees for action_id={action_id}: {:?}",
-        user_ids
-    );
+    debug!("Setting assignees for action_id={action_id}: {user_ids:?}");
 
     // Use a transaction to ensure atomicity of delete + insert operations
     let txn = db.begin().await?;

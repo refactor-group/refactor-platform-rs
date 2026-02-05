@@ -25,7 +25,8 @@ use log::*;
         (status = 201, description = "Successfully Created a New Overarching Goal", body = [entity::overarching_goals::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -69,7 +70,8 @@ pub async fn create(
         (status = 200, description = "Successfully retrieved a specific Overarching Goal by its id", body = [entity::notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Overarching Goal not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -101,7 +103,8 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully Updated Overarching Goal", body = [entity::overarching_goals::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -146,7 +149,8 @@ pub async fn update(
     responses(
         (status = 200, description = "Successfully Updated Overarching Goal", body = [entity::overarching_goals::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -189,7 +193,8 @@ pub async fn update_status(
     responses(
         (status = 200, description = "Successfully retrieved all Overarching Goals", body = [entity::overarching_goals::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])

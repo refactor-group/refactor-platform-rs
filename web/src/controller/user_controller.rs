@@ -24,6 +24,7 @@ use service::config::ApiVersion;
     responses(
         (status = 200, description = "Successfully retrieved a User", body = User),
         (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
         ("cookie_auth" = [])
@@ -51,6 +52,7 @@ pub async fn read(
     responses(
         (status = 204, description = "Successfully updated a User", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
         ("cookie_auth" = [])

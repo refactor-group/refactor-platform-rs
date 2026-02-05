@@ -59,14 +59,12 @@ impl ActiveModelBehavior for ActiveModel {
         match self.role.as_ref() {
             &Role::SuperAdmin if self.organization_id.as_ref().is_some() => {
                 Err(DbErr::Custom(format!(
-                    "[before_save] SuperAdmins should not be associated with an organization, insert: {}",
-                    insert
+                    "[before_save] SuperAdmins should not be associated with an organization, insert: {insert}",
                 )))
             }
             &Role::Admin | &Role::User if self.organization_id.as_ref().is_none() => {
                 Err(DbErr::Custom(format!(
-                    "[before_save] Admins or Users should be associated with an organization, insert: {}",
-                    insert
+                    "[before_save] Admins or Users should be associated with an organization, insert: {insert}",
                 )))
             }
             _ => Ok(self)

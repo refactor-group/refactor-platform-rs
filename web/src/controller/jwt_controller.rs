@@ -22,7 +22,8 @@ use service::config::ApiVersion;
     ),
     responses(
         (status = 200, description = "Successfully generated a collaboration token", body = Jwt),  
-        (status = 500, description = "Internal Server Error")
+        (status = 500, description = "Internal Server Error"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])

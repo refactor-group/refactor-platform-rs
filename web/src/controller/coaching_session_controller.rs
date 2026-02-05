@@ -26,7 +26,8 @@ use log::*;
         (status = 200, description = "Successfully retrieved a Coaching Session", body = coaching_sessions::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching Session not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -65,7 +66,8 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [coaching_sessions::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -106,7 +108,8 @@ pub async fn index(
         (status = 201, description = "Successfully Created a new Coaching Session", body = [domain::coaching_sessions::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -149,6 +152,7 @@ pub async fn create(
     responses(
         (status = 204, description = "Successfully updated a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
         ("cookie_auth" = [])
@@ -173,6 +177,7 @@ pub async fn update(
     responses(
         (status = 204, description = "Successfully deleted a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
         ("cookie_auth" = [])

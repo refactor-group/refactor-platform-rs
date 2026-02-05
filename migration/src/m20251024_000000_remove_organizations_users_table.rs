@@ -37,15 +37,14 @@ impl MigrationTrait for Migration {
 
         let count: i64 = result
             .try_get("", "orphan_count")
-            .map_err(|e| DbErr::Custom(format!("Failed to parse count: {}", e)))?;
+            .map_err(|e| DbErr::Custom(format!("Failed to parse count: {e}")))?;
 
         if count > 0 {
             return Err(DbErr::Custom(format!(
-                "Found {} organizations_users records without matching user_roles. \
+                "Found {count} organizations_users records without matching user_roles. \
                 Each organizations_users record must have a corresponding user_roles record \
                 with the same user_id and organization_id before this table can be removed. \
                 (Super admin users are excluded from this check as they have global access.)",
-                count
             )));
         }
 

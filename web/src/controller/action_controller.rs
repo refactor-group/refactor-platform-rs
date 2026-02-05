@@ -39,7 +39,8 @@ pub struct ActionRequest {
         (status = 201, description = "Successfully Created a New Action", body = [domain::action::ActionWithAssignees]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -78,7 +79,8 @@ pub async fn create(
         (status = 200, description = "Successfully retrieved a specific Action by its id", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Action not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -107,7 +109,8 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully Updated Action", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -132,7 +135,7 @@ pub async fn update(
     )
     .await?;
 
-    debug!("Updated Action: {:?}", action);
+    debug!("Updated Action: {action:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
@@ -149,7 +152,8 @@ pub async fn update(
     responses(
         (status = 200, description = "Successfully Updated Action", body = [actions::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -184,7 +188,8 @@ pub async fn update_status(
     responses(
         (status = 200, description = "Successfully retrieved all Actions", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -211,7 +216,7 @@ pub async fn index(
 
     let actions = ActionApi::find_by_with_assignees(app_state.db_conn_ref(), params).await?;
 
-    debug!("Found Actions: {:?}", actions);
+    debug!("Found Actions: {actions:?}");
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
@@ -228,7 +233,8 @@ pub async fn index(
         (status = 200, description = "Successfully deleted a certain Action by its id", body = [i32]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Action not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
