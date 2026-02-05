@@ -13,6 +13,34 @@
 - Always run `cargo clippy` and `cargo fmt` before committing
 - Always skip adding Claude attribution for commits or PRs (no "Generated with Claude Code" or "Co-Authored-By: Claude" footers)
 
+## Naming Conventions
+
+### No Redundant Type Prefixes
+**CRITICAL:** Never use redundant prefixes in type names when the module path already provides context.
+
+**Examples:**
+- ❌ `oauth/provider.rs` → `OAuthProvider` (redundant "OAuth" prefix)
+- ✅ `oauth/provider.rs` → `Provider` (module path provides context)
+
+- ❌ `oauth/providers/google.rs` → `GoogleProvider` (redundant "Google" prefix)
+- ✅ `oauth/providers/google.rs` → `Provider` (module path provides context)
+
+- ❌ `api_key/auth.rs` → `ApiKeyProvider` (redundant "ApiKey" prefix)
+- ✅ `api_key/auth.rs` → `Provider` (module path provides context)
+
+**Import patterns:**
+```rust
+// ✅ Good - use module path or alias for clarity at call sites
+use oauth::Provider;
+use oauth::providers::google::Provider as GoogleProvider;
+
+// ❌ Bad - redundant prefixes baked into type names
+use oauth::OAuthProvider;
+use oauth::providers::GoogleOAuthProvider;
+```
+
+**Rationale:** Module paths already provide full context. Redundant prefixes create noise and violate DRY principles.
+
 ## Database Migrations
 
 **CRITICAL: PostgreSQL Type Ownership** - When creating any PostgreSQL type (enum, composite, etc.) using `create_type()`, you MUST immediately follow it with `ALTER TYPE refactor_platform.<type_name> OWNER TO refactor`.
