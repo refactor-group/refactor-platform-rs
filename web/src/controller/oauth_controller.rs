@@ -11,10 +11,11 @@ use crate::{AppState, Error};
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
 
-use domain::gateway::google_oauth::{GoogleOAuthClient, GoogleOAuthUrls};
+use domain::gateway::oauth::{self, Provider};
 use domain::user_integrations::Model as UserIntegrationModel;
 use domain::{user_integration, Id};
 use log::*;
+use secrecy::ExposeSecret;
 use serde::Deserialize;
 
 /// Query parameters for OAuth callback
@@ -104,20 +105,15 @@ pub async fn authorize(
         internal_error("Google OAuth not configured")
     })?;
 
-    let urls = GoogleOAuthUrls {
-        auth_url: config.google_oauth_auth_url().to_string(),
-        token_url: config.google_oauth_token_url().to_string(),
-        userinfo_url: config.google_userinfo_url().to_string(),
-    };
-
-    let client = GoogleOAuthClient::new(&client_id, "", &redirect_uri, urls)?;
+    // Create Google OAuth provider (client_secret not needed for authorization URL)
+    let provider = oauth::google::new_provider(client_id, String::new(), redirect_uri);
 
     // Use user ID as state parameter for security
     let state = params.user_id.to_string();
-    let auth_url = client.get_authorization_url(&state);
+    let auth_request = provider.authorization_url(&state, None);
 
     info!("Redirecting user {} to Google OAuth", params.user_id);
-    Ok(Redirect::temporary(&auth_url))
+    Ok(Redirect::temporary(&auth_request.url))
 }
 
 /// GET /oauth/google/callback
@@ -166,16 +162,11 @@ pub async fn callback(
         .google_redirect_uri()
         .ok_or_else(|| internal_error("Google OAuth not configured"))?;
 
-    let urls = GoogleOAuthUrls {
-        auth_url: config.google_oauth_auth_url().to_string(),
-        token_url: config.google_oauth_token_url().to_string(),
-        userinfo_url: config.google_userinfo_url().to_string(),
-    };
-
-    let client = GoogleOAuthClient::new(&client_id, &client_secret, &redirect_uri, urls)?;
+    // Create Google OAuth provider
+    let provider = oauth::google::new_provider(client_id, client_secret, redirect_uri);
 
     // Exchange authorization code for tokens
-    let token_response = client.exchange_code(&params.code).await.map_err(|e| {
+    let tokens = provider.exchange_code(&params.code, None).await.map_err(|e| {
         warn!(
             "Failed to exchange OAuth code for user {}: {:?}",
             user_id, e
@@ -184,8 +175,8 @@ pub async fn callback(
     })?;
 
     // Get user info from Google
-    let user_info = client
-        .get_user_info(&token_response.access_token)
+    let user_info = provider
+        .get_user_info(tokens.access_token.expose_secret())
         .await
         .map_err(|e| {
             warn!(
@@ -199,11 +190,9 @@ pub async fn callback(
     let mut integration: UserIntegrationModel =
         user_integration::get_or_create(app_state.db_conn_ref(), user_id).await?;
 
-    integration.google_access_token = Some(token_response.access_token);
-    integration.google_refresh_token = token_response.refresh_token;
-    integration.google_token_expiry =
-        Some(chrono::Utc::now() + chrono::Duration::seconds(token_response.expires_in))
-            .map(|dt| dt.into());
+    integration.google_access_token = Some(tokens.access_token.expose_secret().to_string());
+    integration.google_refresh_token = tokens.refresh_token.map(|rt| rt.expose_secret().to_string());
+    integration.google_token_expiry = tokens.expires_at.map(|dt| dt.into());
     integration.google_email = Some(user_info.email);
 
     let _updated: UserIntegrationModel =

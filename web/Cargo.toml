@@ -8,6 +8,8 @@ edition = "2021"
 [dependencies]
 domain = { path = "../domain" }
 service = { path = "../service" }
+meeting-auth = { path = "../meeting-auth" }
+secrecy = "0.8"
 
 axum = "0.7.7"
 axum-login = "0.16.0"
