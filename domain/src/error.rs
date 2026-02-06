@@ -53,6 +53,17 @@ pub enum ExternalErrorKind {
     Other(String),
 }
 
+impl Error {
+    /// Returns true if this error represents a service unavailability condition
+    /// (e.g. database connection pool exhaustion).
+    pub fn is_service_unavailable(&self) -> bool {
+        self.error_kind
+            == DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::ServiceUnavailable,
+            ))
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Domain Error: {self:?}")

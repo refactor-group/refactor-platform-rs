@@ -88,6 +88,42 @@ pub async fn find_user(id: Id) -> User {
 }
 ```
 
+### Cross-Layer Error Propagation
+
+Errors must flow through the layer chain `entity_api` -> `domain` -> `web` without skipping layers. Each layer defines its own error types, and conversions happen at layer boundaries using `From` impls and the `?` operator.
+
+**The error type hierarchy:**
+
+- `entity_api::error::Error` with `EntityApiErrorKind` (e.g., `SystemError`, `RecordNotFound`)
+- `domain::error::Error` with `DomainErrorKind` -> `InternalErrorKind` -> `EntityErrorKind` (e.g., `ServiceUnavailable`, `NotFound`)
+- `web::Error` maps `domain::Error` to HTTP status codes via `IntoResponse`
+
+**Rules:**
+
+1. **Never import `entity_api` types in the `web` layer.** The web layer should only depend on `domain` types. If you find yourself importing `entity_api::error::EntityApiErrorKind` in web code, you are violating the layer boundary.
+
+2. **Adding a new error variant** requires changes at each layer:
+   - Add the variant to `EntityApiErrorKind` in `entity_api/src/error.rs`
+   - Map it to an `EntityErrorKind` variant in the `From<EntityApiError>` impl in `domain/src/error.rs`
+   - Handle the `EntityErrorKind` variant in `web/src/error.rs` to return the appropriate HTTP status code
+
+3. **Domain re-exports of entity_api functions** that return `entity_api::Error` must be wrapped in a thin domain function so callers receive `domain::Error`. The `?` operator handles the conversion automatically via the existing `From` impl:
+
+```rust
+// ✅ Good - domain wrapper converts errors at the boundary
+pub async fn find_by_id_with_relationship(
+    db: &DatabaseConnection,
+    id: Id,
+) -> Result<(Model, relationships::Model), Error> {
+    Ok(entity_api_module::find_by_id_with_relationship(db, id).await?)
+}
+
+// ❌ Bad - raw re-export leaks entity_api::Error into higher layers
+pub use entity_api::some_module::find_by_id_with_relationship;
+```
+
+4. **Use helper methods on `domain::error::Error`** (e.g., `is_service_unavailable()`) in middleware and handlers rather than matching on deeply nested error kind enums directly. This keeps call sites readable and centralizes the matching logic.
+
 ### Async Patterns
 
 - Use `async fn` for asynchronous operations
@@ -160,6 +196,7 @@ When reviewing or writing code, ensure:
 - [ ] Naming follows Rust conventions
 - [ ] Error handling uses `Result` and `?` operator appropriately
 - [ ] No `.unwrap()` or `.expect()` in production code paths
+- [ ] Errors propagate through layers (`entity_api` -> `domain` -> `web`) without skipping
 - [ ] Async operations don't block the runtime
 - [ ] Public APIs have doc comments
 - [ ] Code passes `cargo clippy` without warnings

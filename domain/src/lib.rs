@@ -5,7 +5,6 @@
 //! consistent interface for working with query filters within the domain layer, while encapsulating
 //! the underlying implementation details remain in the `entity_api` crate.
 pub use entity_api::{
-    error::EntityApiErrorKind,
     mutate::{IntoUpdateMap, UpdateMap},
     query::{FilterOnly, IntoQueryFilterMap, QueryFilterMap},
 };

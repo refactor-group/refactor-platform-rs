@@ -7,7 +7,7 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use domain::{coaching_session, EntityApiErrorKind};
+use domain::coaching_session;
 use log::*;
 
 /// Checks that coaching relationship record associated with the coaching session
@@ -39,7 +39,7 @@ pub(crate) async fn generate_collab_token(
         Err(e) => {
             error!("Error authorizing collaboration token generation: {e:?}");
 
-            if e.error_kind == EntityApiErrorKind::SystemError {
+            if e.is_service_unavailable() {
                 (StatusCode::SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE").into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()

@@ -5,7 +5,7 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
-use domain::{coaching_session, EntityApiErrorKind, Id};
+use domain::{coaching_session, Id};
 use log::*;
 use serde::Deserialize;
 
@@ -44,7 +44,7 @@ pub(crate) async fn index(
         Err(e) => {
             error!("Error authorizing notes index: {e:?}");
 
-            if e.error_kind == EntityApiErrorKind::SystemError {
+            if e.is_service_unavailable() {
                 (StatusCode::SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE").into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()

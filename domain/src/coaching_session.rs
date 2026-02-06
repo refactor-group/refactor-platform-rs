@@ -12,9 +12,17 @@ use sea_orm::{DatabaseConnection, IntoActiveModel};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    find_by_id, find_by_id_with_coaching_relationship, find_by_user_with_includes, EnrichedSession,
-    IncludeOptions, SessionQueryOptions,
+    find_by_id, find_by_user_with_includes, EnrichedSession, IncludeOptions, SessionQueryOptions,
 };
+
+/// Wraps the entity_api function to convert `entity_api::Error` into `domain::Error`,
+/// keeping the web layer from depending on entity_api error types directly.
+pub async fn find_by_id_with_coaching_relationship(
+    db: &DatabaseConnection,
+    id: Id,
+) -> Result<(Model, crate::coaching_relationships::Model), Error> {
+    Ok(coaching_session::find_by_id_with_coaching_relationship(db, id).await?)
+}
 
 #[derive(Debug, Clone)]
 struct SessionDate(NaiveDateTime);
