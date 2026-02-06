@@ -39,7 +39,7 @@ impl Manager {
         let event_data = match serde_json::to_string(&message.event) {
             Ok(json) => json,
             Err(e) => {
-                error!("Failed to serialize SSE event: {}", e);
+                error!("Failed to serialize SSE event: {e}");
                 return;
             }
         };

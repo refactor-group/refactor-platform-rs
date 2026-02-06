@@ -24,7 +24,8 @@ use log::*;
     responses(
         (status = 200, description = "Successfully created a new Coaching Relationship", body = [coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -70,7 +71,8 @@ pub async fn create(
         (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = [coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "CoachingRelationship not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -107,7 +109,8 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully retrieved all CoachingRelationships", body = [coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])

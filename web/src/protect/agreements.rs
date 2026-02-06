@@ -37,9 +37,8 @@ pub(crate) async fn index(
             }
         }
         Err(e) => {
-            error!("Error authorizing overarching goals index{e:?}");
-
-            (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+            error!("Error authorizing agreements index: {e:?}");
+            crate::error::domain_error_into_response(e)
         }
     }
 }

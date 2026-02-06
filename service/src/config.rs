@@ -87,6 +87,30 @@ pub struct Config {
     )]
     database_url: Option<String>,
 
+    /// Maximum number of database connections in the pool
+    #[arg(long, env, default_value_t = 100)]
+    pub db_max_connections: u32,
+
+    /// Minimum number of idle database connections to maintain
+    #[arg(long, env, default_value_t = 5)]
+    pub db_min_connections: u32,
+
+    /// Timeout in seconds for establishing a new database connection
+    #[arg(long, env, default_value_t = 8)]
+    pub db_connect_timeout_secs: u64,
+
+    /// Timeout in seconds for acquiring a connection from the pool
+    #[arg(long, env, default_value_t = 8)]
+    pub db_acquire_timeout_secs: u64,
+
+    /// Seconds before an idle connection is closed
+    #[arg(long, env, default_value_t = 600)]
+    pub db_idle_timeout_secs: u64,
+
+    /// Maximum lifetime in seconds for any connection in the pool
+    #[arg(long, env, default_value_t = 1800)]
+    pub db_max_lifetime_secs: u64,
+
     /// The URL for the Tiptap Cloud API provider
     #[arg(long, env)]
     tiptap_url: Option<String>,

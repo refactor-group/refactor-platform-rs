@@ -36,7 +36,8 @@ use log::*;
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "User not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])

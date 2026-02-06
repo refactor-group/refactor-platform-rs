@@ -26,7 +26,8 @@ use log::*;
         (status = 201, description = "Successfully Created a New Agreement", body = [agreements::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -65,7 +66,8 @@ pub async fn create(
         (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = [notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Agreement not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -94,7 +96,8 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully Updated Agreement", body = [agreements::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -130,7 +133,8 @@ pub async fn update(
     responses(
         (status = 200, description = "Successfully retrieved all Agreements", body = [agreements::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -170,7 +174,8 @@ pub async fn index(
         (status = 200, description = "Successfully deleted a certain Agreement by its id", body = [i32]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Agreement not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])

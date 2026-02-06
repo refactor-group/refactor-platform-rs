@@ -23,6 +23,7 @@ use service::config::ApiVersion;
     responses(
         (status = 200, description = "Successfully updated a User's password"),
         (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
         ("cookie_auth" = [])

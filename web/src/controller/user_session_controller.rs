@@ -20,7 +20,8 @@ use serde_json::json;
     responses(
         (status = 200, description = "Logs in and returns session authentication cookie"),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -100,7 +101,8 @@ path = "/delete",
 responses(
     (status = 200, description = "Successfully logged out"),
     (status = 401, description = "Unauthorized"),
-    (status = 405, description = "Method not allowed")
+    (status = 405, description = "Method not allowed"),
+    (status = 503, description = "Service temporarily unavailable")
 ),
 security(
     ("cookie_auth" = [])

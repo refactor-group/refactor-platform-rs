@@ -26,7 +26,8 @@ use log::debug;
     responses(
         (status = 200, description = "Successfully retrieved all Organizations", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -63,7 +64,8 @@ pub async fn index(
         (status = 200, description = "Successfully retrieved a certain Organization by its id", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -92,7 +94,8 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully created a new Organization", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -129,7 +132,8 @@ pub async fn create(
         (status = 200, description = "Successfully updated a certain Organization by its id", body = [organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -167,7 +171,8 @@ pub async fn update(
         (status = 200, description = "Successfully deleted a certain Organization by its id", body = [i32]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])

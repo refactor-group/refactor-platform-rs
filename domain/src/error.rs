@@ -42,6 +42,7 @@ pub enum EntityErrorKind {
     Invalid,
     Unauthenticated,
     DbTransaction,
+    ServiceUnavailable,
     Other(String),
 }
 
@@ -73,6 +74,7 @@ impl From<EntityApiError> for Error {
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
             EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,
+            EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
 

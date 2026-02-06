@@ -20,6 +20,7 @@ use log::*;
     params(
         ApiVersion,
         ("user_id" = Id, Path, description = "User ID to retrieve coaching sessions for"),
+        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter sessions to only those in this coaching relationship"),
         ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive, UTC)"),
         ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive, UTC)"),
         ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements'. Example: 'relationship,organization,goal'"),
@@ -32,7 +33,8 @@ use log::*;
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "User not found"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -65,11 +67,14 @@ pub async fn index(
     let enriched_sessions = CoachingSessionApi::find_by_user_with_includes(
         app_state.db_conn_ref(),
         user_id,
-        params.from_date,
-        params.to_date,
-        sort_column,
-        sort_order,
-        includes,
+        CoachingSessionApi::SessionQueryOptions {
+            coaching_relationship_id: params.coaching_relationship_id,
+            from_date: params.from_date,
+            to_date: params.to_date,
+            sort_column,
+            sort_order,
+            includes,
+        },
     )
     .await?;
 

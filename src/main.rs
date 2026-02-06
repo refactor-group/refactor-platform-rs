@@ -26,6 +26,7 @@
 use events::EventPublisher;
 use log::*;
 use service::{config::Config, logging::Logger};
+use std::process;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -35,15 +36,17 @@ async fn main() {
 
     info!("Starting up...");
 
-    let db_conn = Arc::new(
-        service::init_database(config.database_url())
-            .await
-            .map_err(|e| panic!("Failed to establish DBConnection: {:?}", e.to_string()))
-            .unwrap_or_default(),
-    );
+    let db_conn = match service::init_database(&config).await {
+        Ok(db) => Arc::new(db),
+        Err(e) => {
+            error!("Failed to establish database connection: {e}");
+            process::exit(1);
+        }
+    };
 
     if db_conn.ping().await.is_err() {
-        panic!("Failed to establish a useable DBConnection and ping the DB successfully.");
+        error!("Failed to ping the database after establishing connection");
+        process::exit(1);
     }
 
     // Create service-level state (infrastructure only - no SSE)

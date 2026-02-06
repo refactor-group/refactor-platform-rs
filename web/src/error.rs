@@ -101,6 +101,12 @@ impl Error {
                 );
                 (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
             }
+            EntityErrorKind::ServiceUnavailable => {
+                warn!(
+                    "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"
+                );
+                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE").into_response()
+            }
             EntityErrorKind::Other(_description) => {
                 warn!(
                     "EntityErrorKind::Other: Responding with 500 Internal Server Error. Error: {self:?}"
@@ -154,4 +160,13 @@ where
     fn from(err: E) -> Self {
         Error::Domain(err.into())
     }
+}
+
+/// Converts a `domain::Error` into an HTTP `Response` using the standard error mapping.
+///
+/// This is intended for middleware (e.g., protect middleware) that handles errors
+/// manually rather than propagating them with `?`. It routes through `web::Error`'s
+/// `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
+pub(crate) fn domain_error_into_response(err: DomainError) -> Response {
+    Error::Domain(err).into_response()
 }

@@ -24,7 +24,8 @@ use log::*;
     responses(
         (status = 200, description = "Successfully retrieved all Users", body = [domain::users::Model]),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -54,7 +55,8 @@ pub async fn index(
     responses(
         (status = 201, description = "User created successfully", body = domain::users::Model),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])
@@ -89,7 +91,8 @@ pub(crate) async fn create(
     responses(
         (status = 200, description = "User deleted successfully"),
         (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed")
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
     ),
     security(
         ("cookie_auth" = [])

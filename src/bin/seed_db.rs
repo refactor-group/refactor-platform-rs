@@ -1,4 +1,4 @@
-use log::info;
+use log::{error, info};
 use service::{config::Config, logging::Logger};
 use std::sync::Arc;
 
@@ -9,7 +9,13 @@ async fn main() {
 
     info!("Seeding database [{}]...", config.database_url());
 
-    let db = Arc::new(service::init_database(config.database_url()).await.unwrap());
+    let db = match service::init_database(&config).await {
+        Ok(db) => Arc::new(db),
+        Err(e) => {
+            error!("Failed to establish database connection: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let service_state = service::AppState::new(config, &db);
 
