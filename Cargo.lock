@@ -945,6 +945,7 @@ dependencies = [
  "hex",
  "jsonwebtoken",
  "log",
+ "meeting-auth",
  "mockito",
  "rand 0.8.5",
  "reqwest 0.12.19",
@@ -2004,6 +2005,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "urlencoding",
 ]
 
 [[package]]
@@ -4756,9 +4758,11 @@ dependencies = [
  "domain",
  "futures",
  "log",
+ "meeting-auth",
  "password-auth",
  "reqwest 0.12.19",
  "sea-orm",
+ "secrecy",
  "serde",
  "serde_json",
  "service",
