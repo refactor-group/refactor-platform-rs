@@ -38,12 +38,7 @@ pub(crate) async fn generate_collab_token(
         }
         Err(e) => {
             error!("Error authorizing collaboration token generation: {e:?}");
-
-            if e.is_service_unavailable() {
-                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE").into_response()
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
-            }
+            crate::error::domain_error_into_response(e)
         }
     }
 }
