@@ -15,10 +15,12 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use domain::coaching_relationship as CoachingRelationshipApi;
-use domain::gateway::google_oauth::{GoogleMeetClient, GoogleOAuthClient, GoogleOAuthUrls};
+use domain::gateway::google_meet::Client as GoogleMeetClient;
+use domain::gateway::oauth::{self, Provider};
 use domain::user_integration;
 use domain::Id;
 use log::*;
+use secrecy::ExposeSecret;
 use service::config::ApiVersion;
 
 /// UPDATE a CoachingRelationship.
@@ -218,31 +220,28 @@ pub async fn create_google_meet(
                 .google_redirect_uri()
                 .ok_or_else(|| internal_error("Google OAuth not configured"))?;
 
-            let urls = GoogleOAuthUrls {
-                auth_url: config.google_oauth_auth_url().to_string(),
-                token_url: config.google_oauth_token_url().to_string(),
-                userinfo_url: config.google_userinfo_url().to_string(),
-            };
+            let provider = oauth::google::new_provider(client_id, client_secret, redirect_uri);
+            let refresh_result = provider.refresh_token(refresh_token).await.map_err(|e| {
+                warn!("Failed to refresh Google OAuth token for user {}: {:?}", user.id, e);
+                forbidden_error("Failed to refresh Google authorization. Please reconnect your Google account.")
+            })?;
 
-            let oauth_client =
-                GoogleOAuthClient::new(&client_id, &client_secret, &redirect_uri, urls)?;
-            let token_response = oauth_client.refresh_token(refresh_token).await?;
+            let tokens = refresh_result.tokens;
 
             // Update stored tokens
             let mut updated_integration = integration.clone();
-            updated_integration.google_access_token = Some(token_response.access_token.clone());
-            updated_integration.google_token_expiry =
-                Some(chrono::Utc::now() + chrono::Duration::seconds(token_response.expires_in))
-                    .map(|dt| dt.into());
+            updated_integration.google_access_token = Some(tokens.access_token.expose_secret().to_string());
+            updated_integration.google_refresh_token = tokens.refresh_token.map(|rt| rt.expose_secret().to_string());
+            updated_integration.google_token_expiry = tokens.expires_at.map(|dt| dt.into());
 
             user_integration::update(
                 app_state.db_conn_ref(),
                 updated_integration.id,
-                updated_integration,
+                updated_integration.clone(),
             )
             .await?;
 
-            token_response.access_token
+            updated_integration.google_access_token.unwrap()
         } else {
             access_token
         }
