@@ -51,6 +51,7 @@ impl Logger {
     /// When `apply_filters` is true, logs from noisy dependencies are suppressed.
     fn build_log_config(apply_filters: bool) -> simplelog::Config {
         let mut builder = ConfigBuilder::new();
+        builder.set_time_format_rfc3339();
 
         if apply_filters {
             for module in FILTERED_MODULES {
