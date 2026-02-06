@@ -48,8 +48,9 @@ base64 = "0.22"
 # Random generation for PKCE
 rand = "0.8"
 
-# URL parsing
+# URL parsing and encoding
 url = "2.5"
+urlencoding = "2.1"
 
 # Tracing
 tracing = "0.1"

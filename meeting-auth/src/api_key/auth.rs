@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_api_key_auth_creation() {
-        let api_key = SecretString::from("test_key");
+        let api_key = SecretString::from("test_key".to_string());
         let auth = ApiKeyAuth::new(ApiKeyProvider::RecallAi, api_key, "Token");
 
         assert_eq!(auth.provider(), ApiKeyProvider::RecallAi);
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_assemblyai_auth_no_prefix() {
-        let api_key = SecretString::from("test_key");
+        let api_key = SecretString::from("test_key".to_string());
         let auth = ApiKeyAuth::new(ApiKeyProvider::AssemblyAi, api_key, "");
 
         assert_eq!(auth.provider(), ApiKeyProvider::AssemblyAi);
