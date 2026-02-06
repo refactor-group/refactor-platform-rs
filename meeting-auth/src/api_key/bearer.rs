@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn test_bearer_token_auth_creation() {
-        let token = SecretString::from("test_token");
+        let token = SecretString::from("test_token".to_string());
         let auth = BearerTokenAuth::new(ApiKeyProvider::RecallAi, token);
 
         assert_eq!(auth.provider(), ApiKeyProvider::RecallAi);
