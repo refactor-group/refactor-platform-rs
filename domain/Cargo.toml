@@ -14,6 +14,7 @@ entity_api = { path = "../entity_api" }
 events = { path = "../events" }
 hex = "0.4"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+meeting-auth = { path = "../meeting-auth" }
 service = { path = "../service" }
 log = "0.4.22"
 rand = "0.8"
