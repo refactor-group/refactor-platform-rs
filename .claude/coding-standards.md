@@ -122,7 +122,7 @@ pub async fn find_by_id_with_relationship(
 pub use entity_api::some_module::find_by_id_with_relationship;
 ```
 
-4. **Use helper methods on `domain::error::Error`** (e.g., `is_service_unavailable()`) in middleware and handlers rather than matching on deeply nested error kind enums directly. This keeps call sites readable and centralizes the matching logic.
+4. **Use `domain_error_into_response()` in protect middleware** (defined in `web/src/error.rs`) to convert domain errors into HTTP responses. This routes through `web::Error`'s `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
 
 ### Async Patterns
 
