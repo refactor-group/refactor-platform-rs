@@ -67,12 +67,14 @@ pub async fn index(
     let enriched_sessions = CoachingSessionApi::find_by_user_with_includes(
         app_state.db_conn_ref(),
         user_id,
-        params.coaching_relationship_id,
-        params.from_date,
-        params.to_date,
-        sort_column,
-        sort_order,
-        includes,
+        CoachingSessionApi::SessionQueryOptions {
+            coaching_relationship_id: params.coaching_relationship_id,
+            from_date: params.from_date,
+            to_date: params.to_date,
+            sort_column,
+            sort_order,
+            includes,
+        },
     )
     .await?;
 

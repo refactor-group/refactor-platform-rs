@@ -163,7 +163,7 @@ pub struct EnrichedSession {
 /// invalid.organization = true;  // Without relationship: true
 /// assert!(invalid.validate().is_err()); // Error: organization requires relationship
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct IncludeOptions {
     pub relationship: bool,
     pub organization: bool,
@@ -217,20 +217,34 @@ impl IncludeOptions {
         Ok(())
     }
 }
+/// Query options for finding coaching sessions by user.
+///
+/// Groups filtering, sorting, and include parameters into a single argument
+/// to keep the `find_by_user_with_includes` function signature clean.
+#[derive(Debug, Default)]
+pub struct SessionQueryOptions {
+    /// Filter sessions to only those in this coaching relationship
+    pub coaching_relationship_id: Option<Id>,
+    /// Filter sessions starting from this date (inclusive)
+    pub from_date: Option<chrono::NaiveDate>,
+    /// Filter sessions up to this date (inclusive)
+    pub to_date: Option<chrono::NaiveDate>,
+    /// Column to sort results by
+    pub sort_column: Option<coaching_sessions::Column>,
+    /// Sort direction (ascending or descending)
+    pub sort_order: Option<sea_orm::Order>,
+    /// Which related resources to include in the response
+    pub includes: IncludeOptions,
+}
+
 /// Find sessions by user with optional date filtering, sorting, and related data includes
-#[allow(clippy::too_many_arguments)]
 pub async fn find_by_user_with_includes(
     db: &impl ConnectionTrait,
     user_id: Id,
-    coaching_relationship_id: Option<Id>,
-    from_date: Option<chrono::NaiveDate>,
-    to_date: Option<chrono::NaiveDate>,
-    sort_column: Option<coaching_sessions::Column>,
-    sort_order: Option<sea_orm::Order>,
-    includes: IncludeOptions,
+    options: SessionQueryOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
     // Validate include options
-    includes.validate()?;
+    options.includes.validate()?;
 
     // Build query for sessions filtered by user
     let mut query = Entity::find()
@@ -242,23 +256,23 @@ pub async fn find_by_user_with_includes(
         );
 
     // Apply coaching relationship filter
-    if let Some(relationship_id) = coaching_relationship_id {
+    if let Some(relationship_id) = options.coaching_relationship_id {
         query = query.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
     }
 
     // Apply date filtering
-    if let Some(from) = from_date {
+    if let Some(from) = options.from_date {
         query = query.filter(coaching_sessions::Column::Date.gte(from));
     }
 
-    if let Some(to) = to_date {
+    if let Some(to) = options.to_date {
         // Use next day with less-than for inclusive end date
         let end_of_day = to.succ_opt().unwrap_or(to);
         query = query.filter(coaching_sessions::Column::Date.lt(end_of_day));
     }
 
     // Apply sorting if both column and order are provided
-    if let (Some(column), Some(order)) = (sort_column, sort_order) {
+    if let (Some(column), Some(order)) = (options.sort_column, options.sort_order) {
         query = query.order_by(column, order);
     }
 
@@ -266,7 +280,10 @@ pub async fn find_by_user_with_includes(
     let sessions = query.all(db).await?;
 
     // Early return if no includes requested
-    if !includes.needs_relationships() && !includes.goal && !includes.agreements {
+    if !options.includes.needs_relationships()
+        && !options.includes.goal
+        && !options.includes.agreements
+    {
         return Ok(sessions
             .into_iter()
             .map(EnrichedSession::from_session)
@@ -274,7 +291,7 @@ pub async fn find_by_user_with_includes(
     }
 
     // Load all related data in efficient batches
-    let related_data = load_related_data(db, &sessions, includes).await?;
+    let related_data = load_related_data(db, &sessions, options.includes).await?;
 
     // Assemble enriched sessions
     Ok(sessions
@@ -630,10 +647,8 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .into_connection();
 
-        let includes = IncludeOptions::none();
         let results =
-            find_by_user_with_includes(&db, user_id, None, None, None, None, None, includes)
-                .await?;
+            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session_id);
@@ -666,16 +681,14 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .into_connection();
 
-        let includes = IncludeOptions::none();
         let results = find_by_user_with_includes(
             &db,
             user_id,
-            None,
-            Some(from_date),
-            Some(to_date),
-            None,
-            None,
-            includes,
+            SessionQueryOptions {
+                from_date: Some(from_date),
+                to_date: Some(to_date),
+                ..Default::default()
+            },
         )
         .await?;
 
