@@ -69,6 +69,52 @@ main() {
             log_info "Running in $RUST_ENV environment"
             log_info "Using schema $DATABASE_SCHEMA to apply the migrations in"
 
+            # Ensure schema exists before running migrations
+            # This makes the migrator idempotent and independent of external setup
+            log_info "Ensuring schema '$DATABASE_SCHEMA' exists..."
+
+            # Extract connection parameters from DATABASE_URL
+            # Format: postgres://user:password@host:port/database
+            DB_HOST=$(echo "$DATABASE_URL" | sed -E 's|postgres://[^@]+@([^:/]+).*|\1|')
+            DB_PORT=$(echo "$DATABASE_URL" | sed -E 's|postgres://[^@]+@[^:]+:([0-9]+)/.*|\1|')
+            DB_NAME=$(echo "$DATABASE_URL" | sed -E 's|postgres://[^@]+@[^/]+/([^?]+).*|\1|')
+            DB_USER=$(echo "$DATABASE_URL" | sed -E 's|postgres://([^:]+):.*|\1|')
+            DB_PASS=$(echo "$DATABASE_URL" | sed -E 's|postgres://[^:]+:([^@]+)@.*|\1|')
+
+            # Wait for PostgreSQL to be ready
+            log_info "Waiting for PostgreSQL to be ready..."
+            for i in $(seq 1 30); do
+                if PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" >/dev/null 2>&1; then
+                    log_success "PostgreSQL is ready"
+                    break
+                fi
+                if [ "$i" -eq 30 ]; then
+                    log_error "PostgreSQL did not become ready in time"
+                    exit 1
+                fi
+                sleep 1
+            done
+
+            # Create schema if it doesn't exist
+            log_info "Creating schema '$DATABASE_SCHEMA' if it doesn't exist..."
+            if ! PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "CREATE SCHEMA IF NOT EXISTS \"$DATABASE_SCHEMA\";" >/dev/null 2>&1; then
+                log_error "Failed to create schema '$DATABASE_SCHEMA'"
+                exit 1
+            fi
+
+            log_success "Schema '$DATABASE_SCHEMA' is ready"
+
+            # Set search_path in DATABASE_URL so all connections use the correct schema
+            # Append options parameter to DATABASE_URL if not already present
+            if echo "$DATABASE_URL" | grep -q '?'; then
+                # URL already has query parameters
+                export DATABASE_URL="${DATABASE_URL}&options=-csearch_path%3D${DATABASE_SCHEMA}"
+            else
+                # No query parameters yet
+                export DATABASE_URL="${DATABASE_URL}?options=-csearch_path%3D${DATABASE_SCHEMA}"
+            fi
+
+            log_info "Set search_path to '$DATABASE_SCHEMA' in DATABASE_URL"
             log_success "Running SeaORM migrations..."
             exec /app/migrationctl up -s $DATABASE_SCHEMA
             ;;
