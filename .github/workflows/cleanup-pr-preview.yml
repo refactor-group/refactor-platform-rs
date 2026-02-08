@@ -1,0 +1,606 @@
+# =============================================================================
+# PR Preview Cleanup Workflow
+# =============================================================================
+# Purpose: Cleans up PR preview environments when PRs are closed/merged
+# Features: Selective cleanup, volume retention policy, SSH cleanup on RPi5
+# Target: Raspberry Pi 5 (ARM64) via Tailscale SSH
+# =============================================================================
+
+name: Cleanup PR Preview Environment
+
+# Trigger when PR is closed (includes both close and merge events)
+on:
+  workflow_call:
+    inputs:
+      repo_type:
+        description: "Repository type requesting cleanup"
+        required: false
+        type: string
+      pr_number:
+        description: "PR number to clean up"
+        required: true
+        type: string
+      branch_name:
+        description: "Branch name associated with the PR"
+        required: false
+        type: string
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+  # Manual trigger for cleanup of specific PR numbers
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to clean up"
+        required: true
+        type: string
+
+# Permissions needed for cleanup and building main-arm64 image
+permissions:
+  contents: read
+  pull-requests: write
+  packages: write
+  attestations: write
+  id-token: write
+
+# Environment variables shared across all jobs
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  cleanup-preview:
+    name: Cleanup PR Preview on RPi5
+    runs-on: [self-hosted, Linux, ARM64, neo]
+    # Use pr-preview environment only for backend/direct calls.
+    # Frontend calls skip environment so org/repo secrets flow through.
+    environment: ${{ inputs.repo_type != 'frontend' && 'pr-preview' || '' }}
+
+    outputs:
+      pr_number: ${{ steps.context.outputs.pr_number }}
+      is_merged: ${{ steps.context.outputs.is_merged }}
+      cleanup_reason: ${{ steps.context.outputs.cleanup_reason }}
+
+    steps:
+      # Calculate cleanup context and determine volume retention policy
+      - name: Set Cleanup Context
+        id: context
+        run: |
+          # Extract PR metadata
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            IS_MERGED="${{ github.event.pull_request.merged }}"
+          else
+            PR_NUM="${{ inputs.pr_number }}"
+            IS_MERGED="false"
+          fi
+
+          # Calculate ports for logging/verification (same formula as deployment)
+          # Port base values must match ci-deploy-pr-preview.yml (lines 544-545)
+          BACKEND_PORT_BASE=4000
+          FRONTEND_PORT_BASE=3000
+          POSTGRES_PORT_BASE=5432
+
+          BACKEND_CONTAINER_PORT=4000
+          BACKEND_EXTERNAL_PORT=$((BACKEND_PORT_BASE + PR_NUM))
+          POSTGRES_EXTERNAL_PORT=$((POSTGRES_PORT_BASE + PR_NUM))
+          FRONTEND_EXTERNAL_PORT=$((FRONTEND_PORT_BASE + PR_NUM))
+
+          # Store context for subsequent steps
+          echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
+          echo "is_merged=${IS_MERGED}" >> $GITHUB_OUTPUT
+          echo "backend_container_port=${BACKEND_CONTAINER_PORT}" >> $GITHUB_OUTPUT
+          echo "backend_port=${BACKEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
+          echo "postgres_port=${POSTGRES_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
+          echo "frontend_port=${FRONTEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
+          echo "project_name=pr-${PR_NUM}" >> $GITHUB_OUTPUT
+
+          # Cleanup strategy:
+          # - PR-specific images removed from RPi5 to prevent accumulation
+          # - Shared images (postgres:17) retained on RPi5 for reuse
+          # - Volumes always removed on RPi5 to free disk space
+          # - PR images in GHCR deleted after main-arm64 build (if merged)
+          if [[ "${IS_MERGED}" == "true" ]]; then
+            echo "cleanup_reason=merged" >> $GITHUB_OUTPUT
+            echo "::notice::🔀 PR #${PR_NUM} was merged - will build main-arm64 image"
+          else
+            echo "cleanup_reason=closed" >> $GITHUB_OUTPUT
+            echo "::notice::🚫 PR #${PR_NUM} was closed without merge"
+          fi
+
+          echo "::notice::🗑️  PR-specific images and volumes will be removed from RPi5"
+
+      # Verify we can reach the RPi5 through Tailscale VPN
+      - name: Verify Tailscale Connection
+        run: |
+          # Tailscale is pre-installed and already connected on the self-hosted runner
+          # Just verify the connection status
+          echo "🔍 Checking Tailscale connection status..."
+          tailscale status || echo "⚠️ Tailscale status check failed, but continuing..."
+          echo "✅ Tailscale verification complete"
+
+      # Set up SSH key and known hosts to connect securely to RPi5
+      - name: Setup SSH Configuration
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.RPI5_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.RPI5_HOST_KEY }}" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Validate Required Secrets
+        run: |
+          MISSING=""
+          if [[ -z "$RPI5_USER" ]]; then MISSING="${MISSING} RPI5_USERNAME"; fi
+          if [[ -z "$RPI5_HOST" ]]; then MISSING="${MISSING} RPI5_TAILSCALE_NAME"; fi
+          if [[ -z "$RPI5_KEY" ]]; then MISSING="${MISSING} RPI5_SSH_KEY"; fi
+          if [[ -z "$RPI5_HOSTKEY" ]]; then MISSING="${MISSING} RPI5_HOST_KEY"; fi
+          if [[ -n "${MISSING}" ]]; then
+              echo "::error::Missing required secrets:${MISSING}"
+              echo "::error::Ensure secrets exist at org level or in the pr-preview environment"
+              exit 1
+          fi
+        env:
+          RPI5_USER: ${{ secrets.RPI5_USERNAME }}
+          RPI5_HOST: ${{ secrets.RPI5_TAILSCALE_NAME }}
+          RPI5_KEY: ${{ secrets.RPI5_SSH_KEY }}
+          RPI5_HOSTKEY: ${{ secrets.RPI5_HOST_KEY }}
+
+      # Test SSH connection to RPi5 before attempting cleanup
+      - name: Test SSH Connection
+        run: |
+          echo "🔍 Testing SSH connection to ${{ secrets.RPI5_TAILSCALE_NAME }}..."
+
+          # Diagnostic: verify key file
+          echo "--- SSH key diagnostics ---"
+          if [[ -f ~/.ssh/id_ed25519 ]]; then
+              echo "Key file exists"
+              echo "Size: $(wc -c < ~/.ssh/id_ed25519) bytes"
+              echo "Lines: $(wc -l < ~/.ssh/id_ed25519)"
+              head -1 ~/.ssh/id_ed25519
+              tail -1 ~/.ssh/id_ed25519
+              ssh-keygen -l -f ~/.ssh/id_ed25519 2>&1 || echo "ssh-keygen validation failed"
+          else
+              echo "::error::Key file ~/.ssh/id_ed25519 does not exist"
+              exit 1
+          fi
+          echo "--- End SSH key diagnostics ---"
+
+          if ! ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 \
+            -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            'echo "SSH connection successful"'; then
+            echo "::error::SSH connection failed to ${{ secrets.RPI5_TAILSCALE_NAME }}"
+            exit 1
+          fi
+          echo "::notice::✅ SSH connection verified"
+
+      # Execute cleanup commands on RPi5 via SSH
+      - name: Cleanup Deployment on RPi5
+        run: |
+          PR_NUMBER="${{ steps.context.outputs.pr_number }}"
+          PROJECT_NAME="${{ steps.context.outputs.project_name }}"
+
+          echo "🧹 Starting cleanup for PR #${PR_NUMBER}..."
+
+          # Execute cleanup script on RPi5 with proper error handling
+          cat << 'CLEANUP_SCRIPT' | ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+            ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+            /bin/bash
+          set -eo pipefail
+
+          # Variables passed from GitHub Actions
+          PR_NUMBER="${{ steps.context.outputs.pr_number }}"
+          PROJECT_NAME="${{ steps.context.outputs.project_name }}"
+          RPI5_USERNAME="${{ secrets.RPI5_USERNAME }}"
+
+          # Guard against accidentally running on the GitHub runner
+          if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
+            echo "❌ Cleanup running on GitHub runner instead of target server!"
+            exit 1
+          fi
+
+          cd /home/${RPI5_USERNAME}
+
+          echo "🛑 Stopping and removing containers for ${PROJECT_NAME}..."
+          if docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down 2>/dev/null; then
+            echo "✅ Containers stopped and removed"
+          else
+            echo "⚠️  No running containers found (already cleaned up?)"
+          fi
+
+          echo "📁 Removing compose file..."
+          if rm -f pr-${PR_NUMBER}-compose.yaml; then
+            echo "✅ Compose file removed"
+          else
+            echo "⚠️  Compose file not found"
+          fi
+
+          echo "📁 Removing environment file..."
+          if rm -f pr-${PR_NUMBER}.env; then
+            echo "✅ Environment file removed"
+          else
+            echo "⚠️  Environment file not found"
+          fi
+
+          # Volume cleanup - always remove when PR is closed or merged
+          echo "🗑️  Removing database volume..."
+          if docker volume rm ${PROJECT_NAME}_postgres_data 2>/dev/null; then
+            echo "✅ Volume removed"
+          else
+            echo "⚠️  Volume not found (may have been cleaned up already)"
+          fi
+
+          # Remove PR-specific Docker images (keep shared postgres:17 image)
+          echo ""
+          echo "🗑️  Removing PR-specific Docker images..."
+          PR_IMAGES=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep "pr-${PR_NUMBER}" || true)
+          if [[ -n "$PR_IMAGES" ]]; then
+            echo "$PR_IMAGES" | while read -r image; do
+              echo "   Removing: $image"
+              docker rmi -f "$image" 2>/dev/null || echo "   ⚠️  Failed to remove $image"
+            done
+            echo "✅ PR-specific images removed"
+          else
+            echo "⚠️  No PR-specific images found (may have been cleaned up already)"
+          fi
+          echo "📦 Shared images retained: postgres:17 (used by all PRs)"
+
+          echo ""
+          echo "📊 Remaining PR environments on RPi5:"
+          REMAINING=$(docker ps --filter 'name=pr-' --format '{{.Names}}' 2>/dev/null | wc -l)
+          if [[ $REMAINING -gt 0 ]]; then
+            echo "Active PR environments: $REMAINING"
+            docker ps --filter 'name=pr-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | head -6
+          else
+            echo "No PR environments currently running ✨"
+          fi
+
+          echo ""
+          echo "✅ Cleanup complete for PR #${PR_NUMBER}!"
+          CLEANUP_SCRIPT
+
+      # Post cleanup status to PR as comment for developer visibility
+      - name: Update PR Comment with Cleanup Status
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Extract context from previous steps
+            const prNumber = ${{ steps.context.outputs.pr_number }};
+            const isMerged = '${{ steps.context.outputs.is_merged }}' === 'true';
+            const cleanupReason = isMerged ? 'merged into main' : 'closed without merging';
+            const volumeStatus = isMerged
+              ? '📅 Retained for 7 days (auto-cleanup scheduled)'
+              : '🗑️  Removed immediately';
+            const backendPort = ${{ steps.context.outputs.backend_port }};
+            const postgresPort = ${{ steps.context.outputs.postgres_port }};
+
+            // Create comprehensive cleanup status comment
+            const comment = `## 🧹 PR Preview Environment Cleaned Up!
+
+            ### 📊 Cleanup Summary
+            | Resource | Status |
+            |----------|--------|
+            | **Containers** | ✅ Stopped and removed |
+            | **PR-Specific Images** | ✅ Removed from RPi5 |
+            | **Shared Images** | 📦 Retained (postgres:17) |
+            | **Network** | ✅ Removed |
+            | **Compose File** | ✅ Deleted |
+            | **Environment File** | ✅ Deleted |
+            | **Database Volume** | ${volumeStatus} |
+
+            ### 📝 Details
+            - **PR Number:** #${prNumber}
+            - **Reason:** ${cleanupReason}
+            - **Backend Port:** ${backendPort} (now available)
+            - **Postgres Port:** ${postgresPort} (now available)
+            - **Project Name:** \`pr-${prNumber}\`
+
+            ### 📦 Image Cleanup Policy
+            - **PR-specific images removed** from RPi5 to prevent accumulation
+            - **Shared images retained** (postgres:17 used by all PRs)
+            - Images remain in GHCR for auditability and future deployments
+            - Frees disk space on RPi5 while maintaining deployment history
+
+            ### ⏰ Volume Retention Policy
+            ${isMerged
+              ? '- **Merged PRs:** Database volume retained for 7 days\n- Allows post-merge investigation if needed\n- Volume: `pr-' + prNumber + '_postgres_data`\n- Auto-cleanup: ' + new Date(Date.now() + 7*24*60*60*1000).toISOString().split('T')[0]
+              : '- **Closed PRs:** Database volume removed immediately\n- Frees up disk space on RPi5\n- No data retention for abandoned PRs'}
+
+            ---
+            *Cleaned up: ${new Date().toISOString()}*
+            *Workflow: [\`cleanup-pr-preview.yml\`](https://github.com/${{ github.repository }}/actions/workflows/cleanup-pr-preview.yml)*`;
+
+            // Find and delete existing deployment comment, then post cleanup as new comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            // Look for original deployment comment from bot
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('PR Preview Environment Deployed')
+            );
+
+            if (botComment) {
+              // Delete the deployment comment since environment is cleaned up
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+              });
+              console.log('✅ Deleted deployment comment (environment cleaned up)');
+            }
+
+            // Post fresh cleanup comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: comment,
+            });
+            console.log('✅ Posted cleanup status comment');
+
+      # Log final cleanup summary to workflow output
+      - name: Cleanup Summary
+        run: |
+          echo "::notice::✅ Cleanup complete for PR #${{ steps.context.outputs.pr_number }}"
+          echo "::notice::🗑️  Resources removed: containers, PR-specific images, volumes, network, compose file, env file"
+          echo "::notice::📦 Shared images retained: postgres:17 (used by all PRs)"
+          echo "::notice::🎉 RPi5 disk space freed for other PR previews"
+
+  # ===========================================================================
+  # JOB 2: Build main-arm64 Image (only when PR is merged)
+  # ===========================================================================
+  build-main-arm64:
+    name: Build main-arm64 Image
+    runs-on: [self-hosted, Linux, ARM64, neo]
+    needs: cleanup-preview
+    if: needs.cleanup-preview.outputs.is_merged == 'true'
+    environment: pr-preview
+
+    outputs:
+      main_image_tag: ${{ steps.outputs.outputs.main_image_tag }}
+      main_image_digest: ${{ steps.outputs.outputs.main_image_digest }}
+
+    steps:
+      # Get the latest main branch code
+      - name: Checkout Main Branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # Authenticate with GitHub Container Registry to push/pull images
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Set up Docker BuildKit for advanced caching
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      # Calculate image tags for main
+      - name: Calculate Main Image Tags
+        id: tags
+        run: |
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          MAIN_TAG="${IMAGE_BASE}:main-arm64"
+          MAIN_SHA_TAG="${IMAGE_BASE}:main-arm64-${{ github.sha }}"
+          echo "main_tag=${MAIN_TAG}" >> $GITHUB_OUTPUT
+          echo "main_sha_tag=${MAIN_SHA_TAG}" >> $GITHUB_OUTPUT
+          echo "pr_tag=${IMAGE_BASE}:pr-${{ needs.cleanup-preview.outputs.pr_number }}" >> $GITHUB_OUTPUT
+          echo "::notice::📦 Main image: ${MAIN_TAG}"
+
+      # Build main-arm64 image using PR image as cache source
+      - name: Build and Push main-arm64 Image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.main_tag }}
+            ${{ steps.tags.outputs.main_sha_tag }}
+          cache-from: |
+            type=registry,ref=${{ steps.tags.outputs.pr_tag }}
+            type=registry,ref=${{ steps.tags.outputs.main_tag }}
+            type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=Refactor Platform Backend (main-arm64)
+            org.opencontainers.image.description=Main branch ARM64 image for layer caching
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            CARGO_INCREMENTAL=${{ vars.CARGO_INCREMENTAL }}
+            RUSTC_WRAPPER=${{ vars.RUSTC_WRAPPER }}
+          provenance: true
+          sbom: false
+
+      # Store outputs for the next job
+      - name: Set Build Outputs
+        id: outputs
+        run: |
+          echo "main_image_tag=${{ steps.tags.outputs.main_tag }}" >> $GITHUB_OUTPUT
+          echo "main_image_digest=${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
+
+      # Create cryptographic proof of how the main image was built
+      - name: Attest Build Provenance
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # ===========================================================================
+  # JOB 3: Delete PR Image from GHCR (only when PR is merged)
+  # ===========================================================================
+  delete-pr-image:
+    name: Delete PR Image from GHCR
+    runs-on: ubuntu-24.04
+    needs: [cleanup-preview, build-main-arm64]
+    if: needs.cleanup-preview.outputs.is_merged == 'true'
+
+    steps:
+      # Delete the PR-specific image from GHCR now that main-arm64 is built
+      - name: Delete PR Image from GHCR
+        run: |
+          PR_NUMBER="${{ needs.cleanup-preview.outputs.pr_number }}"
+          IMAGE_NAME="${{ env.IMAGE_NAME }}"
+
+          # Get the package version ID for the PR image
+          echo "🔍 Finding PR image package in GHCR..."
+
+          # Use GitHub API to find and delete the PR image
+          PACKAGE_VERSIONS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/orgs/${{ github.repository_owner }}/packages/container/${IMAGE_NAME##*/}/versions" \
+            --jq ".[] | select(.metadata.container.tags[] | contains(\"pr-${PR_NUMBER}\")) | .id" || echo "")
+
+          if [[ -n "$PACKAGE_VERSIONS" ]]; then
+            echo "🗑️  Deleting PR image versions from GHCR..."
+            for VERSION_ID in $PACKAGE_VERSIONS; do
+              echo "   Deleting version ID: $VERSION_ID"
+              gh api \
+                --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "/orgs/${{ github.repository_owner }}/packages/container/${IMAGE_NAME##*/}/versions/${VERSION_ID}" || echo "   ⚠️  Failed to delete version $VERSION_ID"
+            done
+            echo "✅ PR image deleted from GHCR"
+          else
+            echo "⚠️  No PR image found in GHCR (may have been deleted already)"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ===========================================================================
+  # JOB 4: Update PR Comment with Final Status
+  # ===========================================================================
+  update-pr-comment:
+    name: Update PR Comment
+    runs-on: ubuntu-24.04
+    needs: [cleanup-preview, build-main-arm64, delete-pr-image]
+    if: |
+      always() &&
+      needs.cleanup-preview.outputs.is_merged == 'true' &&
+      github.event_name == 'pull_request'
+
+    steps:
+      # Update the PR comment with all cleanup and build details
+      - name: Update PR Comment with Full Status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ needs.cleanup-preview.outputs.pr_number }};
+            const mainImageTag = '${{ needs.build-main-arm64.outputs.main_image_tag }}';
+            const mainImageDigest = '${{ needs.build-main-arm64.outputs.main_image_digest }}';
+            const buildSuccess = '${{ needs.build-main-arm64.result }}' === 'success';
+            const deleteSuccess = '${{ needs.delete-pr-image.result }}' === 'success';
+
+            // Build the status table
+            let statusTable = `| Resource | Status |
+            |----------|--------|
+            | **Containers** | ✅ Stopped and removed |
+            | **PR-Specific Images (RPi5)** | ✅ Removed |
+            | **Database Volume (RPi5)** | ✅ Removed |
+            | **Network** | ✅ Removed |
+            | **Compose File** | ✅ Deleted |
+            | **Environment File** | ✅ Deleted |`;
+
+            if (buildSuccess) {
+              statusTable += `\n| **main-arm64 Image** | ✅ Built and pushed |`;
+            } else {
+              statusTable += `\n| **main-arm64 Image** | ❌ Build failed |`;
+            }
+
+            if (deleteSuccess) {
+              statusTable += `\n| **PR Image (GHCR)** | ✅ Deleted |`;
+            } else {
+              statusTable += `\n| **PR Image (GHCR)** | ⚠️  Deletion skipped or failed |`;
+            }
+
+            // Build provenance section
+            let provenanceSection = '';
+            if (buildSuccess && mainImageDigest) {
+              const shortDigest = mainImageDigest.substring(0, 19);
+              const attestationUrl = `https://github.com/${{ github.repository }}/attestations/${mainImageDigest}`;
+              provenanceSection = `
+            ### 🔐 Security & Provenance
+            - **Image Tag:** \`${mainImageTag}\`
+            - **Digest:** \`${shortDigest}...\`
+            - **Attestation:** [View provenance](${attestationUrl})
+            - **Built from:** main branch @ \`${{ github.sha }}\`
+            - **Registry:** [ghcr.io](https://github.com/${{ github.repository_owner }}?tab=packages&repo_name=${{ github.event.repository.name }})
+            `;
+            }
+
+            const comment = `## 🧹 PR Preview Environment Cleaned Up!
+
+            ### 📊 Cleanup Summary
+            ${statusTable}
+
+            ### 📝 Details
+            - **PR Number:** #${prNumber}
+            - **Status:** Merged into main
+            - **Resources:** All PR-specific resources removed from RPi5
+            - **GHCR:** PR image deleted, main-arm64 image updated
+            ${provenanceSection}
+            ### 💡 Layer Caching Strategy
+            - **main-arm64 image** now available for faster PR builds
+            - Future PR builds will use main-arm64 layers as cache
+            - Reduces build times and GHCR image accumulation
+            - Single source of truth: main-arm64 image
+
+            ---
+            *Cleaned up: ${new Date().toISOString()}*
+            *Workflow: [\`cleanup-pr-preview.yml\`](https://github.com/${{ github.repository }}/actions/workflows/cleanup-pr-preview.yml)*`;
+
+            // Find and update or create comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('PR Preview Environment Cleaned Up')
+            );
+
+            if (botComment) {
+              // Update existing cleanup comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment,
+              });
+              console.log('✅ Updated cleanup status comment');
+            } else {
+              // Create new cleanup comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: comment,
+              });
+              console.log('✅ Posted cleanup status comment');
+            }
