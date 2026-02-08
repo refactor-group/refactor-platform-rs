@@ -1,0 +1,139 @@
+###################################################################
+# Docker Compose Config for PR preview environments
+# Uses Docker Compose projects (-p flag) for automatic namespacing
+# All variables provided by GitHub Actions - no defaults needed
+###################################################################
+
+services:
+  # PostgreSQL database service for PR environment
+  postgres:
+    image: postgres:17                    # Use stable PostgreSQL 17
+    environment:
+      # Database configuration - all values from GitHub Actions
+      POSTGRES_USER: ${POSTGRES_USER}         # Database username
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # Database password
+      POSTGRES_DB: ${POSTGRES_DB}             # Database name
+    # No ports exposed - postgres is internal only, accessed via Docker network
+    volumes:
+      # Persist database data - Docker Compose project creates unique volume automatically
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      # ONLY on default network - NOT on preview-ingress (security: no external access)
+      - default
+    healthcheck:
+      # Verify database is ready before dependent services start
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s      # Check every 5 seconds
+      timeout: 5s       # Timeout after 5 seconds
+      retries: 5        # Try 5 times before marking unhealthy
+      start_period: 30s # Grace period for ARM64 init before counting failures
+    restart: unless-stopped  # Restart automatically unless manually stopped
+  
+  # Database migration service - runs once to setup schema
+  migrator:
+    image: ${BACKEND_IMAGE}               # Use same image as backend
+    platform: linux/arm64/v8             # Explicit ARM64 platform for RPi5
+    environment:
+      # Application role configuration
+      ROLE: migrator                      # Tell app to run migrations
+      RUST_ENV: ${RUST_ENV}              # Environment (staging/dev/prod)
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1} # Enable backtraces for debugging
+      # Database connection string for migrations
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA} # Database schema name
+    depends_on:
+      postgres:
+        condition: service_healthy        # Wait for postgres to be healthy
+    networks:
+      # Use default network - Docker Compose project creates unique network automatically
+      - default
+    restart: "no"                        # Run once and exit (don't restart)
+  
+  # Main backend application service
+  backend:
+    image: ${BACKEND_IMAGE}               # PR-specific backend image
+    platform: linux/arm64/v8             # Explicit ARM64 platform for RPi5
+    environment:
+      # Application role and environment
+      ROLE: app                           # Tell app to run as web server
+      RUST_ENV: ${RUST_ENV}              # Environment configuration
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1} # Enable backtraces for debugging
+
+      # Database connection configuration
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
+
+      # Backend server configuration - use container port for internal binding
+      BACKEND_PORT: ${PR_BACKEND_CONTAINER_PORT}      # Port app binds to inside container
+      BACKEND_INTERFACE: ${BACKEND_INTERFACE}         # Network interface to bind to
+      BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS}  # CORS configuration
+      BACKEND_LOG_FILTER_LEVEL: ${BACKEND_LOG_FILTER_LEVEL}  # Logging level
+      BACKEND_SESSION_EXPIRY_SECONDS: ${BACKEND_SESSION_EXPIRY_SECONDS}  # Session timeout
+
+      # Optional third-party service credentials (set to 'UNUSED' if not needed)
+      TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      TIPTAP_URL: ${TIPTAP_URL}
+      TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+      MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
+      WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID}
+    # Expose port to Docker networks only (no host port binding)
+    expose:
+      - "4000"                            # Container listens on port 4000 (entrypoint.sh default)
+    depends_on:
+      - migrator                          # Start after migrations complete
+    networks:
+      # On BOTH networks: default (for postgres) and preview-ingress (for NGINX)
+      - default
+      - preview-ingress
+    restart: unless-stopped               # Restart automatically unless manually stopped
+
+  # Frontend application service
+  frontend:
+    image: ${FRONTEND_IMAGE}              # PR-specific frontend image
+    platform: linux/arm64/v8             # Explicit ARM64 platform for RPi5
+    environment:
+      # Next.js production environment
+      NODE_ENV: production
+      # Frontend server configuration
+      HOSTNAME: 0.0.0.0                  # Network interface to bind to
+      PORT: ${PR_FRONTEND_CONTAINER_PORT} # Port app binds to inside container
+      # Backend connection configuration via NGINX path-based routing
+      # Browser makes API calls to http://neo.rove-barbel.ts.net/pr-<NUM>/api/
+      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL:-http}
+      NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${NEXT_PUBLIC_BACKEND_SERVICE_HOST}
+      NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${NEXT_PUBLIC_BACKEND_SERVICE_PORT:-80}
+      NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${NEXT_PUBLIC_BACKEND_SERVICE_API_PATH}
+      NEXT_PUBLIC_BACKEND_API_VERSION: ${NEXT_PUBLIC_BACKEND_API_VERSION:-1.0.0-beta1}
+      NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+    # Expose port to Docker networks only (no host port binding)
+    expose:
+      - "3000"                            # Container listens on port 3000
+    depends_on:
+      - backend                           # Start after backend is running
+    networks:
+      # On BOTH networks: default (for service mesh) and preview-ingress (for NGINX)
+      - default
+      - preview-ingress
+    restart: unless-stopped               # Restart automatically unless manually stopped
+
+# Docker Compose project (-p flag) automatically creates:
+# - Unique network: {project_name}_default
+# - Unique volume: {project_name}_postgres_data
+# - Container names: {project_name}-{service_name}-1
+# This eliminates need for manual PR-specific naming in compose file
+
+volumes:
+  # Volume automatically namespaced by Docker Compose project
+  postgres_data:
+
+networks:
+  # Shared ingress network for NGINX to reach all PR containers
+  # This network is created manually and shared across all PR environments
+  preview-ingress:
+    external: true
+    name: preview-ingress
+
+  # Default network is automatically created by Docker Compose with project name
+  # Each PR gets its own isolated default network: pr-<NUM>_default
+  default:
