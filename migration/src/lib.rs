@@ -12,11 +12,8 @@ mod m20251007_093603_add_user_roles_table_and_super_admin;
 mod m20251008_000000_migrate_admin_users_to_super_admin_role;
 mod m20251009_000000_migrate_regular_users_to_user_roles;
 mod m20251024_000000_remove_organizations_users_table;
-mod m20251220_000001_add_user_integrations;
-mod m20251220_000002_add_meeting_fields_to_relationships;
-mod m20251220_000003_add_meeting_recording_tables;
-mod m20251223_000001_add_coachee_ai_privacy_level;
-mod m20251224_000001_add_lemur_fields;
+mod m20251220_000001_add_oauth_connections;
+mod m20251220_000002_add_meeting_fields_to_sessions;
 mod m20251228_000001_add_actions_users_table;
 mod m20260228_000000_rename_overarching_goals_to_goals;
 
@@ -38,11 +35,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20251008_000000_migrate_admin_users_to_super_admin_role::Migration),
             Box::new(m20251009_000000_migrate_regular_users_to_user_roles::Migration),
             Box::new(m20251024_000000_remove_organizations_users_table::Migration),
-            Box::new(m20251220_000001_add_user_integrations::Migration),
-            Box::new(m20251220_000002_add_meeting_fields_to_relationships::Migration),
-            Box::new(m20251220_000003_add_meeting_recording_tables::Migration),
-            Box::new(m20251223_000001_add_coachee_ai_privacy_level::Migration),
-            Box::new(m20251224_000001_add_lemur_fields::Migration),
+            Box::new(m20251220_000001_add_oauth_connections::Migration),
+            Box::new(m20251220_000002_add_meeting_fields_to_sessions::Migration),
             Box::new(m20251228_000001_add_actions_users_table::Migration),
             Box::new(m20260228_000000_rename_overarching_goals_to_goals::Migration),
         ]
