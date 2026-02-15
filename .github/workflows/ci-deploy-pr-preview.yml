@@ -7,9 +7,11 @@
 # Used by: Both refactor-platform-rs and refactor-platform-fe repositories
 #
 # Secrets Strategy:
-# - Jobs always use the 'pr-preview' environment from THIS repo (backend)
-# - This gives cross-repo calls access to backend-specific secrets (Tiptap, MailerSend)
-# - Common secrets (SSH, GHCR, Postgres) are also at org level for redundancy
+# - Environment secrets resolve from the CALLER's repository, not this one.
+# - Cross-repo calls (from frontend) should use deploy-pr-preview-dispatch.yml
+#   which runs in the backend repo's context for correct secret resolution.
+# - Common secrets (SSH, GHCR, Postgres) are at org level for redundancy.
+# - TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
 # =============================================================================
 
 name: CI Deploy PR Preview Environment
@@ -65,10 +67,10 @@ on:
         # =========================================================================
         # SECRETS
         # =========================================================================
-        # All secrets are required: false because they resolve from:
-        # 1. Backend's pr-preview environment (Tiptap, MailerSend, etc.)
+        # All secrets are required: false because they may resolve from:
+        # 1. The CALLER repo's pr-preview environment (workflow_call resolves from caller)
         # 2. Org-level secrets (Postgres, SSH, GHCR)
-        # Jobs always use pr-preview environment, so cross-repo calls get all secrets.
+        # For cross-repo deploys, prefer deploy-pr-preview-dispatch.yml for correct resolution.
         secrets:
             # SSH connection details for RPi5 deployment target
             RPI5_SSH_KEY:
@@ -272,10 +274,14 @@ jobs:
 
         steps:
             # Get the source code for the branch being deployed
+            # Explicit repository ensures correct checkout for cross-repo calls
+            # (workflow_call from frontend, repository_dispatch, or workflow_dispatch)
             - name: Checkout frontend code
               uses: actions/checkout@v4
               with:
+                  repository: ${{ env.FRONTEND_REPOSITORY }}
                   ref: ${{ inputs.branch_name }}
+                  token: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
             # Setup Node.js with npm cache for faster dependency installation
             - name: Setup Node.js
@@ -362,10 +368,13 @@ jobs:
 
         steps:
             # Get the source code for the branch being deployed
+            # Explicit repository ensures correct checkout for cross-repo calls
             - name: Checkout frontend code
               uses: actions/checkout@v4
               with:
+                  repository: ${{ env.FRONTEND_REPOSITORY }}
                   ref: ${{ inputs.branch_name }}
+                  token: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
 
             # Setup Node.js with npm cache for faster dependency installation
             - name: Setup Node.js
@@ -420,10 +429,11 @@ jobs:
     build-arm64-image:
         name: Build ARM64 Images
         runs-on: [self-hosted, Linux, ARM64, neo]
-        # Always use pr-preview environment from this repo (backend) which has all secrets.
-        # When called cross-repo (from frontend), the environment still resolves to backend's
-        # pr-preview, giving access to Tiptap, MailerSend, and other backend-specific secrets.
-        # Postgres secrets are at org level for redundancy.
+        # NOTE: When called cross-repo (from frontend), `environment: pr-preview`
+        # resolves from the CALLER's repository, not this one. Ensure all required
+        # secrets exist in the caller repo's pr-preview environment or at org level.
+        # TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
+        # Preferred cross-repo path: deploy-pr-preview-dispatch.yml (repository_dispatch).
         environment: pr-preview
         # Wait for quality checks to pass before building
         needs:
@@ -761,10 +771,11 @@ jobs:
             always() &&
             !cancelled() &&
             needs.build-arm64-image.result == 'success'
-        # Always use pr-preview environment from this repo (backend) which has all secrets.
-        # When called cross-repo (from frontend), the environment still resolves to backend's
-        # pr-preview, giving access to Tiptap, MailerSend, and other backend-specific secrets.
-        # Postgres secrets are at org level for redundancy.
+        # NOTE: When called cross-repo (from frontend), `environment: pr-preview`
+        # resolves from the CALLER's repository, not this one. Ensure all required
+        # secrets exist in the caller repo's pr-preview environment or at org level.
+        # TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
+        # Preferred cross-repo path: deploy-pr-preview-dispatch.yml (repository_dispatch).
         environment: pr-preview
 
         steps:
@@ -926,12 +937,12 @@ jobs:
                   BACKEND_ALLOWED_ORIGINS=*
                   BACKEND_LOG_FILTER_LEVEL=INFO
                   BACKEND_SESSION_EXPIRY_SECONDS=86400
-                  TIPTAP_AUTH_KEY=${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY }}
-                  TIPTAP_JWT_SIGNING_KEY=${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY }}
-                  TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
-                  TIPTAP_URL=${{ secrets.PR_PREVIEW_TIPTAP_URL }}
-                  MAILERSEND_API_KEY=${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY }}
-                  WELCOME_EMAIL_TEMPLATE_ID=${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID }}
+                  TIPTAP_AUTH_KEY=${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY || 'UNUSED' }}
+                  TIPTAP_JWT_SIGNING_KEY=${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY || 'UNUSED' }}
+                  TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID || 'UNUSED' }}
+                  TIPTAP_URL=${{ secrets.PR_PREVIEW_TIPTAP_URL || 'UNUSED' }}
+                  MAILERSEND_API_KEY=${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY || 'UNUSED' }}
+                  WELCOME_EMAIL_TEMPLATE_ID=${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID || 'UNUSED' }}
                   GHCR_PAT=${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
                   GHCR_USERNAME=${{ secrets.GHCR_USERNAME || github.actor }}
                   RPI5_USERNAME=${{ secrets.RPI5_USERNAME }}
