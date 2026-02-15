@@ -1,0 +1,35 @@
+###################################################################
+# Nginx Reverse Proxy for PR Preview Environments
+# Runs as a persistent container on the preview-ingress network
+# so it can resolve PR container names via Docker DNS (127.0.0.11)
+#
+# This container serves ALL PR previews simultaneously.
+# It only needs to start once — it auto-restarts and persists
+# across PR deployments and cleanups.
+#
+# Usage: docker compose -f docker-compose.nginx-preview.yaml up -d
+###################################################################
+
+services:
+  nginx-preview:
+    image: nginx:alpine
+    container_name: nginx-preview
+    ports:
+      - "80:80"                           # Bind host port 80 for external access
+    volumes:
+      # Mount PR preview routing config as the only nginx site
+      - ./nginx-preview/pr-previews.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - preview-ingress                   # Same network as PR containers
+    restart: unless-stopped               # Auto-restart unless manually stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  # Shared ingress network — must already exist (created by PR deploy workflow)
+  preview-ingress:
+    external: true
+    name: preview-ingress
