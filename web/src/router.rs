@@ -9,11 +9,10 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, ai_suggestion_controller,
-    coaching_relationship_controller, coaching_session_controller, integration_controller,
-    jwt_controller, meeting_recording_controller, note_controller, oauth_controller, organization,
-    organization_controller, overarching_goal_controller, transcription_controller, user,
-    user_controller, user_session_controller, webhook_controller,
+    action_controller, agreement_controller, ai_suggestion_controller, coaching_session_controller,
+    integration_controller, jwt_controller, meeting_recording_controller, note_controller,
+    oauth_controller, organization, organization_controller, overarching_goal_controller,
+    transcription_controller, user, user_controller, user_session_controller, webhook_controller,
 };
 
 use utoipa::{
@@ -133,7 +132,6 @@ pub fn define_routes(app_state: AppState) -> Router {
     Router::new()
         .merge(action_routes(app_state.clone()))
         .merge(agreement_routes(app_state.clone()))
-        .merge(coaching_relationship_routes(app_state.clone()))
         .merge(health_routes())
         .merge(organization_routes(app_state.clone()))
         .merge(note_routes(app_state.clone()))
@@ -550,21 +548,6 @@ fn user_integrations_routes(app_state: AppState) -> Router {
         .route(
             "/users/:user_id/integrations/google",
             delete(integration_controller::disconnect_google),
-        )
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
-}
-
-/// Routes for coaching relationships (direct, non-nested operations)
-fn coaching_relationship_routes(app_state: AppState) -> Router {
-    Router::new()
-        .route(
-            "/coaching_relationships/:id",
-            put(coaching_relationship_controller::update),
-        )
-        .route(
-            "/coaching_relationships/:id/create-google-meet",
-            post(coaching_relationship_controller::create_google_meet),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
