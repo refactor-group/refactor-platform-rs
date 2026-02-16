@@ -87,7 +87,8 @@ pub trait Provider: Send + Sync {
     /// # Returns
     ///
     /// OAuth tokens including access token, refresh token, and expiry.
-    async fn exchange_code(&self, code: &str, pkce_verifier: Option<&str>) -> Result<Tokens, Error>;
+    async fn exchange_code(&self, code: &str, pkce_verifier: Option<&str>)
+        -> Result<Tokens, Error>;
 
     /// Refresh an access token using a refresh token.
     ///

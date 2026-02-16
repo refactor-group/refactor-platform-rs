@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::error::{oauth_error, Error, OAuthErrorKind};
-use crate::oauth::{AuthorizationRequest, ProviderKind, UserInfo as OAuthUserInfo};
 use crate::oauth::token::{RefreshResult, Tokens};
+use crate::oauth::{AuthorizationRequest, ProviderKind, UserInfo as OAuthUserInfo};
 
 /// Google OAuth endpoints.
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -134,7 +134,11 @@ impl crate::oauth::Provider for Provider {
         }
     }
 
-    async fn exchange_code(&self, code: &str, pkce_verifier: Option<&str>) -> Result<Tokens, Error> {
+    async fn exchange_code(
+        &self,
+        code: &str,
+        pkce_verifier: Option<&str>,
+    ) -> Result<Tokens, Error> {
         let request = TokenExchangeRequest {
             code: code.to_string(),
             client_id: self.client_id.clone(),
@@ -240,10 +244,7 @@ impl crate::oauth::Provider for Provider {
         } else {
             let error_text = response.text().await.unwrap_or_default();
             warn!("Google token refresh error: {}", error_text);
-            Err(oauth_error(
-                OAuthErrorKind::TokenRefreshFailed,
-                &error_text,
-            ))
+            Err(oauth_error(OAuthErrorKind::TokenRefreshFailed, &error_text))
         }
     }
 
@@ -267,10 +268,7 @@ impl crate::oauth::Provider for Provider {
         } else {
             let error_text = response.text().await.unwrap_or_default();
             warn!("Google token revocation error: {}", error_text);
-            Err(oauth_error(
-                OAuthErrorKind::RevocationFailed,
-                &error_text,
-            ))
+            Err(oauth_error(OAuthErrorKind::RevocationFailed, &error_text))
         }
     }
 
@@ -291,7 +289,10 @@ impl crate::oauth::Provider for Provider {
         if response.status().is_success() {
             let user_info: UserInfo = response.json().await.map_err(|e| {
                 warn!("Failed to parse Google user info: {:?}", e);
-                oauth_error(OAuthErrorKind::InvalidResponse, "Invalid user info response")
+                oauth_error(
+                    OAuthErrorKind::InvalidResponse,
+                    "Invalid user info response",
+                )
             })?;
 
             info!("Successfully retrieved Google user info");
@@ -306,10 +307,7 @@ impl crate::oauth::Provider for Provider {
         } else {
             let error_text = response.text().await.unwrap_or_default();
             warn!("Google user info error: {}", error_text);
-            Err(oauth_error(
-                OAuthErrorKind::InvalidResponse,
-                &error_text,
-            ))
+            Err(oauth_error(OAuthErrorKind::InvalidResponse, &error_text))
         }
     }
 
@@ -343,7 +341,9 @@ mod tests {
         let auth_request = provider.authorization_url("test_state_123", None);
 
         assert!(auth_request.url.contains("client_id=test_client_id"));
-        assert!(auth_request.url.contains("redirect_uri=https%3A%2F%2Fexample.com%2Fcallback"));
+        assert!(auth_request
+            .url
+            .contains("redirect_uri=https%3A%2F%2Fexample.com%2Fcallback"));
         assert!(auth_request.url.contains("response_type=code"));
         assert!(auth_request.url.contains("access_type=offline"));
         assert!(auth_request.url.contains("prompt=consent"));

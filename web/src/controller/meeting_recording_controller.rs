@@ -15,12 +15,14 @@ use axum::Json;
 use domain::ai_privacy_level::AiPrivacyLevel;
 use domain::coaching_relationship as CoachingRelationshipApi;
 use domain::coaching_session as CoachingSessionApi;
-use domain::gateway::recall_ai::{create_standard_bot_request, RecallAiClient, RecallRegion};
+use domain::gateway::recall_ai::{RecallAiClient, RecallRegion};
 use domain::meeting_recording as MeetingRecordingApi;
 use domain::meeting_recording_status::MeetingRecordingStatus;
 use domain::meeting_recordings::Model as MeetingRecordingModel;
 use domain::{user_integration, Id};
 use log::*;
+use meeting_ai::traits::recording_bot;
+use meeting_ai::types::recording;
 use service::config::ApiVersion;
 
 /// Helper to create a forbidden error

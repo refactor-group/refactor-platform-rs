@@ -15,7 +15,6 @@ mod m20251024_000000_remove_organizations_users_table;
 mod m20251220_000001_add_oauth_connections;
 mod m20251220_000002_add_meeting_fields_to_sessions;
 
-
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -36,7 +35,6 @@ impl MigratorTrait for Migrator {
             Box::new(m20251024_000000_remove_organizations_users_table::Migration),
             Box::new(m20251220_000001_add_oauth_connections::Migration),
             Box::new(m20251220_000002_add_meeting_fields_to_sessions::Migration),
-
         ]
     }
 }

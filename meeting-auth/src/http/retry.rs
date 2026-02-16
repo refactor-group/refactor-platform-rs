@@ -71,5 +71,4 @@ mod tests {
         let delay = policy.exponential_delay(10);
         assert!(delay <= policy.max_delay);
     }
-
 }

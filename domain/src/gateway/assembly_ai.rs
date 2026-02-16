@@ -4,8 +4,13 @@
 //! to transcribe meeting recordings with speaker diarization and AI features.
 
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use async_trait::async_trait;
 use log::*;
+use meeting_ai::traits::{analysis as analysis_trait, transcription as transcription_trait};
+use meeting_ai::types::{analysis, transcription};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Request to create a new transcription
 #[derive(Debug, Serialize)]
@@ -717,4 +722,238 @@ pub fn extract_action_items(transcript: &TranscriptResponse) -> Vec<String> {
     }
 
     actions
+}
+
+// Implement the meeting-ai transcription::Provider trait
+#[async_trait]
+impl transcription_trait::Provider for AssemblyAiClient {
+    async fn create_transcription(
+        &self,
+        config: transcription::Config,
+    ) -> std::result::Result<transcription::Transcription, meeting_ai::Error> {
+        let request = CreateTranscriptRequest {
+            audio_url: config.media_url,
+            webhook_url: config.webhook_url.clone(),
+            webhook_auth_header_name: config
+                .webhook_url
+                .as_ref()
+                .map(|_| "X-Webhook-Secret".to_string()),
+            webhook_auth_header_value: None,
+            speaker_labels: config.enable_speaker_labels,
+            sentiment_analysis: config.enable_sentiment_analysis,
+            auto_chapters: config.enable_auto_chapters,
+            entity_detection: config.enable_entity_detection,
+        };
+
+        let response = self
+            .create_transcript(request)
+            .await
+            .map_err(|e| meeting_ai::Error::Provider(e.to_string()))?;
+
+        Ok(map_transcript_response(response))
+    }
+
+    async fn get_transcription(
+        &self,
+        transcription_id: &str,
+    ) -> std::result::Result<transcription::Transcription, meeting_ai::Error> {
+        let response = self
+            .get_transcript(transcription_id)
+            .await
+            .map_err(|e| meeting_ai::Error::Provider(e.to_string()))?;
+
+        Ok(map_transcript_response(response))
+    }
+
+    async fn delete_transcription(
+        &self,
+        transcription_id: &str,
+    ) -> std::result::Result<(), meeting_ai::Error> {
+        self.delete_transcript(transcription_id)
+            .await
+            .map_err(|e| meeting_ai::Error::Provider(e.to_string()))
+    }
+
+    fn provider_id(&self) -> &str {
+        "assemblyai"
+    }
+
+    async fn verify_credentials(&self) -> std::result::Result<bool, meeting_ai::Error> {
+        self.verify_api_key()
+            .await
+            .map_err(|e| meeting_ai::Error::Authentication(e.to_string()))
+    }
+}
+
+// Implement the meeting-ai analysis::Provider trait
+#[async_trait]
+impl analysis_trait::Provider for AssemblyAiClient {
+    async fn analyze(
+        &self,
+        config: analysis::Config,
+    ) -> std::result::Result<analysis::Result, meeting_ai::Error> {
+        // For now, we'll use a simplified implementation
+        // In production, you'd want to use LeMUR or a more sophisticated extraction
+        let _transcript_id = &config.transcript_id;
+
+        // Create a basic result
+        let result = analysis::Result {
+            request_id: Uuid::new_v4().to_string(),
+            resources: HashMap::new(),
+            summary: if config.generate_summary {
+                Some(analysis::Summary {
+                    overview: "Meeting summary placeholder".to_string(),
+                    key_points: vec![],
+                    goals: vec![],
+                    challenges: vec![],
+                    insights: vec![],
+                    next_steps: vec![],
+                    topics: vec![],
+                })
+            } else {
+                None
+            },
+            token_usage: None,
+        };
+
+        Ok(result)
+    }
+
+    async fn custom_task(
+        &self,
+        transcript_id: &str,
+        prompt: &str,
+    ) -> std::result::Result<String, meeting_ai::Error> {
+        let request = LemurTaskRequest {
+            transcript_ids: vec![transcript_id.to_string()],
+            prompt: prompt.to_string(),
+            final_model: Some("default".to_string()),
+            max_output_size: None,
+        };
+
+        let response = self
+            .lemur_task(request)
+            .await
+            .map_err(|e| meeting_ai::Error::Provider(e.to_string()))?;
+
+        Ok(response.response)
+    }
+
+    fn provider_id(&self) -> &str {
+        "assemblyai"
+    }
+
+    async fn verify_credentials(&self) -> std::result::Result<bool, meeting_ai::Error> {
+        self.verify_api_key()
+            .await
+            .map_err(|e| meeting_ai::Error::Authentication(e.to_string()))
+    }
+}
+
+/// Map AssemblyAI transcript response to meeting-ai transcription
+fn map_transcript_response(response: TranscriptResponse) -> transcription::Transcription {
+    transcription::Transcription {
+        id: response.id,
+        status: map_transcript_status(response.status),
+        text: response.text,
+        words: response
+            .words
+            .unwrap_or_default()
+            .into_iter()
+            .map(map_word)
+            .collect(),
+        segments: response
+            .utterances
+            .unwrap_or_default()
+            .into_iter()
+            .map(map_segment)
+            .collect(),
+        chapters: response
+            .chapters
+            .unwrap_or_default()
+            .into_iter()
+            .map(map_chapter)
+            .collect(),
+        sentiment_analysis: response
+            .sentiment_analysis_results
+            .unwrap_or_default()
+            .into_iter()
+            .map(map_sentiment)
+            .collect(),
+        confidence: response.confidence,
+        duration_seconds: response.audio_duration,
+        language_code: None,
+        speaker_count: None,
+        error_message: response.error,
+    }
+}
+
+/// Map AssemblyAI status to meeting-ai status
+fn map_transcript_status(status: TranscriptStatus) -> transcription::Status {
+    match status {
+        TranscriptStatus::Queued => transcription::Status::Queued,
+        TranscriptStatus::Processing => transcription::Status::Processing,
+        TranscriptStatus::Completed => transcription::Status::Completed,
+        TranscriptStatus::Error => transcription::Status::Failed,
+    }
+}
+
+/// Map AssemblyAI word to meeting-ai word
+fn map_word(word: Word) -> transcription::Word {
+    transcription::Word {
+        text: word.text,
+        start_ms: word.start,
+        end_ms: word.end,
+        confidence: word.confidence,
+        speaker: word.speaker,
+    }
+}
+
+/// Map AssemblyAI utterance to meeting-ai segment
+fn map_segment(utterance: Utterance) -> transcription::Segment {
+    transcription::Segment {
+        text: utterance.text,
+        speaker: utterance.speaker,
+        start_ms: utterance.start,
+        end_ms: utterance.end,
+        confidence: utterance.confidence,
+        words: utterance
+            .words
+            .unwrap_or_default()
+            .into_iter()
+            .map(map_word)
+            .collect(),
+    }
+}
+
+/// Map AssemblyAI chapter to meeting-ai chapter
+fn map_chapter(chapter: Chapter) -> transcription::Chapter {
+    transcription::Chapter {
+        title: chapter.headline,
+        summary: chapter.summary,
+        gist: chapter.gist,
+        start_ms: chapter.start,
+        end_ms: chapter.end,
+    }
+}
+
+/// Map AssemblyAI sentiment result to meeting-ai sentiment analysis
+fn map_sentiment(result: SentimentResult) -> transcription::SentimentAnalysis {
+    transcription::SentimentAnalysis {
+        text: result.text,
+        sentiment: map_sentiment_value(result.sentiment),
+        confidence: result.confidence,
+        start_ms: result.start,
+        end_ms: result.end,
+        speaker: result.speaker,
+    }
+}
+
+/// Map AssemblyAI sentiment to meeting-ai sentiment
+fn map_sentiment_value(sentiment: Sentiment) -> transcription::Sentiment {
+    match sentiment {
+        Sentiment::Positive => transcription::Sentiment::Positive,
+        Sentiment::Neutral => transcription::Sentiment::Neutral,
+        Sentiment::Negative => transcription::Sentiment::Negative,
+    }
 }

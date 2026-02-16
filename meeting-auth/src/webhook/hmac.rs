@@ -39,38 +39,28 @@ impl HmacWebhookValidator {
 impl WebhookValidator for HmacWebhookValidator {
     fn validate(&self, headers: &HashMap<String, String>, body: &[u8]) -> Result<bool, Error> {
         // Get the signature from headers
-        let signature = headers
-            .get(&self.signature_header)
-            .ok_or_else(|| {
-                webhook_error(
-                    WebhookErrorKind::MissingSignature,
-                    &format!("Missing signature header: {}", self.signature_header),
-                )
-            })?;
+        let signature = headers.get(&self.signature_header).ok_or_else(|| {
+            webhook_error(
+                WebhookErrorKind::MissingSignature,
+                &format!("Missing signature header: {}", self.signature_header),
+            )
+        })?;
 
         // Parse the hex-encoded signature
-        let expected_sig = hex::decode(signature.trim_start_matches("sha256="))
-            .map_err(|_| {
-                webhook_error(
-                    WebhookErrorKind::InvalidSignature,
-                    "Invalid signature format",
-                )
-            })?;
+        let expected_sig = hex::decode(signature.trim_start_matches("sha256=")).map_err(|_| {
+            webhook_error(
+                WebhookErrorKind::InvalidSignature,
+                "Invalid signature format",
+            )
+        })?;
 
         // Compute HMAC
         let mut mac = HmacSha256::new_from_slice(self.secret.as_bytes())
-            .map_err(|_| {
-                webhook_error(
-                    WebhookErrorKind::InvalidPayload,
-                    "Invalid HMAC key",
-                )
-            })?;
+            .map_err(|_| webhook_error(WebhookErrorKind::InvalidPayload, "Invalid HMAC key"))?;
         mac.update(body);
 
         // Verify the signature
-        mac.verify_slice(&expected_sig)
-            .map(|_| true)
-            .or(Ok(false))
+        mac.verify_slice(&expected_sig).map(|_| true).or(Ok(false))
     }
 
     fn provider_id(&self) -> &str {

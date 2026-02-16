@@ -4,8 +4,13 @@
 //! to manage meeting recording bots for Google Meet sessions.
 
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use log::*;
+use meeting_ai::traits::recording_bot;
+use meeting_ai::types::recording;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 /// Recall.ai API regions
@@ -501,4 +506,172 @@ pub fn create_standard_bot_request(
         recording_config,
         webhook: webhook_config,
     }
+}
+
+// Implement the meeting-ai recording_bot::Provider trait
+#[async_trait]
+impl recording_bot::Provider for RecallAiClient {
+    async fn create_bot(
+        &self,
+        config: recording::Config,
+    ) -> std::result::Result<recording::Info, meeting_ai::Error> {
+        let request = create_standard_bot_request(
+            config.meeting_url.clone(),
+            config.bot_name,
+            config.webhook_url,
+        );
+
+        let response = self
+            .create_bot(request)
+            .await
+            .map_err(|e| meeting_ai::Error::Provider(e.to_string()))?;
+
+        Ok(recording::Info {
+            id: response.id,
+            meeting_url: config.meeting_url,
+            status: map_status_changes(&response.status_changes),
+            artifacts: None,
+            error_message: None,
+            status_history: response
+                .status_changes
+                .into_iter()
+                .map(map_status_change)
+                .collect(),
+        })
+    }
+
+    async fn get_bot_status(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<recording::Info, meeting_ai::Error> {
+        let response = self
+            .get_bot_status(bot_id)
+            .await
+            .map_err(|e| meeting_ai::Error::Provider(e.to_string()))?;
+
+        let status = map_status_changes(&response.status_changes);
+        let artifacts = if !response.recordings.is_empty() {
+            Some(recording::Artifacts {
+                video_url: response.video_url(),
+                audio_url: None,
+                duration_seconds: response.duration_seconds(),
+                started_at: response.recordings.first().and_then(|r| {
+                    r.started_at.as_ref().and_then(|s| {
+                        DateTime::parse_from_rfc3339(s)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    })
+                }),
+                ended_at: response.recordings.first().and_then(|r| {
+                    r.completed_at.as_ref().and_then(|s| {
+                        DateTime::parse_from_rfc3339(s)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    })
+                }),
+                file_size_bytes: None,
+                metadata: HashMap::new(),
+            })
+        } else {
+            None
+        };
+
+        Ok(recording::Info {
+            id: response.id,
+            meeting_url: String::new(), // Not provided in status response
+            status,
+            artifacts,
+            error_message: extract_error_message(&response.status_changes),
+            status_history: response
+                .status_changes
+                .into_iter()
+                .map(map_status_change)
+                .collect(),
+        })
+    }
+
+    async fn stop_bot(&self, bot_id: &str) -> std::result::Result<(), meeting_ai::Error> {
+        self.stop_bot(bot_id)
+            .await
+            .map_err(|e| meeting_ai::Error::Provider(e.to_string()))
+    }
+
+    async fn list_bots(
+        &self,
+        _filters: Option<recording::Filters>,
+    ) -> std::result::Result<Vec<recording::Info>, meeting_ai::Error> {
+        // Recall.ai doesn't have a list endpoint in the current implementation
+        Err(meeting_ai::Error::Configuration(
+            "List bots not supported by Recall.ai client".to_string(),
+        ))
+    }
+
+    fn provider_id(&self) -> &str {
+        "recall_ai"
+    }
+
+    async fn verify_credentials(&self) -> std::result::Result<bool, meeting_ai::Error> {
+        self.verify_api_key()
+            .await
+            .map_err(|e| meeting_ai::Error::Authentication(e.to_string()))
+    }
+}
+
+/// Map Recall.ai status changes to meeting-ai bot status
+fn map_status_changes(changes: &[StatusChange]) -> recording::Status {
+    if let Some(latest) = changes.last() {
+        match latest.code.as_str() {
+            "ready" => recording::Status::Pending,
+            "joining_call" => recording::Status::Joining,
+            "in_waiting_room" => recording::Status::WaitingRoom,
+            "in_call_not_recording" => recording::Status::InMeeting,
+            "in_call_recording" => recording::Status::Recording,
+            "call_ended" | "done" => {
+                if changes.iter().any(|c| c.code == "fatal") {
+                    recording::Status::Failed
+                } else {
+                    recording::Status::Completed
+                }
+            }
+            "fatal" => recording::Status::Failed,
+            _ => recording::Status::Pending,
+        }
+    } else {
+        recording::Status::Pending
+    }
+}
+
+/// Map a single status change to meeting-ai format
+fn map_status_change(change: StatusChange) -> recording::StatusChange {
+    let status = match change.code.as_str() {
+        "ready" => recording::Status::Pending,
+        "joining_call" => recording::Status::Joining,
+        "in_waiting_room" => recording::Status::WaitingRoom,
+        "in_call_not_recording" => recording::Status::InMeeting,
+        "in_call_recording" => recording::Status::Recording,
+        "call_ended" | "done" => recording::Status::Completed,
+        "fatal" => recording::Status::Failed,
+        _ => recording::Status::Pending,
+    };
+
+    let timestamp = change
+        .created_at
+        .or(change.updated_at)
+        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+
+    recording::StatusChange {
+        status,
+        timestamp,
+        message: change.message.or(change.sub_code),
+    }
+}
+
+/// Extract error message from status changes
+fn extract_error_message(changes: &[StatusChange]) -> Option<String> {
+    changes
+        .iter()
+        .find(|c| c.code == "fatal")
+        .and_then(|c| c.message.clone().or(c.sub_code.clone()))
 }
