@@ -37,22 +37,42 @@ Replaced the prototype `user_integrations` table (hardcoded `google_*`, `recall_
 - **No speculative columns** (`refresh_count`, `last_refreshed_at`, `error_message`) — `updated_at` covers refresh timing. Add columns when a real use case requires them.
 - **Scopes as TEXT** (space-separated per OAuth2 spec) — simpler SeaORM mapping than PostgreSQL arrays.
 
+## Completed Steps
+
+### 1. Entity + enum definitions ✓
+Created `Provider` Rust enum (SeaORM `DeriveActiveEnum`), `oauth_connections` entity, added `meeting_url`/`provider` to `coaching_sessions` entity. Removed `meeting_url` and AI privacy columns from `coaching_relationships` entity (no migration existed for those columns).
+
+### 2. Entity API layer ✓
+Added CRUD operations for `oauth_connections` (create, find_by_user_and_provider, update_tokens, delete_by_user_and_provider) with tests. Updated `coaching_sessions` create to pass through `meeting_url` and `provider`. Cleaned up `CoachingRelationshipWithUserNames` to match actual schema.
+
+### 3. Domain layer ✓
+Created `domain::oauth_connection` module with `google_authorize_url`, `exchange_and_store_tokens`, and `get_valid_access_token` (with automatic token refresh). Added `PlainTokens` and `Tokens::into_plain()` to `meeting-auth` to expose secret tokens at trust boundaries without leaking the `secrecy` crate. Integrated meeting creation into `coaching_session::create` — when a `provider` is specified, it automatically creates a meeting space via the coach's OAuth connection.
+
+### 4. Web layer: OAuth controller ✓
+Slimmed `oauth_controller` to thin wrappers calling domain functions. `authorize` → `oauth_connection::google_authorize_url`, `callback` → `oauth_connection::exchange_and_store_tokens`. Removed all inline token handling and error helpers.
+
+### 5. Web layer: session/meeting endpoints (partial) ✓
+Meeting creation is integrated into the existing `POST /coaching_sessions` flow — passing a `provider` field triggers automatic meeting space creation. Removed the standalone `POST /coaching_relationships/:id/create-google-meet` endpoint and the `coaching_relationship_controller`.
+
 ## Remaining Steps
 
-### 1. Entity + enum definitions
-Create `Provider` Rust enum (SeaORM `DeriveActiveEnum`), `oauth_connections` entity, add `meeting_url`/`provider` to `coaching_sessions` entity. Remove `meeting_url` and AI privacy columns from `coaching_relationships` entity. Delete `user_integrations` entity.
+### 6. Set existing meeting URL on a session
+Add support for coaches to set an arbitrary meeting URL on a session (e.g., an existing Zoom or Google Meet link) without triggering provider-based meeting creation. This may be handled via the existing `PUT /coaching_sessions/:id` update endpoint by allowing `meeting_url` in the update params. Verify that `meeting_url` is readable by both coaches and coachees via the session GET responses.
 
-### 2. Entity API layer
-Add CRUD operations for `oauth_connections` (store, get, update, delete tokens by user+provider). Update `coaching_sessions` create/update to accept `meeting_url` and `provider`.
+### 7. Delete user_integrations and stale references
+- Delete `entity/src/user_integrations.rs` entity and `entity_api/src/user_integration.rs` module
+- Remove `user_integrations` re-exports from `entity/src/lib.rs`, `entity_api/src/lib.rs`, `domain/src/lib.rs`
+- Remove `integration_controller.rs` and its routes from `web/src/router.rs` (or update it to use `oauth_connections`)
+- Delete the `user_integrations` params module if it exists
+- Search for any remaining `user_integration` references throughout the codebase
 
-### 3. Domain layer
-Wire the existing `meeting-auth` Google OAuth provider and `google_meet::Client` to use `oauth_connections` storage instead of `user_integrations`. Token refresh logic should use the stored `refresh_token` from `oauth_connections`.
+### 8. Fix meeting_recording_controller.rs compile errors
+- Fix `meeting_ai` import errors (should be `meeting_ai` crate or re-routed through domain gateways)
+- Update references to removed `coaching_relationships` fields (`coach_ai_privacy_level`, `coachee_ai_privacy_level`, `meeting_url`) — meeting URL should now come from the coaching session, not the relationship
+- This controller may need significant rework or deferral to the AI/recording milestone
 
-### 4. Web layer: OAuth controller
-Update `authorize` and `callback` endpoints to read/write `oauth_connections` instead of `user_integrations`. Store encrypted tokens via `domain::encryption`.
-
-### 5. Web layer: session/meeting endpoints
-Move `create_google_meet` from coaching relationship controller to coaching session context. Add endpoint to set an existing meeting URL on a session. Both coaches and coachees need to read the `meeting_url`.
-
-### 6. Cleanup
-Delete `user_integrations` entity and all references throughout the codebase. Fix `meeting_ai` import errors in `meeting_recording_controller.rs`. Remove stale fields from `coaching_relationships` entity.
+### 9. Final verification
+- `cargo check` — full workspace clean
+- `cargo clippy` — no warnings
+- `cargo test --features mock` — all tests pass
+- Manual testing of OAuth flow and meeting creation
