@@ -1,4 +1,5 @@
 use chrono::{NaiveDate, NaiveDateTime};
+use domain::provider::Provider;
 use sea_orm::{Order, Value};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -52,6 +53,8 @@ impl IntoQueryFilterMap for IndexParams {
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub(crate) struct UpdateParams {
     pub(crate) date: NaiveDateTime,
+    pub(crate) meeting_url: Option<String>,
+    pub(crate) provider: Option<Provider>,
 }
 
 impl IntoUpdateMap for UpdateParams {
@@ -61,6 +64,18 @@ impl IntoUpdateMap for UpdateParams {
             "date".to_string(),
             Some(Value::ChronoDateTime(Some(Box::new(self.date)))),
         );
+        if let Some(meeting_url) = self.meeting_url {
+            update_map.insert(
+                "meeting_url".to_string(),
+                Some(Value::String(Some(Box::new(meeting_url)))),
+            );
+        }
+        if let Some(provider) = self.provider {
+            update_map.insert(
+                "provider".to_string(),
+                Some(Value::String(Some(Box::new(provider.to_string())))),
+            );
+        }
         update_map
     }
 }
