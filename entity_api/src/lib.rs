@@ -4,8 +4,8 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
-    coaching_sessions, goals, jwts, notes, organizations, status, user_roles, users, users::Role,
-    Id,
+    coaching_sessions, goals, jwts, notes, oauth_connections, organizations, provider, status,
+    user_roles, users, users::Role, Id,
 };
 
 // AI Meeting Integration entity re-exports
@@ -24,6 +24,7 @@ pub mod error;
 pub mod goal;
 pub mod mutate;
 pub mod note;
+pub mod oauth_connection;
 pub mod organization;
 pub mod query;
 pub mod user;
@@ -140,9 +141,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coachee_id: Set(caleb_bourg.id.clone().unwrap()),
         organization_id: Set(refactor_coaching_id),
         slug: Set("jim-caleb".to_owned()),
-        meeting_url: Set(None),
-        coach_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
-        coachee_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -157,9 +155,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coachee_id: Set(jim_hodapp.id.clone().unwrap()),
         organization_id: Set(acme_corp.id.clone().unwrap()),
         slug: Set("jim-caleb".to_owned()),
-        meeting_url: Set(None),
-        coach_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
-        coachee_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -173,9 +168,6 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coachee_id: Set(other_user.id.clone().unwrap()),
         organization_id: Set(acme_corp.id.clone().unwrap()),
         slug: Set("jim-other".to_owned()),
-        meeting_url: Set(None),
-        coach_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
-        coachee_ai_privacy_level: Set(ai_privacy_level::AiPrivacyLevel::Full),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
