@@ -34,11 +34,7 @@ pub trait CredentialStorage: Send + Sync {
     ) -> Result<(), Error>;
 
     /// Retrieve credentials for a user and provider.
-    async fn get(
-        &self,
-        user_id: &str,
-        provider_id: &str,
-    ) -> Result<Option<CredentialData>, Error>;
+    async fn get(&self, user_id: &str, provider_id: &str) -> Result<Option<CredentialData>, Error>;
 
     /// Update credentials for a user and provider.
     async fn update(

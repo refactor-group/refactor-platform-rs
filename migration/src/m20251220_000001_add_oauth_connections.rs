@@ -10,9 +10,7 @@ impl MigrationTrait for Migration {
         // Starting with 'google' only; add providers via ALTER TYPE ADD VALUE as needed.
         manager
             .get_connection()
-            .execute_unprepared(
-                "CREATE TYPE refactor_platform.provider AS ENUM ('google')",
-            )
+            .execute_unprepared("CREATE TYPE refactor_platform.provider AS ENUM ('google')")
             .await?;
 
         manager
@@ -52,9 +50,7 @@ impl MigrationTrait for Migration {
 
         manager
             .get_connection()
-            .execute_unprepared(
-                "ALTER TABLE refactor_platform.oauth_connections OWNER TO refactor",
-            )
+            .execute_unprepared("ALTER TABLE refactor_platform.oauth_connections OWNER TO refactor")
             .await?;
 
         manager
