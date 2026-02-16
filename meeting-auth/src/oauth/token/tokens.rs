@@ -1,7 +1,7 @@
 //! OAuth token types.
 
 use chrono::{DateTime, Utc};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 /// OAuth tokens with metadata.
 #[derive(Debug, Clone)]
@@ -35,6 +35,31 @@ impl Tokens {
     /// Get the remaining time until expiration.
     pub fn time_until_expiry(&self) -> Option<chrono::Duration> {
         self.expires_at.map(|expires| expires - Utc::now())
+    }
+}
+
+/// Plain-string representation of OAuth tokens.
+///
+/// Use [`Tokens::into_plain`] to convert secret-wrapped tokens into plain strings
+/// suitable for database storage and API calls.
+#[derive(Debug, Clone)]
+pub struct PlainTokens {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl Tokens {
+    /// Convert into plain strings, exposing the secret values.
+    ///
+    /// Use this at trust boundaries (e.g. gateway layers) where tokens need
+    /// to be stored or passed to external APIs as plain strings.
+    pub fn into_plain(self) -> PlainTokens {
+        PlainTokens {
+            access_token: self.access_token.expose_secret().to_string(),
+            refresh_token: self.refresh_token.map(|rt| rt.expose_secret().to_string()),
+            expires_at: self.expires_at,
+        }
     }
 }
 
