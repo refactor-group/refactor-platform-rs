@@ -83,7 +83,12 @@ impl<S: Storage> Manager<S> {
             .storage
             .get(user_id, provider_id)
             .await?
-            .ok_or_else(|| token_error(TokenErrorKind::NotFound, "Tokens disappeared during refresh"))?;
+            .ok_or_else(|| {
+                token_error(
+                    TokenErrorKind::NotFound,
+                    "Tokens disappeared during refresh",
+                )
+            })?;
 
         if !tokens.is_expired() {
             debug!("Token was refreshed by another request");
@@ -99,7 +104,12 @@ impl<S: Storage> Manager<S> {
         let refresh_result = provider
             .refresh_token(refresh_token.expose_secret())
             .await
-            .map_err(|e| token_error(TokenErrorKind::Refresh, &format!("Token refresh failed: {}", e)))?;
+            .map_err(|e| {
+                token_error(
+                    TokenErrorKind::Refresh,
+                    &format!("Token refresh failed: {}", e),
+                )
+            })?;
 
         // Store the new tokens
         if refresh_result.refresh_token_rotated {
@@ -157,7 +167,11 @@ impl<S: Storage> Manager<S> {
     ///
     /// * `user_id` - Unique user identifier
     /// * `provider_id` - Provider identifier
-    pub async fn get_tokens(&self, user_id: &str, provider_id: &str) -> Result<Option<Tokens>, Error> {
+    pub async fn get_tokens(
+        &self,
+        user_id: &str,
+        provider_id: &str,
+    ) -> Result<Option<Tokens>, Error> {
         self.storage.get(user_id, provider_id).await
     }
 }
@@ -188,7 +202,12 @@ mod tests {
 
     #[async_trait]
     impl Storage for MockStorage {
-        async fn store(&self, user_id: &str, provider_id: &str, tokens: Tokens) -> Result<(), Error> {
+        async fn store(
+            &self,
+            user_id: &str,
+            provider_id: &str,
+            tokens: Tokens,
+        ) -> Result<(), Error> {
             let mut map = self.tokens.lock().await;
             map.insert(Self::key(user_id, provider_id), tokens);
             Ok(())
