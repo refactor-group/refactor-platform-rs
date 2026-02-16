@@ -6,7 +6,7 @@ use sea_orm::{DatabaseConnection, TransactionTrait};
 
 pub use entity_api::coaching_relationship::{
     create, find_by_id, find_by_organization_with_user_names, find_by_user,
-    find_by_user_and_organization_with_user_names, get_relationship_with_user_names, update,
+    find_by_user_and_organization_with_user_names, get_relationship_with_user_names,
     CoachingRelationshipWithUserNames,
 };
 

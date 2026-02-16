@@ -54,6 +54,13 @@ pub async fn create(
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
 
+    // If a provider is specified, create a meeting space and populate meeting_url
+    if let Some(provider) = &coaching_session_model.provider {
+        let meeting_url =
+            create_meeting_url(db, config, coaching_relationship.coach_id, provider).await?;
+        coaching_session_model.meeting_url = Some(meeting_url);
+    }
+
     let tiptap = TiptapDocument::new(config).await?;
     tiptap.create(&document_name).await?;
 
@@ -104,6 +111,34 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
 
     coaching_session::delete(db, id).await?;
     Ok(())
+}
+
+/// Create a meeting URL for the given provider using the coach's OAuth connection.
+async fn create_meeting_url(
+    db: &DatabaseConnection,
+    config: &Config,
+    coach_id: Id,
+    provider: &crate::provider::Provider,
+) -> Result<String, Error> {
+    let access_token =
+        crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
+
+    match provider {
+        crate::provider::Provider::Google => {
+            let client = crate::gateway::google_meet::Client::new(
+                &access_token,
+                config.google_meet_api_url(),
+            )?;
+            let space = client.create_space().await?;
+
+            info!(
+                "Created Google Meet {} for coaching session",
+                space.meeting_code,
+            );
+
+            Ok(space.meeting_uri)
+        }
+    }
 }
 
 fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> String {

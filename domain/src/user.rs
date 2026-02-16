@@ -114,9 +114,6 @@ pub async fn create_user_and_coaching_relationship(
         organization_id: Default::default(),
         id: Default::default(),
         slug: "".to_string(),
-        meeting_url: None,
-        coach_ai_privacy_level: entity_api::ai_privacy_level::AiPrivacyLevel::Full,
-        coachee_ai_privacy_level: entity_api::ai_privacy_level::AiPrivacyLevel::Full,
         created_at: Utc::now().into(),
         updated_at: Utc::now().into(),
     };

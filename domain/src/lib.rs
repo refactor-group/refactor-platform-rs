@@ -12,7 +12,8 @@ pub use entity_api::{
 // Re-exports from `entity` crate via `entity_api`
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, jwts, notes,
-    organizations, overarching_goals, query::QuerySort, status, user_roles, users, Id,
+    oauth_connections, organizations, overarching_goals, provider, query::QuerySort, status,
+    user_roles, users, Id,
 };
 
 // AI Meeting Integration re-exports
@@ -32,6 +33,7 @@ pub mod encryption;
 pub mod error;
 pub mod jwt;
 pub mod note;
+pub mod oauth_connection;
 pub mod organization;
 pub mod overarching_goal;
 pub mod user;
