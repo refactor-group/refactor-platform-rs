@@ -22,6 +22,8 @@ pub async fn create(
         coaching_relationship_id: Set(coaching_session_model.coaching_relationship_id),
         date: Set(coaching_session_model.date),
         collab_document_name: Set(coaching_session_model.collab_document_name),
+        meeting_url: Set(coaching_session_model.meeting_url),
+        provider: Set(coaching_session_model.provider),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -506,6 +508,8 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -532,7 +536,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -554,7 +558,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -595,7 +599,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -615,6 +619,8 @@ mod tests {
             coaching_relationship_id: relationship_id,
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -650,6 +656,8 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             date: from_date.into(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -718,6 +726,8 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
