@@ -277,8 +277,8 @@ pub async fn test_force_logout(
 pub async fn test_connection(
     user1: &AuthenticatedUser,
     user2: &AuthenticatedUser,
-    sse1: &mut Connection,
-    sse2: &mut Connection,
+    _sse1: &mut Connection,
+    _sse2: &mut Connection,
 ) -> Result<TestResult> {
     let start = Instant::now();
 
