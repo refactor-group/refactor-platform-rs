@@ -251,6 +251,7 @@ pub enum Scope {
 pub struct FindByUserParams {
     pub scope: Scope,
     pub coaching_session_id: Option<Id>,
+    pub coaching_relationship_id: Option<Id>,
     pub status: Option<entity::status::Status>,
     pub assignee_filter: AssigneeFilter,
     pub sort_column: Option<entity::actions::Column>,
@@ -262,6 +263,12 @@ pub struct FindByUserParams {
 /// Supports two scopes:
 /// - `Scope::Assigned`: Actions where the user is an assignee
 /// - `Scope::Sessions`: Actions from coaching sessions where user is coach or coachee
+///
+/// Optional filters narrow results further: `coaching_session_id`, `coaching_relationship_id`,
+/// `status`, and `assignee_filter`. The `coaching_relationship_id` filter uses the
+/// `coaching_sessions.coaching_relationship_id` FK column, so it requires a join to
+/// `coaching_sessions` (not `coaching_relationships`). For `Scope::Sessions` this join
+/// already exists in the base query; for `Scope::Assigned` it is added dynamically.
 pub async fn find_by_user(
     db: &DatabaseConnection,
     user_id: Id,
@@ -271,9 +278,12 @@ pub async fn find_by_user(
     use sea_orm::{JoinType, QueryOrder};
 
     debug!(
-        "Finding actions for user_id={user_id} with scope={:?}, session={:?}, status={:?}, assignee={:?}",
-        params.scope, params.coaching_session_id, params.status, params.assignee_filter
+        "Finding actions for user_id={user_id} with scope={:?}, session={:?}, relationship={:?}, status={:?}, assignee={:?}",
+        params.scope, params.coaching_session_id, params.coaching_relationship_id, params.status, params.assignee_filter
     );
+
+    // Track whether the base query already joins coaching_sessions (Sessions does, Assigned does not)
+    let needs_sessions_join = matches!(params.scope, Scope::Assigned);
 
     // Build base query based on scope
     let base_select = match params.scope {
@@ -307,6 +317,17 @@ pub async fn find_by_user(
 
     if let Some(session_id) = params.coaching_session_id {
         select = select.filter(actions::Column::CoachingSessionId.eq(session_id));
+    }
+
+    if let Some(relationship_id) = params.coaching_relationship_id {
+        if needs_sessions_join {
+            select = select.join(
+                JoinType::InnerJoin,
+                actions::Relation::CoachingSessions.def(),
+            );
+        }
+        select =
+            select.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
     }
 
     if let Some(status) = &params.status {
@@ -685,6 +706,105 @@ mod tests {
 
         // Should be empty because the action has no assignees
         assert!(actions.is_empty());
+
+        Ok(())
+    }
+
+    /// Tests that find_by_user with Scope::Sessions and coaching_relationship_id generates
+    /// SQL with the coaching_relationship_id WHERE clause. This proves the filter is actually
+    /// applied at the database level, not just accepted as a parameter.
+    #[tokio::test]
+    async fn find_by_user_with_sessions_scope_and_relationship_filter() -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+
+        // Empty mock — we only care about the generated SQL, not the results
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let _ = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Sessions,
+                coaching_relationship_id: Some(relationship_id),
+                assignee_filter: AssigneeFilter::All,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let log = db.into_transaction_log();
+
+        // The first (and only) query should contain the coaching_relationship_id filter.
+        // Debug output uses escaped quotes, so we match against those.
+        let sql = format!("{:?}", log[0]);
+        // Assert the WHERE clause contains an AND filter on coaching_relationship_id.
+        // We check for "AND" to distinguish from the JOIN ON clause, which also references
+        // this column (e.g., ON coaching_sessions.coaching_relationship_id = coaching_relationships.id).
+        assert!(
+            sql.contains(r#"AND \"coaching_sessions\".\"coaching_relationship_id\" ="#),
+            "SQL WHERE clause must filter by coaching_relationship_id, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// Tests that find_by_user with Scope::Assigned and coaching_relationship_id generates
+    /// SQL with a dynamic JOIN to coaching_sessions and a coaching_relationship_id WHERE clause.
+    /// This proves that the Assigned scope correctly adds the join it doesn't have by default.
+    #[tokio::test]
+    async fn find_by_user_with_assigned_scope_and_relationship_filter() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let action_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+
+        // Mock: 1) actions_user query returns action IDs (so we don't early-return),
+        //       2) actions query (empty — we only care about its SQL),
+        //       3) assignee lookup (never reached since actions is empty, but safe to omit)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![entity::actions_users::Model {
+                id: Id::new_v4(),
+                action_id,
+                user_id,
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let _ = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Assigned,
+                coaching_relationship_id: Some(relationship_id),
+                assignee_filter: AssigneeFilter::All,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let log = db.into_transaction_log();
+
+        // The second query (index 1) is the actions query — it should have the dynamic join
+        // and the coaching_relationship_id filter
+        assert!(
+            log.len() >= 2,
+            "Expected at least 2 queries (action IDs + actions), got {}",
+            log.len()
+        );
+        let actions_sql = format!("{:?}", log[1]);
+        assert!(
+            actions_sql.contains(r#"JOIN \"refactor_platform\".\"coaching_sessions\""#),
+            "SQL must dynamically join coaching_sessions for Scope::Assigned, got: {actions_sql}"
+        );
+        assert!(
+            actions_sql.contains(r#"AND \"coaching_sessions\".\"coaching_relationship_id\" ="#),
+            "SQL WHERE clause must filter by coaching_relationship_id, got: {actions_sql}"
+        );
 
         Ok(())
     }
