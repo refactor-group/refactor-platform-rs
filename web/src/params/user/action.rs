@@ -68,6 +68,8 @@ pub(crate) struct IndexParams {
     pub(crate) scope: Scope,
     /// Optional: filter to a specific coaching session
     pub(crate) coaching_session_id: Option<Id>,
+    /// Optional: filter to a specific coaching relationship
+    pub(crate) coaching_relationship_id: Option<Id>,
     /// Optional: filter by assignee status (all, assigned, unassigned)
     #[serde(default)]
     pub(crate) assignee_filter: AssigneeFilter,

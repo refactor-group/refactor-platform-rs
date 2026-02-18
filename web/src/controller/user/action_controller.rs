@@ -26,6 +26,7 @@ use log::*;
         ("user_id" = Id, Path, description = "User ID to retrieve actions for"),
         ("scope" = Option<String>, Query, description = "Scope: 'sessions' (default) or 'assigned'"),
         ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching session"),
+        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching relationship"),
         ("assignee_filter" = Option<String>, Query, description = "Filter: 'all' (default), 'assigned', or 'unassigned'"),
         ("status" = Option<String>, Query, description = "Filter by action status"),
         ("sort_by" = Option<String>, Query, description = "Sort by: 'due_by', 'created_at', 'updated_at'"),
@@ -67,6 +68,7 @@ pub async fn index(
             Scope::Sessions => ActionApi::Scope::Sessions,
         },
         coaching_session_id: params.coaching_session_id,
+        coaching_relationship_id: params.coaching_relationship_id,
         status: params.status,
         assignee_filter: match params.assignee_filter {
             AssigneeFilter::All => ActionApi::AssigneeFilter::All,
