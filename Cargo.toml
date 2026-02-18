@@ -1,6 +1,6 @@
 [package]
 name = "refactor_platform_rs"
-version = "1.0.0-beta2"
+version = "1.0.0-beta3"
 edition = "2021"
 
 default-run = "refactor_platform_rs"
