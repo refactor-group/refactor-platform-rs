@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1.83"
 chrono = { version = "0.4.38", features = ["serde"] }
+chrono-tz = "0.10"
 email_address = "0.2"
 entity_api = { path = "../entity_api" }
 events = { path = "../events" }

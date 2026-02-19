@@ -133,6 +133,16 @@ pub struct Config {
     /// The MailerSend template ID for welcome emails.
     #[arg(long, env)]
     welcome_email_template_id: Option<String>,
+    /// The MailerSend template ID for session-scheduled emails.
+    #[arg(long, env)]
+    session_scheduled_email_template_id: Option<String>,
+    /// The MailerSend template ID for action-assigned emails.
+    #[arg(long, env)]
+    action_assigned_email_template_id: Option<String>,
+    /// The base URL of the frontend application (e.g. https://app.myrefactor.com).
+    /// Used to construct links in email notifications.
+    #[arg(long, env)]
+    frontend_base_url: Option<String>,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -224,6 +234,15 @@ impl Config {
     }
     pub fn welcome_email_template_id(&self) -> Option<String> {
         self.welcome_email_template_id.clone()
+    }
+    pub fn session_scheduled_email_template_id(&self) -> Option<String> {
+        self.session_scheduled_email_template_id.clone()
+    }
+    pub fn action_assigned_email_template_id(&self) -> Option<String> {
+        self.action_assigned_email_template_id.clone()
+    }
+    pub fn frontend_base_url(&self) -> Option<String> {
+        self.frontend_base_url.clone()
     }
 
     pub fn runtime_env(&self) -> RustEnv {

@@ -11,7 +11,8 @@ use entity_api::{
 };
 pub use entity_api::{
     user::{
-        create, find_by_email, find_by_id, find_by_organization, generate_hash, verify_password,
+        create, find_by_email, find_by_id, find_by_ids, find_by_organization, generate_hash,
+        verify_password,
         AuthSession, Backend, Credentials, Role,
     },
     user_roles,

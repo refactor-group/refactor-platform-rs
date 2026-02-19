@@ -118,6 +118,16 @@ pub async fn update_status(
     }
 }
 
+pub async fn find_by_coaching_session_id(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(entity::overarching_goals::Column::CoachingSessionId.eq(coaching_session_id))
+        .all(db)
+        .await?)
+}
+
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,

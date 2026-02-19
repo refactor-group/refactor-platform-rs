@@ -165,6 +165,22 @@ pub async fn has_admin_access(
     Ok(admin_role.is_some())
 }
 
+pub async fn find_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<Vec<Model>, Error> {
+    let results = Entity::find()
+        .filter(Column::Id.is_in(ids.to_vec()))
+        .find_with_related(user_roles::Entity)
+        .all(db)
+        .await?;
+
+    Ok(results
+        .into_iter()
+        .map(|(mut user, roles)| {
+            user.roles = roles;
+            user
+        })
+        .collect())
+}
+
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(user_id).exec(db).await?;
     Ok(())

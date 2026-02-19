@@ -1,12 +1,78 @@
 use crate::{
+    coaching_relationship, coaching_session, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
-    users,
+    organization, organizations, overarching_goal, user, users, Id,
 };
 
+use sea_orm::DatabaseConnection;
+
+use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use log::*;
 use service::config::Config;
+
+/// Trait for email notifications that need common config prerequisites.
+///
+/// Implementors declare which template ID to use and a human-readable name
+/// for log messages. The trait provides default implementations for resolving
+/// the template ID and frontend base URL from config with consistent error handling.
+trait EmailNotification {
+    /// Return the template ID from config for this notification type.
+    fn template_id(config: &Config) -> Option<String>;
+
+    /// Human-readable name used in log/error messages (e.g. "session scheduled").
+    fn notification_name() -> &'static str;
+
+    /// Resolve the template ID from config, or return a config error.
+    fn resolve_template_id(config: &Config) -> Result<String, Error> {
+        Self::template_id(config).ok_or_else(|| {
+            error!(
+                "{} email template ID not configured",
+                Self::notification_name()
+            );
+            Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            }
+        })
+    }
+
+    /// Resolve the frontend base URL from config, or return a config error.
+    fn resolve_base_url(config: &Config) -> Result<String, Error> {
+        config.frontend_base_url().ok_or_else(|| {
+            error!(
+                "Frontend base URL not configured, cannot send {} notification",
+                Self::notification_name()
+            );
+            Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            }
+        })
+    }
+}
+
+struct SessionScheduled;
+impl EmailNotification for SessionScheduled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.session_scheduled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "session scheduled"
+    }
+}
+
+struct ActionAssigned;
+impl EmailNotification for ActionAssigned {
+    fn template_id(config: &Config) -> Option<String> {
+        config.action_assigned_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "action assigned"
+    }
+}
 
 /// Send a welcome email to a newly created user
 pub async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
@@ -45,6 +111,235 @@ pub async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<
     // send_email now handles the async spawning internally
     mailersend_client.send_email(email_request).await;
     Ok(())
+}
+
+/// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
+/// Falls back to UTC formatting if the timezone string is invalid.
+fn format_session_date_time(
+    date: NaiveDateTime,
+    timezone: &str,
+) -> (String, String) {
+    let utc_dt = Utc.from_utc_datetime(&date);
+
+    match timezone.parse::<Tz>() {
+        Ok(tz) => {
+            let local_dt = utc_dt.with_timezone(&tz);
+            let date_str = local_dt.format("%A, %B %-d, %Y").to_string();
+            let time_str = local_dt.format("%-I:%M %p").to_string();
+            (date_str, time_str)
+        }
+        Err(_) => {
+            warn!("Invalid timezone '{timezone}', falling back to UTC");
+            let date_str = utc_dt.format("%A, %B %-d, %Y").to_string();
+            let time_str = format!("{} UTC", utc_dt.format("%-I:%M %p"));
+            (date_str, time_str)
+        }
+    }
+}
+
+/// Send a session-scheduled notification email to a single recipient.
+/// This is called once per recipient (coach and coachee each get their own email).
+async fn send_session_email_to_recipient(
+    config: &Config,
+    recipient: &users::Model,
+    other_user: &users::Model,
+    other_user_role: &str,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    let mailersend_client = MailerSendClient::new(config).await?;
+    let template_id = SessionScheduled::resolve_template_id(config)?;
+    let base_url = SessionScheduled::resolve_base_url(config)?;
+
+    let (session_date, session_time) =
+        format_session_date_time(session.date, &recipient.timezone);
+    let session_url = format!("{}/coaching-sessions/{}", base_url, session.id);
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from("hello@myrefactor.com")
+        .to_with_name(
+            &recipient.email,
+            format!("{} {}", recipient.first_name, recipient.last_name),
+        )
+        .subject(format!("New coaching session scheduled for {session_date}"))
+        .template_id(template_id)
+        .add_personalization("first_name", &recipient.first_name)
+        .add_personalization("other_user_first_name", &other_user.first_name)
+        .add_personalization("other_user_last_name", &other_user.last_name)
+        .add_personalization("other_user_role", other_user_role)
+        .add_personalization("organization_name", &organization.name)
+        .add_personalization("session_date", &session_date)
+        .add_personalization("session_time", &session_time)
+        .add_personalization("session_url", &session_url)
+        .build()
+        .await?;
+
+    mailersend_client.send_email(email_request).await;
+    Ok(())
+}
+
+/// Send session-scheduled notification emails to both coach and coachee.
+pub async fn send_session_scheduled_email(
+    config: &Config,
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    info!(
+        "Initiating session scheduled emails for session: {} (coach: {}, coachee: {})",
+        session.id, coach.email, coachee.email
+    );
+
+    // Email to coachee: "Your coach, ... has a session with you"
+    if let Err(e) =
+        send_session_email_to_recipient(config, coachee, coach, "coach", session, organization)
+            .await
+    {
+        warn!(
+            "Failed to send session scheduled email to coachee {}: {e:?}",
+            coachee.email
+        );
+    }
+
+    // Email to coach: "Your coachee, ... has a session with you"
+    if let Err(e) =
+        send_session_email_to_recipient(config, coach, coachee, "coachee", session, organization)
+            .await
+    {
+        warn!(
+            "Failed to send session scheduled email to coach {}: {e:?}",
+            coach.email
+        );
+    }
+
+    Ok(())
+}
+
+/// Send action-assigned notification emails to all assignees.
+pub async fn send_action_assigned_email(
+    config: &Config,
+    assignees: &[users::Model],
+    assigner: &users::Model,
+    action_body: &str,
+    due_by: Option<DateTime<FixedOffset>>,
+    session_id: crate::Id,
+    organization: &organizations::Model,
+    overarching_goal: &str,
+) -> Result<(), Error> {
+    info!(
+        "Initiating action assigned emails for {} assignee(s) (assigner: {})",
+        assignees.len(),
+        assigner.email
+    );
+
+    let mailersend_client = MailerSendClient::new(config).await?;
+    let template_id = ActionAssigned::resolve_template_id(config)?;
+    let base_url = ActionAssigned::resolve_base_url(config)?;
+
+    let session_url = format!("{}/coaching-sessions/{}", base_url, session_id);
+
+    for assignee in assignees {
+        let due_date_str = match due_by {
+            Some(dt) => {
+                let (date_str, _) = format_session_date_time(dt.naive_utc(), &assignee.timezone);
+                date_str
+            }
+            None => "No due date set".to_string(),
+        };
+
+        let email_request = SendEmailRequestBuilder::new()
+            .from("hello@myrefactor.com")
+            .to_with_name(
+                &assignee.email,
+                format!("{} {}", assignee.first_name, assignee.last_name),
+            )
+            .subject("You've been assigned a new action")
+            .template_id(template_id.clone())
+            .add_personalization("first_name", &assignee.first_name)
+            .add_personalization("action_body", action_body)
+            .add_personalization("due_date", &due_date_str)
+            .add_personalization("assigner_first_name", &assigner.first_name)
+            .add_personalization("assigner_last_name", &assigner.last_name)
+            .add_personalization("organization_name", &organization.name)
+            .add_personalization("overarching_goal", overarching_goal)
+            .add_personalization("session_url", &session_url)
+            .build()
+            .await;
+
+        match email_request {
+            Ok(request) => mailersend_client.send_email(request).await,
+            Err(e) => warn!(
+                "Failed to build action assigned email for {}: {e:?}",
+                assignee.email
+            ),
+        }
+    }
+
+    Ok(())
+}
+
+/// Orchestrate sending session-scheduled emails.
+///
+/// Looks up the coaching relationship, both users, and the organization,
+/// then sends notification emails to both coach and coachee.
+/// This is the entry point controllers should call.
+pub async fn notify_session_scheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) -> Result<(), Error> {
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let coach = user::find_by_id(db, relationship.coach_id).await?;
+    let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+    let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+    send_session_scheduled_email(config, &coach, &coachee, session, &org).await
+}
+
+/// Orchestrate sending action-assigned emails.
+///
+/// Looks up assignee users, the coaching session, relationship, organization,
+/// and overarching goal, then sends notification emails to all assignees.
+/// This is the entry point controllers should call.
+pub async fn notify_action_assigned(
+    db: &DatabaseConnection,
+    config: &Config,
+    assignee_ids: &[Id],
+    assigner: &users::Model,
+    action_body: &str,
+    due_by: Option<DateTime<FixedOffset>>,
+    coaching_session_id: Id,
+) -> Result<(), Error> {
+    // Look up assignee user models
+    let assignees = user::find_by_ids(db, assignee_ids).await?;
+
+    // Look up session → relationship → organization
+    let (session, relationship) =
+        coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id).await?;
+    let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+    // Look up overarching goal for this session (use first if multiple exist)
+    let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
+        .await
+        .unwrap_or_default();
+    let goal_title = goals
+        .first()
+        .and_then(|g| g.title.as_deref())
+        .unwrap_or("");
+
+    send_action_assigned_email(
+        config,
+        &assignees,
+        assigner,
+        action_body,
+        due_by,
+        coaching_session_id,
+        &org,
+        goal_title,
+    )
+    .await
 }
 
 #[cfg(test)]

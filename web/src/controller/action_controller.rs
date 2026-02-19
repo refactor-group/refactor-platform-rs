@@ -14,7 +14,7 @@ use crate::extractors::{
 use crate::params::action::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use domain::{action as ActionApi, actions::Model, Id};
+use domain::{action as ActionApi, actions::Model, emails as EmailsApi, Id};
 use log::*;
 use service::config::ApiVersion;
 
@@ -63,6 +63,26 @@ pub async fn create(
         request.assignee_ids,
     )
     .await?;
+
+    // Best-effort action assigned email — log failures, don't block action creation
+    if !action.assignee_ids.is_empty() {
+        if let Err(e) = EmailsApi::notify_action_assigned(
+            app_state.db_conn_ref(),
+            &app_state.config,
+            &action.assignee_ids,
+            &user,
+            action.action.body.as_deref().unwrap_or(""),
+            action.action.due_by,
+            action.action.coaching_session_id,
+        )
+        .await
+        {
+            warn!(
+                "Failed to send action assigned emails for action {}: {e:?}",
+                action.action.id
+            );
+        }
+    }
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), action)))
 }

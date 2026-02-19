@@ -9,7 +9,7 @@ use entity_api::{
 use log::*;
 use sea_orm::DatabaseConnection;
 
-pub use entity_api::overarching_goal::find_by_id;
+pub use entity_api::overarching_goal::{find_by_coaching_session_id, find_by_id};
 
 pub async fn create(
     db: &DatabaseConnection,
