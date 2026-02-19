@@ -25,13 +25,20 @@
 
 ```
 refactor-platform-rs/
-├── entity/        # SeaORM entity definitions
-├── entity_api/    # Entity API layer
-├── domain/        # Domain logic and business rules
-├── service/       # Service layer
-├── web/           # Axum web handlers and routes
-├── migration/     # SeaORM database migrations
-└── src/           # Main application entry point
+├── docs/              # Architecture docs and implementation plans
+├── domain/            # Domain logic and business rules (emails, users, sessions)
+├── entity/            # SeaORM entity definitions
+├── entity_api/        # Entity API layer (CRUD operations)
+├── events/            # SSE domain event definitions
+├── migration/         # SeaORM database migrations
+├── nginx/             # Production nginx configuration
+├── nginx-preview/     # PR preview nginx configuration
+├── scripts/           # Database rebuild and utility scripts
+├── service/           # Service layer (config, app state)
+├── src/               # Main application entry point
+├── sse/               # SSE server and event handling
+├── testing-tools/     # Test helpers and scenario builders
+└── web/               # Axum web handlers, routes, and middleware
 ```
 
 ## Toolchain
