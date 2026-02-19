@@ -28,12 +28,56 @@ Notification settings (on/off toggle per user) are deferred to a follow-up issue
 
 All email notifications follow a two-tier pattern that respects the backend's layer boundaries:
 
-```
-entity_api          — DB queries (SeaORM)
-    ↑
-domain/emails.rs    — notify_*() orchestration + send_*() email construction
-    ↑
-web/controllers     — call ONE notify_*() function per email notification
+```mermaid
+flowchart TD
+    subgraph web["Web Layer — Controllers"]
+        CC["coaching_session_controller::create()"]
+        AC["action_controller::create()"]
+        UC["user_controller::create()"]
+    end
+
+    subgraph domain["Domain Layer — domain/src/emails.rs"]
+        subgraph notify["Public API: notify_* orchestration"]
+            NS["notify_session_scheduled()"]
+            NA["notify_action_assigned()"]
+            NW["notify_welcome_email()"]
+        end
+
+        subgraph send["Private: send_* email construction"]
+            SS["send_session_scheduled_email()"]
+            SR["send_session_email_to_recipient()"]
+            SA["send_action_assigned_email()"]
+        end
+
+        ET["EmailNotification trait\nresolve_template_id()\nresolve_base_url()"]
+    end
+
+    subgraph entity_api["Entity API Layer"]
+        UF["user::find_by_id / find_by_ids"]
+        CF["coaching_relationship::find_by_id"]
+        OF["organization::find_by_id"]
+        SF["coaching_session::find_by_id_with_coaching_relationship"]
+        GF["overarching_goal::find_by_coaching_session_id"]
+    end
+
+    subgraph gateway["Gateway Layer"]
+        MS["MailerSendClient\ntokio::spawn — fire-and-forget"]
+    end
+
+    CC -->|"best-effort"| NS
+    AC -->|"best-effort"| NA
+    UC --> NW
+
+    NS --> UF & CF & OF
+    NS --> SS
+    SS --> SR
+    SR --> ET --> MS
+
+    NA --> UF & SF & OF & GF
+    NA --> SA
+    SA --> ET
+
+    NW -.->|"no data lookups"| MS
 ```
 
 **Tier 1: `notify_*` orchestration functions (public, called by controllers)**
