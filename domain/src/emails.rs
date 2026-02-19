@@ -219,16 +219,22 @@ pub async fn send_session_scheduled_email(
     Ok(())
 }
 
+/// Context for an action-assigned email, bundling the action-specific data
+/// that the email needs for personalization.
+pub struct ActionEmailContext<'a> {
+    pub action_body: &'a str,
+    pub due_by: Option<DateTime<FixedOffset>>,
+    pub session_id: Id,
+    pub organization: &'a organizations::Model,
+    pub overarching_goal: &'a str,
+}
+
 /// Send action-assigned notification emails to all assignees.
 pub async fn send_action_assigned_email(
     config: &Config,
     assignees: &[users::Model],
     assigner: &users::Model,
-    action_body: &str,
-    due_by: Option<DateTime<FixedOffset>>,
-    session_id: crate::Id,
-    organization: &organizations::Model,
-    overarching_goal: &str,
+    ctx: &ActionEmailContext<'_>,
 ) -> Result<(), Error> {
     info!(
         "Initiating action assigned emails for {} assignee(s) (assigner: {})",
@@ -240,10 +246,10 @@ pub async fn send_action_assigned_email(
     let template_id = ActionAssigned::resolve_template_id(config)?;
     let base_url = ActionAssigned::resolve_base_url(config)?;
 
-    let session_url = format!("{}/coaching-sessions/{}?tab=actions", base_url, session_id);
+    let session_url = format!("{}/coaching-sessions/{}?tab=actions", base_url, ctx.session_id);
 
     for assignee in assignees {
-        let due_date_str = match due_by {
+        let due_date_str = match ctx.due_by {
             Some(dt) => {
                 let (date_str, _) = format_session_date_time(dt.naive_utc(), &assignee.timezone);
                 date_str
@@ -260,12 +266,12 @@ pub async fn send_action_assigned_email(
             .subject("You've been assigned a new action")
             .template_id(template_id.clone())
             .add_personalization("first_name", &assignee.first_name)
-            .add_personalization("action_body", action_body)
+            .add_personalization("action_body", ctx.action_body)
             .add_personalization("due_date", &due_date_str)
             .add_personalization("assigner_first_name", &assigner.first_name)
             .add_personalization("assigner_last_name", &assigner.last_name)
-            .add_personalization("organization_name", &organization.name)
-            .add_personalization("overarching_goal", overarching_goal)
+            .add_personalization("organization_name", &ctx.organization.name)
+            .add_personalization("overarching_goal", ctx.overarching_goal)
             .add_personalization("session_url", &session_url)
             .build()
             .await;
@@ -332,17 +338,15 @@ pub async fn notify_action_assigned(
         .and_then(|g| g.title.as_deref())
         .unwrap_or("");
 
-    send_action_assigned_email(
-        config,
-        &assignees,
-        assigner,
+    let ctx = ActionEmailContext {
         action_body,
         due_by,
-        coaching_session_id,
-        &org,
-        goal_title,
-    )
-    .await
+        session_id: coaching_session_id,
+        organization: &org,
+        overarching_goal: goal_title,
+    };
+
+    send_action_assigned_email(config, &assignees, assigner, &ctx).await
 }
 
 #[cfg(test)]
@@ -839,17 +843,15 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee],
-            &assigner,
-            "Read chapters 3-5 of Radical Candor",
-            Some(due_by),
+        let ctx = ActionEmailContext {
+            action_body: "Read chapters 3-5 of Radical Candor",
+            due_by: Some(due_by),
             session_id,
-            &org,
-            "Improve communication",
-        )
-        .await;
+            organization: &org,
+            overarching_goal: "Improve communication",
+        };
+
+        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
         assert!(result.is_ok());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -900,17 +902,15 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee],
-            &assigner,
-            "Follow up with team",
-            None,
+        let ctx = ActionEmailContext {
+            action_body: "Follow up with team",
+            due_by: None,
             session_id,
-            &org,
-            "",
-        )
-        .await;
+            organization: &org,
+            overarching_goal: "",
+        };
+
+        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
         assert!(result.is_ok());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -942,17 +942,16 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee1, assignee2],
-            &assigner,
-            "Complete the survey",
-            None,
+        let ctx = ActionEmailContext {
+            action_body: "Complete the survey",
+            due_by: None,
             session_id,
-            &org,
-            "",
-        )
-        .await;
+            organization: &org,
+            overarching_goal: "",
+        };
+
+        let result =
+            send_action_assigned_email(&config, &[assignee1, assignee2], &assigner, &ctx).await;
         assert!(result.is_ok());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -970,7 +969,7 @@ mod tests {
 
         let server = setup_test_server().await;
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
-        env::set_var("MAILERSEND_BASE_URL", &server.url());
+        env::set_var("MAILERSEND_BASE_URL", server.url());
         env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
         env::remove_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID");
         let config = Config::default();
@@ -980,17 +979,15 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee],
-            &assigner,
-            "Some action",
-            None,
+        let ctx = ActionEmailContext {
+            action_body: "Some action",
+            due_by: None,
             session_id,
-            &org,
-            "",
-        )
-        .await;
+            organization: &org,
+            overarching_goal: "",
+        };
+
+        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
 
         assert!(result.is_err());
         if let Err(e) = result {

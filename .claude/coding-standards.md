@@ -2,6 +2,18 @@
 
 This document outlines coding conventions and standards for the refactor-platform-rs project.
 
+## Branching
+
+Always start new implementation work on a feature branch — never commit directly to `main`. If the work addresses a specific GitHub issue, include the issue number in the branch name:
+
+```
+<issue-num>-short-description
+```
+
+Examples:
+- `226-session-scheduled-email`
+- `fix/clippy-warnings`
+
 ## Rust Conventions
 
 ### Import Organization
@@ -123,6 +135,40 @@ pub use entity_api::some_module::find_by_id_with_relationship;
 ```
 
 4. **Use `domain_error_into_response()` in protect middleware** (defined in `web/src/error.rs`) to convert domain errors into HTTP responses. This routes through `web::Error`'s `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
+
+### Function Argument Limits
+
+Clippy enforces a maximum of 7 arguments per function (`clippy::too_many_arguments`). When a function needs more, bundle related parameters into a context struct instead of adding an `#[allow]` attribute.
+
+```rust
+// ✅ Good - bundle related params into a struct
+pub struct ActionEmailContext<'a> {
+    pub action_body: &'a str,
+    pub due_by: Option<DateTime<FixedOffset>>,
+    pub session_id: Id,
+    pub organization: &'a organizations::Model,
+    pub overarching_goal: &'a str,
+}
+
+pub async fn send_email(
+    config: &Config,
+    assignees: &[users::Model],
+    assigner: &users::Model,
+    ctx: &ActionEmailContext<'_>,
+) -> Result<(), Error> { ... }
+
+// ❌ Bad - too many loose parameters
+pub async fn send_email(
+    config: &Config,
+    assignees: &[users::Model],
+    assigner: &users::Model,
+    action_body: &str,
+    due_by: Option<DateTime<FixedOffset>>,
+    session_id: Id,
+    organization: &organizations::Model,
+    overarching_goal: &str,
+) -> Result<(), Error> { ... }
+```
 
 ### Async Patterns
 
