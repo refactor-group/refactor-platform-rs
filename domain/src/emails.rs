@@ -240,7 +240,7 @@ pub async fn send_action_assigned_email(
     let template_id = ActionAssigned::resolve_template_id(config)?;
     let base_url = ActionAssigned::resolve_base_url(config)?;
 
-    let session_url = format!("{}/coaching-sessions/{}", base_url, session_id);
+    let session_url = format!("{}/coaching-sessions/{}?tab=actions", base_url, session_id);
 
     for assignee in assignees {
         let due_date_str = match due_by {
@@ -806,7 +806,7 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}");
+        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
         let due_by: DateTime<FixedOffset> = NaiveDate::from_ymd_opt(2026, 3, 7)
             .unwrap()
             .and_hms_opt(17, 0, 0)
@@ -873,7 +873,7 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}");
+        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
 
         let _mock = server
             .mock("POST", "/v1/email")
