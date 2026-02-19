@@ -6,7 +6,7 @@ Two GitHub issues request email notifications for key platform events:
 - **refactor-platform-fe#170** - Email when a coaching session is scheduled (both coach and coachee)
 - **refactor-platform-fe#251** - Email when an action is created/assigned to a user
 
-The backend already had a working Mailersend integration for welcome emails (`send_welcome_email` in `domain/src/emails.rs`). The two new email functions follow the same `MailerSendClient` + `SendEmailRequestBuilder` flow, with an added `EmailNotification` trait to avoid leaking config concerns into controllers.
+The backend already had a working Mailersend integration for welcome emails (`notify_welcome_email` in `domain/src/emails.rs`). The two new email functions follow the same `MailerSendClient` + `SendEmailRequestBuilder` flow, with an added `EmailNotification` trait to avoid leaking config concerns into controllers.
 
 Notification settings (on/off toggle per user) are deferred to a follow-up issue (refactor-platform-fe#301) since the Settings page doesn't exist yet.
 
@@ -217,4 +217,4 @@ These are in addition to the existing `MAILERSEND_API_KEY` and `WELCOME_EMAIL_TE
 - [ ] Create Mailersend templates in dashboard and set env vars
 - [ ] Add tests for the new email functions (session scheduled, action assigned)
 - [ ] Wire action assigned email into the `update` handler when `assignee_ids` changes (currently only on `create`)
-- [ ] Bring welcome email into the `notify_*` pattern for consistency
+- [x] Bring welcome email into the `notify_*` naming pattern for consistency

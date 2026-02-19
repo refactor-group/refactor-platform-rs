@@ -74,8 +74,11 @@ impl EmailNotification for ActionAssigned {
     }
 }
 
-/// Send a welcome email to a newly created user
-pub async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
+/// Send a welcome email to a newly created user.
+///
+/// Unlike the other `notify_*` functions, no additional data lookups are needed —
+/// the controller already has the user model from the preceding create operation.
+pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
     info!(
         "Initiating welcome email for user: {} ({})",
         user.email, user.id
@@ -409,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_send_welcome_email_success() {
+    async fn test_notify_welcome_email_success() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -442,7 +445,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
 
         // Give the spawned task time to execute
@@ -451,7 +454,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_send_welcome_email_missing_api_key() {
+    async fn test_notify_welcome_email_missing_api_key() {
         let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
 
         // Set test state
@@ -466,7 +469,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -479,7 +482,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_send_welcome_email_missing_template_id() {
+    async fn test_notify_welcome_email_missing_template_id() {
         let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
 
         // Set test state
@@ -498,7 +501,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -511,7 +514,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_send_welcome_email_http_error() {
+    async fn test_notify_welcome_email_http_error() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -524,7 +527,7 @@ mod tests {
             .await;
 
         // The function returns Ok because send_email spawns async
-        let result = send_welcome_email(&config, &user).await;
+        let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
 
         // Give the spawned task time to execute and log the error
@@ -533,7 +536,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_send_welcome_email_server_timeout() {
+    async fn test_notify_welcome_email_server_timeout() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -551,13 +554,13 @@ mod tests {
             .await;
 
         // Function should return Ok immediately due to async spawning
-        let result = send_welcome_email(&config, &user).await;
+        let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_send_welcome_email_with_different_user_data() {
+    async fn test_notify_welcome_email_with_different_user_data() {
         let mut server = setup_test_server().await;
         let user = users::Model {
             id: Id::new_v4(),
@@ -601,7 +604,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -609,7 +612,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_send_welcome_email_validates_personalization() {
+    async fn test_notify_welcome_email_validates_personalization() {
         let mut server = setup_test_server().await;
         let user = users::Model {
             id: Id::new_v4(),
@@ -653,7 +656,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

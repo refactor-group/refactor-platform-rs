@@ -74,7 +74,7 @@ pub(crate) async fn create(
             .await?;
     info!("User created: {user:?}");
 
-    EmailsAPI::send_welcome_email(&app_state.config, &user).await?;
+    EmailsAPI::notify_welcome_email(&app_state.config, &user).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
