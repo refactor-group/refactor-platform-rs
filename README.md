@@ -84,16 +84,25 @@ The platform uses MailerSend for transactional emails. To configure email functi
 1. **Environment Variables** (for Docker):
    - `MAILERSEND_API_KEY`: Your MailerSend API key
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
+   - `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for session-scheduled notification emails
+   - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
+   - `FRONTEND_BASE_URL`: Base URL used to construct links in email notifications (e.g. `https://myrefactor.com`)
 
 2. **Command Line Arguments** (for direct execution):
    - `--mailersend-api-key`: Your MailerSend API key
    - `--welcome-email-template-id`: The template ID for welcome emails
+   - `--session-scheduled-email-template-id`: The template ID for session-scheduled emails
+   - `--action-assigned-email-template-id`: The template ID for action-assigned emails
+   - `--frontend-base-url`: Base URL for email links
 
 Example:
 
 ```bash
 export MAILERSEND_API_KEY="your-api-key"
 export WELCOME_EMAIL_TEMPLATE_ID="your-template-id"
+export SESSION_SCHEDULED_EMAIL_TEMPLATE_ID="your-template-id"
+export ACTION_ASSIGNED_EMAIL_TEMPLATE_ID="your-template-id"
+export FRONTEND_BASE_URL="https://myrefactor.com"
 ```
 
 ---
