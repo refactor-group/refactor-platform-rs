@@ -24,6 +24,13 @@ pub struct ActionWithAssignees {
     pub assignee_ids: Vec<Id>,
 }
 
+impl ActionWithAssignees {
+    /// Returns true if this action has at least one assignee.
+    pub fn has_assignees(&self) -> bool {
+        !self.assignee_ids.is_empty()
+    }
+}
+
 pub async fn create(
     db: &DatabaseConnection,
     action_model: Model,

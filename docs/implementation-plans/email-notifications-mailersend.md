@@ -260,5 +260,5 @@ These are in addition to the existing `MAILERSEND_API_KEY` and `WELCOME_EMAIL_TE
 
 - [ ] Create Mailersend templates in dashboard and set env vars
 - [ ] Add tests for the new email functions (session scheduled, action assigned)
-- [ ] Wire action assigned email into the `update` handler when `assignee_ids` changes (currently only on `create`)
+- [x] Wire action assigned email into the `update` handler when `assignee_ids` changes (currently only on `create`)
 - [x] Bring welcome email into the `notify_*` naming pattern for consistency

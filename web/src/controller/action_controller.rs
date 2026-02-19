@@ -29,6 +29,14 @@ pub struct ActionRequest {
     pub assignee_ids: Option<Vec<Id>>,
 }
 
+impl ActionRequest {
+    /// Returns true if the request explicitly specifies assignees
+    /// (even if the list is empty, meaning "remove all assignees").
+    pub fn have_assignees_changed(&self) -> bool {
+        self.assignee_ids.is_some()
+    }
+}
+
 /// POST create a new Action
 #[utoipa::path(
     post,
@@ -65,7 +73,7 @@ pub async fn create(
     .await?;
 
     // Best-effort action assigned email — log failures, don't block action creation
-    if !action.assignee_ids.is_empty() {
+    if action.has_assignees() {
         if let Err(e) = EmailsApi::notify_action_assigned(
             app_state.db_conn_ref(),
             &app_state.config,
@@ -138,7 +146,7 @@ pub async fn read(
 )]
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
@@ -146,6 +154,8 @@ pub async fn update(
     Json(request): Json<ActionRequest>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT Update Action with id: {id}");
+
+    let assignees_changed = request.have_assignees_changed();
 
     let action = ActionApi::update_with_assignees(
         app_state.db_conn_ref(),
@@ -156,6 +166,26 @@ pub async fn update(
     .await?;
 
     debug!("Updated Action: {action:?}");
+
+    // Best-effort action assigned email when assignees are explicitly changed
+    if action.has_assignees() && assignees_changed {
+        if let Err(e) = EmailsApi::notify_action_assigned(
+            app_state.db_conn_ref(),
+            &app_state.config,
+            &action.assignee_ids,
+            &user,
+            action.action.body.as_deref().unwrap_or(""),
+            action.action.due_by,
+            action.action.coaching_session_id,
+        )
+        .await
+        {
+            warn!(
+                "Failed to send action assigned emails for action {}: {e:?}",
+                action.action.id
+            );
+        }
+    }
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
