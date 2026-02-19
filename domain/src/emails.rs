@@ -348,7 +348,8 @@ pub async fn notify_action_assigned(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{users, Id};
+    use crate::{coaching_sessions, organizations, users, Id};
+    use chrono::NaiveDate;
     use mockito::{Server, ServerGuard};
     use serial_test::serial;
     use service::config::Config;
@@ -376,9 +377,67 @@ mod tests {
         }
     }
 
+    fn create_test_user_with(
+        first_name: &str,
+        last_name: &str,
+        email: &str,
+        timezone: &str,
+    ) -> users::Model {
+        users::Model {
+            id: Id::new_v4(),
+            first_name: first_name.to_string(),
+            last_name: last_name.to_string(),
+            email: email.to_string(),
+            display_name: Some(format!("{first_name} {last_name}")),
+            password: "hashed_password".to_string(),
+            github_username: None,
+            github_profile_url: None,
+            timezone: timezone.to_string(),
+            role: users::Role::User,
+            roles: vec![],
+            created_at: chrono::Utc::now().fixed_offset(),
+            updated_at: chrono::Utc::now().fixed_offset(),
+        }
+    }
+
+    fn create_test_session() -> coaching_sessions::Model {
+        coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            collab_document_name: None,
+            date: NaiveDate::from_ymd_opt(2026, 3, 4)
+                .unwrap()
+                .and_hms_opt(15, 0, 0)
+                .unwrap(),
+            created_at: chrono::Utc::now().fixed_offset(),
+            updated_at: chrono::Utc::now().fixed_offset(),
+        }
+    }
+
+    fn create_test_organization() -> organizations::Model {
+        organizations::Model {
+            id: Id::new_v4(),
+            name: "Acme Corp".to_string(),
+            logo: None,
+            slug: "acme-corp".to_string(),
+            created_at: chrono::Utc::now().fixed_offset(),
+            updated_at: chrono::Utc::now().fixed_offset(),
+        }
+    }
+
     fn create_config_with_mock(server_url: &str) -> Config {
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
         env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
+        env::set_var("MAILERSEND_BASE_URL", server_url);
+        Config::default()
+    }
+
+    fn create_full_config_with_mock(server_url: &str) -> Config {
+        env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
+        env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
+        env::set_var("SESSION_SCHEDULED_EMAIL_TEMPLATE_ID", "session_template_456");
+        env::set_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID", "action_template_789");
+        env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
         env::set_var("MAILERSEND_BASE_URL", server_url);
         Config::default()
     }
@@ -660,5 +719,332 @@ mod tests {
         assert!(result.is_ok());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    // ── Session Scheduled Email Tests ──────────────────────────────────
+
+    #[tokio::test]
+    #[serial]
+    async fn test_send_session_scheduled_email_personalization() {
+        let _guard = EnvGuard::new(&[
+            "MAILERSEND_API_KEY",
+            "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
+            "FRONTEND_BASE_URL",
+            "MAILERSEND_BASE_URL",
+        ]);
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session = create_test_session();
+        let org = create_test_organization();
+
+        let session_url = format!(
+            "https://app.example.com/coaching-sessions/{}",
+            session.id
+        );
+
+        // First email goes to coachee — verify role-aware personalization
+        let _mock_coachee = server
+            .mock("POST", "/v1/email")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "from": { "email": "hello@myrefactor.com", "name": null },
+                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "subject": "New coaching session scheduled for Wednesday, March 4, 2026",
+                "template_id": "session_template_456",
+                "personalization": [{
+                    "email": "jane@example.com",
+                    "data": {
+                        "first_name": "Jane",
+                        "other_user_first_name": "Alex",
+                        "other_user_last_name": "Smith",
+                        "other_user_role": "coach",
+                        "organization_name": "Acme Corp",
+                        "session_date": "Wednesday, March 4, 2026",
+                        "session_time": "3:00 PM",
+                        "session_url": session_url,
+                    }
+                }]
+            })))
+            .with_status(202)
+            .create_async()
+            .await;
+
+        // Second email goes to coach
+        let _mock_coach = server
+            .mock("POST", "/v1/email")
+            .with_status(202)
+            .create_async()
+            .await;
+
+        let result =
+            send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
+        assert!(result.is_ok());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+
+    // ── Action Assigned Email Tests ────────────────────────────────────
+
+    #[tokio::test]
+    #[serial]
+    async fn test_send_action_assigned_email_success() {
+        let _guard = EnvGuard::new(&[
+            "MAILERSEND_API_KEY",
+            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
+            "FRONTEND_BASE_URL",
+            "MAILERSEND_BASE_URL",
+        ]);
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session_id = Id::new_v4();
+        let org = create_test_organization();
+
+        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}");
+        let due_by: DateTime<FixedOffset> = NaiveDate::from_ymd_opt(2026, 3, 7)
+            .unwrap()
+            .and_hms_opt(17, 0, 0)
+            .unwrap()
+            .and_utc()
+            .fixed_offset();
+
+        let _mock = server
+            .mock("POST", "/v1/email")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "from": { "email": "hello@myrefactor.com", "name": null },
+                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "subject": "You've been assigned a new action",
+                "template_id": "action_template_789",
+                "personalization": [{
+                    "email": "jane@example.com",
+                    "data": {
+                        "first_name": "Jane",
+                        "action_body": "Read chapters 3-5 of Radical Candor",
+                        "due_date": "Saturday, March 7, 2026",
+                        "assigner_first_name": "Alex",
+                        "assigner_last_name": "Smith",
+                        "organization_name": "Acme Corp",
+                        "overarching_goal": "Improve communication",
+                        "session_url": session_url,
+                    }
+                }]
+            })))
+            .with_status(202)
+            .create_async()
+            .await;
+
+        let result = send_action_assigned_email(
+            &config,
+            &[assignee],
+            &assigner,
+            "Read chapters 3-5 of Radical Candor",
+            Some(due_by),
+            session_id,
+            &org,
+            "Improve communication",
+        )
+        .await;
+        assert!(result.is_ok());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_send_action_assigned_email_no_due_date() {
+        let _guard = EnvGuard::new(&[
+            "MAILERSEND_API_KEY",
+            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
+            "FRONTEND_BASE_URL",
+            "MAILERSEND_BASE_URL",
+        ]);
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session_id = Id::new_v4();
+        let org = create_test_organization();
+
+        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}");
+
+        let _mock = server
+            .mock("POST", "/v1/email")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "from": { "email": "hello@myrefactor.com", "name": null },
+                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "subject": "You've been assigned a new action",
+                "template_id": "action_template_789",
+                "personalization": [{
+                    "email": "jane@example.com",
+                    "data": {
+                        "first_name": "Jane",
+                        "action_body": "Follow up with team",
+                        "due_date": "No due date set",
+                        "assigner_first_name": "Alex",
+                        "assigner_last_name": "Smith",
+                        "organization_name": "Acme Corp",
+                        "overarching_goal": "",
+                        "session_url": session_url,
+                    }
+                }]
+            })))
+            .with_status(202)
+            .create_async()
+            .await;
+
+        let result = send_action_assigned_email(
+            &config,
+            &[assignee],
+            &assigner,
+            "Follow up with team",
+            None,
+            session_id,
+            &org,
+            "",
+        )
+        .await;
+        assert!(result.is_ok());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_send_action_assigned_email_multiple_assignees() {
+        let _guard = EnvGuard::new(&[
+            "MAILERSEND_API_KEY",
+            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
+            "FRONTEND_BASE_URL",
+            "MAILERSEND_BASE_URL",
+        ]);
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let assignee1 = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let assignee2 = create_test_user_with("Bob", "Jones", "bob@example.com", "UTC");
+        let session_id = Id::new_v4();
+        let org = create_test_organization();
+
+        let _mock = server
+            .mock("POST", "/v1/email")
+            .with_status(202)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_action_assigned_email(
+            &config,
+            &[assignee1, assignee2],
+            &assigner,
+            "Complete the survey",
+            None,
+            session_id,
+            &org,
+            "",
+        )
+        .await;
+        assert!(result.is_ok());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_send_action_assigned_email_missing_template_id() {
+        let _guard = EnvGuard::new(&[
+            "MAILERSEND_API_KEY",
+            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
+            "FRONTEND_BASE_URL",
+            "MAILERSEND_BASE_URL",
+        ]);
+
+        let server = setup_test_server().await;
+        env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
+        env::set_var("MAILERSEND_BASE_URL", &server.url());
+        env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
+        env::remove_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID");
+        let config = Config::default();
+
+        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session_id = Id::new_v4();
+        let org = create_test_organization();
+
+        let result = send_action_assigned_email(
+            &config,
+            &[assignee],
+            &assigner,
+            "Some action",
+            None,
+            session_id,
+            &org,
+            "",
+        )
+        .await;
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            match e.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+            }
+        }
+    }
+
+    // ── format_session_date_time Unit Tests ────────────────────────────
+
+    #[test]
+    fn test_format_session_date_time_utc() {
+        let date = NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+        let (date_str, time_str) = format_session_date_time(date, "UTC");
+        assert_eq!(date_str, "Wednesday, March 4, 2026");
+        assert_eq!(time_str, "3:00 PM");
+    }
+
+    #[test]
+    fn test_format_session_date_time_eastern() {
+        let date = NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+        let (date_str, time_str) = format_session_date_time(date, "America/New_York");
+        assert_eq!(date_str, "Wednesday, March 4, 2026");
+        assert_eq!(time_str, "10:00 AM");
+    }
+
+    #[test]
+    fn test_format_session_date_time_invalid_timezone_falls_back_to_utc() {
+        let date = NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+        let (date_str, time_str) = format_session_date_time(date, "Invalid/Timezone");
+        assert_eq!(date_str, "Wednesday, March 4, 2026");
+        assert_eq!(time_str, "3:00 PM UTC");
+    }
+
+    #[test]
+    fn test_format_session_date_time_date_rolls_over_with_timezone() {
+        // 2026-03-07 23:00 UTC → 2026-03-08 08:00 in Asia/Tokyo (UTC+9)
+        let date = NaiveDate::from_ymd_opt(2026, 3, 7)
+            .unwrap()
+            .and_hms_opt(23, 0, 0)
+            .unwrap();
+        let (date_str, time_str) = format_session_date_time(date, "Asia/Tokyo");
+        assert_eq!(date_str, "Sunday, March 8, 2026");
+        assert_eq!(time_str, "8:00 AM");
     }
 }
