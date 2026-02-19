@@ -118,10 +118,7 @@ pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Resul
 
 /// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
 /// Falls back to UTC formatting if the timezone string is invalid.
-fn format_session_date_time(
-    date: NaiveDateTime,
-    timezone: &str,
-) -> (String, String) {
+fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, String) {
     let utc_dt = Utc.from_utc_datetime(&date);
 
     match timezone.parse::<Tz>() {
@@ -154,8 +151,7 @@ async fn send_session_email_to_recipient(
     let template_id = SessionScheduled::resolve_template_id(config)?;
     let base_url = SessionScheduled::resolve_base_url(config)?;
 
-    let (session_date, session_time) =
-        format_session_date_time(session.date, &recipient.timezone);
+    let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = format!("{}/coaching-sessions/{}", base_url, session.id);
 
     let email_request = SendEmailRequestBuilder::new()
@@ -246,7 +242,10 @@ pub async fn send_action_assigned_email(
     let template_id = ActionAssigned::resolve_template_id(config)?;
     let base_url = ActionAssigned::resolve_base_url(config)?;
 
-    let session_url = format!("{}/coaching-sessions/{}?tab=actions", base_url, ctx.session_id);
+    let session_url = format!(
+        "{}/coaching-sessions/{}?tab=actions",
+        base_url, ctx.session_id
+    );
 
     for assignee in assignees {
         let due_date_str = match ctx.due_by {
@@ -333,10 +332,7 @@ pub async fn notify_action_assigned(
     let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
         .await
         .unwrap_or_default();
-    let goal_title = goals
-        .first()
-        .and_then(|g| g.title.as_deref())
-        .unwrap_or("");
+    let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
 
     let ctx = ActionEmailContext {
         action_body,
@@ -439,7 +435,10 @@ mod tests {
     fn create_full_config_with_mock(server_url: &str) -> Config {
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
         env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
-        env::set_var("SESSION_SCHEDULED_EMAIL_TEMPLATE_ID", "session_template_456");
+        env::set_var(
+            "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
+            "session_template_456",
+        );
         env::set_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID", "action_template_789");
         env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
         env::set_var("MAILERSEND_BASE_URL", server_url);
@@ -745,10 +744,7 @@ mod tests {
         let session = create_test_session();
         let org = create_test_organization();
 
-        let session_url = format!(
-            "https://app.example.com/coaching-sessions/{}",
-            session.id
-        );
+        let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
 
         // First email goes to coachee — verify role-aware personalization
         let _mock_coachee = server
@@ -783,8 +779,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result =
-            send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
+        let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
         assert!(result.is_ok());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -810,7 +805,8 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+        let session_url =
+            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
         let due_by: DateTime<FixedOffset> = NaiveDate::from_ymd_opt(2026, 3, 7)
             .unwrap()
             .and_hms_opt(17, 0, 0)
@@ -875,7 +871,8 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+        let session_url =
+            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
 
         let _mock = server
             .mock("POST", "/v1/email")

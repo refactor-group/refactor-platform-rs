@@ -9,7 +9,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{coaching_session as CoachingSessionApi, coaching_sessions::Model, emails as EmailsApi, Id};
+use domain::{
+    coaching_session as CoachingSessionApi, coaching_sessions::Model, emails as EmailsApi, Id,
+};
 use service::config::ApiVersion;
 
 use log::*;
