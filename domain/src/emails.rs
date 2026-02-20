@@ -420,8 +420,12 @@ pub async fn notify_action_assigned(
             .await?;
     let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-    // Look up overarching goal for this session (use first if multiple exist)
-    let goals = overarching_goal::find_by_coaching_session_id(db, session.id).await?;
+    // Look up overarching goal for this session (use first if multiple exist).
+    // This is optional metadata — a DB error here should not prevent the email
+    // from being sent, so we fall back to an empty list on failure.
+    let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
+        .await
+        .unwrap_or_default();
     let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
 
     let ctx = ActionEmailContext {

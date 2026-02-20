@@ -142,15 +142,15 @@ Clippy enforces a maximum of 7 arguments per function (`clippy::too_many_argumen
 
 ```rust
 // ✅ Good - bundle related params into a struct
-pub struct ActionEmailContext<'a> {
-    pub action_body: &'a str,
-    pub due_by: Option<DateTime<FixedOffset>>,
-    pub session_id: Id,
-    pub organization: &'a organizations::Model,
-    pub overarching_goal: &'a str,
+struct ActionEmailContext<'a> {
+    action_body: &'a str,
+    due_by: Option<DateTime<FixedOffset>>,
+    session_id: Id,
+    organization: &'a organizations::Model,
+    overarching_goal: &'a str,
 }
 
-pub async fn send_email(
+async fn send_email(
     config: &Config,
     assignees: &[users::Model],
     assigner: &users::Model,

@@ -1,11 +1,15 @@
-use serde::Deserialize;
-use utoipa::ToSchema;
-
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::action::ActionWithAssignees;
+use domain::{action as ActionApi, actions::Model, emails as EmailsApi, users, Id};
+use log::*;
+use sea_orm::DatabaseConnection;
+use serde::Deserialize;
 use serde_json::json;
+use service::config::ApiVersion;
+use utoipa::ToSchema;
 
 use crate::controller::ApiResponse;
 use crate::extractors::{
@@ -14,11 +18,6 @@ use crate::extractors::{
 use crate::params::action::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use domain::action::ActionWithAssignees;
-use domain::{action as ActionApi, actions::Model, emails as EmailsApi, users, Id};
-use log::*;
-use sea_orm::DatabaseConnection;
-use service::config::ApiVersion;
 
 /// Request body for creating or updating an action.
 #[derive(Debug, Deserialize, ToSchema)]
