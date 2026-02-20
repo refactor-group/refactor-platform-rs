@@ -1,4 +1,5 @@
 use crate::controller::ApiResponse;
+use crate::extractors::coaching_session_access::CoachingSessionAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
@@ -36,16 +37,8 @@ use log::*;
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
+    CoachingSessionAccess (coaching_session): CoachingSessionAccess,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Coaching Session by ID: {coaching_session_id}");
-
-    let coaching_session =
-        CoachingSessionApi::find_by_id(app_state.db_conn_ref(), coaching_session_id).await?;
-
-    debug!("Found Coaching Session: {coaching_session:?}");
-
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
         coaching_session,
