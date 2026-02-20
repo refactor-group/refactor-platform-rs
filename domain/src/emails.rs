@@ -178,7 +178,7 @@ async fn send_session_email_to_recipient(
 }
 
 /// Send session-scheduled notification emails to both coach and coachee.
-pub async fn send_session_scheduled_email(
+async fn send_session_scheduled_email(
     config: &Config,
     coach: &users::Model,
     coachee: &users::Model,
@@ -226,7 +226,7 @@ pub struct ActionEmailContext<'a> {
 }
 
 /// Send action-assigned notification emails to all assignees.
-pub async fn send_action_assigned_email(
+async fn send_action_assigned_email(
     config: &Config,
     assignees: &[users::Model],
     assigner: &users::Model,
