@@ -317,3 +317,53 @@ impl Check for UserCanAccessCoachingSession {
             || coaching_relationship.coachee_id == authenticated_user.id
     }
 }
+
+/// Checks if the authenticated user is the coach in the coaching relationship
+/// associated with a coaching session.
+///
+/// # Arguments
+/// * `args[0]` - The coaching session ID to check
+pub struct UserIsCoach;
+
+#[async_trait]
+impl Check for UserIsCoach {
+    async fn eval(
+        &self,
+        app_state: &AppState,
+        authenticated_user: &domain::users::Model,
+        args: Vec<Id>,
+    ) -> bool {
+        let coaching_session_id = args[0];
+
+        let coaching_session = match coaching_session::find_by_id(
+            app_state.db_conn_ref(),
+            coaching_session_id,
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(e) => {
+                error!("Error finding coaching session {coaching_session_id}: {e:?}");
+                return false;
+            }
+        };
+
+        let coaching_relationship = match coaching_relationship::find_by_id(
+            app_state.db_conn_ref(),
+            coaching_session.coaching_relationship_id,
+        )
+        .await
+        {
+            Ok(relationship) => relationship,
+            Err(e) => {
+                error!(
+                    "Error finding coaching relationship {}: {e:?}",
+                    coaching_session.coaching_relationship_id
+                );
+                return false;
+            }
+        };
+
+        coaching_relationship.coach_id == authenticated_user.id
+    }
+}

@@ -2,7 +2,7 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    organizations, overarching_goals, users, Id,
+    organizations, overarching_goals, provider::Provider, users, Id,
 };
 use log::debug;
 use sea_orm::{
@@ -64,6 +64,21 @@ pub async fn find_by_id_with_coaching_relationship(
 pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(coaching_session_id).exec(db).await?;
     Ok(())
+}
+
+pub async fn update_meeting(
+    db: &DatabaseConnection,
+    id: Id,
+    meeting_url: String,
+    provider: Provider,
+) -> Result<Model, Error> {
+    let session = find_by_id(db, id).await?;
+    let mut active_model: ActiveModel = session.into();
+    active_model.meeting_url = Set(Some(meeting_url));
+    active_model.provider = Set(Some(provider));
+    active_model.updated_at = Set(chrono::Utc::now().into());
+
+    Ok(active_model.save(db).await?.try_into_model()?)
 }
 
 pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {

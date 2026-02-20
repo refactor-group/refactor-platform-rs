@@ -1,4 +1,4 @@
-use crate::protect::{Predicate, UserCanAccessCoachingSession};
+use crate::protect::{Predicate, UserCanAccessCoachingSession, UserIsCoach};
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
     extract::{Path, Query, Request, State},
@@ -145,4 +145,24 @@ pub(crate) async fn delete(
     } else {
         (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
     }
+}
+
+/// Checks that coaching session record referenced by `coaching_session_id`
+///     * exists
+///     * that the authenticated user can access it
+///     * that the authenticated user is the coach
+///  Intended to be given to axum::middleware::from_fn_with_state in the router
+pub(crate) async fn create_meeting(
+    State(app_state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(coaching_session_id): Path<Id>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    let checks: Vec<Predicate> = vec![
+        Predicate::new(UserCanAccessCoachingSession, vec![coaching_session_id]),
+        Predicate::new(UserIsCoach, vec![coaching_session_id]),
+    ];
+
+    crate::protect::authorize(&app_state, user, request, next, checks).await
 }

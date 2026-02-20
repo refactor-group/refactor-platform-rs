@@ -113,6 +113,28 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
     Ok(())
 }
 
+/// Create a meeting for an existing coaching session.
+///
+/// Looks up the coaching relationship to find the coach's OAuth connection,
+/// creates a meeting space via the provider's API, and updates the session
+/// with the resulting meeting URL and provider.
+pub async fn create_meeting(
+    db: &DatabaseConnection,
+    config: &Config,
+    session_id: Id,
+    provider: crate::provider::Provider,
+) -> Result<Model, Error> {
+    let session = coaching_session::find_by_id(db, session_id).await?;
+
+    let coaching_relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+
+    let meeting_url =
+        create_meeting_url(db, config, coaching_relationship.coach_id, &provider).await?;
+
+    Ok(coaching_session::update_meeting(db, session_id, meeting_url, provider).await?)
+}
+
 /// Create a meeting URL for the given provider using the coach's OAuth connection.
 async fn create_meeting_url(
     db: &DatabaseConnection,

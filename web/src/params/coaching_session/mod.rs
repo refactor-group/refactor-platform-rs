@@ -1,3 +1,5 @@
+pub(crate) mod meeting;
+
 use chrono::{NaiveDate, NaiveDateTime};
 use domain::provider::Provider;
 use sea_orm::{Order, Value};
