@@ -8,13 +8,6 @@ pub use entity::{
     users::Role, Id,
 };
 
-// AI Meeting Integration entity re-exports
-pub use entity::{
-    ai_privacy_level, ai_suggested_items, ai_suggestion, meeting_recording_status,
-    meeting_recordings, sentiment, transcript_segments, transcription_status, transcriptions,
-    user_integrations,
-};
-
 pub mod action;
 pub mod agreement;
 pub mod coaching_relationship;
@@ -28,13 +21,6 @@ pub mod overarching_goal;
 pub mod query;
 pub mod user;
 pub mod user_role;
-
-// AI Meeting Integration modules
-pub mod ai_suggested_item;
-pub mod meeting_recording;
-pub mod transcript_segment;
-pub mod transcription;
-pub mod user_integration;
 
 pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
     Id::parse_str(uuid_str).map_err(|_| error::Error {

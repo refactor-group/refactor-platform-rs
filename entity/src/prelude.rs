@@ -4,10 +4,3 @@ pub use super::coaching_relationships::Entity as CoachingRelationships;
 pub use super::oauth_connections::Entity as OauthConnections;
 pub use super::organizations::Entity as Organizations;
 pub use super::users::Entity as Users;
-
-// AI Meeting Integration entities
-pub use super::ai_suggested_items::Entity as AiSuggestedItems;
-pub use super::meeting_recordings::Entity as MeetingRecordings;
-pub use super::transcript_segments::Entity as TranscriptSegments;
-pub use super::transcriptions::Entity as Transcriptions;
-pub use super::user_integrations::Entity as UserIntegrations;
