@@ -225,63 +225,58 @@ impl MailerSendClient {
     /// Create a new MailerSend client with authentication
     pub async fn new(config: &Config) -> Result<Self, Error> {
         let client = build_client(config).await?;
-        let base_url = "https://api.mailersend.com/v1".to_string();
+        let base_url = config.mailersend_base_url().to_string();
 
         Ok(Self { client, base_url })
     }
 
-    /// Send an email using MailerSend API asynchronously
+    /// Send an email using the MailerSend API.
     ///
-    /// This method spawns the email sending operation in a background task,
-    /// allowing the caller to continue without waiting for the email to be sent.
-    /// The result of the email sending is logged but not returned to the caller.
-    pub async fn send_email(&self, request: SendEmailRequest) {
-        // Clone values needed for the async task
-        let client = self.client.clone();
-        let base_url = self.base_url.clone();
-        let to_count = request.to.len();
+    /// Errors are returned to the caller so they can be handled by the
+    /// best-effort pattern in the controller layer.
+    pub async fn send_email(&self, request: SendEmailRequest) -> Result<(), Error> {
+        let url = format!("{}/email", self.base_url);
         let to_emails: Vec<String> = request.to.iter().map(|r| r.email.clone()).collect();
 
-        info!("Queuing email for {to_count} recipients");
+        info!(
+            "Sending email to {} recipients: {to_emails:?}",
+            request.to.len()
+        );
 
-        // Spawn the email sending as a background task
-        tokio::spawn(async move {
-            let url = format!("{base_url}/email");
-
-            info!("Sending email to {to_count} recipients: {to_emails:?}");
-
-            let response = match client.post(&url).json(&request).send().await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    warn!("Failed to send email request: {e:?}");
-                    return Err(Error {
-                        source: Some(Box::new(e)),
-                        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                            "Failed to send email request".to_string(),
-                        )),
-                    });
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                warn!("Failed to send email request: {e:?}");
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                        "Failed to send email request".to_string(),
+                    )),
                 }
-            };
+            })?;
 
-            let status = response.status();
-            if status.is_success() {
-                let message_id = response
-                    .headers()
-                    .get("x-message-id")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
+        let status = response.status();
+        if status.is_success() {
+            let message_id = response
+                .headers()
+                .get("x-message-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
 
-                info!("Email sent successfully to {to_emails:?}, message_id: {message_id:?}");
-                Ok(())
-            } else {
-                let error_text = response.text().await.unwrap_or_default();
-                warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
-                Err(Error {
-                    source: None,
-                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text)),
-                })
-            }
-        });
+            info!("Email sent successfully to {to_emails:?}, message_id: {message_id:?}");
+            Ok(())
+        } else {
+            let error_text = response.text().await.unwrap_or_default();
+            warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
+            Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text)),
+            })
+        }
     }
 }
 

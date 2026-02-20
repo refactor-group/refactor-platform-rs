@@ -118,6 +118,7 @@ pub async fn update_status(
     }
 }
 
+/// Finds all overarching goals associated with the given coaching session.
 pub async fn find_by_coaching_session_id(
     db: &DatabaseConnection,
     coaching_session_id: Id,
