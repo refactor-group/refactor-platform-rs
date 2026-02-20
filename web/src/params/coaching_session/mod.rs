@@ -2,7 +2,7 @@ pub(crate) mod meeting;
 
 use chrono::{NaiveDate, NaiveDateTime};
 use domain::provider::Provider;
-use sea_orm::{Order, Value};
+use sea_orm::{ActiveEnum, Order, Value};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
@@ -75,7 +75,7 @@ impl IntoUpdateMap for UpdateParams {
         if let Some(provider) = self.provider {
             update_map.insert(
                 "provider".to_string(),
-                Some(Value::String(Some(Box::new(provider.to_string())))),
+                Some(Value::String(Some(Box::new(provider.to_value())))),
             );
         }
         update_map
