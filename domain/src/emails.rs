@@ -191,6 +191,33 @@ impl ResolvedEmailConfig {
             url_path_template,
         })
     }
+
+    /// Build a full session URL by combining `base_url` and `url_path_template`.
+    ///
+    /// Returns a config error if either field is `None`, which indicates a
+    /// programming error — this method should only be called on configs created
+    /// with `needs_base_url: true`.
+    fn build_session_url(&self, session_id: &Id) -> Result<String, Error> {
+        let base_url = self.base_url.as_deref().ok_or_else(|| {
+            error!("Cannot build session URL: base_url not resolved");
+            Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            }
+        })?;
+        let path = self
+            .url_path_template
+            .as_deref()
+            .ok_or_else(|| {
+                error!("Cannot build session URL: url_path_template not resolved");
+                Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+                }
+            })?
+            .replace("{session_id}", &session_id.to_string());
+        Ok(format!("{base_url}{path}"))
+    }
 }
 
 /// Send a session-scheduled notification email to a single recipient.
@@ -204,13 +231,7 @@ async fn send_session_email_to_recipient(
     organization: &organizations::Model,
 ) -> Result<(), Error> {
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
-    let base_url = email_config.base_url.as_deref().unwrap_or_default();
-    let path = email_config
-        .url_path_template
-        .as_deref()
-        .unwrap_or_default()
-        .replace("{session_id}", &session.id.to_string());
-    let session_url = format!("{base_url}{path}");
+    let session_url = email_config.build_session_url(&session.id)?;
 
     let email_request = SendEmailRequestBuilder::new()
         .from("hello@myrefactor.com")
@@ -310,14 +331,7 @@ async fn send_action_assigned_email(
     );
 
     let email_config = ResolvedEmailConfig::new::<ActionAssigned>(config, true).await?;
-
-    let base_url = email_config.base_url.as_deref().unwrap_or_default();
-    let path = email_config
-        .url_path_template
-        .as_deref()
-        .unwrap_or_default()
-        .replace("{session_id}", &ctx.session_id.to_string());
-    let session_url = format!("{base_url}{path}");
+    let session_url = email_config.build_session_url(&ctx.session_id)?;
 
     for assignee in assignees {
         let due_date_str = match ctx.due_by {
@@ -1050,6 +1064,102 @@ mod tests {
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            match e.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+            }
+        }
+    }
+
+    // ── build_session_url Unit Tests ────────────────────────────────────
+
+    /// Helper to construct a `ResolvedEmailConfig` with specific URL fields,
+    /// without needing a real MailerSend client.
+    async fn create_test_email_config(
+        server_url: &str,
+        base_url: Option<&str>,
+        url_path_template: Option<&str>,
+    ) -> ResolvedEmailConfig {
+        let config = create_config_with_mock(server_url);
+        ResolvedEmailConfig {
+            client: MailerSendClient::new(&config).await.unwrap(),
+            template_id: "test_template".to_string(),
+            base_url: base_url.map(String::from),
+            url_path_template: url_path_template.map(String::from),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_build_session_url_success() {
+        let server = setup_test_server().await;
+        let email_config = create_test_email_config(
+            &server.url(),
+            Some("https://app.example.com"),
+            Some("/coaching-sessions/{session_id}"),
+        )
+        .await;
+
+        let session_id = Id::new_v4();
+        let result = email_config.build_session_url(&session_id);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            format!("https://app.example.com/coaching-sessions/{session_id}")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_build_session_url_custom_path_template() {
+        let server = setup_test_server().await;
+        let email_config = create_test_email_config(
+            &server.url(),
+            Some("https://app.example.com"),
+            Some("/sessions/{session_id}?tab=actions"),
+        )
+        .await;
+
+        let session_id = Id::new_v4();
+        let result = email_config.build_session_url(&session_id).unwrap();
+
+        assert_eq!(
+            result,
+            format!("https://app.example.com/sessions/{session_id}?tab=actions")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_build_session_url_missing_base_url() {
+        let server = setup_test_server().await;
+        let email_config =
+            create_test_email_config(&server.url(), None, Some("/coaching-sessions/{session_id}"))
+                .await;
+
+        let result = email_config.build_session_url(&Id::new_v4());
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            match e.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_build_session_url_missing_url_path_template() {
+        let server = setup_test_server().await;
+        let email_config =
+            create_test_email_config(&server.url(), Some("https://app.example.com"), None).await;
+
+        let result = email_config.build_session_url(&Id::new_v4());
 
         assert!(result.is_err());
         if let Err(e) = result {
