@@ -225,9 +225,7 @@ impl MailerSendClient {
     /// Create a new MailerSend client with authentication
     pub async fn new(config: &Config) -> Result<Self, Error> {
         let client = build_client(config).await?;
-        let base_url = config
-            .mailersend_base_url()
-            .unwrap_or_else(|| "https://api.mailersend.com/v1".to_string());
+        let base_url = config.mailersend_base_url().to_string();
 
         Ok(Self { client, base_url })
     }

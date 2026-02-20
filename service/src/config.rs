@@ -17,6 +17,9 @@ const API_VERSIONS: APiVersionList = [DEFAULT_API_VERSION];
 
 static X_VERSION: &str = "x-version";
 
+/// Default MailerSend API base URL used when `MAILERSEND_BASE_URL` is not set.
+pub const DEFAULT_MAILERSEND_BASE_URL: &str = "https://api.mailersend.com/v1";
+
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Header)]
 pub struct ApiVersion {
@@ -127,10 +130,10 @@ pub struct Config {
     #[arg(long, env)]
     tiptap_app_id: Option<String>,
 
-    /// The base URL of the MailerSend API (e.g. https://api.mailersend.com/v1).
+    /// The base URL of the MailerSend API.
     /// Override in tests to point at a mock server.
-    #[arg(long, env)]
-    mailersend_base_url: Option<String>,
+    #[arg(long, env, default_value = DEFAULT_MAILERSEND_BASE_URL)]
+    mailersend_base_url: String,
     /// The API key to use when calling the MailerSend API.
     #[arg(long, env)]
     mailersend_api_key: Option<String>,
@@ -233,10 +236,9 @@ impl Config {
         self.tiptap_app_id.clone()
     }
 
-    /// Returns the MailerSend API base URL, if configured.
-    /// Falls back to the production URL when `None`.
-    pub fn mailersend_base_url(&self) -> Option<String> {
-        self.mailersend_base_url.clone()
+    /// Returns the MailerSend API base URL.
+    pub fn mailersend_base_url(&self) -> &str {
+        &self.mailersend_base_url
     }
 
     /// Returns the MailerSend API key, if configured.
