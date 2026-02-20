@@ -81,9 +81,7 @@ pub async fn create(
             &app_state.config,
             &action.assignee_ids,
             &user,
-            action.action.body.as_deref().unwrap_or(""),
-            action.action.due_by,
-            action.action.coaching_session_id,
+            &action.action,
         )
         .await
         {
@@ -162,9 +160,7 @@ async fn notify_added_assignees(
         &app_state.config,
         &new_assignees,
         assigner,
-        action.action.body.as_deref().unwrap_or(""),
-        action.action.due_by,
-        action.action.coaching_session_id,
+        &action.action,
     )
     .await
     {

@@ -1,5 +1,5 @@
 use crate::{
-    coaching_relationship, coaching_session, coaching_sessions,
+    actions, coaching_relationship, coaching_session, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
@@ -135,22 +135,26 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
     }
 }
 
+/// Pre-resolved MailerSend configuration, created once per notification
+/// so that config errors propagate before per-recipient sends begin.
+struct ResolvedEmailConfig {
+    client: MailerSendClient,
+    template_id: String,
+    base_url: String,
+}
+
 /// Send a session-scheduled notification email to a single recipient.
 /// This is called once per recipient (coach and coachee each get their own email).
 async fn send_session_email_to_recipient(
-    config: &Config,
+    email_config: &ResolvedEmailConfig,
     recipient: &users::Model,
     other_user: &users::Model,
     other_user_role: &str,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
 ) -> Result<(), Error> {
-    let mailersend_client = MailerSendClient::new(config).await?;
-    let template_id = SessionScheduled::resolve_template_id(config)?;
-    let base_url = SessionScheduled::resolve_base_url(config)?;
-
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
-    let session_url = format!("{}/coaching-sessions/{}", base_url, session.id);
+    let session_url = format!("{}/coaching-sessions/{}", email_config.base_url, session.id);
 
     let email_request = SendEmailRequestBuilder::new()
         .from("hello@myrefactor.com")
@@ -159,7 +163,7 @@ async fn send_session_email_to_recipient(
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
         .subject(format!("New coaching session scheduled for {session_date}"))
-        .template_id(template_id)
+        .template_id(email_config.template_id.clone())
         .add_personalization("first_name", &recipient.first_name)
         .add_personalization("other_user_first_name", &other_user.first_name)
         .add_personalization("other_user_last_name", &other_user.last_name)
@@ -171,7 +175,7 @@ async fn send_session_email_to_recipient(
         .build()
         .await?;
 
-    mailersend_client.send_email(email_request).await
+    email_config.client.send_email(email_request).await
 }
 
 /// Send session-scheduled notification emails to both coach and coachee.
@@ -187,10 +191,23 @@ async fn send_session_scheduled_email(
         session.id, coach.email, coachee.email
     );
 
+    // Resolve config once — propagate errors since they affect all recipients
+    let email_config = ResolvedEmailConfig {
+        client: MailerSendClient::new(config).await?,
+        template_id: SessionScheduled::resolve_template_id(config)?,
+        base_url: SessionScheduled::resolve_base_url(config)?,
+    };
+
     // Email to coachee: "Your coach, ... has a session with you"
-    if let Err(e) =
-        send_session_email_to_recipient(config, coachee, coach, "coach", session, organization)
-            .await
+    if let Err(e) = send_session_email_to_recipient(
+        &email_config,
+        coachee,
+        coach,
+        "coach",
+        session,
+        organization,
+    )
+    .await
     {
         warn!(
             "Failed to send session scheduled email to coachee {}: {e:?}",
@@ -199,9 +216,15 @@ async fn send_session_scheduled_email(
     }
 
     // Email to coach: "Your coachee, ... has a session with you"
-    if let Err(e) =
-        send_session_email_to_recipient(config, coach, coachee, "coachee", session, organization)
-            .await
+    if let Err(e) = send_session_email_to_recipient(
+        &email_config,
+        coach,
+        coachee,
+        "coachee",
+        session,
+        organization,
+    )
+    .await
     {
         warn!(
             "Failed to send session scheduled email to coach {}: {e:?}",
@@ -214,12 +237,12 @@ async fn send_session_scheduled_email(
 
 /// Context for an action-assigned email, bundling the action-specific data
 /// that the email needs for personalization.
-pub struct ActionEmailContext<'a> {
-    pub action_body: &'a str,
-    pub due_by: Option<DateTime<FixedOffset>>,
-    pub session_id: Id,
-    pub organization: &'a organizations::Model,
-    pub overarching_goal: &'a str,
+struct ActionEmailContext<'a> {
+    action_body: &'a str,
+    due_by: Option<DateTime<FixedOffset>>,
+    session_id: Id,
+    organization: &'a organizations::Model,
+    overarching_goal: &'a str,
 }
 
 /// Send action-assigned notification emails to all assignees.
@@ -320,16 +343,15 @@ pub async fn notify_action_assigned(
     config: &Config,
     assignee_ids: &[Id],
     assigner: &users::Model,
-    action_body: &str,
-    due_by: Option<DateTime<FixedOffset>>,
-    coaching_session_id: Id,
+    action: &actions::Model,
 ) -> Result<(), Error> {
     // Look up assignee user models
     let assignees = user::find_by_ids(db, assignee_ids).await?;
 
     // Look up session → relationship → organization
     let (session, relationship) =
-        coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id).await?;
+        coaching_session::find_by_id_with_coaching_relationship(db, action.coaching_session_id)
+            .await?;
     let org = organization::find_by_id(db, relationship.organization_id).await?;
 
     // Look up overarching goal for this session (use first if multiple exist)
@@ -337,9 +359,9 @@ pub async fn notify_action_assigned(
     let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
 
     let ctx = ActionEmailContext {
-        action_body,
-        due_by,
-        session_id: coaching_session_id,
+        action_body: action.body.as_deref().unwrap_or(""),
+        due_by: action.due_by,
+        session_id: action.coaching_session_id,
         organization: &org,
         overarching_goal: goal_title,
     };
