@@ -329,9 +329,7 @@ pub async fn notify_action_assigned(
     let org = organization::find_by_id(db, relationship.organization_id).await?;
 
     // Look up overarching goal for this session (use first if multiple exist)
-    let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
-        .await
-        .unwrap_or_default();
+    let goals = overarching_goal::find_by_coaching_session_id(db, session.id).await?;
     let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
 
     let ctx = ActionEmailContext {
