@@ -81,7 +81,8 @@ services:
     expose:
       - "4000"                            # Container listens on port 4000 (entrypoint.sh default)
     depends_on:
-      - migrator                          # Start after migrations complete
+      migrator:
+        condition: service_completed_successfully  # Wait for migrations to finish
     networks:
       # On BOTH networks: default (for postgres) and preview-ingress (for NGINX)
       - default
