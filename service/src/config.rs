@@ -150,6 +150,18 @@ pub struct Config {
     /// Used to construct links in email notifications.
     #[arg(long, env)]
     frontend_base_url: Option<String>,
+    /// URL path template for session-scheduled email links.
+    /// Use `{session_id}` as a placeholder for the coaching session ID.
+    #[arg(long, env, default_value = "/coaching-sessions/{session_id}")]
+    session_scheduled_email_url_path: String,
+    /// URL path template for action-assigned email links.
+    /// Use `{session_id}` as a placeholder for the coaching session ID.
+    #[arg(
+        long,
+        env,
+        default_value = "/coaching-sessions/{session_id}?tab=actions"
+    )]
+    action_assigned_email_url_path: String,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -264,6 +276,16 @@ impl Config {
     /// Returns the frontend application base URL used to construct links in emails.
     pub fn frontend_base_url(&self) -> Option<String> {
         self.frontend_base_url.clone()
+    }
+
+    /// Returns the URL path template for session-scheduled email links.
+    pub fn session_scheduled_email_url_path(&self) -> &str {
+        &self.session_scheduled_email_url_path
+    }
+
+    /// Returns the URL path template for action-assigned email links.
+    pub fn action_assigned_email_url_path(&self) -> &str {
+        &self.action_assigned_email_url_path
     }
 
     pub fn runtime_env(&self) -> RustEnv {

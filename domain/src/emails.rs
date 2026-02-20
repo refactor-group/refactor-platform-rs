@@ -38,6 +38,12 @@ trait EmailNotification {
         })
     }
 
+    /// Return the URL path template from config for this notification type, if any.
+    /// The template may contain `{session_id}` as a placeholder.
+    fn url_path_template(_config: &Config) -> Option<String> {
+        None
+    }
+
     /// Resolve the frontend base URL from config, or return a config error.
     fn resolve_base_url(config: &Config) -> Result<String, Error> {
         config.frontend_base_url().ok_or_else(|| {
@@ -61,6 +67,9 @@ impl EmailNotification for SessionScheduled {
     fn notification_name() -> &'static str {
         "session scheduled"
     }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
 }
 
 struct ActionAssigned;
@@ -70,6 +79,19 @@ impl EmailNotification for ActionAssigned {
     }
     fn notification_name() -> &'static str {
         "action assigned"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.action_assigned_email_url_path().to_owned())
+    }
+}
+
+struct WelcomeEmail;
+impl EmailNotification for WelcomeEmail {
+    fn template_id(config: &Config) -> Option<String> {
+        config.welcome_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "welcome"
     }
 }
 
@@ -84,16 +106,8 @@ pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Resul
         user.email, user.id
     );
 
-    let mailersend_client = MailerSendClient::new(config).await?;
-
-    let template_id = config.welcome_email_template_id().ok_or_else(|| {
-        error!("Welcome email template ID not configured");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-        }
-    })?;
-    info!("Using template ID: {template_id}");
+    let email_config = ResolvedEmailConfig::new::<WelcomeEmail>(config, false).await?;
+    info!("Using template ID: {}", email_config.template_id);
 
     debug!("Preparing personalization data for {}", user.email);
 
@@ -104,14 +118,14 @@ pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Resul
             format!("{} {}", user.first_name, user.last_name),
         )
         .subject("Welcome to Refactor Platform")
-        .template_id(template_id)
+        .template_id(email_config.template_id.clone())
         .add_personalization("first_name", &user.first_name)
         .add_personalization("last_name", &user.last_name)
         .build()
         .await?;
     debug!("Email request created for {}", user.email);
 
-    mailersend_client.send_email(email_request).await
+    email_config.client.send_email(email_request).await
 }
 
 /// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
@@ -140,7 +154,43 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
 struct ResolvedEmailConfig {
     client: MailerSendClient,
     template_id: String,
-    base_url: String,
+    /// Frontend base URL for building links in emails.
+    /// `None` for notification types that don't include app links (e.g. welcome emails).
+    base_url: Option<String>,
+    /// URL path template with `{session_id}` placeholder (e.g. `/coaching-sessions/{session_id}`).
+    /// `None` for notification types that don't include app links.
+    url_path_template: Option<String>,
+}
+
+impl ResolvedEmailConfig {
+    /// Resolve all MailerSend configuration for the given notification type.
+    ///
+    /// Creates the HTTP client, resolves the template ID via the `EmailNotification`
+    /// trait, and optionally resolves the frontend base URL and URL path template.
+    /// Errors are returned eagerly so callers fail fast before attempting any
+    /// per-recipient sends.
+    async fn new<N: EmailNotification>(
+        config: &Config,
+        needs_base_url: bool,
+    ) -> Result<Self, Error> {
+        let client = MailerSendClient::new(config).await?;
+        let template_id = N::resolve_template_id(config)?;
+        let (base_url, url_path_template) = if needs_base_url {
+            (
+                Some(N::resolve_base_url(config)?),
+                N::url_path_template(config),
+            )
+        } else {
+            (None, None)
+        };
+
+        Ok(Self {
+            client,
+            template_id,
+            base_url,
+            url_path_template,
+        })
+    }
 }
 
 /// Send a session-scheduled notification email to a single recipient.
@@ -154,7 +204,13 @@ async fn send_session_email_to_recipient(
     organization: &organizations::Model,
 ) -> Result<(), Error> {
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
-    let session_url = format!("{}/coaching-sessions/{}", email_config.base_url, session.id);
+    let base_url = email_config.base_url.as_deref().unwrap_or_default();
+    let path = email_config
+        .url_path_template
+        .as_deref()
+        .unwrap_or_default()
+        .replace("{session_id}", &session.id.to_string());
+    let session_url = format!("{base_url}{path}");
 
     let email_request = SendEmailRequestBuilder::new()
         .from("hello@myrefactor.com")
@@ -191,12 +247,7 @@ async fn send_session_scheduled_email(
         session.id, coach.email, coachee.email
     );
 
-    // Resolve config once — propagate errors since they affect all recipients
-    let email_config = ResolvedEmailConfig {
-        client: MailerSendClient::new(config).await?,
-        template_id: SessionScheduled::resolve_template_id(config)?,
-        base_url: SessionScheduled::resolve_base_url(config)?,
-    };
+    let email_config = ResolvedEmailConfig::new::<SessionScheduled>(config, true).await?;
 
     // Email to coachee: "Your coach, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
@@ -258,14 +309,15 @@ async fn send_action_assigned_email(
         assigner.email
     );
 
-    let mailersend_client = MailerSendClient::new(config).await?;
-    let template_id = ActionAssigned::resolve_template_id(config)?;
-    let base_url = ActionAssigned::resolve_base_url(config)?;
+    let email_config = ResolvedEmailConfig::new::<ActionAssigned>(config, true).await?;
 
-    let session_url = format!(
-        "{}/coaching-sessions/{}?tab=actions",
-        base_url, ctx.session_id
-    );
+    let base_url = email_config.base_url.as_deref().unwrap_or_default();
+    let path = email_config
+        .url_path_template
+        .as_deref()
+        .unwrap_or_default()
+        .replace("{session_id}", &ctx.session_id.to_string());
+    let session_url = format!("{base_url}{path}");
 
     for assignee in assignees {
         let due_date_str = match ctx.due_by {
@@ -283,7 +335,7 @@ async fn send_action_assigned_email(
                 format!("{} {}", assignee.first_name, assignee.last_name),
             )
             .subject("You've been assigned a new action")
-            .template_id(template_id.clone())
+            .template_id(email_config.template_id.clone())
             .add_personalization("first_name", &assignee.first_name)
             .add_personalization("action_body", ctx.action_body)
             .add_personalization("due_date", &due_date_str)
@@ -297,7 +349,7 @@ async fn send_action_assigned_email(
 
         match email_request {
             Ok(request) => {
-                if let Err(e) = mailersend_client.send_email(request).await {
+                if let Err(e) = email_config.client.send_email(request).await {
                     warn!(
                         "Failed to send action assigned email for {}: {e:?}",
                         assignee.email
