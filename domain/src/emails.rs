@@ -111,9 +111,7 @@ pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Resul
         .await?;
     debug!("Email request created for {}", user.email);
 
-    // send_email now handles the async spawning internally
-    mailersend_client.send_email(email_request).await;
-    Ok(())
+    mailersend_client.send_email(email_request).await
 }
 
 /// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
@@ -173,8 +171,7 @@ async fn send_session_email_to_recipient(
         .build()
         .await?;
 
-    mailersend_client.send_email(email_request).await;
-    Ok(())
+    mailersend_client.send_email(email_request).await
 }
 
 /// Send session-scheduled notification emails to both coach and coachee.
@@ -276,7 +273,14 @@ async fn send_action_assigned_email(
             .await;
 
         match email_request {
-            Ok(request) => mailersend_client.send_email(request).await,
+            Ok(request) => {
+                if let Err(e) = mailersend_client.send_email(request).await {
+                    warn!(
+                        "Failed to send action assigned email for {}: {e:?}",
+                        assignee.email
+                    );
+                }
+            }
             Err(e) => warn!(
                 "Failed to build action assigned email for {}: {e:?}",
                 assignee.email
@@ -426,7 +430,7 @@ mod tests {
     fn create_config_with_mock(server_url: &str) -> Config {
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
         env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
-        env::set_var("MAILERSEND_BASE_URL", server_url);
+        env::set_var("MAILERSEND_BASE_URL", format!("{server_url}/v1"));
         Config::default()
     }
 
@@ -439,7 +443,7 @@ mod tests {
         );
         env::set_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID", "action_template_789");
         env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
-        env::set_var("MAILERSEND_BASE_URL", server_url);
+        env::set_var("MAILERSEND_BASE_URL", format!("{server_url}/v1"));
         Config::default()
     }
 
@@ -502,14 +506,12 @@ mod tests {
             })))
             .with_status(202)
             .with_header("x-message-id", "msg_123456789")
+            .expect(1)
             .create_async()
             .await;
 
         let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
-
-        // Give the spawned task time to execute
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
@@ -583,37 +585,34 @@ mod tests {
             .mock("POST", "/v1/email")
             .with_status(400)
             .with_body(r#"{"message": "Invalid request"}"#)
+            .expect(1)
             .create_async()
             .await;
 
-        // The function returns Ok because send_email spawns async
+        // HTTP 400 from MailerSend should propagate as an error
         let result = notify_welcome_email(&config, &user).await;
-        assert!(result.is_ok());
-
-        // Give the spawned task time to execute and log the error
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_server_timeout() {
+    async fn test_notify_welcome_email_server_slow_response() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
 
-        // Create a mock that delays response
+        // Verify that a slightly delayed response still succeeds
         let _mock = server
             .mock("POST", "/v1/email")
             .with_status(202)
             .with_chunked_body(|w| {
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                std::thread::sleep(std::time::Duration::from_millis(50));
                 w.write_all(b"{}")
             })
-            .expect_at_most(1)
+            .expect(1)
             .create_async()
             .await;
 
-        // Function should return Ok immediately due to async spawning
         let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
     }
@@ -661,13 +660,12 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
         let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
@@ -713,13 +711,12 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
         let result = notify_welcome_email(&config, &user).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     // ── Session Scheduled Email Tests ──────────────────────────────────
@@ -767,6 +764,7 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
@@ -774,13 +772,12 @@ mod tests {
         let _mock_coach = server
             .mock("POST", "/v1/email")
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
         let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 
     // ── Action Assigned Email Tests ────────────────────────────────────
@@ -834,6 +831,7 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
@@ -847,8 +845,6 @@ mod tests {
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
@@ -894,6 +890,7 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
@@ -907,8 +904,6 @@ mod tests {
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
@@ -948,8 +943,6 @@ mod tests {
         let result =
             send_action_assigned_email(&config, &[assignee1, assignee2], &assigner, &ctx).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 
     #[tokio::test]
@@ -964,7 +957,7 @@ mod tests {
 
         let server = setup_test_server().await;
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
-        env::set_var("MAILERSEND_BASE_URL", server.url());
+        env::set_var("MAILERSEND_BASE_URL", format!("{}/v1", server.url()));
         env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
         env::remove_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID");
         let config = Config::default();

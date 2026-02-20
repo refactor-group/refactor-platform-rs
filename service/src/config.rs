@@ -127,6 +127,10 @@ pub struct Config {
     #[arg(long, env)]
     tiptap_app_id: Option<String>,
 
+    /// The base URL of the MailerSend API (e.g. https://api.mailersend.com/v1).
+    /// Override in tests to point at a mock server.
+    #[arg(long, env)]
+    mailersend_base_url: Option<String>,
     /// The API key to use when calling the MailerSend API.
     #[arg(long, env)]
     mailersend_api_key: Option<String>,
@@ -229,6 +233,9 @@ impl Config {
         self.tiptap_app_id.clone()
     }
 
+    pub fn mailersend_base_url(&self) -> Option<String> {
+        self.mailersend_base_url.clone()
+    }
     pub fn mailersend_api_key(&self) -> Option<String> {
         self.mailersend_api_key.clone()
     }
