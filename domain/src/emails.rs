@@ -1,3 +1,9 @@
+use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
+use log::*;
+use sea_orm::DatabaseConnection;
+use service::config::Config;
+
 use crate::{
     actions, coaching_relationship, coaching_session, coaching_sessions,
     error::Error,
@@ -5,13 +11,6 @@ use crate::{
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
     organization, organizations, overarching_goal, user, users, Id,
 };
-
-use sea_orm::DatabaseConnection;
-
-use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
-use chrono_tz::Tz;
-use log::*;
-use service::config::Config;
 
 /// Trait for email notifications that need common config prerequisites.
 ///
@@ -76,8 +75,9 @@ impl EmailNotification for ActionAssigned {
 
 /// Send a welcome email to a newly created user.
 ///
-/// Unlike the other `notify_*` functions, no additional data lookups are needed —
-/// the controller already has the user model from the preceding create operation.
+/// This function sends directly rather than delegating to a private `send_*`
+/// helper because no additional data lookups are needed — the controller
+/// already has the user model from the preceding create operation.
 pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
     info!(
         "Initiating welcome email for user: {} ({})",

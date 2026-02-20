@@ -32,8 +32,10 @@ pub struct ActionRequest {
 }
 
 impl ActionRequest {
-    /// Returns true if the request explicitly specifies assignees
-    /// (even if the list is empty, meaning "remove all assignees").
+    /// Returns true if the request explicitly includes an `assignee_ids` field.
+    /// Note: this only signals that the assignee list should be *replaced*, not
+    /// that notifications should be sent — the caller must diff against the
+    /// previous assignee set to determine which users (if any) are newly added.
     pub fn have_assignees_changed(&self) -> bool {
         self.assignee_ids.is_some()
     }

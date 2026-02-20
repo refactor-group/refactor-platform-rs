@@ -233,21 +233,33 @@ impl Config {
         self.tiptap_app_id.clone()
     }
 
+    /// Returns the MailerSend API base URL, if configured.
+    /// Falls back to the production URL when `None`.
     pub fn mailersend_base_url(&self) -> Option<String> {
         self.mailersend_base_url.clone()
     }
+
+    /// Returns the MailerSend API key, if configured.
     pub fn mailersend_api_key(&self) -> Option<String> {
         self.mailersend_api_key.clone()
     }
+
+    /// Returns the MailerSend template ID for welcome emails, if configured.
     pub fn welcome_email_template_id(&self) -> Option<String> {
         self.welcome_email_template_id.clone()
     }
+
+    /// Returns the MailerSend template ID for session-scheduled emails, if configured.
     pub fn session_scheduled_email_template_id(&self) -> Option<String> {
         self.session_scheduled_email_template_id.clone()
     }
+
+    /// Returns the MailerSend template ID for action-assigned emails, if configured.
     pub fn action_assigned_email_template_id(&self) -> Option<String> {
         self.action_assigned_email_template_id.clone()
     }
+
+    /// Returns the frontend application base URL used to construct links in emails.
     pub fn frontend_base_url(&self) -> Option<String> {
         self.frontend_base_url.clone()
     }
