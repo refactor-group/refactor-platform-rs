@@ -54,24 +54,37 @@ Slimmed `oauth_controller` to thin wrappers calling domain functions. `authorize
 ### 5. Web layer: session/meeting endpoints (partial) ✓
 Meeting creation is integrated into the existing `POST /coaching_sessions` flow — passing a `provider` field triggers automatic meeting space creation. Removed the standalone `POST /coaching_relationships/:id/create-google-meet` endpoint and the `coaching_relationship_controller`.
 
+### 6. Create meeting for existing session ✓
+Added `POST /coaching_sessions/:id/meetings` endpoint that creates a provider meeting (e.g. Google Meet) for an existing coaching session. Coach-only, protected by new `UserIsCoach` Check implementation.
+
+**Changes:**
+- `entity_api/src/coaching_session.rs` — added `update_meeting()` to set meeting_url and provider
+- `domain/src/coaching_session.rs` — added `create_meeting()` orchestrating session lookup → meeting creation → session update
+- `web/src/protect/mod.rs` — added `UserIsCoach` Check implementation
+- `web/src/protect/coaching_sessions.rs` — added `create_meeting` middleware using `UserCanAccessCoachingSession` + `UserIsCoach`
+- `web/src/params/coaching_session/meeting.rs` — new `CreateParams { provider }` (params converted from file to directory module)
+- `web/src/controller/coaching_session/meeting_controller.rs` — new `create()` handler
+- `web/src/router.rs` — route wired into `coaching_sessions_routes()`
+
 ## Remaining Steps
 
-### 6. Set existing meeting URL on a session
-Add support for coaches to set an arbitrary meeting URL on a session (e.g., an existing Zoom or Google Meet link) without triggering provider-based meeting creation. This may be handled via the existing `PUT /coaching_sessions/:id` update endpoint by allowing `meeting_url` in the update params. Verify that `meeting_url` is readable by both coaches and coachees via the session GET responses.
+### 7. Remove meeting_recording_controller.rs
+- Delete `web/src/controller/meeting_recording_controller.rs`
+- Remove module declaration from `web/src/controller/mod.rs`
+- Remove routes, OpenAPI paths, and `meeting_recording_routes()` from `web/src/router.rs`
+- This controller belongs to the deferred AI/recording milestone and currently has 6 compile errors
 
-### 7. Delete user_integrations and stale references
+### 8. Delete user_integrations and stale references
 - Delete `entity/src/user_integrations.rs` entity and `entity_api/src/user_integration.rs` module
 - Remove `user_integrations` re-exports from `entity/src/lib.rs`, `entity_api/src/lib.rs`, `domain/src/lib.rs`
 - Remove `integration_controller.rs` and its routes from `web/src/router.rs` (or update it to use `oauth_connections`)
 - Delete the `user_integrations` params module if it exists
 - Search for any remaining `user_integration` references throughout the codebase
 
-### 8. Fix meeting_recording_controller.rs compile errors
-- Fix `meeting_ai` import errors (should be `meeting_ai` crate or re-routed through domain gateways)
-- Update references to removed `coaching_relationships` fields (`coach_ai_privacy_level`, `coachee_ai_privacy_level`, `meeting_url`) — meeting URL should now come from the coaching session, not the relationship
-- This controller may need significant rework or deferral to the AI/recording milestone
+### 9. Set existing meeting URL on a session
+Verify that `PUT /coaching_sessions/:id` with `meeting_url` in the update params works end-to-end. `meeting_url` is already in `UpdateParams`. Verify readable by both coaches and coachees via session GET responses.
 
-### 9. Final verification
+### 10. Final verification
 - `cargo check` — full workspace clean
 - `cargo clippy` — no warnings
 - `cargo test --features mock` — all tests pass
