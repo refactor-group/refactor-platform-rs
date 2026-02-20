@@ -9,10 +9,9 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, ai_suggestion_controller, coaching_session,
-    coaching_session_controller, integration_controller, jwt_controller, note_controller,
-    oauth_controller, organization, organization_controller, overarching_goal_controller,
-    transcription_controller, user, user_controller, user_session_controller, webhook_controller,
+    action_controller, agreement_controller, coaching_session, coaching_session_controller,
+    jwt_controller, note_controller, oauth_controller, organization, organization_controller,
+    overarching_goal_controller, user, user_controller, user_session_controller,
 };
 
 use utoipa::{
@@ -75,15 +74,6 @@ use utoipa_rapidoc::RapiDoc;
             user::coaching_session_controller::index,
             user::overarching_goal_controller::index,
             jwt_controller::generate_collab_token,
-            meeting_recording_controller::get_recording_status,
-            meeting_recording_controller::start_recording,
-            meeting_recording_controller::stop_recording,
-            transcription_controller::get_transcript,
-            transcription_controller::get_transcript_segments,
-            transcription_controller::get_session_summary,
-            ai_suggestion_controller::get_session_suggestions,
-            ai_suggestion_controller::accept_suggestion,
-            ai_suggestion_controller::dismiss_suggestion,
         ),
         components(
             schemas(
@@ -91,13 +81,9 @@ use utoipa_rapidoc::RapiDoc;
                 domain::agreements::Model,
                 domain::coaching_sessions::Model,
                 domain::coaching_relationships::Model,
-                domain::meeting_recordings::Model,
                 domain::notes::Model,
                 domain::organizations::Model,
                 domain::overarching_goals::Model,
-                domain::transcriptions::Model,
-                domain::transcript_segments::Model,
-                domain::ai_suggested_items::Model,
                 domain::users::Model,
                 domain::user::Credentials,
                 params::user::UpdateParams,
@@ -141,7 +127,6 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_user_routes(app_state.clone()))
         .merge(overarching_goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
-        .merge(user_integrations_routes(app_state.clone()))
         .merge(oauth_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
         .merge(user_organizations_routes(app_state.clone()))
@@ -151,10 +136,6 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
-        .merge(meeting_recording_routes(app_state.clone()))
-        .merge(transcription_routes(app_state.clone()))
-        .merge(ai_suggestion_routes(app_state.clone()))
-        .merge(webhook_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
         .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
@@ -540,33 +521,6 @@ fn user_overarching_goals_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
-/// Routes for user integrations (API key management)
-fn user_integrations_routes(app_state: AppState) -> Router {
-    Router::new()
-        .route(
-            "/users/:user_id/integrations",
-            get(integration_controller::read),
-        )
-        .route(
-            "/users/:user_id/integrations",
-            put(integration_controller::update),
-        )
-        .route(
-            "/users/:user_id/integrations/verify/recall-ai",
-            post(integration_controller::verify_recall_ai),
-        )
-        .route(
-            "/users/:user_id/integrations/verify/assembly-ai",
-            post(integration_controller::verify_assembly_ai),
-        )
-        .route(
-            "/users/:user_id/integrations/google",
-            delete(integration_controller::disconnect_google),
-        )
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
-}
-
 /// Routes for Google OAuth flow
 fn oauth_routes(app_state: AppState) -> Router {
     Router::new()
@@ -575,82 +529,6 @@ fn oauth_routes(app_state: AppState) -> Router {
         .merge(
             // Callback doesn't require auth (user is redirected back from Google)
             Router::new().route("/oauth/google/callback", get(oauth_controller::callback)),
-        )
-        .with_state(app_state)
-}
-
-/// Routes for meeting recording operations
-fn meeting_recording_routes(app_state: AppState) -> Router {
-    Router::new()
-        .route(
-            "/coaching_sessions/:id/recording",
-            get(meeting_recording_controller::get_recording_status),
-        )
-        .route(
-            "/coaching_sessions/:id/recording/start",
-            post(meeting_recording_controller::start_recording),
-        )
-        .route(
-            "/coaching_sessions/:id/recording/stop",
-            post(meeting_recording_controller::stop_recording),
-        )
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
-}
-
-/// Routes for transcript and transcription operations
-fn transcription_routes(app_state: AppState) -> Router {
-    Router::new()
-        .route(
-            "/coaching_sessions/:id/transcript",
-            get(transcription_controller::get_transcript),
-        )
-        .route(
-            "/coaching_sessions/:id/transcript/segments",
-            get(transcription_controller::get_transcript_segments),
-        )
-        .route(
-            "/coaching_sessions/:id/summary",
-            get(transcription_controller::get_session_summary),
-        )
-        .route(
-            "/coaching_sessions/:id/transcript/extract-actions",
-            post(transcription_controller::extract_actions),
-        )
-        .route(
-            "/coaching_sessions/:id/transcript/extract-agreements",
-            post(transcription_controller::extract_agreements),
-        )
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
-}
-
-/// Routes for AI suggestion operations (accept/dismiss)
-fn ai_suggestion_routes(app_state: AppState) -> Router {
-    Router::new()
-        .route(
-            "/coaching_sessions/:id/ai-suggestions",
-            get(ai_suggestion_controller::get_session_suggestions),
-        )
-        .route(
-            "/ai-suggestions/:id/accept",
-            post(ai_suggestion_controller::accept_suggestion),
-        )
-        .route(
-            "/ai-suggestions/:id/dismiss",
-            post(ai_suggestion_controller::dismiss_suggestion),
-        )
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
-}
-
-/// Routes for external service webhooks (no authentication - validated by webhook secret)
-fn webhook_routes(app_state: AppState) -> Router {
-    Router::new()
-        .route("/webhooks/recall", post(webhook_controller::recall_webhook))
-        .route(
-            "/webhooks/assemblyai",
-            post(webhook_controller::assemblyai_webhook),
         )
         .with_state(app_state)
 }
