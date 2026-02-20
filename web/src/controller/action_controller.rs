@@ -14,8 +14,10 @@ use crate::extractors::{
 use crate::params::action::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use domain::{action as ActionApi, actions::Model, emails as EmailsApi, Id};
+use domain::action::ActionWithAssignees;
+use domain::{action as ActionApi, actions::Model, emails as EmailsApi, users, Id};
 use log::*;
+use sea_orm::DatabaseConnection;
 use service::config::ApiVersion;
 
 /// Request body for creating or updating an action.
@@ -126,6 +128,53 @@ pub async fn read(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
 
+/// Fetch the current assignee IDs for an action before an update.
+/// Returns `None` if the fetch fails (email notification will be skipped).
+async fn fetch_previous_assignee_ids(db: &DatabaseConnection, action_id: Id) -> Option<Vec<Id>> {
+    match ActionApi::find_assignee_ids(db, action_id).await {
+        Ok(ids) => Some(ids),
+        Err(e) => {
+            warn!(
+                "Failed to fetch previous assignees for action {action_id}, \
+                 skipping action assigned email: {e:?}"
+            );
+            None
+        }
+    }
+}
+
+/// Send best-effort email notifications to newly added assignees only.
+/// Compares the post-update assignee list against `previous_ids` and
+/// only notifies users who were not previously assigned.
+async fn notify_added_assignees(
+    app_state: &AppState,
+    action: &ActionWithAssignees,
+    assigner: &users::Model,
+    previous_ids: &[Id],
+) {
+    let new_assignees = action.added_assignees(previous_ids);
+    if new_assignees.is_empty() {
+        return;
+    }
+
+    if let Err(e) = EmailsApi::notify_action_assigned(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        &new_assignees,
+        assigner,
+        action.action.body.as_deref().unwrap_or(""),
+        action.action.due_by,
+        action.action.coaching_session_id,
+    )
+    .await
+    {
+        warn!(
+            "Failed to send action assigned emails for action {}: {e:?}",
+            action.action.id
+        );
+    }
+}
+
 #[utoipa::path(
     put,
     path = "/actions/{id}",
@@ -157,6 +206,13 @@ pub async fn update(
 
     let assignees_changed = request.have_assignees_changed();
 
+    // Capture current assignees BEFORE the update for diffing
+    let previous_assignee_ids = if assignees_changed {
+        fetch_previous_assignee_ids(app_state.db_conn_ref(), id).await
+    } else {
+        None
+    };
+
     let action = ActionApi::update_with_assignees(
         app_state.db_conn_ref(),
         id,
@@ -167,24 +223,9 @@ pub async fn update(
 
     debug!("Updated Action: {action:?}");
 
-    // Best-effort action assigned email when assignees are explicitly changed
-    if action.has_assignees() && assignees_changed {
-        if let Err(e) = EmailsApi::notify_action_assigned(
-            app_state.db_conn_ref(),
-            &app_state.config,
-            &action.assignee_ids,
-            &user,
-            action.action.body.as_deref().unwrap_or(""),
-            action.action.due_by,
-            action.action.coaching_session_id,
-        )
-        .await
-        {
-            warn!(
-                "Failed to send action assigned emails for action {}: {e:?}",
-                action.action.id
-            );
-        }
+    // Best-effort email — only notify newly added assignees
+    if let Some(prev_ids) = &previous_assignee_ids {
+        notify_added_assignees(&app_state, &action, &user, prev_ids).await;
     }
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))

@@ -47,3 +47,11 @@ where
 
     Ok(result)
 }
+
+/// Returns the user IDs currently assigned to the given action.
+pub async fn find_assignee_ids(
+    db: &DatabaseConnection,
+    action_id: crate::Id,
+) -> Result<Vec<crate::Id>, Error> {
+    Ok(actions_user::find_user_ids_by_action_id(db, action_id).await?)
+}
