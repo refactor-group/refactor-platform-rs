@@ -1169,3 +1169,8 @@ jobs:
                           issue_number: prNumber,
                           body: comment,
                       });
+
+            # Clean up secrets file from runner (runs even on failure)
+            - name: Clean up local env file
+              if: always()
+              run: rm -f /tmp/pr-${{ needs.build-arm64-image.outputs.pr_number }}.env
