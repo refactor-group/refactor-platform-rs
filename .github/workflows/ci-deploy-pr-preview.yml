@@ -873,7 +873,7 @@ jobs:
                   fi
                   echo "--- End SSH key diagnostics ---"
 
-                  if ! ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 \
+                  if ! ssh -vvv -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=10 \
                       -i ~/.ssh/id_ed25519 \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
                       'echo "SSH connection successful"'; then
@@ -890,7 +890,7 @@ jobs:
                   PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
 
                   echo "🧹 Cleaning previous deployment for PR #${PR_NUMBER}..."
-                  ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                  ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
                       "docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true"
                   echo "::notice::✅ Previous deployment cleaned"
@@ -905,19 +905,19 @@ jobs:
 
                   # Transfer Docker Compose configuration to target server
                   echo "📦 Transferring compose file to RPi5..."
-                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                  scp -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       backend-compose/docker-compose.pr-preview.yaml \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}-compose.yaml
 
                   # Transfer nginx preview config and compose file
                   echo "📦 Transferring nginx preview files to RPi5..."
-                  ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                  ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
                       "mkdir -p ~/nginx-preview"
-                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                  scp -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       backend-compose/docker-compose.nginx-preview.yaml \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/nginx-preview-compose.yaml
-                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                  scp -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       backend-compose/nginx-preview/pr-previews.conf \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/nginx-preview/pr-previews.conf
 
@@ -964,7 +964,7 @@ jobs:
                   ENVEOF
 
                   # Transfer deployment configuration to target server
-                  scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                  scp -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       /tmp/pr-${PR_NUMBER}.env \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }}:/home/${{ secrets.RPI5_USERNAME }}/pr-${PR_NUMBER}.env
 
@@ -972,7 +972,7 @@ jobs:
                   # Note: We use an unquoted heredoc delimiter to allow variable expansion
                   # for PR_NUMBER, which enables explicit env file path resolution and
                   # prevents race conditions when multiple PRs deploy simultaneously.
-                  ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+                  ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} << DEPLOY_SCRIPT
                   set -eo pipefail
 
