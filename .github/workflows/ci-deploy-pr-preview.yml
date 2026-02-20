@@ -792,6 +792,15 @@ jobs:
                   FRONTEND_CONTAINER_PORT=3000
                   FRONTEND_EXTERNAL_PORT=${{ needs.build-arm64-image.outputs.frontend_service_port }}
 
+                  # Validate all external ports are within valid TCP range
+                  for PORT_NAME in BACKEND_EXTERNAL_PORT POSTGRES_EXTERNAL_PORT FRONTEND_EXTERNAL_PORT; do
+                      PORT_VALUE=${!PORT_NAME}
+                      if (( PORT_VALUE > 65535 )); then
+                          echo "::error::Port overflow: ${PORT_NAME}=${PORT_VALUE} exceeds 65535 (PR #${PR_NUM} too high)"
+                          exit 1
+                      fi
+                  done
+
                   echo "backend_container_port=${BACKEND_CONTAINER_PORT}" >> $GITHUB_OUTPUT
                   echo "backend_port=${BACKEND_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
                   echo "postgres_port=${POSTGRES_EXTERNAL_PORT}" >> $GITHUB_OUTPUT
