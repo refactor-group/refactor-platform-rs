@@ -536,11 +536,17 @@ jobs:
                       BACKEND_TAGS="${BACKEND_IMAGE},${BACKEND_SHA}"
                   fi
 
-                  # Handle backend image override
+                  # Handle backend image override — validate it exists in registry.
+                  # If the override image is missing, fall back to building from source.
                   if [[ -n "$BACKEND_IMAGE_OVERRIDE" ]]; then
-                      BACKEND_IMAGE="$BACKEND_IMAGE_OVERRIDE"
-                      BACKEND_NEEDS_BUILD=false
-                      BACKEND_BUILD_MODE="skip"
+                      if docker manifest inspect "$BACKEND_IMAGE_OVERRIDE" >/dev/null 2>&1; then
+                          echo "::notice::Backend override image validated: $BACKEND_IMAGE_OVERRIDE"
+                          BACKEND_IMAGE="$BACKEND_IMAGE_OVERRIDE"
+                          BACKEND_NEEDS_BUILD=false
+                          BACKEND_BUILD_MODE="skip"
+                      else
+                          echo "::warning::Backend override image not found: $BACKEND_IMAGE_OVERRIDE — will build from source"
+                      fi
                   fi
 
                   # Configure frontend image strategy
@@ -553,11 +559,17 @@ jobs:
                   FRONTEND_NEEDS_BUILD=true
                   FRONTEND_TAGS="${FRONTEND_IMAGE},${FRONTEND_SHA}"
 
-                  # Handle frontend image override
+                  # Handle frontend image override — validate it exists in registry.
+                  # If the override image is missing, fall back to building from source.
                   if [[ -n "$FRONTEND_IMAGE_OVERRIDE" ]]; then
-                      FRONTEND_IMAGE="$FRONTEND_IMAGE_OVERRIDE"
-                      FRONTEND_NEEDS_BUILD=false
-                      FRONTEND_BUILD_MODE="skip"
+                      if docker manifest inspect "$FRONTEND_IMAGE_OVERRIDE" >/dev/null 2>&1; then
+                          echo "::notice::Frontend override image validated: $FRONTEND_IMAGE_OVERRIDE"
+                          FRONTEND_IMAGE="$FRONTEND_IMAGE_OVERRIDE"
+                          FRONTEND_NEEDS_BUILD=false
+                          FRONTEND_BUILD_MODE="skip"
+                      else
+                          echo "::warning::Frontend override image not found: $FRONTEND_IMAGE_OVERRIDE — will build from source"
+                      fi
                   fi
 
                   # Calculate unique ports for this PR (formula: base + PR number)
