@@ -2,7 +2,7 @@
 # Backend PR Preview Overlay Workflow
 # =============================================================================
 # Purpose: Trigger PR preview deployments when backend PRs are opened/updated
-# Strategy: Build backend from PR branch, use main-arm64 frontend image
+# Strategy: Build backend from PR branch, build PR-specific frontend with basePath
 # Calls: ci-deploy-pr-preview.yml (reusable workflow)
 # =============================================================================
 
@@ -47,11 +47,14 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
       # Build backend from this PR's branch
       branch_name: ${{ github.head_ref }}
-      # Use main branch for frontend (will use main-arm64 image)
-      frontend_branch: 'main'
+      # IMPORTANT: Using frontend feature branch until frontend PR #226 merges to main.
+      # main branch lacks basePath support (NEXT_PUBLIC_BASE_PATH in Dockerfile and
+      # next.config.mjs), causing _next/static/ asset 404s in PR previews.
+      # After merge, change back to 'main'.
+      frontend_branch: '225-feature-create-github-actions-workflows-for-preview-environments-on-pull-requests'
       # Optional: override with specific image tags if needed
       # backend_image: ''  # Leave empty to build from PR branch
-      # frontend_image: '' # Leave empty to use main-arm64
+      # frontend_image: '' # Leave empty to build PR-specific with basePath
       # Optional: force complete rebuild
       force_rebuild: false
     # =========================================================================
