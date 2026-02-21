@@ -169,7 +169,7 @@ jobs:
           fi
           echo "--- End SSH key diagnostics ---"
 
-          if ! ssh -vvv -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 \
+          if ! ssh -vvv -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=10 \
             -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
             'echo "SSH connection successful"'; then
@@ -187,7 +187,7 @@ jobs:
           echo "🧹 Starting cleanup for PR #${PR_NUMBER}..."
 
           # Execute cleanup script on RPi5 with proper error handling
-          cat << 'CLEANUP_SCRIPT' | ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 \
+          cat << 'CLEANUP_SCRIPT' | ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
             /bin/bash
           set -eo pipefail

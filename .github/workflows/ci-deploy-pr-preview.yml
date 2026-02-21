@@ -253,13 +253,14 @@ jobs:
                   cache-all-crates: true
 
             # Run clippy to catch common mistakes and improve code quality
+            # Uses -D warnings to match main CI pipeline (build-test-push.yml)
             - name: Run clippy
-              run: cargo clippy --all-targets
+              run: cargo clippy --all-targets -- -D warnings
 
             # Check if code follows Rust formatting standards
+            # Blocking step (no continue-on-error) to match main CI pipeline
             - name: Run format check
-              run: cargo fmt --all -- --check || echo "::warning::Code formatting issues found. Run 'cargo fmt --all' locally to fix."
-              continue-on-error: true
+              run: cargo fmt --all -- --check
 
     # ===========================================================================
     # JOB 2: Frontend Code Quality Checks
@@ -979,6 +980,11 @@ jobs:
                   # Use explicit PR-numbered env file path to prevent race conditions
                   # when multiple PRs deploy simultaneously
                   ENV_FILE=~/pr-${PR_NUMBER}.env
+
+                  # SECURITY: Ensure secrets env file is always cleaned up, even on failure.
+                  # Without this trap, set -eo pipefail would exit on error and leave the
+                  # file containing DB passwords, GHCR PAT, and API keys on disk.
+                  trap 'rm -f "\$ENV_FILE"' EXIT
                   if [[ -f "\$ENV_FILE" ]]; then
                       echo "📥 Loading environment file: \$ENV_FILE"
                       set -a
@@ -1081,9 +1087,7 @@ jobs:
 
                   echo "✅ Backend is running successfully"
                   echo "✅ Deployment complete!"
-
-                  # Clean up transferred environment file
-                  rm -f "\$ENV_FILE"
+                  # Note: ENV_FILE cleanup handled by EXIT trap (set at script start)
                   DEPLOY_SCRIPT
 
             # Post deployment status and access URLs to PR
