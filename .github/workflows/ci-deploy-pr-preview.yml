@@ -544,21 +544,14 @@ jobs:
                   fi
 
                   # Configure frontend image strategy
-                  if [[ "$REPO_TYPE" == "frontend" ]]; then
-                      # Build PR-specific frontend image
-                      FRONTEND_IMAGE="${FRONTEND_IMAGE_REPO}:pr-${PR}"
-                      FRONTEND_SHA="${FRONTEND_IMAGE_REPO}:pr-${PR}-${{ github.sha }}"
-                      FRONTEND_BUILD_MODE="pr"
-                      FRONTEND_NEEDS_BUILD=true
-                      FRONTEND_TAGS="${FRONTEND_IMAGE},${FRONTEND_SHA}"
-                  else
-                      # Use main-arm64 frontend image for backend deployments
-                      FRONTEND_IMAGE="${FRONTEND_IMAGE_REPO}:main-arm64"
-                      FRONTEND_SHA="${FRONTEND_IMAGE_REPO}:main-arm64-latest"
-                      FRONTEND_BUILD_MODE="ensure_main"
-                      FRONTEND_NEEDS_BUILD=$([[ "$FORCE_BUILD" == "true" ]] && echo true || echo false)
-                      FRONTEND_TAGS="${FRONTEND_IMAGE},${FRONTEND_SHA}"
-                  fi
+                  # Always build PR-specific frontend image regardless of repo_type.
+                  # Next.js basePath is baked in at build time — main-arm64 has basePath=""
+                  # but PR previews need basePath="/pr-<NUM>" for sub-path routing.
+                  FRONTEND_IMAGE="${FRONTEND_IMAGE_REPO}:pr-${PR}"
+                  FRONTEND_SHA="${FRONTEND_IMAGE_REPO}:pr-${PR}-${{ github.sha }}"
+                  FRONTEND_BUILD_MODE="pr"
+                  FRONTEND_NEEDS_BUILD=true
+                  FRONTEND_TAGS="${FRONTEND_IMAGE},${FRONTEND_SHA}"
 
                   # Handle frontend image override
                   if [[ -n "$FRONTEND_IMAGE_OVERRIDE" ]]; then
@@ -632,13 +625,25 @@ jobs:
                       echo "::warning::Backend main-arm64 image not found in registry - will build from source"
                   fi
 
-            # Get backend source code if we need to build it
+            # Get backend source code if we need to build it.
+            # Uses continue-on-error + fallback to main so that if a PR branch
+            # has been deleted (e.g. after merge), the checkout still succeeds.
             - name: Checkout backend repository
+              id: checkout_backend
               if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
+              continue-on-error: true
               uses: actions/checkout@v4
               with:
                   repository: ${{ env.BACKEND_REPOSITORY }}
                   ref: ${{ steps.resolve.outputs.backend_branch }}
+                  path: backend-src
+
+            - name: Checkout backend repository (fallback to main)
+              if: steps.checkout_backend.outcome == 'failure'
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.BACKEND_REPOSITORY }}
+                  ref: main
                   path: backend-src
 
             # Cache Rust dependencies for faster ARM64 builds
@@ -680,33 +685,32 @@ jobs:
                   provenance: true
                   sbom: false
 
-            # Check if main-arm64 frontend image exists in registry
-            - name: Check frontend image in registry
-              id: frontend_registry
-              if: steps.resolve.outputs.frontend_build_mode == 'ensure_main' && steps.resolve.outputs.frontend_needs_build != 'true'
-              run: |
-                  if docker manifest inspect ${{ steps.resolve.outputs.frontend_image }} >/dev/null 2>&1; then
-                      echo "exists=true" >> $GITHUB_OUTPUT
-                      echo "::notice::📦 Frontend main-arm64 image already exists"
-                  else
-                      echo "exists=false" >> $GITHUB_OUTPUT
-                      echo "::notice::🔨 Frontend main-arm64 image missing - will build"
-                  fi
-
-            # Get frontend source code if we need to build it
+            # Get frontend source code if we need to build it.
+            # Uses continue-on-error + fallback to main so that if a PR branch
+            # has been deleted (e.g. after merge), the checkout still succeeds.
             - name: Checkout frontend repository
-              if: steps.resolve.outputs.frontend_build_mode != 'skip' && (steps.resolve.outputs.frontend_needs_build == 'true' || steps.frontend_registry.outputs.exists == 'false')
+              id: checkout_frontend
+              if: steps.resolve.outputs.frontend_build_mode != 'skip' && steps.resolve.outputs.frontend_needs_build == 'true'
+              continue-on-error: true
               uses: actions/checkout@v4
               with:
                   repository: ${{ env.FRONTEND_REPOSITORY }}
                   ref: ${{ steps.resolve.outputs.frontend_branch }}
                   path: frontend-src
 
+            - name: Checkout frontend repository (fallback to main)
+              if: steps.checkout_frontend.outcome == 'failure'
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.FRONTEND_REPOSITORY }}
+                  ref: main
+                  path: frontend-src
+
             # Build and push ARM64 frontend image with Next.js optimization
             # Cache strategy: PR-specific image → branch-specific GHA cache → main GHA cache
             - name: Build and push frontend image
               id: build_frontend
-              if: steps.resolve.outputs.frontend_build_mode != 'skip' && (steps.resolve.outputs.frontend_needs_build == 'true' || steps.frontend_registry.outputs.exists == 'false')
+              if: steps.resolve.outputs.frontend_build_mode != 'skip' && steps.resolve.outputs.frontend_needs_build == 'true'
               uses: docker/build-push-action@v5
               with:
                   context: ./frontend-src
