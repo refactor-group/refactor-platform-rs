@@ -19,7 +19,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use time::Duration;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 mod controller;
 mod error;
@@ -110,14 +110,39 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     let listen_addr = SocketAddr::from_str(&server_url).unwrap();
 
     let listener = TcpListener::bind(listen_addr).await.unwrap();
-    // Convert the type of the allow_origins Vec into a HeaderValue that the CorsLayer accepts
-    let allowed_origins = app_state
+
+    // Handle CORS origin configuration
+    // If wildcard (*) is present, mirror request origin; otherwise use explicit list
+    let has_wildcard = app_state
         .config
         .allowed_origins
         .iter()
-        .filter_map(|origin| origin.parse().ok())
-        .collect::<Vec<HeaderValue>>();
-    info!("allowed_origins: {allowed_origins:#?}");
+        .any(|origin| origin == "*");
+
+    info!("allowed_origins: {:#?}", app_state.config.allowed_origins);
+
+    // Mirror the request origin when wildcard "*" is configured to keep credentials enabled
+    // SECURITY: Refuse wildcard CORS in production — mirror_request() with credentials
+    // allows any origin to make authenticated API requests (CSRF/data-exfiltration risk)
+    let allow_origin = if has_wildcard && app_state.config.is_production() {
+        warn!(
+            "ALLOWED_ORIGINS contains '*' in production — ignoring wildcard for security. \
+             Set explicit origins instead."
+        );
+        AllowOrigin::list(Vec::<HeaderValue>::new())
+    } else if has_wildcard {
+        info!("Using mirrored CORS origin (allows all origins with credentials)");
+        AllowOrigin::mirror_request()
+    } else {
+        let allowed_origins = app_state
+            .config
+            .allowed_origins
+            .iter()
+            .filter_map(|origin| origin.parse().ok())
+            .collect::<Vec<HeaderValue>>();
+        info!("Using specific CORS origins: {allowed_origins:#?}");
+        AllowOrigin::list(allowed_origins)
+    };
 
     let cors_layer = CorsLayer::new()
         .allow_methods([
@@ -142,7 +167,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         ])
         .expose_headers([ApiVersion::field_name().parse::<HeaderName>().unwrap()])
         .allow_private_network(true)
-        .allow_origin(allowed_origins);
+        .allow_origin(allow_origin);
 
     axum::serve(
         listener,

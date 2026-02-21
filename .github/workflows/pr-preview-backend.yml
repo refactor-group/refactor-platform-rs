@@ -1,0 +1,65 @@
+# =============================================================================
+# Backend PR Preview Overlay Workflow
+# =============================================================================
+# Purpose: Trigger PR preview deployments when backend PRs are opened/updated
+# Strategy: Build backend from PR branch, build PR-specific frontend with basePath
+# Calls: ci-deploy-pr-preview.yml (reusable workflow)
+# =============================================================================
+
+name: PR Preview (Backend)
+
+on:
+  pull_request:
+    # Trigger on PR lifecycle events
+    types: [opened, synchronize, reopened]
+    # Only run for backend code changes
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - '!.github/workflows/pr-preview-backend.yml'
+      - '!.github/workflows/ci-deploy-pr-preview.yml'
+
+# Prevent multiple deployments for the same PR
+concurrency:
+  group: pr-preview-backend-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+  attestations: write
+  id-token: write
+
+jobs:
+  # ===========================================================================
+  # JOB: Call reusable workflow with backend-specific configuration
+  # ===========================================================================
+  deploy-backend-pr:
+    name: Deploy Backend PR Preview
+    # Call the reusable workflow located in this repository
+    uses: ./.github/workflows/ci-deploy-pr-preview.yml
+    with:
+      # This is a backend PR deployment
+      repo_type: 'backend'
+      # Use the PR number for port allocation and naming
+      pr_number: ${{ github.event.pull_request.number }}
+      # Build backend from this PR's branch
+      branch_name: ${{ github.head_ref }}
+      # IMPORTANT: Using frontend feature branch until frontend PR #226 merges to main.
+      # main branch lacks basePath support (NEXT_PUBLIC_BASE_PATH in Dockerfile and
+      # next.config.mjs), causing _next/static/ asset 404s in PR previews.
+      # After merge, change back to 'main'.
+      frontend_branch: '225-feature-create-github-actions-workflows-for-preview-environments-on-pull-requests'
+      # Optional: override with specific image tags if needed
+      # backend_image: ''  # Leave empty to build from PR branch
+      # frontend_image: '' # Leave empty to build PR-specific with basePath
+      # Optional: force complete rebuild
+      force_rebuild: false
+    # =========================================================================
+    # SECRETS - Inherit all secrets from calling workflow's environment
+    # =========================================================================
+    # The reusable workflow declares required secrets
+    # We must pass them through using 'secrets: inherit'
+    secrets: inherit

@@ -25,13 +25,20 @@
 
 ```
 refactor-platform-rs/
-├── entity/        # SeaORM entity definitions
-├── entity_api/    # Entity API layer
-├── domain/        # Domain logic and business rules
-├── service/       # Service layer
-├── web/           # Axum web handlers and routes
-├── migration/     # SeaORM database migrations
-└── src/           # Main application entry point
+├── docs/              # Architecture docs and implementation plans
+├── domain/            # Domain logic and business rules (emails, users, sessions)
+├── entity/            # SeaORM entity definitions
+├── entity_api/        # Entity API layer (CRUD operations)
+├── events/            # SSE domain event definitions
+├── migration/         # SeaORM database migrations
+├── nginx/             # Production nginx configuration
+├── nginx-preview/     # PR preview nginx configuration
+├── scripts/           # Database rebuild and utility scripts
+├── service/           # Service layer (config, app state)
+├── src/               # Main application entry point
+├── sse/               # SSE server and event handling
+├── testing-tools/     # Test helpers and scenario builders
+└── web/               # Axum web handlers, routes, and middleware
 ```
 
 ## Toolchain
@@ -42,3 +49,36 @@ refactor-platform-rs/
 - **Formatting**: `cargo fmt`
 - **Database**: SeaORM with PostgreSQL
 - **Web Framework**: Axum
+
+## PR Preview Environments
+
+### Reusable Workflow
+`ci-deploy-pr-preview.yml` is the central reusable workflow called by both frontend and backend PR workflows. It builds Docker images, deploys per-PR container stacks via SSH, and posts preview URLs as PR comments.
+
+### Docker Compose Stack
+Each PR gets an isolated stack defined in `docker-compose.pr-preview.yaml`:
+- **postgres**: Per-PR database with isolated schema
+- **backend**: Axum API server (port allocated per PR)
+- **frontend**: Next.js with `basePath=/pr-<NUM>`
+- **migrator**: Runs SeaORM migrations then exits
+- **nginx**: Containerized reverse proxy for path-based routing
+
+### Nginx Routing
+Nginx runs as a Docker container (`docker-compose.nginx-preview.yaml`) using Docker's internal DNS (`resolver 127.0.0.11`) to resolve container names. Path-based routing:
+- `/pr-<NUM>/api` → health check JSON response
+- `/pr-<NUM>/api/<path>` → proxied to backend container
+- `/pr-<NUM>/` → proxied to frontend container (passes `$request_uri` for basePath)
+
+### CORS Wildcard Handling
+`web/src/lib.rs` uses `AllowOrigin::mirror_request()` when `ALLOWED_ORIGINS` contains `*`. This mirrors the request's `Origin` header instead of returning `Access-Control-Allow-Origin: *`, which browsers reject when credentials are included.
+
+### entrypoint.sh Schema Flow
+The entrypoint waits for PostgreSQL readiness, then idempotently creates the `refactor_platform` schema and sets `search_path`. This supports the PR preview migrator container which needs the schema to exist before running migrations.
+
+### Secrets Resolution Order
+The reusable workflow resolves secrets in this order:
+1. Secrets passed from the **caller repo** (via `secrets: inherit`)
+2. Secrets from the backend repo's **pr-preview environment**
+3. Hardcoded **fallback defaults** in the workflow (e.g., `|| '1.0.0-beta1'`)
+
+**Warning**: A stale secret at level 1 overrides levels 2-3. Always check caller repo secrets when debugging.
