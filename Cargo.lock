@@ -937,21 +937,18 @@ dependencies = [
 name = "domain"
 version = "1.0.0-beta2"
 dependencies = [
- "aes-gcm",
  "async-trait",
- "base64 0.22.1",
  "chrono",
  "email_address",
  "entity_api",
- "hex",
  "jsonwebtoken",
  "log",
  "meeting-ai",
  "meeting-auth",
  "mockito",
- "rand 0.8.5",
  "reqwest 0.12.19",
  "sea-orm",
+ "secrecy",
  "serde",
  "serde_json",
  "serial_test",
@@ -2012,6 +2009,7 @@ dependencies = [
 name = "meeting-auth"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "base64 0.22.1",
  "chrono",

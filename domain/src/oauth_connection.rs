@@ -1,11 +1,14 @@
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::oauth::{self, Provider};
 use crate::oauth_connections::Model as OauthConnectionModel;
+use crate::oauth_token_storage::DbOAuthTokenStorage;
 use crate::provider::Provider as OauthProvider;
 use crate::Id;
 use entity_api::oauth_connection;
 use log::*;
+use meeting_auth::oauth::token::{encryption, Manager};
 use sea_orm::DatabaseConnection;
+use secrecy::ExposeSecret;
 use service::config::Config;
 
 pub use entity_api::oauth_connection::{delete_by_user_and_provider, find_by_user_and_provider};
@@ -41,44 +44,53 @@ pub async fn exchange_and_store_tokens(
 ) -> Result<String, Error> {
     info!("Processing Google OAuth callback for user {}", user_id);
 
+    let encryption_key = config.encryption_key().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+    })?;
+
     let provider = create_google_provider(config)?;
 
-    // Exchange authorization code for tokens
     let tokens = provider
         .exchange_code(authorization_code, None)
         .await
-        .map_err(|e| {
+        .inspect_err(|e| {
             warn!(
                 "Failed to exchange OAuth code for user {}: {:?}",
                 user_id, e
-            );
-            Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                    "Failed to complete Google authorization".to_string(),
-                )),
-            }
+            )
         })?
         .into_plain();
 
-    // Get user info from Google
     let user_info = provider
         .get_user_info(&tokens.access_token)
         .await
-        .map_err(|e| {
+        .inspect_err(|e| {
             warn!(
                 "Failed to get Google user info for user {}: {:?}",
                 user_id, e
-            );
-            Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                    "Failed to get Google user info".to_string(),
-                )),
-            }
+            )
         })?;
 
-    // Upsert oauth_connection
+    let encrypted_access =
+        encryption::encrypt(&tokens.access_token, &encryption_key).map_err(|e| Error {
+            source: Some(Box::new(e)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Failed to encrypt access token".to_string(),
+            )),
+        })?;
+    let encrypted_refresh = tokens
+        .refresh_token
+        .as_deref()
+        .map(|rt| encryption::encrypt(rt, &encryption_key))
+        .transpose()
+        .map_err(|e: meeting_auth::Error| Error {
+            source: Some(Box::new(e)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Failed to encrypt refresh token".to_string(),
+            )),
+        })?;
+
     let existing =
         oauth_connection::find_by_user_and_provider(db, user_id, OauthProvider::Google).await?;
 
@@ -87,8 +99,8 @@ pub async fn exchange_and_store_tokens(
             oauth_connection::update_tokens(
                 db,
                 conn.id,
-                tokens.access_token,
-                tokens.refresh_token,
+                encrypted_access,
+                encrypted_refresh,
                 tokens.expires_at,
             )
             .await?;
@@ -101,8 +113,8 @@ pub async fn exchange_and_store_tokens(
                 provider: OauthProvider::Google,
                 external_account_id: None,
                 external_email: Some(user_info.email),
-                access_token: tokens.access_token,
-                refresh_token: tokens.refresh_token,
+                access_token: encrypted_access,
+                refresh_token: encrypted_refresh,
                 token_expires_at: tokens.expires_at.map(|dt| dt.into()),
                 token_type: "Bearer".to_string(),
                 scopes: "openid email https://www.googleapis.com/auth/meetings.space.created"
@@ -125,81 +137,28 @@ pub async fn exchange_and_store_tokens(
 
 /// Get a valid (non-expired) access token for a user and provider.
 ///
-/// Refreshes the token if expired, storing the new tokens.
+/// Uses `Manager` for per-user refresh locking and automatic token refresh.
 pub async fn get_valid_access_token(
     db: &DatabaseConnection,
     config: &Config,
     user_id: Id,
-    provider: OauthProvider,
+    _provider: OauthProvider,
 ) -> Result<String, Error> {
-    let connection = oauth_connection::find_by_user_and_provider(db, user_id, provider).await?;
-
-    let connection = connection.ok_or_else(|| {
-        warn!(
-            "User {} has no OAuth connection for the requested provider",
-            user_id
-        );
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Please connect your account first in Settings > Integrations".to_string(),
-            )),
-        }
-    })?;
-
-    // Check if token is expired
-    let is_expired = connection
-        .token_expires_at
-        .as_ref()
-        .is_some_and(|expiry| *expiry < chrono::Utc::now().fixed_offset());
-
-    if !is_expired {
-        return Ok(connection.access_token);
-    }
-
-    // Token is expired, try to refresh
-    let refresh_token = connection.refresh_token.as_ref().ok_or_else(|| {
-        warn!(
-            "OAuth token expired and no refresh token available for user {}",
-            user_id
-        );
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Authorization expired. Please reconnect your account.".to_string(),
-            )),
-        }
+    let encryption_key = config.encryption_key().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
     })?;
 
     let oauth_provider = create_google_provider(config)?;
-    let refresh_result = oauth_provider
-        .refresh_token(refresh_token)
+    let storage = DbOAuthTokenStorage::new(db, encryption_key);
+    let manager = Manager::new(storage);
+
+    let access_token = manager
+        .get_valid_token(&oauth_provider, &user_id.to_string())
         .await
-        .map_err(|e| {
-            warn!(
-                "Failed to refresh OAuth token for user {}: {:?}",
-                user_id, e
-            );
-            Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                    "Failed to refresh authorization. Please reconnect your account.".to_string(),
-                )),
-            }
-        })?;
+        .inspect_err(|e| warn!("Failed to get valid token for user {}: {:?}", user_id, e))?;
 
-    let tokens = refresh_result.tokens.into_plain();
-
-    oauth_connection::update_tokens(
-        db,
-        connection.id,
-        tokens.access_token.clone(),
-        tokens.refresh_token,
-        tokens.expires_at,
-    )
-    .await?;
-
-    Ok(tokens.access_token)
+    Ok(access_token.expose_secret().to_string())
 }
 
 /// Create a Google OAuth provider from config.

@@ -42,6 +42,10 @@ pub trait Storage: Send + Sync {
     /// CRITICAL for Zoom's rotating refresh tokens. This method ensures that only one
     /// concurrent refresh succeeds when multiple requests try to refresh simultaneously.
     ///
+    /// The default implementation delegates to `store()`, which is correct for providers
+    /// that do not rotate refresh tokens (e.g., Google). Providers with rotating refresh
+    /// tokens (e.g., Zoom) must override this with a real compare-and-swap.
+    ///
     /// # Arguments
     ///
     /// * `user_id` - Unique user identifier
@@ -56,9 +60,11 @@ pub trait Storage: Send + Sync {
         &self,
         user_id: &str,
         provider_id: &str,
-        old_refresh: Option<&str>,
+        _old_refresh: Option<&str>,
         new_tokens: Tokens,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        self.store(user_id, provider_id, new_tokens).await
+    }
 
     /// Delete tokens for a user and provider.
     ///
