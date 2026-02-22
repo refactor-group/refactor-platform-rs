@@ -1,5 +1,6 @@
 //! OAuth token management with storage and refresh capabilities.
 
+pub mod encryption;
 mod manager;
 mod storage;
 mod tokens;

@@ -21,12 +21,12 @@ pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
 pub mod emails;
-pub mod encryption;
 pub mod error;
 pub mod goal;
 pub mod jwt;
 pub mod note;
 pub mod oauth_connection;
+pub mod oauth_token_storage;
 pub mod organization;
 pub mod user;
 
