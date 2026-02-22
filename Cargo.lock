@@ -1000,9 +1000,9 @@ dependencies = [
  "meeting-ai",
  "meeting-auth",
  "mockito",
- "rand 0.8.5",
  "reqwest 0.12.28",
  "sea-orm",
+ "secrecy",
  "serde",
  "serde_json",
  "serial_test",
@@ -2211,6 +2211,7 @@ dependencies = [
 name = "meeting-auth"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "base64 0.22.1",
  "chrono",
