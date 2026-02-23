@@ -207,11 +207,12 @@ pub async fn update_with_assignees(
 ) -> Result<ActionWithAssignees, Error> {
     let action = update(db, id, model).await?;
 
-    // Set assignees if provided, extracting user IDs from the returned models
-    // instead of making an extra DB query. When not provided, fetch current assignees.
     let assignee_ids = if let Some(ids) = assignee_ids {
-        let created = actions_user::set_assignees(db, action.id, ids).await?;
-        created.into_iter().map(|m| m.user_id).collect()
+        let assignments = actions_user::set_assignees(db, action.id, ids).await?;
+        assignments
+            .into_iter()
+            .map(|assignment| assignment.user_id)
+            .collect()
     } else {
         actions_user::find_user_ids_by_action_id(db, action.id).await?
     };

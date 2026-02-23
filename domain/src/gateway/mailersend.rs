@@ -233,7 +233,7 @@ impl MailerSendClient {
     /// Send an email using the MailerSend API.
     ///
     /// Errors are returned to the caller so they can be handled by the
-    /// best-effort pattern in the controller layer.
+    /// best-effort pattern in the domain email functions.
     pub async fn send_email(&self, request: SendEmailRequest) -> Result<(), Error> {
         let url = format!("{}/email", self.base_url);
         let to_emails: Vec<String> = request.to.iter().map(|r| r.email.clone()).collect();
