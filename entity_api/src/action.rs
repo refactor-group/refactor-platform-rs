@@ -33,9 +33,10 @@ impl ActionWithAssignees {
     /// Returns assignee IDs that are present in the current list
     /// but were not in `previous_ids` — i.e., the newly added assignees.
     pub fn added_assignees(&self, previous_ids: &[Id]) -> Vec<Id> {
+        let previous: std::collections::HashSet<&Id> = previous_ids.iter().collect();
         self.assignee_ids
             .iter()
-            .filter(|id| !previous_ids.contains(id))
+            .filter(|id| !previous.contains(id))
             .copied()
             .collect()
     }
@@ -204,16 +205,16 @@ pub async fn update_with_assignees(
     model: Model,
     assignee_ids: Option<Vec<Id>>,
 ) -> Result<ActionWithAssignees, Error> {
-    // Update the action
     let action = update(db, id, model).await?;
 
-    // Update assignees if specified
-    if let Some(ids) = assignee_ids {
-        actions_user::set_assignees(db, action.id, ids).await?;
-    }
-
-    // Fetch current assignees
-    let assignee_ids = actions_user::find_user_ids_by_action_id(db, action.id).await?;
+    // Set assignees if provided, extracting user IDs from the returned models
+    // instead of making an extra DB query. When not provided, fetch current assignees.
+    let assignee_ids = if let Some(ids) = assignee_ids {
+        let created = actions_user::set_assignees(db, action.id, ids).await?;
+        created.into_iter().map(|m| m.user_id).collect()
+    } else {
+        actions_user::find_user_ids_by_action_id(db, action.id).await?
+    };
 
     Ok(ActionWithAssignees {
         action,

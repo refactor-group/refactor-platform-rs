@@ -128,8 +128,8 @@ impl SendEmailRequestBuilder {
     }
 
     /// Set the template ID
-    pub fn template_id(mut self, template_id: String) -> Self {
-        self.template_id = Some(template_id);
+    pub fn template_id(mut self, template_id: impl Into<String>) -> Self {
+        self.template_id = Some(template_id.into());
         self
     }
 

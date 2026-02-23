@@ -106,7 +106,7 @@ pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Resul
         user.email, user.id
     );
 
-    let email_config = ResolvedEmailConfig::new::<WelcomeEmail>(config, false).await?;
+    let email_config = ResolvedEmailConfig::new::<WelcomeEmail>(config).await?;
     info!("Using template ID: {}", email_config.template_id);
 
     debug!("Preparing personalization data for {}", user.email);
@@ -118,7 +118,7 @@ pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Resul
             format!("{} {}", user.first_name, user.last_name),
         )
         .subject("Welcome to Refactor Platform")
-        .template_id(email_config.template_id.clone())
+        .template_id(&email_config.template_id)
         .add_personalization("first_name", &user.first_name)
         .add_personalization("last_name", &user.last_name)
         .build()
@@ -149,74 +149,70 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
     }
 }
 
+/// Groups the base URL and path template for building session links in emails.
+struct SessionUrlBuilder {
+    base_url: String,
+    path_template: String,
+}
+
+impl SessionUrlBuilder {
+    fn build(&self, session_id: &Id) -> String {
+        let path = self
+            .path_template
+            .replace("{session_id}", &session_id.to_string());
+        format!("{}{}", self.base_url, path)
+    }
+}
+
 /// Pre-resolved MailerSend configuration, created once per notification
 /// so that config errors propagate before per-recipient sends begin.
 struct ResolvedEmailConfig {
     client: MailerSendClient,
     template_id: String,
-    /// Frontend base URL for building links in emails.
     /// `None` for notification types that don't include app links (e.g. welcome emails).
-    base_url: Option<String>,
-    /// URL path template with `{session_id}` placeholder (e.g. `/coaching-sessions/{session_id}`).
-    /// `None` for notification types that don't include app links.
-    url_path_template: Option<String>,
+    session_url_builder: Option<SessionUrlBuilder>,
 }
 
 impl ResolvedEmailConfig {
     /// Resolve all MailerSend configuration for the given notification type.
     ///
-    /// Creates the HTTP client, resolves the template ID via the `EmailNotification`
-    /// trait, and optionally resolves the frontend base URL and URL path template.
-    /// Errors are returned eagerly so callers fail fast before attempting any
-    /// per-recipient sends.
-    async fn new<N: EmailNotification>(
-        config: &Config,
-        needs_base_url: bool,
-    ) -> Result<Self, Error> {
+    /// Creates the HTTP client and resolves the template ID via the
+    /// `EmailNotification` trait. URL support is derived from the trait:
+    /// if `url_path_template` returns `Some`, the base URL is also resolved.
+    async fn new<N: EmailNotification>(config: &Config) -> Result<Self, Error> {
         let client = MailerSendClient::new(config).await?;
         let template_id = N::resolve_template_id(config)?;
-        let (base_url, url_path_template) = if needs_base_url {
-            (
-                Some(N::resolve_base_url(config)?),
-                N::url_path_template(config),
-            )
-        } else {
-            (None, None)
+
+        let session_url_builder = match N::url_path_template(config) {
+            Some(path_template) => Some(SessionUrlBuilder {
+                base_url: N::resolve_base_url(config)?,
+                path_template,
+            }),
+            None => None,
         };
 
         Ok(Self {
             client,
             template_id,
-            base_url,
-            url_path_template,
+            session_url_builder,
         })
     }
 
-    /// Build a full session URL by combining `base_url` and `url_path_template`.
+    /// Build a full session URL from the resolved base URL and path template.
     ///
-    /// Returns a config error if either field is `None`, which indicates a
-    /// programming error — this method should only be called on configs created
-    /// with `needs_base_url: true`.
+    /// Returns a config error if this notification type does not support
+    /// session URLs (i.e., its `url_path_template` returned `None`).
     fn build_session_url(&self, session_id: &Id) -> Result<String, Error> {
-        let base_url = self.base_url.as_deref().ok_or_else(|| {
-            error!("Cannot build session URL: base_url not resolved");
-            Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-            }
-        })?;
-        let path = self
-            .url_path_template
-            .as_deref()
+        self.session_url_builder
+            .as_ref()
+            .map(|b| b.build(session_id))
             .ok_or_else(|| {
-                error!("Cannot build session URL: url_path_template not resolved");
+                error!("Cannot build session URL: notification type has no URL template");
                 Error {
                     source: None,
                     error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
                 }
-            })?
-            .replace("{session_id}", &session_id.to_string());
-        Ok(format!("{base_url}{path}"))
+            })
     }
 }
 
@@ -240,7 +236,7 @@ async fn send_session_email_to_recipient(
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
         .subject(format!("New coaching session scheduled for {session_date}"))
-        .template_id(email_config.template_id.clone())
+        .template_id(&email_config.template_id)
         .add_personalization("first_name", &recipient.first_name)
         .add_personalization("other_user_first_name", &other_user.first_name)
         .add_personalization("other_user_last_name", &other_user.last_name)
@@ -268,7 +264,7 @@ async fn send_session_scheduled_email(
         session.id, coach.email, coachee.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<SessionScheduled>(config, true).await?;
+    let email_config = ResolvedEmailConfig::new::<SessionScheduled>(config).await?;
 
     // Email to coachee: "Your coach, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
@@ -330,7 +326,7 @@ async fn send_action_assigned_email(
         assigner.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<ActionAssigned>(config, true).await?;
+    let email_config = ResolvedEmailConfig::new::<ActionAssigned>(config).await?;
     let session_url = email_config.build_session_url(&ctx.session_id)?;
 
     for assignee in assignees {
@@ -349,7 +345,7 @@ async fn send_action_assigned_email(
                 format!("{} {}", assignee.first_name, assignee.last_name),
             )
             .subject("You've been assigned a new action")
-            .template_id(email_config.template_id.clone())
+            .template_id(&email_config.template_id)
             .add_personalization("first_name", &assignee.first_name)
             .add_personalization("action_body", ctx.action_body)
             .add_personalization("due_date", &due_date_str)
@@ -1078,21 +1074,55 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn test_send_action_assigned_email_empty_assignees_sends_nothing() {
+        let _guard = EnvGuard::new(&[
+            "MAILERSEND_API_KEY",
+            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
+            "FRONTEND_BASE_URL",
+            "MAILERSEND_BASE_URL",
+        ]);
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let session_id = Id::new_v4();
+        let org = create_test_organization();
+
+        // Expect exactly zero calls — no assignees means no emails
+        let _mock = server
+            .mock("POST", "/v1/email")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let ctx = ActionEmailContext {
+            action_body: "Some action",
+            due_by: None,
+            session_id,
+            organization: &org,
+            overarching_goal: "",
+        };
+
+        let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;
+        assert!(result.is_ok());
+    }
+
     // ── build_session_url Unit Tests ────────────────────────────────────
 
-    /// Helper to construct a `ResolvedEmailConfig` with specific URL fields,
-    /// without needing a real MailerSend client.
+    /// Helper to construct a `ResolvedEmailConfig` with an optional
+    /// `SessionUrlBuilder`, without needing a real MailerSend client.
     async fn create_test_email_config(
         server_url: &str,
-        base_url: Option<&str>,
-        url_path_template: Option<&str>,
+        url_builder: Option<SessionUrlBuilder>,
     ) -> ResolvedEmailConfig {
         let config = create_config_with_mock(server_url);
         ResolvedEmailConfig {
             client: MailerSendClient::new(&config).await.unwrap(),
             template_id: "test_template".to_string(),
-            base_url: base_url.map(String::from),
-            url_path_template: url_path_template.map(String::from),
+            session_url_builder: url_builder,
         }
     }
 
@@ -1102,8 +1132,10 @@ mod tests {
         let server = setup_test_server().await;
         let email_config = create_test_email_config(
             &server.url(),
-            Some("https://app.example.com"),
-            Some("/coaching-sessions/{session_id}"),
+            Some(SessionUrlBuilder {
+                base_url: "https://app.example.com".to_string(),
+                path_template: "/coaching-sessions/{session_id}".to_string(),
+            }),
         )
         .await;
 
@@ -1123,8 +1155,10 @@ mod tests {
         let server = setup_test_server().await;
         let email_config = create_test_email_config(
             &server.url(),
-            Some("https://app.example.com"),
-            Some("/sessions/{session_id}?tab=actions"),
+            Some(SessionUrlBuilder {
+                base_url: "https://app.example.com".to_string(),
+                path_template: "/sessions/{session_id}?tab=actions".to_string(),
+            }),
         )
         .await;
 
@@ -1139,29 +1173,9 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_build_session_url_missing_base_url() {
+    async fn test_build_session_url_no_url_builder() {
         let server = setup_test_server().await;
-        let email_config =
-            create_test_email_config(&server.url(), None, Some("/coaching-sessions/{session_id}"))
-                .await;
-
-        let result = email_config.build_session_url(&Id::new_v4());
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_build_session_url_missing_url_path_template() {
-        let server = setup_test_server().await;
-        let email_config =
-            create_test_email_config(&server.url(), Some("https://app.example.com"), None).await;
+        let email_config = create_test_email_config(&server.url(), None).await;
 
         let result = email_config.build_session_url(&Id::new_v4());
 
