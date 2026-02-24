@@ -1149,10 +1149,6 @@ jobs:
                       - **Access Method:** NGINX path-based routing (no direct port access)
                       - **Build Type:** ${isNativeArm64 ? '🚀 Native ARM64' : '⚠️ ARM64 Emulation'}
 
-                      ### 🔐 Access Requirements
-                      1. **Connect to Tailscale** (required)
-                      2. Access via NGINX ingress at: \`${baseUrl}${prPath}/\`
-
                       ### 🧪 Testing
                       \`\`\`bash
                       # Health check
