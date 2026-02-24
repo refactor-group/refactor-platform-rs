@@ -74,13 +74,7 @@ pub(crate) async fn create(
             .await?;
     info!("User created: {user:?}");
 
-    // Best-effort welcome email — log failures, don't block user creation
-    if let Err(e) = EmailsAPI::notify_welcome_email(&app_state.config, &user).await {
-        warn!(
-            "Failed to send welcome email for user {}: {e:?}",
-            user.email
-        );
-    }
+    EmailsAPI::notify_welcome_email(&app_state.config, &user).await;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }

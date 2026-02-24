@@ -2,6 +2,18 @@
 
 This document outlines coding conventions and standards for the refactor-platform-rs project.
 
+## Branching
+
+Always start new implementation work on a feature branch — never commit directly to `main`. If the work addresses a specific GitHub issue, include the issue number in the branch name:
+
+```
+<issue-num>-short-description
+```
+
+Examples:
+- `226-session-scheduled-email`
+- `fix/clippy-warnings`
+
 ## Rust Conventions
 
 ### Import Organization
@@ -124,6 +136,40 @@ pub use entity_api::some_module::find_by_id_with_relationship;
 
 4. **Use `domain_error_into_response()` in protect middleware** (defined in `web/src/error.rs`) to convert domain errors into HTTP responses. This routes through `web::Error`'s `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
 
+### Function Argument Limits
+
+Clippy enforces a maximum of 7 arguments per function (`clippy::too_many_arguments`). When a function needs more, bundle related parameters into a context struct instead of adding an `#[allow]` attribute.
+
+```rust
+// ✅ Good - bundle related params into a struct
+struct ActionEmailContext<'a> {
+    action_body: &'a str,
+    due_by: Option<DateTime<FixedOffset>>,
+    session_id: Id,
+    organization: &'a organizations::Model,
+    overarching_goal: &'a str,
+}
+
+async fn send_email(
+    config: &Config,
+    assignees: &[users::Model],
+    assigner: &users::Model,
+    ctx: &ActionEmailContext<'_>,
+) -> Result<(), Error> { ... }
+
+// ❌ Bad - too many loose parameters
+pub async fn send_email(
+    config: &Config,
+    assignees: &[users::Model],
+    assigner: &users::Model,
+    action_body: &str,
+    due_by: Option<DateTime<FixedOffset>>,
+    session_id: Id,
+    organization: &organizations::Model,
+    overarching_goal: &str,
+) -> Result<(), Error> { ... }
+```
+
 ### Async Patterns
 
 - Use `async fn` for asynchronous operations
@@ -163,6 +209,30 @@ txn.commit().await?;  // Rolls back automatically if we never reach here
 - **domain/**: Business logic, domain models, validation rules
 - **service/**: Orchestration layer, complex operations spanning multiple entities
 - **web/**: HTTP handlers, request/response types, routing
+
+### Thin Controllers
+
+Controllers (web handlers) should be **thin orchestrators**: accept a request, call domain logic, and map the result to an HTTP response. Keep side-effect concerns — logging, best-effort error handling, retries — in the domain layer, not in controllers.
+
+```rust
+// ✅ Good — controller delegates side-effect handling to domain
+pub async fn create(...) -> Result<impl IntoResponse, Error> {
+    let user = UserApi::create_by_organization(db, org_id, model).await?;
+    EmailsApi::notify_welcome_email(&config, &user).await;
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
+}
+
+// ❌ Bad — controller handles email error logging
+pub async fn create(...) -> Result<impl IntoResponse, Error> {
+    let user = UserApi::create_by_organization(db, org_id, model).await?;
+    if let Err(e) = EmailsApi::notify_welcome_email(&config, &user).await {
+        warn!("Failed to send welcome email: {e:?}");
+    }
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
+}
+```
+
+**Why**: Busy controller code obscures responsibility boundary leaks. When side-effect handling accumulates in controllers, it becomes harder to spot when they are doing work that belongs in a lower layer. Domain functions that perform best-effort operations (like sending emails) should return `()` and handle errors internally.
 
 ### Visibility Rules
 

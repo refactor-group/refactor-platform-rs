@@ -165,6 +165,7 @@ pub async fn has_admin_access(
     Ok(admin_role.is_some())
 }
 
+/// Finds all users matching the given IDs, including their associated roles.
 pub async fn find_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<Vec<Model>, Error> {
     let results = Entity::find()
         .filter(Column::Id.is_in(ids.to_vec()))
