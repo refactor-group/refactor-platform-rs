@@ -136,19 +136,12 @@ pub async fn create(
 
     debug!("New Coaching Session: {coaching_session:?}");
 
-    // Best-effort session scheduled email — log failures, don't block session creation
-    if let Err(e) = EmailsApi::notify_session_scheduled(
+    EmailsApi::notify_session_scheduled(
         app_state.db_conn_ref(),
         &app_state.config,
         &coaching_session,
     )
-    .await
-    {
-        warn!(
-            "Failed to send session scheduled emails for session {}: {e:?}",
-            coaching_session.id
-        );
-    }
+    .await;
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),

@@ -95,12 +95,18 @@ impl EmailNotification for WelcomeEmail {
     }
 }
 
-/// Send a welcome email to a newly created user.
+/// Send a best-effort welcome email to a newly created user.
 ///
-/// This function sends directly rather than delegating to a private `send_*`
-/// helper because no additional data lookups are needed — the controller
-/// already has the user model from the preceding create operation.
-pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
+pub async fn notify_welcome_email(config: &Config, user: &users::Model) {
+    if let Err(e) = send_welcome_email(config, user).await {
+        warn!("Failed to send welcome email to {}: {e:?}", user.email);
+    }
+}
+
+/// Build and send the welcome email to a single user.
+async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
     info!(
         "Initiating welcome email for user: {} ({})",
         user.email, user.id
@@ -376,63 +382,85 @@ async fn send_action_assigned_email(
     Ok(())
 }
 
-/// Orchestrate sending session-scheduled emails.
+/// Orchestrate sending session-scheduled emails (best-effort).
 ///
 /// Looks up the coaching relationship, both users, and the organization,
 /// then sends notification emails to both coach and coachee.
-/// This is the entry point controllers should call.
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
 pub async fn notify_session_scheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
-) -> Result<(), Error> {
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let coach = user::find_by_id(db, relationship.coach_id).await?;
-    let coachee = user::find_by_id(db, relationship.coachee_id).await?;
-    let org = organization::find_by_id(db, relationship.organization_id).await?;
+) {
+    let result: Result<(), Error> = async {
+        let relationship =
+            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-    send_session_scheduled_email(config, &coach, &coachee, session, &org).await
+        send_session_scheduled_email(config, &coach, &coachee, session, &org).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send session scheduled emails for session {}: {e:?}",
+            session.id
+        );
+    }
 }
 
-/// Orchestrate sending action-assigned emails.
+/// Orchestrate sending action-assigned emails (best-effort).
 ///
 /// Looks up assignee users, the coaching session, relationship, organization,
 /// and overarching goal, then sends notification emails to all assignees.
-/// This is the entry point controllers should call.
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
 pub async fn notify_action_assigned(
     db: &DatabaseConnection,
     config: &Config,
     assignee_ids: &[Id],
     assigner: &users::Model,
     action: &actions::Model,
-) -> Result<(), Error> {
-    // Look up assignee user models
-    let assignees = user::find_by_ids(db, assignee_ids).await?;
+) {
+    let result: Result<(), Error> = async {
+        // Look up assignee user models
+        let assignees = user::find_by_ids(db, assignee_ids).await?;
 
-    // Look up session → relationship → organization
-    let (session, relationship) =
-        coaching_session::find_by_id_with_coaching_relationship(db, action.coaching_session_id)
-            .await?;
-    let org = organization::find_by_id(db, relationship.organization_id).await?;
+        // Look up session → relationship → organization
+        let (session, relationship) =
+            coaching_session::find_by_id_with_coaching_relationship(db, action.coaching_session_id)
+                .await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-    // Look up overarching goal for this session (use first if multiple exist).
-    // This is optional metadata — a DB error here should not prevent the email
-    // from being sent, so we fall back to an empty list on failure.
-    let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
-        .await
-        .unwrap_or_default();
-    let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
+        // Look up overarching goal for this session (use first if multiple exist).
+        // This is optional metadata — a DB error here should not prevent the email
+        // from being sent, so we fall back to an empty list on failure.
+        let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
+            .await
+            .unwrap_or_default();
+        let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
 
-    let ctx = ActionEmailContext {
-        action_body: action.body.as_deref().unwrap_or(""),
-        due_by: action.due_by,
-        session_id: action.coaching_session_id,
-        organization: &org,
-        overarching_goal: goal_title,
-    };
+        let ctx = ActionEmailContext {
+            action_body: action.body.as_deref().unwrap_or(""),
+            due_by: action.due_by,
+            session_id: action.coaching_session_id,
+            organization: &org,
+            overarching_goal: goal_title,
+        };
 
-    send_action_assigned_email(config, &assignees, assigner, &ctx).await
+        send_action_assigned_email(config, &assignees, assigner, &ctx).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send action assigned emails for action {}: {e:?}",
+            action.id
+        );
+    }
 }
 
 #[cfg(test)]
@@ -564,7 +592,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_success() {
+    async fn test_send_welcome_email_success() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -598,13 +626,13 @@ mod tests {
             .create_async()
             .await;
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_missing_api_key() {
+    async fn test_send_welcome_email_missing_api_key() {
         let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
 
         // Set test state
@@ -619,7 +647,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -632,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_missing_template_id() {
+    async fn test_send_welcome_email_missing_template_id() {
         let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
 
         // Set test state
@@ -651,7 +679,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -664,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_http_error() {
+    async fn test_send_welcome_email_http_error() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -678,13 +706,13 @@ mod tests {
             .await;
 
         // HTTP 400 from MailerSend should propagate as an error
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_server_slow_response() {
+    async fn test_send_welcome_email_server_slow_response() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -701,13 +729,13 @@ mod tests {
             .create_async()
             .await;
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_with_different_user_data() {
+    async fn test_send_welcome_email_with_different_user_data() {
         let mut server = setup_test_server().await;
         let user = users::Model {
             id: Id::new_v4(),
@@ -752,13 +780,13 @@ mod tests {
             .create_async()
             .await;
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_validates_personalization() {
+    async fn test_send_welcome_email_validates_personalization() {
         let mut server = setup_test_server().await;
         let user = users::Model {
             id: Id::new_v4(),
@@ -803,7 +831,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
     }
 

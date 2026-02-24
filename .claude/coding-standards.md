@@ -210,6 +210,30 @@ txn.commit().await?;  // Rolls back automatically if we never reach here
 - **service/**: Orchestration layer, complex operations spanning multiple entities
 - **web/**: HTTP handlers, request/response types, routing
 
+### Thin Controllers
+
+Controllers (web handlers) should be **thin orchestrators**: accept a request, call domain logic, and map the result to an HTTP response. Keep side-effect concerns — logging, best-effort error handling, retries — in the domain layer, not in controllers.
+
+```rust
+// ✅ Good — controller delegates side-effect handling to domain
+pub async fn create(...) -> Result<impl IntoResponse, Error> {
+    let user = UserApi::create_by_organization(db, org_id, model).await?;
+    EmailsApi::notify_welcome_email(&config, &user).await;
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
+}
+
+// ❌ Bad — controller handles email error logging
+pub async fn create(...) -> Result<impl IntoResponse, Error> {
+    let user = UserApi::create_by_organization(db, org_id, model).await?;
+    if let Err(e) = EmailsApi::notify_welcome_email(&config, &user).await {
+        warn!("Failed to send welcome email: {e:?}");
+    }
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
+}
+```
+
+**Why**: Busy controller code obscures responsibility boundary leaks. When side-effect handling accumulates in controllers, it becomes harder to spot when they are doing work that belongs in a lower layer. Domain functions that perform best-effort operations (like sending emails) should return `()` and handle errors internally.
+
 ### Visibility Rules
 
 - Keep module internals private by default

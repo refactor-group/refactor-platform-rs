@@ -75,22 +75,15 @@ pub async fn create(
     )
     .await?;
 
-    // Best-effort action assigned email — log failures, don't block action creation
     if action.has_assignees() {
-        if let Err(e) = EmailsApi::notify_action_assigned(
+        EmailsApi::notify_action_assigned(
             app_state.db_conn_ref(),
             &app_state.config,
             &action.assignee_ids,
             &user,
             &action.action,
         )
-        .await
-        {
-            warn!(
-                "Failed to send action assigned emails for action {}: {e:?}",
-                action.action.id
-            );
-        }
+        .await;
     }
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), action)))
@@ -142,7 +135,7 @@ async fn fetch_previous_assignee_ids(db: &DatabaseConnection, action_id: Id) -> 
     }
 }
 
-/// Send best-effort email notifications to newly added assignees only.
+/// Notify newly added assignees via email.
 /// Compares the post-update assignee list against `previous_ids` and
 /// only notifies users who were not previously assigned.
 async fn notify_added_assignees(
@@ -156,20 +149,14 @@ async fn notify_added_assignees(
         return;
     }
 
-    if let Err(e) = EmailsApi::notify_action_assigned(
+    EmailsApi::notify_action_assigned(
         app_state.db_conn_ref(),
         &app_state.config,
         &new_assignees,
         assigner,
         &action.action,
     )
-    .await
-    {
-        warn!(
-            "Failed to send action assigned emails for action {}: {e:?}",
-            action.action.id
-        );
-    }
+    .await;
 }
 
 #[utoipa::path(
