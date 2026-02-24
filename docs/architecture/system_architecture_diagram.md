@@ -19,7 +19,7 @@ The Refactor Platform is a coaching management system built with Rust (Axum back
 ### Web Layer (Axum HTTP Server)
 - **main.rs**: Application entry point, bootstraps the server
 - **Router**: Defines API routes and applies middleware (auth, CORS, logging)
-- **Controllers**: Handle HTTP requests, validate input, call business logic
+- **Controllers**: Thin orchestrators — accept requests, call domain logic, map results to HTTP responses. Side-effect concerns (logging, best-effort error handling for emails, etc.) belong in the domain layer, not here.
 - **Authentication**: Manages user sessions and request authorization
 
 ### Business Logic Layer
@@ -46,8 +46,8 @@ The Refactor Platform is a coaching management system built with Rust (Axum back
 1. **HTTP Request** → Nginx → Axum Web Server
 2. **Routing** → Router matches URL to controller
 3. **Authentication** → Middleware validates session/token
-4. **Controller** → Validates input, calls domain logic
-5. **Domain** → Implements business rules, calls Entity API
+4. **Controller** → Validates input, calls domain logic (thin orchestrator)
+5. **Domain** → Implements business rules, handles side-effects (e.g. best-effort emails), calls Entity API
 6. **Entity API** → Performs database operations via Entity models
 7. **Response** → Results flow back through the layers
 

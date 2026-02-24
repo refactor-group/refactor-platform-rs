@@ -250,6 +250,10 @@ This action is associated with your goal: {{overarching_goal}}
 SESSION_SCHEDULED_EMAIL_TEMPLATE_ID=<template-id-from-mailersend>
 ACTION_ASSIGNED_EMAIL_TEMPLATE_ID=<template-id-from-mailersend>
 FRONTEND_BASE_URL=https://app.myrefactor.com  # no trailing slash
+
+# Optional — URL path templates (have sensible defaults, override only if frontend routing changes)
+SESSION_SCHEDULED_EMAIL_URL_PATH=/coaching-sessions/{session_id}
+ACTION_ASSIGNED_EMAIL_URL_PATH=/coaching-sessions/{session_id}?tab=actions
 ```
 
 These are in addition to the existing `MAILERSEND_API_KEY` and `WELCOME_EMAIL_TEMPLATE_ID`.

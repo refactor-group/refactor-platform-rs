@@ -1,17 +1,16 @@
+use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
+use log::*;
+use sea_orm::DatabaseConnection;
+use service::config::Config;
+
 use crate::{
-    coaching_relationship, coaching_session, coaching_sessions,
+    actions, coaching_relationship, coaching_session, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
     organization, organizations, overarching_goal, user, users, Id,
 };
-
-use sea_orm::DatabaseConnection;
-
-use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
-use chrono_tz::Tz;
-use log::*;
-use service::config::Config;
 
 /// Trait for email notifications that need common config prerequisites.
 ///
@@ -39,6 +38,12 @@ trait EmailNotification {
         })
     }
 
+    /// Return the URL path template from config for this notification type, if any.
+    /// The template may contain `{session_id}` as a placeholder.
+    fn url_path_template(_config: &Config) -> Option<String> {
+        None
+    }
+
     /// Resolve the frontend base URL from config, or return a config error.
     fn resolve_base_url(config: &Config) -> Result<String, Error> {
         config.frontend_base_url().ok_or_else(|| {
@@ -62,6 +67,9 @@ impl EmailNotification for SessionScheduled {
     fn notification_name() -> &'static str {
         "session scheduled"
     }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
 }
 
 struct ActionAssigned;
@@ -72,28 +80,40 @@ impl EmailNotification for ActionAssigned {
     fn notification_name() -> &'static str {
         "action assigned"
     }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.action_assigned_email_url_path().to_owned())
+    }
 }
 
-/// Send a welcome email to a newly created user.
+struct WelcomeEmail;
+impl EmailNotification for WelcomeEmail {
+    fn template_id(config: &Config) -> Option<String> {
+        config.welcome_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "welcome"
+    }
+}
+
+/// Send a best-effort welcome email to a newly created user.
 ///
-/// Unlike the other `notify_*` functions, no additional data lookups are needed —
-/// the controller already has the user model from the preceding create operation.
-pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
+pub async fn notify_welcome_email(config: &Config, user: &users::Model) {
+    if let Err(e) = send_welcome_email(config, user).await {
+        warn!("Failed to send welcome email to {}: {e:?}", user.email);
+    }
+}
+
+/// Build and send the welcome email to a single user.
+async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
     info!(
         "Initiating welcome email for user: {} ({})",
         user.email, user.id
     );
 
-    let mailersend_client = MailerSendClient::new(config).await?;
-
-    let template_id = config.welcome_email_template_id().ok_or_else(|| {
-        error!("Welcome email template ID not configured");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-        }
-    })?;
-    info!("Using template ID: {template_id}");
+    let email_config = ResolvedEmailConfig::new::<WelcomeEmail>(config).await?;
+    info!("Using template ID: {}", email_config.template_id);
 
     debug!("Preparing personalization data for {}", user.email);
 
@@ -104,24 +124,19 @@ pub async fn notify_welcome_email(config: &Config, user: &users::Model) -> Resul
             format!("{} {}", user.first_name, user.last_name),
         )
         .subject("Welcome to Refactor Platform")
-        .template_id(template_id)
+        .template_id(&email_config.template_id)
         .add_personalization("first_name", &user.first_name)
         .add_personalization("last_name", &user.last_name)
         .build()
         .await?;
     debug!("Email request created for {}", user.email);
 
-    // send_email now handles the async spawning internally
-    mailersend_client.send_email(email_request).await;
-    Ok(())
+    email_config.client.send_email(email_request).await
 }
 
 /// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
 /// Falls back to UTC formatting if the timezone string is invalid.
-fn format_session_date_time(
-    date: NaiveDateTime,
-    timezone: &str,
-) -> (String, String) {
+fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, String) {
     let utc_dt = Utc.from_utc_datetime(&date);
 
     match timezone.parse::<Tz>() {
@@ -140,23 +155,85 @@ fn format_session_date_time(
     }
 }
 
+/// Groups the base URL and path template for building session links in emails.
+struct SessionUrlBuilder {
+    base_url: String,
+    path_template: String,
+}
+
+impl SessionUrlBuilder {
+    fn build(&self, session_id: &Id) -> String {
+        let path = self
+            .path_template
+            .replace("{session_id}", &session_id.to_string());
+        format!("{}{}", self.base_url, path)
+    }
+}
+
+/// Pre-resolved MailerSend configuration, created once per notification
+/// so that config errors propagate before per-recipient sends begin.
+struct ResolvedEmailConfig {
+    client: MailerSendClient,
+    template_id: String,
+    /// `None` for notification types that don't include app links (e.g. welcome emails).
+    session_url_builder: Option<SessionUrlBuilder>,
+}
+
+impl ResolvedEmailConfig {
+    /// Resolve all MailerSend configuration for the given notification type.
+    ///
+    /// Creates the HTTP client and resolves the template ID via the
+    /// `EmailNotification` trait. URL support is derived from the trait:
+    /// if `url_path_template` returns `Some`, the base URL is also resolved.
+    async fn new<N: EmailNotification>(config: &Config) -> Result<Self, Error> {
+        let client = MailerSendClient::new(config).await?;
+        let template_id = N::resolve_template_id(config)?;
+
+        let session_url_builder = match N::url_path_template(config) {
+            Some(path_template) => Some(SessionUrlBuilder {
+                base_url: N::resolve_base_url(config)?,
+                path_template,
+            }),
+            None => None,
+        };
+
+        Ok(Self {
+            client,
+            template_id,
+            session_url_builder,
+        })
+    }
+
+    /// Build a full session URL from the resolved base URL and path template.
+    ///
+    /// Returns a config error if this notification type does not support
+    /// session URLs (i.e., its `url_path_template` returned `None`).
+    fn build_session_url(&self, session_id: &Id) -> Result<String, Error> {
+        self.session_url_builder
+            .as_ref()
+            .map(|b| b.build(session_id))
+            .ok_or_else(|| {
+                error!("Cannot build session URL: notification type has no URL template");
+                Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+                }
+            })
+    }
+}
+
 /// Send a session-scheduled notification email to a single recipient.
 /// This is called once per recipient (coach and coachee each get their own email).
 async fn send_session_email_to_recipient(
-    config: &Config,
+    email_config: &ResolvedEmailConfig,
     recipient: &users::Model,
     other_user: &users::Model,
     other_user_role: &str,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
 ) -> Result<(), Error> {
-    let mailersend_client = MailerSendClient::new(config).await?;
-    let template_id = SessionScheduled::resolve_template_id(config)?;
-    let base_url = SessionScheduled::resolve_base_url(config)?;
-
-    let (session_date, session_time) =
-        format_session_date_time(session.date, &recipient.timezone);
-    let session_url = format!("{}/coaching-sessions/{}", base_url, session.id);
+    let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
+    let session_url = email_config.build_session_url(&session.id)?;
 
     let email_request = SendEmailRequestBuilder::new()
         .from("hello@myrefactor.com")
@@ -165,7 +242,7 @@ async fn send_session_email_to_recipient(
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
         .subject(format!("New coaching session scheduled for {session_date}"))
-        .template_id(template_id)
+        .template_id(&email_config.template_id)
         .add_personalization("first_name", &recipient.first_name)
         .add_personalization("other_user_first_name", &other_user.first_name)
         .add_personalization("other_user_last_name", &other_user.last_name)
@@ -177,12 +254,11 @@ async fn send_session_email_to_recipient(
         .build()
         .await?;
 
-    mailersend_client.send_email(email_request).await;
-    Ok(())
+    email_config.client.send_email(email_request).await
 }
 
 /// Send session-scheduled notification emails to both coach and coachee.
-pub async fn send_session_scheduled_email(
+async fn send_session_scheduled_email(
     config: &Config,
     coach: &users::Model,
     coachee: &users::Model,
@@ -194,10 +270,18 @@ pub async fn send_session_scheduled_email(
         session.id, coach.email, coachee.email
     );
 
+    let email_config = ResolvedEmailConfig::new::<SessionScheduled>(config).await?;
+
     // Email to coachee: "Your coach, ... has a session with you"
-    if let Err(e) =
-        send_session_email_to_recipient(config, coachee, coach, "coach", session, organization)
-            .await
+    if let Err(e) = send_session_email_to_recipient(
+        &email_config,
+        coachee,
+        coach,
+        "coach",
+        session,
+        organization,
+    )
+    .await
     {
         warn!(
             "Failed to send session scheduled email to coachee {}: {e:?}",
@@ -206,9 +290,15 @@ pub async fn send_session_scheduled_email(
     }
 
     // Email to coach: "Your coachee, ... has a session with you"
-    if let Err(e) =
-        send_session_email_to_recipient(config, coach, coachee, "coachee", session, organization)
-            .await
+    if let Err(e) = send_session_email_to_recipient(
+        &email_config,
+        coach,
+        coachee,
+        "coachee",
+        session,
+        organization,
+    )
+    .await
     {
         warn!(
             "Failed to send session scheduled email to coach {}: {e:?}",
@@ -219,16 +309,22 @@ pub async fn send_session_scheduled_email(
     Ok(())
 }
 
+/// Context for an action-assigned email, bundling the action-specific data
+/// that the email needs for personalization.
+struct ActionEmailContext<'a> {
+    action_body: &'a str,
+    due_by: Option<DateTime<FixedOffset>>,
+    session_id: Id,
+    organization: &'a organizations::Model,
+    overarching_goal: &'a str,
+}
+
 /// Send action-assigned notification emails to all assignees.
-pub async fn send_action_assigned_email(
+async fn send_action_assigned_email(
     config: &Config,
     assignees: &[users::Model],
     assigner: &users::Model,
-    action_body: &str,
-    due_by: Option<DateTime<FixedOffset>>,
-    session_id: crate::Id,
-    organization: &organizations::Model,
-    overarching_goal: &str,
+    ctx: &ActionEmailContext<'_>,
 ) -> Result<(), Error> {
     info!(
         "Initiating action assigned emails for {} assignee(s) (assigner: {})",
@@ -236,14 +332,11 @@ pub async fn send_action_assigned_email(
         assigner.email
     );
 
-    let mailersend_client = MailerSendClient::new(config).await?;
-    let template_id = ActionAssigned::resolve_template_id(config)?;
-    let base_url = ActionAssigned::resolve_base_url(config)?;
-
-    let session_url = format!("{}/coaching-sessions/{}?tab=actions", base_url, session_id);
+    let email_config = ResolvedEmailConfig::new::<ActionAssigned>(config).await?;
+    let session_url = email_config.build_session_url(&ctx.session_id)?;
 
     for assignee in assignees {
-        let due_date_str = match due_by {
+        let due_date_str = match ctx.due_by {
             Some(dt) => {
                 let (date_str, _) = format_session_date_time(dt.naive_utc(), &assignee.timezone);
                 date_str
@@ -258,20 +351,27 @@ pub async fn send_action_assigned_email(
                 format!("{} {}", assignee.first_name, assignee.last_name),
             )
             .subject("You've been assigned a new action")
-            .template_id(template_id.clone())
+            .template_id(&email_config.template_id)
             .add_personalization("first_name", &assignee.first_name)
-            .add_personalization("action_body", action_body)
+            .add_personalization("action_body", ctx.action_body)
             .add_personalization("due_date", &due_date_str)
             .add_personalization("assigner_first_name", &assigner.first_name)
             .add_personalization("assigner_last_name", &assigner.last_name)
-            .add_personalization("organization_name", &organization.name)
-            .add_personalization("overarching_goal", overarching_goal)
+            .add_personalization("organization_name", &ctx.organization.name)
+            .add_personalization("overarching_goal", ctx.overarching_goal)
             .add_personalization("session_url", &session_url)
             .build()
             .await;
 
         match email_request {
-            Ok(request) => mailersend_client.send_email(request).await,
+            Ok(request) => {
+                if let Err(e) = email_config.client.send_email(request).await {
+                    warn!(
+                        "Failed to send action assigned email for {}: {e:?}",
+                        assignee.email
+                    );
+                }
+            }
             Err(e) => warn!(
                 "Failed to build action assigned email for {}: {e:?}",
                 assignee.email
@@ -282,67 +382,85 @@ pub async fn send_action_assigned_email(
     Ok(())
 }
 
-/// Orchestrate sending session-scheduled emails.
+/// Orchestrate sending session-scheduled emails (best-effort).
 ///
 /// Looks up the coaching relationship, both users, and the organization,
 /// then sends notification emails to both coach and coachee.
-/// This is the entry point controllers should call.
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
 pub async fn notify_session_scheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
-) -> Result<(), Error> {
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let coach = user::find_by_id(db, relationship.coach_id).await?;
-    let coachee = user::find_by_id(db, relationship.coachee_id).await?;
-    let org = organization::find_by_id(db, relationship.organization_id).await?;
+) {
+    let result: Result<(), Error> = async {
+        let relationship =
+            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-    send_session_scheduled_email(config, &coach, &coachee, session, &org).await
+        send_session_scheduled_email(config, &coach, &coachee, session, &org).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send session scheduled emails for session {}: {e:?}",
+            session.id
+        );
+    }
 }
 
-/// Orchestrate sending action-assigned emails.
+/// Orchestrate sending action-assigned emails (best-effort).
 ///
 /// Looks up assignee users, the coaching session, relationship, organization,
 /// and overarching goal, then sends notification emails to all assignees.
-/// This is the entry point controllers should call.
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
 pub async fn notify_action_assigned(
     db: &DatabaseConnection,
     config: &Config,
     assignee_ids: &[Id],
     assigner: &users::Model,
-    action_body: &str,
-    due_by: Option<DateTime<FixedOffset>>,
-    coaching_session_id: Id,
-) -> Result<(), Error> {
-    // Look up assignee user models
-    let assignees = user::find_by_ids(db, assignee_ids).await?;
+    action: &actions::Model,
+) {
+    let result: Result<(), Error> = async {
+        // Look up assignee user models
+        let assignees = user::find_by_ids(db, assignee_ids).await?;
 
-    // Look up session → relationship → organization
-    let (session, relationship) =
-        coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id).await?;
-    let org = organization::find_by_id(db, relationship.organization_id).await?;
+        // Look up session → relationship → organization
+        let (session, relationship) =
+            coaching_session::find_by_id_with_coaching_relationship(db, action.coaching_session_id)
+                .await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-    // Look up overarching goal for this session (use first if multiple exist)
-    let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
-        .await
-        .unwrap_or_default();
-    let goal_title = goals
-        .first()
-        .and_then(|g| g.title.as_deref())
-        .unwrap_or("");
+        // Look up overarching goal for this session (use first if multiple exist).
+        // This is optional metadata — a DB error here should not prevent the email
+        // from being sent, so we fall back to an empty list on failure.
+        let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
+            .await
+            .unwrap_or_default();
+        let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
 
-    send_action_assigned_email(
-        config,
-        &assignees,
-        assigner,
-        action_body,
-        due_by,
-        coaching_session_id,
-        &org,
-        goal_title,
-    )
-    .await
+        let ctx = ActionEmailContext {
+            action_body: action.body.as_deref().unwrap_or(""),
+            due_by: action.due_by,
+            session_id: action.coaching_session_id,
+            organization: &org,
+            overarching_goal: goal_title,
+        };
+
+        send_action_assigned_email(config, &assignees, assigner, &ctx).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send action assigned emails for action {}: {e:?}",
+            action.id
+        );
+    }
 }
 
 #[cfg(test)]
@@ -428,17 +546,20 @@ mod tests {
     fn create_config_with_mock(server_url: &str) -> Config {
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
         env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
-        env::set_var("MAILERSEND_BASE_URL", server_url);
+        env::set_var("MAILERSEND_BASE_URL", format!("{server_url}/v1"));
         Config::default()
     }
 
     fn create_full_config_with_mock(server_url: &str) -> Config {
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
         env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
-        env::set_var("SESSION_SCHEDULED_EMAIL_TEMPLATE_ID", "session_template_456");
+        env::set_var(
+            "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
+            "session_template_456",
+        );
         env::set_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID", "action_template_789");
         env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
-        env::set_var("MAILERSEND_BASE_URL", server_url);
+        env::set_var("MAILERSEND_BASE_URL", format!("{server_url}/v1"));
         Config::default()
     }
 
@@ -471,7 +592,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_success() {
+    async fn test_send_welcome_email_success() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -501,19 +622,17 @@ mod tests {
             })))
             .with_status(202)
             .with_header("x-message-id", "msg_123456789")
+            .expect(1)
             .create_async()
             .await;
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
-
-        // Give the spawned task time to execute
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_missing_api_key() {
+    async fn test_send_welcome_email_missing_api_key() {
         let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
 
         // Set test state
@@ -528,7 +647,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -541,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_missing_template_id() {
+    async fn test_send_welcome_email_missing_template_id() {
         let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
 
         // Set test state
@@ -560,7 +679,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -573,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_http_error() {
+    async fn test_send_welcome_email_http_error() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
@@ -582,44 +701,41 @@ mod tests {
             .mock("POST", "/v1/email")
             .with_status(400)
             .with_body(r#"{"message": "Invalid request"}"#)
+            .expect(1)
             .create_async()
             .await;
 
-        // The function returns Ok because send_email spawns async
-        let result = notify_welcome_email(&config, &user).await;
-        assert!(result.is_ok());
-
-        // Give the spawned task time to execute and log the error
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // HTTP 400 from MailerSend should propagate as an error
+        let result = send_welcome_email(&config, &user).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_server_timeout() {
+    async fn test_send_welcome_email_server_slow_response() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
         let config = create_config_with_mock(&server.url());
 
-        // Create a mock that delays response
+        // Verify that a slightly delayed response still succeeds
         let _mock = server
             .mock("POST", "/v1/email")
             .with_status(202)
             .with_chunked_body(|w| {
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                std::thread::sleep(std::time::Duration::from_millis(50));
                 w.write_all(b"{}")
             })
-            .expect_at_most(1)
+            .expect(1)
             .create_async()
             .await;
 
-        // Function should return Ok immediately due to async spawning
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_with_different_user_data() {
+    async fn test_send_welcome_email_with_different_user_data() {
         let mut server = setup_test_server().await;
         let user = users::Model {
             id: Id::new_v4(),
@@ -660,18 +776,17 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_notify_welcome_email_validates_personalization() {
+    async fn test_send_welcome_email_validates_personalization() {
         let mut server = setup_test_server().await;
         let user = users::Model {
             id: Id::new_v4(),
@@ -712,13 +827,12 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
-        let result = notify_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     // ── Session Scheduled Email Tests ──────────────────────────────────
@@ -741,10 +855,7 @@ mod tests {
         let session = create_test_session();
         let org = create_test_organization();
 
-        let session_url = format!(
-            "https://app.example.com/coaching-sessions/{}",
-            session.id
-        );
+        let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
 
         // First email goes to coachee — verify role-aware personalization
         let _mock_coachee = server
@@ -769,6 +880,7 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
@@ -776,14 +888,12 @@ mod tests {
         let _mock_coach = server
             .mock("POST", "/v1/email")
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
-        let result =
-            send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
+        let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
         assert!(result.is_ok());
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 
     // ── Action Assigned Email Tests ────────────────────────────────────
@@ -806,7 +916,8 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+        let session_url =
+            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
         let due_by: DateTime<FixedOffset> = NaiveDate::from_ymd_opt(2026, 3, 7)
             .unwrap()
             .and_hms_opt(17, 0, 0)
@@ -836,23 +947,20 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee],
-            &assigner,
-            "Read chapters 3-5 of Radical Candor",
-            Some(due_by),
+        let ctx = ActionEmailContext {
+            action_body: "Read chapters 3-5 of Radical Candor",
+            due_by: Some(due_by),
             session_id,
-            &org,
-            "Improve communication",
-        )
-        .await;
-        assert!(result.is_ok());
+            organization: &org,
+            overarching_goal: "Improve communication",
+        };
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -873,7 +981,8 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+        let session_url =
+            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
 
         let _mock = server
             .mock("POST", "/v1/email")
@@ -897,23 +1006,20 @@ mod tests {
                 }]
             })))
             .with_status(202)
+            .expect(1)
             .create_async()
             .await;
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee],
-            &assigner,
-            "Follow up with team",
-            None,
+        let ctx = ActionEmailContext {
+            action_body: "Follow up with team",
+            due_by: None,
             session_id,
-            &org,
-            "",
-        )
-        .await;
-        assert!(result.is_ok());
+            organization: &org,
+            overarching_goal: "",
+        };
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -942,20 +1048,17 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee1, assignee2],
-            &assigner,
-            "Complete the survey",
-            None,
+        let ctx = ActionEmailContext {
+            action_body: "Complete the survey",
+            due_by: None,
             session_id,
-            &org,
-            "",
-        )
-        .await;
-        assert!(result.is_ok());
+            organization: &org,
+            overarching_goal: "",
+        };
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let result =
+            send_action_assigned_email(&config, &[assignee1, assignee2], &assigner, &ctx).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -970,7 +1073,7 @@ mod tests {
 
         let server = setup_test_server().await;
         env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
-        env::set_var("MAILERSEND_BASE_URL", &server.url());
+        env::set_var("MAILERSEND_BASE_URL", format!("{}/v1", server.url()));
         env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
         env::remove_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID");
         let config = Config::default();
@@ -980,17 +1083,129 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let result = send_action_assigned_email(
-            &config,
-            &[assignee],
-            &assigner,
-            "Some action",
-            None,
+        let ctx = ActionEmailContext {
+            action_body: "Some action",
+            due_by: None,
             session_id,
-            &org,
-            "",
+            organization: &org,
+            overarching_goal: "",
+        };
+
+        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            match e.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_send_action_assigned_email_empty_assignees_sends_nothing() {
+        let _guard = EnvGuard::new(&[
+            "MAILERSEND_API_KEY",
+            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
+            "FRONTEND_BASE_URL",
+            "MAILERSEND_BASE_URL",
+        ]);
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let session_id = Id::new_v4();
+        let org = create_test_organization();
+
+        // Expect exactly zero calls — no assignees means no emails
+        let _mock = server
+            .mock("POST", "/v1/email")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let ctx = ActionEmailContext {
+            action_body: "Some action",
+            due_by: None,
+            session_id,
+            organization: &org,
+            overarching_goal: "",
+        };
+
+        let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    // ── build_session_url Unit Tests ────────────────────────────────────
+
+    /// Helper to construct a `ResolvedEmailConfig` with an optional
+    /// `SessionUrlBuilder`, without needing a real MailerSend client.
+    async fn create_test_email_config(
+        server_url: &str,
+        url_builder: Option<SessionUrlBuilder>,
+    ) -> ResolvedEmailConfig {
+        let config = create_config_with_mock(server_url);
+        ResolvedEmailConfig {
+            client: MailerSendClient::new(&config).await.unwrap(),
+            template_id: "test_template".to_string(),
+            session_url_builder: url_builder,
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_build_session_url_success() {
+        let server = setup_test_server().await;
+        let email_config = create_test_email_config(
+            &server.url(),
+            Some(SessionUrlBuilder {
+                base_url: "https://app.example.com".to_string(),
+                path_template: "/coaching-sessions/{session_id}".to_string(),
+            }),
         )
         .await;
+
+        let session_id = Id::new_v4();
+        let result = email_config.build_session_url(&session_id);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            format!("https://app.example.com/coaching-sessions/{session_id}")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_build_session_url_custom_path_template() {
+        let server = setup_test_server().await;
+        let email_config = create_test_email_config(
+            &server.url(),
+            Some(SessionUrlBuilder {
+                base_url: "https://app.example.com".to_string(),
+                path_template: "/sessions/{session_id}?tab=actions".to_string(),
+            }),
+        )
+        .await;
+
+        let session_id = Id::new_v4();
+        let result = email_config.build_session_url(&session_id).unwrap();
+
+        assert_eq!(
+            result,
+            format!("https://app.example.com/sessions/{session_id}?tab=actions")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_build_session_url_no_url_builder() {
+        let server = setup_test_server().await;
+        let email_config = create_test_email_config(&server.url(), None).await;
+
+        let result = email_config.build_session_url(&Id::new_v4());
 
         assert!(result.is_err());
         if let Err(e) = result {

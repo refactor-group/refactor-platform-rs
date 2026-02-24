@@ -29,6 +29,17 @@ impl ActionWithAssignees {
     pub fn has_assignees(&self) -> bool {
         !self.assignee_ids.is_empty()
     }
+
+    /// Returns assignee IDs that are present in the current list
+    /// but were not in `previous_ids` — i.e., the newly added assignees.
+    pub fn added_assignees(&self, previous_ids: &[Id]) -> Vec<Id> {
+        let previous: std::collections::HashSet<&Id> = previous_ids.iter().collect();
+        self.assignee_ids
+            .iter()
+            .filter(|id| !previous.contains(id))
+            .copied()
+            .collect()
+    }
 }
 
 pub async fn create(
@@ -194,16 +205,17 @@ pub async fn update_with_assignees(
     model: Model,
     assignee_ids: Option<Vec<Id>>,
 ) -> Result<ActionWithAssignees, Error> {
-    // Update the action
     let action = update(db, id, model).await?;
 
-    // Update assignees if specified
-    if let Some(ids) = assignee_ids {
-        actions_user::set_assignees(db, action.id, ids).await?;
-    }
-
-    // Fetch current assignees
-    let assignee_ids = actions_user::find_user_ids_by_action_id(db, action.id).await?;
+    let assignee_ids = if let Some(ids) = assignee_ids {
+        let assignments = actions_user::set_assignees(db, action.id, ids).await?;
+        assignments
+            .into_iter()
+            .map(|assignment| assignment.user_id)
+            .collect()
+    } else {
+        actions_user::find_user_ids_by_action_id(db, action.id).await?
+    };
 
     Ok(ActionWithAssignees {
         action,
@@ -814,5 +826,90 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Helper to construct a minimal ActionWithAssignees for pure unit tests.
+    fn action_with_assignees(assignee_ids: Vec<Id>) -> ActionWithAssignees {
+        let now = chrono::Utc::now();
+        ActionWithAssignees {
+            action: Model {
+                id: Id::new_v4(),
+                user_id: Id::new_v4(),
+                coaching_session_id: Id::new_v4(),
+                body: None,
+                due_by: None,
+                status_changed_at: now.into(),
+                status: Default::default(),
+                created_at: now.into(),
+                updated_at: now.into(),
+            },
+            assignee_ids,
+        }
+    }
+
+    #[test]
+    fn added_assignees_returns_all_when_no_previous() {
+        let a = Id::new_v4();
+        let b = Id::new_v4();
+        let action = action_with_assignees(vec![a, b]);
+
+        let added = action.added_assignees(&[]);
+        assert_eq!(added, vec![a, b]);
+    }
+
+    #[test]
+    fn added_assignees_returns_only_new_ids() {
+        let a = Id::new_v4();
+        let b = Id::new_v4();
+        let c = Id::new_v4();
+        let action = action_with_assignees(vec![a, b, c]);
+
+        let added = action.added_assignees(&[a, b]);
+        assert_eq!(added, vec![c]);
+    }
+
+    #[test]
+    fn added_assignees_returns_empty_when_no_changes() {
+        let a = Id::new_v4();
+        let b = Id::new_v4();
+        let action = action_with_assignees(vec![a, b]);
+
+        let added = action.added_assignees(&[a, b]);
+        assert!(added.is_empty());
+    }
+
+    #[test]
+    fn added_assignees_returns_empty_when_assignees_removed() {
+        let a = Id::new_v4();
+        let b = Id::new_v4();
+        let c = Id::new_v4();
+        let action = action_with_assignees(vec![a]);
+
+        let added = action.added_assignees(&[a, b, c]);
+        assert!(added.is_empty());
+    }
+
+    #[test]
+    fn added_assignees_handles_complete_replacement() {
+        let a = Id::new_v4();
+        let b = Id::new_v4();
+        let c = Id::new_v4();
+        let d = Id::new_v4();
+        let action = action_with_assignees(vec![c, d]);
+
+        let added = action.added_assignees(&[a, b]);
+        assert_eq!(added, vec![c, d]);
+    }
+
+    #[test]
+    fn has_assignees_returns_true_when_non_empty() {
+        let action = action_with_assignees(vec![Id::new_v4()]);
+        assert!(action.has_assignees());
+    }
+
+    #[test]
+    fn has_assignees_returns_false_when_empty() {
+        let action = action_with_assignees(vec![]);
+        assert!(!action.has_assignees());
     }
 }

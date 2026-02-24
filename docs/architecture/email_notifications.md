@@ -77,6 +77,8 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` | Session scheduled template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |
 | `FRONTEND_BASE_URL` | Base URL for email links (e.g. `https://app.myrefactor.com`) |
+| `SESSION_SCHEDULED_EMAIL_URL_PATH` | URL path template for session links (default: `/coaching-sessions/{session_id}`) |
+| `ACTION_ASSIGNED_EMAIL_URL_PATH` | URL path template for action links (default: `/coaching-sessions/{session_id}?tab=actions`) |
 
 ## Key Files
 
