@@ -117,7 +117,13 @@ jobs:
           # -------- Mailersend Config
           # Template ID for welcome emails
           WELCOME_EMAIL_TEMPLATE_ID=${{ vars.WELCOME_EMAIL_TEMPLATE_ID }}
+          # Template ID for session-scheduled notification emails
+          SESSION_SCHEDULED_EMAIL_TEMPLATE_ID=${{ vars.SESSION_SCHEDULED_EMAIL_TEMPLATE_ID }}
+          # Template ID for action-assigned notification emails
+          ACTION_ASSIGNED_EMAIL_TEMPLATE_ID=${{ vars.ACTION_ASSIGNED_EMAIL_TEMPLATE_ID }}
           MAILERSEND_API_KEY=${{ secrets.MAILERSEND_API_KEY }}
+          # Base URL of the frontend app, used to construct links in emails
+          FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL }}
 
           # -------- Frontend Config
           # Docker image for frontend
