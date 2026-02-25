@@ -17,8 +17,14 @@ const API_VERSIONS: APiVersionList = [DEFAULT_API_VERSION];
 
 static X_VERSION: &str = "x-version";
 
-/// Default MailerSend API base URL used when `MAILERSEND_BASE_URL` is not set.
+/// Default MailerSend API base URL used when `MAILERSEND_BASE_URL` is not set or empty.
 pub const DEFAULT_MAILERSEND_BASE_URL: &str = "https://api.mailersend.com/v1";
+
+/// Default URL path for session-scheduled email links.
+const DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}";
+
+/// Default URL path for action-assigned email links.
+const DEFAULT_ACTION_ASSIGNED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}?tab=actions";
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Header)]
@@ -308,8 +314,13 @@ impl Config {
     }
 
     /// Returns the MailerSend API base URL.
+    /// Falls back to the default if the configured value is empty.
     pub fn mailersend_base_url(&self) -> &str {
-        &self.mailersend_base_url
+        if self.mailersend_base_url.is_empty() {
+            DEFAULT_MAILERSEND_BASE_URL
+        } else {
+            &self.mailersend_base_url
+        }
     }
 
     /// Returns the MailerSend API key, if configured.
@@ -338,13 +349,23 @@ impl Config {
     }
 
     /// Returns the URL path template for session-scheduled email links.
+    /// Falls back to the default if the configured value is empty.
     pub fn session_scheduled_email_url_path(&self) -> &str {
-        &self.session_scheduled_email_url_path
+        if self.session_scheduled_email_url_path.is_empty() {
+            DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH
+        } else {
+            &self.session_scheduled_email_url_path
+        }
     }
 
     /// Returns the URL path template for action-assigned email links.
+    /// Falls back to the default if the configured value is empty.
     pub fn action_assigned_email_url_path(&self) -> &str {
-        &self.action_assigned_email_url_path
+        if self.action_assigned_email_url_path.is_empty() {
+            DEFAULT_ACTION_ASSIGNED_EMAIL_URL_PATH
+        } else {
+            &self.action_assigned_email_url_path
+        }
     }
 
     pub fn runtime_env(&self) -> RustEnv {
