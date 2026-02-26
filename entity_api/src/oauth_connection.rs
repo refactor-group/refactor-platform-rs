@@ -44,7 +44,7 @@ pub async fn find_by_user_and_provider(
 ) -> Result<Option<Model>, Error> {
     Ok(Entity::find()
         .filter(Column::UserId.eq(user_id))
-        .filter(Column::Provider.eq(provider.to_string()))
+        .filter(Column::Provider.eq(provider))
         .one(db)
         .await?)
 }
