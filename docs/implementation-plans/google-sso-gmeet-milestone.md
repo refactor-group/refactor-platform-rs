@@ -81,10 +81,17 @@ Added `POST /coaching_sessions/:id/meetings` endpoint that creates a provider me
 - Delete the `user_integrations` params module if it exists
 - Search for any remaining `user_integration` references throughout the codebase
 
-### 9. Set existing meeting URL on a session
+### 9. Implement OAuth status and disconnect endpoints
+- Add `GET /oauth/google/status` returning `{ status: "connected", google_email, connected_at }` or `{ status: "disconnected" }`
+- Add `DELETE /oauth/google` to remove the user's `oauth_connections` row
+- Add `get_google_connection_status()` and `disconnect_google()` domain functions
+- Wire both routes into `oauth_routes()` in `web/src/router.rs`
+- Frontend calls these from `oauth-connection.ts` (`getConnectionStatus`, `disconnect`)
+
+### 10. Set existing meeting URL on a session
 Verify that `PUT /coaching_sessions/:id` with `meeting_url` in the update params works end-to-end. `meeting_url` is already in `UpdateParams`. Verify readable by both coaches and coachees via session GET responses.
 
-### 10. Final verification
+### 11. Final verification
 - `cargo check` — full workspace clean
 - `cargo clippy` — no warnings
 - `cargo test --features mock` — all tests pass
