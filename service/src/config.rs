@@ -232,6 +232,7 @@ pub struct Config {
     /// The API key to use when calling the MailerSend API.
     #[arg(long, env)]
     mailersend_api_key: Option<String>,
+
     /// The MailerSend template ID for welcome emails.
     #[arg(long, env)]
     welcome_email_template_id: Option<String>,
@@ -295,22 +296,9 @@ pub struct Config {
     #[arg(long, env, default_value_t = 86400)]
     pub backend_session_expiry_seconds: u64,
 
-    // AI Meeting Integration configuration
     /// 32-byte AES encryption key for encrypting sensitive API keys in database (hex-encoded)
     #[arg(long, env)]
     encryption_key: Option<String>,
-
-    /// Platform-default Recall.ai API key (optional, users can configure their own)
-    #[arg(long, env)]
-    recall_ai_api_key: Option<String>,
-
-    /// Recall.ai region (default: us-west-2)
-    #[arg(long, env, default_value = "us-west-2")]
-    recall_ai_region: Option<String>,
-
-    /// Platform-default AssemblyAI API key (optional, users can configure their own)
-    #[arg(long, env)]
-    assembly_ai_api_key: Option<String>,
 
     /// Google OAuth client ID
     #[arg(long, env)]
@@ -327,23 +315,6 @@ pub struct Config {
     /// URL to redirect to after successful Google OAuth (frontend settings page)
     #[arg(long, env, default_value = "http://localhost:3000/settings")]
     google_oauth_success_redirect_uri: String,
-
-    /// Base URL for webhook endpoints (e.g., https://api.refactor.coach)
-    #[arg(long, env)]
-    webhook_base_url: Option<String>,
-
-    /// Secret for validating incoming webhooks
-    #[arg(long, env)]
-    webhook_secret: Option<String>,
-
-    // External API Base URLs (for testing/override)
-    /// AssemblyAI API base URL
-    #[arg(long, env, default_value = "https://api.assemblyai.com/v2")]
-    assembly_ai_base_url: String,
-
-    /// Recall.ai base domain (region prefix will be added, e.g., "us-west-2.{domain}")
-    #[arg(long, env, default_value = "recall.ai")]
-    recall_ai_base_domain: String,
 
     /// Google OAuth authorization URL
     #[arg(
@@ -625,18 +596,6 @@ impl Config {
         self.encryption_key.clone()
     }
 
-    pub fn recall_ai_api_key(&self) -> Option<String> {
-        self.recall_ai_api_key.clone()
-    }
-
-    pub fn recall_ai_region(&self) -> Option<String> {
-        self.recall_ai_region.clone()
-    }
-
-    pub fn assembly_ai_api_key(&self) -> Option<String> {
-        self.assembly_ai_api_key.clone()
-    }
-
     pub fn google_client_id(&self) -> Option<String> {
         self.google_client_id.clone()
     }
@@ -651,29 +610,6 @@ impl Config {
 
     pub fn google_oauth_success_redirect_uri(&self) -> &str {
         &self.google_oauth_success_redirect_uri
-    }
-
-    pub fn webhook_base_url(&self) -> Option<String> {
-        self.webhook_base_url.clone()
-    }
-
-    pub fn webhook_secret(&self) -> Option<String> {
-        self.webhook_secret.clone()
-    }
-
-    // External API Base URL accessors
-
-    pub fn assembly_ai_base_url(&self) -> &str {
-        &self.assembly_ai_base_url
-    }
-
-    pub fn recall_ai_base_domain(&self) -> &str {
-        &self.recall_ai_base_domain
-    }
-
-    /// Constructs the full Recall.ai API URL for a given region
-    pub fn recall_ai_url_for_region(&self, region: &str) -> String {
-        format!("https://{}.{}", region, self.recall_ai_base_domain)
     }
 
     pub fn google_oauth_auth_url(&self) -> &str {
