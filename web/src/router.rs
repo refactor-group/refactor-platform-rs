@@ -207,11 +207,7 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                 .route(
                     "/coaching_sessions/:id",
                     get(coaching_session_controller::read),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::read,
-                )),
+                ),
         )
         .merge(
             // PUT /coaching_sessions/:id
