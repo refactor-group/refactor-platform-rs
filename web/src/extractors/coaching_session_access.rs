@@ -3,7 +3,6 @@ use domain::{Id, coaching_session};
 
 use crate::{AppState, extractors::{RejectionType, authenticated_user::AuthenticatedUser}};
 use domain::coaching_sessions;
-use domain::coaching_relationship;
 use log::*;
 
 pub(crate) struct CoachingSessionAccess(pub coaching_sessions::Model);
@@ -31,44 +30,25 @@ where
         debug!("GET Coaching Session by ID: {coaching_session_id}");
 
         // Get the coaching session
-        let coaching_session = match coaching_session::find_by_id(
+        let (coaching_session, coaching_relationship) = match coaching_session::find_by_id_with_coaching_relationship(
             state.db_conn_ref(),
             coaching_session_id,
         )
         .await
         {
-            Ok(session) => session,
+            Ok((coaching_session, coaching_relationship)) => (coaching_session, coaching_relationship),
             Err(e) => {
-                error!("Error finding coaching session {coaching_session_id}: {e:?}");
-                return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
-            }
-        };
-
-        debug!("Found Coaching Session: {coaching_session:?}");
-
-        // Get the coaching relationship
-        let coaching_relationship = match coaching_relationship::find_by_id(
-            state.db_conn_ref(),
-            coaching_session.coaching_relationship_id,
-        )
-        .await
-        {
-            Ok(relationship) => relationship,
-            Err(e) => {
-                error!(
-                    "Error finding coaching relationship {}: {e:?}",
-                    coaching_session.coaching_relationship_id
-                );
-                return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+                error!("Authorization error finding coaching session {coaching_session_id}: {e:?}");
+                return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
             }
         };
 
         // Check if user is coach or coachee
-        if (
-            coaching_relationship.coach_id == authenticated_user.id
-            || coaching_relationship.coachee_id == authenticated_user.id) == false
+        if
+            !(coaching_relationship.coach_id == authenticated_user.id
+            || coaching_relationship.coachee_id == authenticated_user.id)
         {
-            return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+            return Err((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()));
         }
 
         Ok(CoachingSessionAccess(coaching_session))
@@ -153,20 +133,15 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![test_session.clone()]])
-                .append_query_results(
-                    vec![
-                        vec![coaching_relationships::Model {
-                            id: relationship_id,
-                            coach_id: Id::new_v4(),
-                            coachee_id: test_user.id,
-                            organization_id: Id::new_v4(),
-                            slug: "test".to_string(),
-                            created_at: now.into(),
-                            updated_at: now.into(),
-                        }]
-                    ]
-                )
+                .append_query_results(vec![vec![(test_session.clone(), coaching_relationships::Model {
+                    id: relationship_id,
+                    coach_id: Id::new_v4(),
+                    coachee_id: test_user.id,
+                    organization_id: Id::new_v4(),
+                    slug: "test".to_string(),
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                })]])
                 .into_connection()
         );
 
@@ -301,7 +276,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_coaching_session_extractor_returns_401_when_session_does_not_exist() {
+    async fn test_coaching_session_extractor_returns_404_when_session_does_not_exist() {
         // Create mock database with expected results
         let session_id = Id::new_v4();
         let now = Utc::now();
@@ -377,11 +352,11 @@ mod tests {
             .unwrap();
 
         let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
-    async fn test_coaching_session_extractor_returns_401_when_coaching_session_exists_but_user_relationship_does_not() {
+    async fn test_coaching_session_extractor_returns_404_when_coaching_session_exists_but_user_relationship_does_not() {
         // Create mock database with expected results
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
@@ -468,6 +443,6 @@ mod tests {
             .unwrap();
 
         let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
