@@ -43,7 +43,6 @@ where
             }
         };
 
-        // Check if user is coach or coachee
         if
             !(coaching_relationship.coach_id == authenticated_user.id
             || coaching_relationship.coachee_id == authenticated_user.id)
