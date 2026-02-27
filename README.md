@@ -1,4 +1,4 @@
-[![Build & Tests (backend)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Jim-Hodapp-Coaching/refactor-platform-rs/actions/workflows/ci.yml) [![Build and Deploy Containers](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_deploy_containers.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_deploy_containers.yml)
+[![Build, Test & Push](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml) [![Production Images](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml)
 
 # Refactor Coaching & Mentoring Platform
 
@@ -84,15 +84,25 @@ The platform uses MailerSend for transactional emails. To configure email functi
 1. **Environment Variables** (for Docker):
    - `MAILERSEND_API_KEY`: Your MailerSend API key
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
+   - `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for session-scheduled notification emails
+   - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
+   - `FRONTEND_BASE_URL`: Base URL used to construct links in email notifications (e.g. `https://myrefactor.com`)
 
 2. **Command Line Arguments** (for direct execution):
    - `--mailersend-api-key`: Your MailerSend API key
    - `--welcome-email-template-id`: The template ID for welcome emails
+   - `--session-scheduled-email-template-id`: The template ID for session-scheduled emails
+   - `--action-assigned-email-template-id`: The template ID for action-assigned emails
+   - `--frontend-base-url`: Base URL for email links
 
 Example:
+
 ```bash
 export MAILERSEND_API_KEY="your-api-key"
 export WELCOME_EMAIL_TEMPLATE_ID="your-template-id"
+export SESSION_SCHEDULED_EMAIL_TEMPLATE_ID="your-template-id"
+export ACTION_ASSIGNED_EMAIL_TEMPLATE_ID="your-template-id"
+export FRONTEND_BASE_URL="https://myrefactor.com"
 ```
 
 ---
@@ -190,6 +200,24 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 
 ---
 
+## CI/CD & Deployment
+
+This project uses GitHub Actions for continuous integration, release builds, and deployment.
+
+- **Branch CI**: Automated linting, testing, and Docker builds on every push/PR
+- **Release Builds**: Multi-architecture production images triggered by GitHub releases
+- **Deployment**: Manual deployment to DigitalOcean via secure Tailscale VPN
+
+📚 **Complete Documentation:** [docs/cicd/README.md](docs/cicd/README.md)
+
+### Quick Links
+
+- [Production Deployment Guide](docs/cicd/production-deployment.md)
+- [Docker Quickstart](docs/cicd/docker-quickstart.md)
+- [PR Preview Environments](docs/cicd/pr-preview-environments.md)
+
+---
+
 ## Advanced / Manual DB operations
 
 ### Set Up Database Manually
@@ -234,3 +262,19 @@ Note that to generate a new Entity using the CLI you must ignore all other table
 ```bash
  DATABASE_URL=postgres://refactor:password@localhost:5432/refactor sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
 ```
+
+---
+
+## PR Preview Environments
+
+This repository automatically deploys **isolated preview environments** for each pull request. When you open a PR, a complete stack (backend + frontend + database) deploys to a dedicated server on our Tailnet for testing before merge.
+
+**What happens automatically:**
+
+- ✅ PR opened → Environment deploys
+- ✅ New commits → Environment updates
+- ✅ PR closed/merged → Environment cleans up
+
+**Access:** Requires Tailscale VPN connection. Access URLs are posted as a comment on your PR in the GitHub Web UI.
+
+For detailed information, see the [PR Preview Environments Guide](docs/cicd/pr-preview-environments.md).

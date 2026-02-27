@@ -1,0 +1,84 @@
+# =============================================================================
+# Deploy PR Preview via Repository Dispatch
+# =============================================================================
+# Purpose: Handle cross-repo PR preview deployments triggered by repository_dispatch
+#
+# Why this exists:
+#   When the frontend repo calls ci-deploy-pr-preview.yml via workflow_call,
+#   `environment: pr-preview` resolves from the CALLER (frontend) repo, which
+#   lacks backend-specific secrets (Tiptap, MailerSend, etc.). This workflow
+#   runs in the backend repo's context, so environment secrets resolve correctly.
+#
+# Trigger: Frontend repo sends repository_dispatch via BACKEND_REPO_PAT
+# Flow: Frontend CI (lint/test) → dispatch → this workflow → reusable workflow → deploy
+#
+# TODO: Remove this workflow once PR_PREVIEW_* secrets are moved to org-level.
+#       At that point, the frontend can call ci-deploy-pr-preview.yml directly.
+# =============================================================================
+
+name: Deploy PR Preview (Dispatch)
+
+on:
+    repository_dispatch:
+        types: [deploy-pr-preview]
+
+# Prevent multiple deployments for the same PR
+concurrency:
+    group: preview-deploy-dispatch-${{ github.event.client_payload.pr_number }}-${{ github.event.client_payload.repo_type }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+    packages: write
+    pull-requests: write
+    attestations: write
+    id-token: write
+
+jobs:
+    # ===========================================================================
+    # JOB: Call the reusable workflow from the backend repo's context
+    # ===========================================================================
+    # Because this workflow lives in the backend repo, `environment: pr-preview`
+    # in the reusable workflow resolves from the backend repo — all secrets available.
+    # ===========================================================================
+    deploy-preview:
+        uses: ./.github/workflows/ci-deploy-pr-preview.yml
+        with:
+            repo_type: ${{ github.event.client_payload.repo_type }}
+            pr_number: ${{ github.event.client_payload.pr_number }}
+            branch_name: ${{ github.event.client_payload.branch_name }}
+            backend_branch: ${{ github.event.client_payload.backend_branch || 'main' }}
+            backend_image: ${{ github.event.client_payload.backend_image || '' }}
+            frontend_image: ${{ github.event.client_payload.frontend_image || '' }}
+            force_rebuild: false
+        secrets: inherit
+
+    # ===========================================================================
+    # JOB: Log deployment result
+    # ===========================================================================
+    # The reusable workflow's PR comment step is skipped for repository_dispatch
+    # events (it checks for pull_request/workflow_call events). This job logs
+    # the result as a workflow annotation so it's visible in the Actions tab.
+    #
+    # Cross-repo PR comments require a PAT with issues:write on the source repo.
+    # TODO: Add cross-repo PR comment once a suitable PAT is available.
+    # ===========================================================================
+    log-result:
+        name: Log Deployment Result
+        runs-on: ubuntu-latest
+        needs: deploy-preview
+        if: always()
+        steps:
+            - name: Report deployment status
+              run: |
+                  PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+                  SOURCE_REPO="${{ github.event.client_payload.source_repo }}"
+                  RESULT="${{ needs.deploy-preview.result }}"
+
+                  if [[ "$RESULT" == "success" ]]; then
+                      echo "::notice::PR #${PR_NUMBER} preview deployed successfully (source: ${SOURCE_REPO})"
+                      echo "::notice::Frontend: http://neo.rove-barbel.ts.net/pr-${PR_NUMBER}/"
+                      echo "::notice::Backend API: http://neo.rove-barbel.ts.net/pr-${PR_NUMBER}/api"
+                  else
+                      echo "::error::PR #${PR_NUMBER} preview deployment failed with status: ${RESULT} (source: ${SOURCE_REPO})"
+                  fi

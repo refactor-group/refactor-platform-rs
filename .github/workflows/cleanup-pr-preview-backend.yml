@@ -1,0 +1,40 @@
+# =============================================================================
+# Backend PR Preview Cleanup Overlay Workflow
+# =============================================================================
+# Purpose: Trigger cleanup when backend PRs are closed/merged
+# Calls: cleanup-pr-preview.yml (reusable workflow)
+# =============================================================================
+
+name: Cleanup PR Preview (Backend)
+
+on:
+  pull_request:
+    # Trigger on PR close (includes merge)
+    types: [closed]
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  # ===========================================================================
+  # JOB: Call reusable cleanup workflow
+  # ===========================================================================
+  cleanup-backend-pr:
+    name: Cleanup Backend PR Preview
+    # Call the reusable workflow located in this repository
+    uses: ./.github/workflows/cleanup-pr-preview.yml
+    with:
+      # This is a backend PR cleanup
+      repo_type: 'backend'
+      # PR number to cleanup
+      pr_number: ${{ github.event.pull_request.number }}
+      # Branch name for image identification
+      branch_name: ${{ github.head_ref }}
+    secrets: inherit
+    # =========================================================================
+    # NO SECRETS NEEDED!
+    # =========================================================================
+    # The reusable workflow uses the pr-preview environment from this repo
+    # which contains all necessary secrets for cleanup.
