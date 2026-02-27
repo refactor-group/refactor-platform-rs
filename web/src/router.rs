@@ -519,10 +519,15 @@ fn sse_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
-/// Routes for Google OAuth flow
+/// Routes for Google OAuth flow and connection management
 fn oauth_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/oauth/google/authorize", get(oauth_controller::authorize))
+        .route("/oauth/connections", get(oauth_controller::index))
+        .route(
+            "/oauth/connections/:provider",
+            get(oauth_controller::read).delete(oauth_controller::delete),
+        )
         .route_layer(from_fn(require_auth))
         .merge(
             // Callback doesn't require auth (user is redirected back from Google)
