@@ -11,7 +11,10 @@ use sea_orm::DatabaseConnection;
 use secrecy::ExposeSecret;
 use service::config::Config;
 
-pub use entity_api::oauth_connection::{delete_by_user_and_provider, find_by_user_and_provider};
+pub use entity_api::oauth_connection::{
+    delete_by_user_and_provider, find_all_by_user, find_by_user_and_provider,
+    get_by_user_and_provider,
+};
 
 /// Build the Google OAuth authorization URL for a user.
 pub fn google_authorize_url(config: &Config, user_id: Id) -> Result<String, Error> {
