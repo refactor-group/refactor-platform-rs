@@ -49,6 +49,28 @@ pub async fn find_by_user_and_provider(
         .await?)
 }
 
+/// Lists all OAuth connections for a user
+pub async fn find_all_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::UserId.eq(user_id))
+        .all(db)
+        .await?)
+}
+
+/// Gets an OAuth connection by user ID and provider, returning RecordNotFound if absent
+pub async fn get_by_user_and_provider(
+    db: &DatabaseConnection,
+    user_id: Id,
+    provider: Provider,
+) -> Result<Model, Error> {
+    find_by_user_and_provider(db, user_id, provider)
+        .await?
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
 /// Updates tokens on an existing OAuth connection
 pub async fn update_tokens(
     db: &DatabaseConnection,
@@ -164,6 +186,58 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap().user_id, model.user_id);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_all_by_user_returns_empty_when_none_found() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_all_by_user(&db, Id::new_v4()).await?;
+        assert!(result.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_all_by_user_returns_models_when_found() -> Result<(), Error> {
+        let model = test_model();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![model.clone()]])
+            .into_connection();
+
+        let result = find_all_by_user(&db, model.user_id).await?;
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].user_id, model.user_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_by_user_and_provider_returns_model_when_found() -> Result<(), Error> {
+        let model = test_model();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![model.clone()]])
+            .into_connection();
+
+        let result = get_by_user_and_provider(&db, model.user_id, Provider::Google).await?;
+        assert_eq!(result.user_id, model.user_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_by_user_and_provider_returns_error_when_not_found() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = get_by_user_and_provider(&db, Id::new_v4(), Provider::Google).await;
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().error_kind,
+            EntityApiErrorKind::RecordNotFound
+        );
     }
 
     #[tokio::test]
