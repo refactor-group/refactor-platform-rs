@@ -1,7 +1,14 @@
-use axum::{async_trait, extract::{FromRef, FromRequestParts, Path}, http::{StatusCode, request::Parts}};
-use domain::{Id, coaching_session};
+use axum::{
+    async_trait,
+    extract::{FromRef, FromRequestParts, Path},
+    http::{request::Parts, StatusCode},
+};
+use domain::{coaching_session, Id};
 
-use crate::{AppState, extractors::{RejectionType, authenticated_user::AuthenticatedUser}};
+use crate::{
+    extractors::{authenticated_user::AuthenticatedUser, RejectionType},
+    AppState,
+};
 use domain::coaching_sessions;
 use log::*;
 
@@ -17,34 +24,40 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let state = AppState::from_ref(state);
-        let AuthenticatedUser(authenticated_user) = AuthenticatedUser::from_request_parts(parts, &state).await?;
+        let AuthenticatedUser(authenticated_user) =
+            AuthenticatedUser::from_request_parts(parts, &state).await?;
 
-        let Path(coaching_session_id) = match Path::<Id>::from_request_parts(parts, &state)
-            .await
-            {
-                Ok(path) => path,
-                Err(_e) => {
-                    return Err((StatusCode::BAD_REQUEST, "Invalid coaching session id".to_string()));
-                }
-            };
+        let Path(coaching_session_id) = match Path::<Id>::from_request_parts(parts, &state).await {
+            Ok(path) => path,
+            Err(_e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid coaching session id".to_string(),
+                ));
+            }
+        };
         debug!("GET Coaching Session by ID: {coaching_session_id}");
 
         // Get the coaching session
-        let (coaching_session, coaching_relationship) = match coaching_session::find_by_id_with_coaching_relationship(
-            state.db_conn_ref(),
-            coaching_session_id,
-        )
-        .await
-        {
-            Ok((coaching_session, coaching_relationship)) => (coaching_session, coaching_relationship),
-            Err(e) => {
-                error!("Authorization error finding coaching session {coaching_session_id}: {e:?}");
-                return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
-            }
-        };
+        let (coaching_session, coaching_relationship) =
+            match coaching_session::find_by_id_with_coaching_relationship(
+                state.db_conn_ref(),
+                coaching_session_id,
+            )
+            .await
+            {
+                Ok((coaching_session, coaching_relationship)) => {
+                    (coaching_session, coaching_relationship)
+                }
+                Err(e) => {
+                    error!(
+                        "Authorization error finding coaching session {coaching_session_id}: {e:?}"
+                    );
+                    return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
+                }
+            };
 
-        if
-            !(coaching_relationship.coach_id == authenticated_user.id
+        if !(coaching_relationship.coach_id == authenticated_user.id
             || coaching_relationship.coachee_id == authenticated_user.id)
         {
             return Err((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()));
@@ -63,21 +76,21 @@ mod tests {
 
     use super::*;
     use axum::{body::Body, middleware::from_fn};
-    use domain::{coaching_relationships, user_roles};
-    use sea_orm::{DatabaseBackend, MockDatabase};
     use axum::{extract::Request, routing::get, Router};
-    use password_auth::generate_hash;
-    use domain::user::Backend;
-    use chrono::Utc;
     use axum_login::{
         tower_sessions::{MemoryStore, SessionManagerLayer},
         AuthManagerLayerBuilder,
     };
+    use chrono::Utc;
+    use domain::user::Backend;
+    use domain::users;
+    use domain::{coaching_relationships, user_roles};
+    use password_auth::generate_hash;
+    use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
     use time::Duration;
     use tower::ServiceExt;
     use tower_sessions::Expiry;
-    use domain::users;
 
     fn create_test_user() -> users::Model {
         let now = Utc::now();
@@ -98,7 +111,9 @@ mod tests {
         }
     }
 
-    async fn protected_route(CoachingSessionAccess(_coaching_session): CoachingSessionAccess) -> &'static str {
+    async fn protected_route(
+        CoachingSessionAccess(_coaching_session): CoachingSessionAccess,
+    ) -> &'static str {
         "extracted_success"
     }
 
@@ -132,22 +147,25 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![(test_session.clone(), coaching_relationships::Model {
-                    id: relationship_id,
-                    coach_id: Id::new_v4(),
-                    coachee_id: test_user.id,
-                    organization_id: Id::new_v4(),
-                    slug: "test".to_string(),
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                })]])
-                .into_connection()
+                .append_query_results(vec![vec![(
+                    test_session.clone(),
+                    coaching_relationships::Model {
+                        id: relationship_id,
+                        coach_id: Id::new_v4(),
+                        coachee_id: test_user.id,
+                        organization_id: Id::new_v4(),
+                        slug: "test".to_string(),
+                        created_at: now.into(),
+                        updated_at: now.into(),
+                    },
+                )]])
+                .into_connection(),
         );
 
         let app_state = AppState::new(
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default()
+            domain::events::EventPublisher::default(),
         );
 
         // Set up session layer
@@ -168,7 +186,10 @@ mod tests {
             )
             .merge(
                 Router::new()
-                    .route("/coaching_sessions/:coaching_session_id", get(protected_route))
+                    .route(
+                        "/coaching_sessions/:coaching_session_id",
+                        get(protected_route),
+                    )
                     .route_layer(from_fn(require_auth)),
             )
             .layer(auth_layer)
@@ -232,13 +253,13 @@ mod tests {
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results(vec![vec![test_session.clone()]])
-                .into_connection()
+                .into_connection(),
         );
 
         let app_state = AppState::new(
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default()
+            domain::events::EventPublisher::default(),
         );
 
         // Set up session layer
@@ -259,7 +280,10 @@ mod tests {
             )
             .merge(
                 Router::new()
-                    .route("/coaching_sessions/:coaching_session_id", get(protected_route))
+                    .route(
+                        "/coaching_sessions/:coaching_session_id",
+                        get(protected_route),
+                    )
                     .route_layer(from_fn(require_auth)),
             )
             .layer(auth_layer)
@@ -294,13 +318,13 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .into_connection()
+                .into_connection(),
         );
 
         let app_state = AppState::new(
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default()
+            domain::events::EventPublisher::default(),
         );
 
         // Set up session layer
@@ -321,7 +345,10 @@ mod tests {
             )
             .merge(
                 Router::new()
-                    .route("/coaching_sessions/:coaching_session_id", get(protected_route))
+                    .route(
+                        "/coaching_sessions/:coaching_session_id",
+                        get(protected_route),
+                    )
                     .route_layer(from_fn(require_auth)),
             )
             .layer(auth_layer)
@@ -355,7 +382,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_coaching_session_extractor_returns_404_when_coaching_session_exists_but_user_relationship_does_not() {
+    async fn test_coaching_session_extractor_returns_404_when_coaching_session_exists_but_user_relationship_does_not(
+    ) {
         // Create mock database with expected results
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
@@ -385,13 +413,13 @@ mod tests {
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results(vec![vec![test_session.clone()]])
-                .into_connection()
+                .into_connection(),
         );
 
         let app_state = AppState::new(
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default()
+            domain::events::EventPublisher::default(),
         );
 
         // Set up session layer
@@ -412,7 +440,10 @@ mod tests {
             )
             .merge(
                 Router::new()
-                    .route("/coaching_sessions/:coaching_session_id", get(protected_route))
+                    .route(
+                        "/coaching_sessions/:coaching_session_id",
+                        get(protected_route),
+                    )
                     .route_layer(from_fn(require_auth)),
             )
             .layer(auth_layer)

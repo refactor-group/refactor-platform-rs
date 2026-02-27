@@ -38,7 +38,7 @@ use log::*;
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
-    CoachingSessionAccess (coaching_session): CoachingSessionAccess,
+    CoachingSessionAccess(coaching_session): CoachingSessionAccess,
 ) -> Result<impl IntoResponse, Error> {
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
