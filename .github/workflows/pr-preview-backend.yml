@@ -47,11 +47,9 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
       # Build backend from this PR's branch
       branch_name: ${{ github.head_ref }}
-      # IMPORTANT: Using frontend feature branch until frontend PR #226 merges to main.
-      # main branch lacks basePath support (NEXT_PUBLIC_BASE_PATH in Dockerfile and
-      # next.config.mjs), causing _next/static/ asset 404s in PR previews.
-      # After merge, change back to 'main'.
-      frontend_branch: '225-feature-create-github-actions-workflows-for-preview-environments-on-pull-requests'
+      # Frontend branch for building the frontend image in backend PR previews.
+      # Override via repo variable PR_PREVIEW_FRONTEND_BRANCH (defaults to 'main').
+      frontend_branch: ${{ vars.PR_PREVIEW_FRONTEND_BRANCH || 'main' }}
       # Optional: override with specific image tags if needed
       # backend_image: ''  # Leave empty to build from PR branch
       # frontend_image: '' # Leave empty to build PR-specific with basePath
