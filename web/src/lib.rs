@@ -99,6 +99,8 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     let host = app_state.config.interface.as_ref().unwrap();
     let port = app_state.config.port;
 
+    app_state.config.log_non_secret_config();
+
     if app_state.config.is_production() {
         info!("Server starting... listening for internal connections on http://{host}:{port}");
         info!("External access available via HTTPS proxy at https://myrefactor.com");

@@ -1,7 +1,7 @@
 use clap::builder::TypedValueParser as _;
 use clap::Parser;
 use dotenvy::dotenv;
-use log::LevelFilter;
+use log::{debug, LevelFilter};
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::Deserialize;
 use std::fmt;
@@ -17,8 +17,14 @@ const API_VERSIONS: APiVersionList = [DEFAULT_API_VERSION];
 
 static X_VERSION: &str = "x-version";
 
-/// Default MailerSend API base URL used when `MAILERSEND_BASE_URL` is not set.
+/// Default MailerSend API base URL used when `MAILERSEND_BASE_URL` is not set or empty.
 pub const DEFAULT_MAILERSEND_BASE_URL: &str = "https://api.mailersend.com/v1";
+
+/// Default URL path for session-scheduled email links.
+const DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}";
+
+/// Default URL path for action-assigned email links.
+const DEFAULT_ACTION_ASSIGNED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}?tab=actions";
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Header)]
@@ -215,6 +221,65 @@ impl Config {
         Config::parse()
     }
 
+    /// Logs all non-secret configuration values at DEBUG level.
+    /// Secrets (API keys, auth keys, signing keys, database URL) are redacted.
+    pub fn log_non_secret_config(&self) {
+        debug!("Configuration:");
+        debug!("  runtime_env: {:?}", self.runtime_env);
+        debug!("  api_version: {:?}", self.api_version);
+        debug!("  interface: {:?}", self.interface);
+        debug!("  port: {}", self.port);
+        debug!("  log_level_filter: {}", self.log_level_filter);
+        debug!("  allowed_origins: {:?}", self.allowed_origins);
+        debug!("  db_max_connections: {}", self.db_max_connections);
+        debug!("  db_min_connections: {}", self.db_min_connections);
+        debug!(
+            "  db_connect_timeout_secs: {}",
+            self.db_connect_timeout_secs
+        );
+        debug!(
+            "  db_acquire_timeout_secs: {}",
+            self.db_acquire_timeout_secs
+        );
+        debug!("  db_idle_timeout_secs: {}", self.db_idle_timeout_secs);
+        debug!("  db_max_lifetime_secs: {}", self.db_max_lifetime_secs);
+        debug!(
+            "  backend_session_expiry_seconds: {}",
+            self.backend_session_expiry_seconds
+        );
+        debug!("  tiptap_app_id: {:?}", self.tiptap_app_id);
+        debug!("  mailersend_base_url: {}", self.mailersend_base_url);
+        debug!(
+            "  mailersend_api_key: {}",
+            if self.mailersend_api_key.is_some() {
+                "[set]"
+            } else {
+                "[not set]"
+            }
+        );
+        debug!(
+            "  welcome_email_template_id: {:?}",
+            self.welcome_email_template_id
+        );
+        debug!(
+            "  session_scheduled_email_template_id: {:?}",
+            self.session_scheduled_email_template_id
+        );
+        debug!(
+            "  action_assigned_email_template_id: {:?}",
+            self.action_assigned_email_template_id
+        );
+        debug!("  frontend_base_url: {:?}", self.frontend_base_url);
+        debug!(
+            "  session_scheduled_email_url_path: {}",
+            self.session_scheduled_email_url_path
+        );
+        debug!(
+            "  action_assigned_email_url_path: {}",
+            self.action_assigned_email_url_path
+        );
+    }
+
     pub fn api_version(&self) -> &str {
         self.api_version
             .as_ref()
@@ -249,8 +314,13 @@ impl Config {
     }
 
     /// Returns the MailerSend API base URL.
+    /// Falls back to the default if the configured value is empty.
     pub fn mailersend_base_url(&self) -> &str {
-        &self.mailersend_base_url
+        if self.mailersend_base_url.is_empty() {
+            DEFAULT_MAILERSEND_BASE_URL
+        } else {
+            &self.mailersend_base_url
+        }
     }
 
     /// Returns the MailerSend API key, if configured.
@@ -279,13 +349,23 @@ impl Config {
     }
 
     /// Returns the URL path template for session-scheduled email links.
+    /// Falls back to the default if the configured value is empty.
     pub fn session_scheduled_email_url_path(&self) -> &str {
-        &self.session_scheduled_email_url_path
+        if self.session_scheduled_email_url_path.is_empty() {
+            DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH
+        } else {
+            &self.session_scheduled_email_url_path
+        }
     }
 
     /// Returns the URL path template for action-assigned email links.
+    /// Falls back to the default if the configured value is empty.
     pub fn action_assigned_email_url_path(&self) -> &str {
-        &self.action_assigned_email_url_path
+        if self.action_assigned_email_url_path.is_empty() {
+            DEFAULT_ACTION_ASSIGNED_EMAIL_URL_PATH
+        } else {
+            &self.action_assigned_email_url_path
+        }
     }
 
     pub fn runtime_env(&self) -> RustEnv {
