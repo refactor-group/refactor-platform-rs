@@ -275,14 +275,24 @@ jobs:
 
         steps:
             # Get the source code for the branch being deployed
-            # Explicit repository ensures correct checkout for cross-repo calls
-            # (workflow_call from frontend, repository_dispatch, or workflow_dispatch)
+            # Explicit repository ensures correct checkout for cross-repo calls.
+            # Uses continue-on-error + fallback so a stale GHCR_PAT doesn't
+            # block re-runs — the default GITHUB_TOKEN has sufficient read access.
             - name: Checkout frontend code
+              id: checkout_frontend_lint
+              continue-on-error: true
               uses: actions/checkout@v4
               with:
                   repository: ${{ env.FRONTEND_REPOSITORY }}
                   ref: ${{ inputs.branch_name }}
-                  token: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+                  token: ${{ secrets.GHCR_PAT }}
+
+            - name: Checkout frontend code (fallback token)
+              if: steps.checkout_frontend_lint.outcome == 'failure'
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.FRONTEND_REPOSITORY }}
+                  ref: ${{ inputs.branch_name }}
 
             # Setup Node.js with npm cache for faster dependency installation
             - name: Setup Node.js
@@ -363,19 +373,36 @@ jobs:
         if: inputs.repo_type == 'frontend'
         # Use pr-preview environment from calling repository
         environment: pr-preview
+        # Playwright container includes browsers + system deps, eliminating the
+        # 5+ minute `npx playwright install --with-deps` step. Keep the image
+        # tag in sync with the @playwright/test version in package.json.
+        container:
+            image: mcr.microsoft.com/playwright:v1.58.2-noble
+            options: --user 1001
 
         env:
             NODE_ENV: test
 
         steps:
             # Get the source code for the branch being deployed
-            # Explicit repository ensures correct checkout for cross-repo calls
+            # Explicit repository ensures correct checkout for cross-repo calls.
+            # Uses continue-on-error + fallback so a stale GHCR_PAT doesn't
+            # block re-runs — the default GITHUB_TOKEN has sufficient read access.
             - name: Checkout frontend code
+              id: checkout_frontend_test
+              continue-on-error: true
               uses: actions/checkout@v4
               with:
                   repository: ${{ env.FRONTEND_REPOSITORY }}
                   ref: ${{ inputs.branch_name }}
-                  token: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+                  token: ${{ secrets.GHCR_PAT }}
+
+            - name: Checkout frontend code (fallback token)
+              if: steps.checkout_frontend_test.outcome == 'failure'
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.FRONTEND_REPOSITORY }}
+                  ref: ${{ inputs.branch_name }}
 
             # Setup Node.js with npm cache for faster dependency installation
             - name: Setup Node.js
@@ -395,34 +422,43 @@ jobs:
                       ${{ runner.os }}-nextjs-test-${{ hashFiles('**/package-lock.json') }}-
                       ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
 
-            # Cache Playwright browser binaries for E2E tests
-            - name: Cache Playwright browsers
-              uses: actions/cache@v4
-              with:
-                  path: ~/.cache/ms-playwright
-                  key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
-                  restore-keys: |
-                      ${{ runner.os }}-playwright-
-
             # Install exact versions from package-lock.json for consistency
             - name: Install dependencies
               run: npm ci --prefer-offline
 
             # Build the Next.js application to check for build errors
+            # NEXT_PUBLIC_* vars are baked at build time. E2E tests mock all API
+            # routes via Playwright, so no real backend is needed — but the URL
+            # must be well-formed so fetch() doesn't throw before route handlers
+            # can intercept.
             - name: Build application
               run: npm run build
-
-            # Download browser binaries needed for E2E testing
-            - name: Install Playwright browsers
-              run: npx playwright install --with-deps
+              env:
+                  NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PROTOCOL || 'http' }}
+                  NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_HOST || 'localhost' }}
+                  NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PORT || '4000' }}
+                  NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_API_PATH || '' }}
+                  NEXT_PUBLIC_BACKEND_API_VERSION: ${{ secrets.PR_PREVIEW_BACKEND_API_VERSION || '1.0.0-beta1' }}
 
             # Run unit tests to validate component functionality
             - name: Run unit tests
               run: npm run test:run
 
+            # The standalone server.js expects static assets and public/ inside
+            # its own directory (same copies the Dockerfile performs).
+            - name: Prepare standalone server for E2E
+              run: |
+                  cp -r .next/static .next/standalone/.next/static
+                  cp -r public .next/standalone/public 2>/dev/null || true
+
             # Run end-to-end tests to validate full application flow
             - name: Run E2E tests
               run: npm run test:e2e
+              env:
+                  # The standalone server uses HOSTNAME (defaults to container ID
+                  # inside Docker). Override to 0.0.0.0 so Playwright can reach
+                  # it at http://localhost:3000.
+                  HOSTNAME: 0.0.0.0
 
     # ===========================================================================
     # JOB 5: Build ARM64 Images for Deployment
