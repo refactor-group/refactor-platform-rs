@@ -206,10 +206,16 @@ jobs:
           cd /home/${RPI5_USERNAME}
 
           echo "🛑 Stopping and removing containers for ${PROJECT_NAME}..."
-          if docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down 2>/dev/null; then
-            echo "✅ Containers stopped and removed"
+          if [[ -f pr-${PR_NUMBER}-compose.yaml ]]; then
+            if docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down --volumes --remove-orphans; then
+              echo "✅ Containers stopped and removed"
+            else
+              echo "⚠️  docker compose down failed, force-removing containers..."
+              docker ps -a --filter "name=${PROJECT_NAME}" --format '{{.ID}}' | xargs -r docker rm -f || true
+            fi
           else
-            echo "⚠️  No running containers found (already cleaned up?)"
+            echo "⚠️  Compose file not found, force-removing containers by name..."
+            docker ps -a --filter "name=${PROJECT_NAME}" --format '{{.ID}}' | xargs -r docker rm -f || true
           fi
 
           echo "📁 Removing compose file..."
@@ -251,10 +257,10 @@ jobs:
 
           echo ""
           echo "📊 Remaining PR environments on RPi5:"
-          REMAINING=$(docker ps --filter 'name=pr-' --format '{{.Names}}' 2>/dev/null | wc -l)
+          REMAINING=$(docker ps --filter 'name=pr-' --format '{{.Names}}' 2>/dev/null | wc -l || true)
           if [[ $REMAINING -gt 0 ]]; then
             echo "Active PR environments: $REMAINING"
-            docker ps --filter 'name=pr-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | head -6
+            docker ps --filter 'name=pr-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | head -6 || true
           else
             echo "No PR environments currently running ✨"
           fi
