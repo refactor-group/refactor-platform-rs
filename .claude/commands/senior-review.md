@@ -18,7 +18,7 @@ semantically redundant with types already defined in the codebase?
 Check against the canonical type locations:
 - **`entity/src/`** — SeaORM models: `actions.rs`, `coaching_sessions.rs`,
   `coaching_relationships.rs`, `users.rs`, `organizations.rs`, `notes.rs`,
-  `agreements.rs`, `overarching_goals.rs`, `status.rs`, `roles.rs`, etc.
+  `agreements.rs`, `goals.rs`, `status.rs`, `roles.rs`, etc.
 - **`entity_api/src/`** — Query/mutation types and error types
 - **`domain/src/`** — Domain models, business logic types, and error hierarchy
 

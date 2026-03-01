@@ -182,7 +182,7 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 
 `entity` - shape of the data models and the relationships to each other
 
-`events` - Foundation layer providing domain event definitions (overarching goals, coaching sessions, etc.). No internal dependencies.
+`events` - Foundation layer providing domain event definitions (goals, coaching sessions, etc.). No internal dependencies.
 
 `migration` - relational DB SQL migrations
 

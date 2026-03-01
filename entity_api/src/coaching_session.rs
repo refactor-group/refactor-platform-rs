@@ -2,7 +2,7 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    organizations, overarching_goals, users, Id,
+    goals, organizations, users, Id,
 };
 use log::debug;
 use sea_orm::{
@@ -124,7 +124,7 @@ pub struct EnrichedSession {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<organizations::Model>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub overarching_goal: Option<overarching_goals::Model>,
+    pub goal: Option<goals::Model>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
 }
@@ -315,7 +315,7 @@ struct RelatedData {
     coaches: HashMap<Id, users::Model>,
     coachees: HashMap<Id, users::Model>,
     organizations: HashMap<Id, organizations::Model>,
-    goals: HashMap<Id, overarching_goals::Model>,
+    goals: HashMap<Id, goals::Model>,
     agreements: HashMap<Id, agreements::Model>,
 }
 
@@ -425,17 +425,17 @@ async fn batch_load_organizations(
         .collect())
 }
 
-/// Batch load overarching goals by session IDs
+/// Batch load goals by session IDs
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
-) -> Result<HashMap<Id, overarching_goals::Model>, Error> {
+) -> Result<HashMap<Id, goals::Model>, Error> {
     if session_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    Ok(overarching_goals::Entity::find()
-        .filter(overarching_goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()))
+    Ok(goals::Entity::find()
+        .filter(goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()))
         .all(db)
         .await?
         .into_iter()
@@ -482,7 +482,7 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         .as_ref()
         .and_then(|rel| related.organizations.get(&rel.organization_id).cloned());
 
-    let overarching_goal = related.goals.get(&session.id).cloned();
+    let goal = related.goals.get(&session.id).cloned();
     let agreement = related.agreements.get(&session.id).cloned();
 
     EnrichedSession {
@@ -491,7 +491,7 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         coach,
         coachee,
         organization,
-        overarching_goal,
+        goal,
         agreement,
     }
 }
@@ -505,7 +505,7 @@ impl EnrichedSession {
             coach: None,
             coachee: None,
             organization: None,
-            overarching_goal: None,
+            goal: None,
             agreement: None,
         }
     }
@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(results[0].session.id, session_id);
         assert!(results[0].relationship.is_none());
         assert!(results[0].organization.is_none());
-        assert!(results[0].overarching_goal.is_none());
+        assert!(results[0].goal.is_none());
         assert!(results[0].agreement.is_none());
 
         Ok(())
@@ -751,7 +751,7 @@ mod tests {
         assert!(enriched.coach.is_none());
         assert!(enriched.coachee.is_none());
         assert!(enriched.organization.is_none());
-        assert!(enriched.overarching_goal.is_none());
+        assert!(enriched.goal.is_none());
         assert!(enriched.agreement.is_none());
     }
 

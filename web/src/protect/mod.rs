@@ -11,10 +11,10 @@
 pub(crate) mod actions;
 pub(crate) mod agreements;
 pub(crate) mod coaching_sessions;
+pub(crate) mod goals;
 pub(crate) mod jwt;
 pub(crate) mod notes;
 pub(crate) mod organizations;
-pub(crate) mod overarching_goals;
 pub(crate) mod users;
 
 use crate::AppState;

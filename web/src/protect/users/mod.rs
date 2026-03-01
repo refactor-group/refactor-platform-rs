@@ -10,8 +10,8 @@ use log::*;
 
 pub(crate) mod actions;
 pub(crate) mod coaching_sessions;
+pub(crate) mod goals;
 pub(crate) mod organizations;
-pub(crate) mod overarching_goals;
 pub(crate) mod passwords;
 
 /// Checks that the `user_id` matches the `authenticated_user.id`

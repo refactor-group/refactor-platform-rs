@@ -4,9 +4,9 @@ use utoipa::{IntoParams, ToSchema};
 
 use super::sort::SortOrder;
 use super::WithSortDefaults;
-use domain::{overarching_goals, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
+use domain::{goals, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 
-/// Sortable fields for overarching goals
+/// Sortable fields for goals
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "title")]
 pub(crate) enum SortField {
@@ -37,12 +37,12 @@ impl IntoQueryFilterMap for IndexParams {
     }
 }
 
-impl QuerySort<overarching_goals::Column> for IndexParams {
-    fn get_sort_column(&self) -> Option<overarching_goals::Column> {
+impl QuerySort<goals::Column> for IndexParams {
+    fn get_sort_column(&self) -> Option<goals::Column> {
         self.sort_by.as_ref().map(|field| match field {
-            SortField::Title => overarching_goals::Column::Title,
-            SortField::CreatedAt => overarching_goals::Column::CreatedAt,
-            SortField::UpdatedAt => overarching_goals::Column::UpdatedAt,
+            SortField::Title => goals::Column::Title,
+            SortField::CreatedAt => goals::Column::CreatedAt,
+            SortField::UpdatedAt => goals::Column::UpdatedAt,
         })
     }
 

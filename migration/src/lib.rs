@@ -13,6 +13,7 @@ mod m20251008_000000_migrate_admin_users_to_super_admin_role;
 mod m20251009_000000_migrate_regular_users_to_user_roles;
 mod m20251024_000000_remove_organizations_users_table;
 mod m20251228_000001_add_actions_users_table;
+mod m20260228_000000_rename_overarching_goals_to_goals;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -32,6 +33,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20251009_000000_migrate_regular_users_to_user_roles::Migration),
             Box::new(m20251024_000000_remove_organizations_users_table::Migration),
             Box::new(m20251228_000001_add_actions_users_table::Migration),
+            Box::new(m20260228_000000_rename_overarching_goals_to_goals::Migration),
         ]
     }
 }
