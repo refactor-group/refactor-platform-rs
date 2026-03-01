@@ -643,7 +643,11 @@ jobs:
             # Override GHCR login with PAT for cross-repo image pushes and pulls.
             # GITHUB_TOKEN only has packages:write for its own repo, so any workflow
             # that builds or deploys images from both repos needs a PAT.
+            # Uses continue-on-error so a missing/stale PAT doesn't block the job —
+            # the GITHUB_TOKEN login above remains in effect for same-repo pushes.
             - name: Login to GHCR with PAT (cross-repo)
+              id: ghcr_pat_login
+              continue-on-error: true
               uses: docker/login-action@v3
               with:
                   registry: ${{ env.REGISTRY }}
