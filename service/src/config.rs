@@ -151,7 +151,7 @@ impl<T: ConfigDisplay> ConfigDisplay for Option<T> {
     fn display_value(&self) -> String {
         match self {
             Some(v) => v.display_value(),
-            None => "None".to_string(),
+            None => "[unset]".to_string(),
         }
     }
 }
@@ -403,16 +403,6 @@ impl Config {
         );
         self.debug_field("tiptap_app_id", &self.tiptap_app_id);
         self.debug_field("mailersend_base_url", &self.mailersend_base_url);
-        // Redact secret — only show whether the key is configured
-        debug!(
-            "  mailersend_api_key: {}{}",
-            if self.mailersend_api_key.is_some() {
-                "[set]"
-            } else {
-                "[not set]"
-            },
-            self.source_suffix("mailersend_api_key")
-        );
         self.debug_field("welcome_email_template_id", &self.welcome_email_template_id);
         self.debug_field(
             "session_scheduled_email_template_id",
