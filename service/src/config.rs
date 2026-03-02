@@ -2,7 +2,7 @@ use clap::builder::TypedValueParser as _;
 use clap::parser::ValueSource;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use dotenvy::dotenv;
-use log::{debug, LevelFilter};
+use log::{debug, warn, LevelFilter};
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -325,7 +325,36 @@ impl Config {
             }
         }
 
+        Self::warn_untracked_fields(&matches);
+
         config
+    }
+
+    /// Returns the names of any Clap args not listed in CONFIG_FIELD_KEYS.
+    fn find_untracked_fields(matches: &clap::ArgMatches) -> Vec<String> {
+        matches
+            .ids()
+            .filter_map(|id| {
+                let name = id.as_str();
+                if CONFIG_FIELD_KEYS.contains(&name) {
+                    None
+                } else {
+                    Some(name.to_string())
+                }
+            })
+            .collect()
+    }
+
+    /// Warns about any Clap args not listed in CONFIG_FIELD_KEYS so developers
+    /// know they forgot to register a newly added config field.
+    fn warn_untracked_fields(matches: &clap::ArgMatches) {
+        for name in Self::find_untracked_fields(matches) {
+            warn!(
+                "Config field \"{}\" is not in CONFIG_FIELD_KEYS — \
+                 add it to track its value source",
+                name
+            );
+        }
     }
 
     /// Returns " (default)" if the field was not explicitly set via CLI or env var.
@@ -642,5 +671,30 @@ mod tests {
 
         assert_eq!(config.port.display_value(), "8080");
         assert_eq!(config.source_suffix("port"), "");
+    }
+
+    #[test]
+    fn all_config_fields_are_tracked() {
+        let matches = Config::command()
+            .try_get_matches_from(["test_binary"])
+            .expect("Failed to parse test args");
+
+        let untracked = Config::find_untracked_fields(&matches);
+        assert!(
+            untracked.is_empty(),
+            "Config fields not in CONFIG_FIELD_KEYS: {:?}",
+            untracked
+        );
+    }
+
+    #[test]
+    fn untracked_field_is_detected() {
+        let matches = Config::command()
+            .arg(clap::Arg::new("extra_test_field").long("extra-test-field"))
+            .try_get_matches_from(["test_binary", "--extra-test-field", "value"])
+            .expect("Failed to parse test args");
+
+        let untracked = Config::find_untracked_fields(&matches);
+        assert_eq!(untracked, vec!["extra_test_field"]);
     }
 }
