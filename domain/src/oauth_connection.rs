@@ -145,7 +145,7 @@ pub async fn get_valid_access_token(
     db: &DatabaseConnection,
     config: &Config,
     user_id: Id,
-    _provider: OauthProvider,
+    provider: OauthProvider,
 ) -> Result<String, Error> {
     let encryption_key = config.encryption_key().ok_or_else(|| Error {
         source: None,
@@ -156,12 +156,30 @@ pub async fn get_valid_access_token(
     let storage = DbOAuthTokenStorage::new(db, encryption_key);
     let manager = Manager::new(storage);
 
-    let access_token = manager
+    let result = manager
         .get_valid_token(&oauth_provider, &user_id.to_string())
         .await
-        .inspect_err(|e| warn!("Failed to get valid token for user {}: {:?}", user_id, e))?;
+        .inspect_err(|e| warn!("Failed to get valid token for user {}: {:?}", user_id, e));
 
-    Ok(access_token.expose_secret().to_string())
+    match result {
+        Ok(token) => Ok(token.expose_secret().to_string()),
+        Err(ref e)
+            if matches!(
+                e.error_kind,
+                meeting_auth::error::ErrorKind::OAuth(
+                    meeting_auth::error::OAuthErrorKind::TokenRevoked
+                )
+            ) =>
+        {
+            warn!(
+                "Refresh token revoked for user {}, removing connection",
+                user_id
+            );
+            let _ = delete_by_user_and_provider(db, user_id, provider).await;
+            Err(result.unwrap_err().into())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Create a Google OAuth provider from config.

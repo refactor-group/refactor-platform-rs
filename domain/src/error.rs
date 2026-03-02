@@ -1,6 +1,8 @@
 //! Error types for the `domain` layer.
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
-use meeting_auth::error::{Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind};
+use meeting_auth::error::{
+    Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
+};
 use std::error::Error as StdError;
 use std::fmt;
 
@@ -51,6 +53,7 @@ pub enum EntityErrorKind {
 #[derive(Debug, PartialEq)]
 pub enum ExternalErrorKind {
     Network,
+    OauthTokenRevoked, // provider permanently revoked the refresh token
     Other(String),
 }
 
@@ -122,6 +125,9 @@ impl From<MeetingAuthError> for Error {
     fn from(err: MeetingAuthError) -> Self {
         let error_kind = match &err.error_kind {
             MeetingAuthErrorKind::Http(_) => DomainErrorKind::External(ExternalErrorKind::Network),
+            MeetingAuthErrorKind::OAuth(OAuthErrorKind::TokenRevoked) => {
+                DomainErrorKind::External(ExternalErrorKind::OauthTokenRevoked)
+            }
             MeetingAuthErrorKind::OAuth(_) => {
                 DomainErrorKind::External(ExternalErrorKind::Other("OAuth error".to_string()))
             }

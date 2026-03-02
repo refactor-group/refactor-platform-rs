@@ -40,6 +40,7 @@ pub enum OAuthErrorKind {
     AuthorizationFailed,
     TokenExchangeFailed,
     TokenRefreshFailed,
+    TokenRevoked, // permanent: invalid_grant from provider
     RevocationFailed,
     InvalidState,
     PkceVerificationFailed,

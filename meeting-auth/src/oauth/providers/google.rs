@@ -244,7 +244,11 @@ impl crate::oauth::Provider for Provider {
         } else {
             let error_text = response.text().await.unwrap_or_default();
             warn!("Google token refresh error: {}", error_text);
-            Err(oauth_error(OAuthErrorKind::TokenRefreshFailed, &error_text))
+            if error_text.contains("invalid_grant") {
+                Err(oauth_error(OAuthErrorKind::TokenRevoked, &error_text))
+            } else {
+                Err(oauth_error(OAuthErrorKind::TokenRefreshFailed, &error_text))
+            }
         }
     }
 
