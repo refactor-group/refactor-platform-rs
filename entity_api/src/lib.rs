@@ -4,8 +4,8 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
-    coaching_sessions, jwts, notes, organizations, overarching_goals, status, user_roles, users,
-    users::Role, Id,
+    coaching_sessions, goals, jwts, notes, organizations, status, user_roles, users, users::Role,
+    Id,
 };
 
 pub mod action;
@@ -14,10 +14,10 @@ pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
 pub mod error;
+pub mod goal;
 pub mod mutate;
 pub mod note;
 pub mod organization;
-pub mod overarching_goal;
 pub mod query;
 pub mod user;
 pub mod user_role;

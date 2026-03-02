@@ -9,7 +9,7 @@ use crate::{
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
-    organization, organizations, overarching_goal, user, users, Id,
+    goal, organization, organizations, user, users, Id,
 };
 
 /// Trait for email notifications that need common config prerequisites.
@@ -316,7 +316,7 @@ struct ActionEmailContext<'a> {
     due_by: Option<DateTime<FixedOffset>>,
     session_id: Id,
     organization: &'a organizations::Model,
-    overarching_goal: &'a str,
+    goal: &'a str,
 }
 
 /// Send action-assigned notification emails to all assignees.
@@ -358,7 +358,7 @@ async fn send_action_assigned_email(
             .add_personalization("assigner_first_name", &assigner.first_name)
             .add_personalization("assigner_last_name", &assigner.last_name)
             .add_personalization("organization_name", &ctx.organization.name)
-            .add_personalization("overarching_goal", ctx.overarching_goal)
+            .add_personalization("goal", ctx.goal)
             .add_personalization("session_url", &session_url)
             .build()
             .await;
@@ -415,7 +415,7 @@ pub async fn notify_session_scheduled(
 /// Orchestrate sending action-assigned emails (best-effort).
 ///
 /// Looks up assignee users, the coaching session, relationship, organization,
-/// and overarching goal, then sends notification emails to all assignees.
+/// and goal, then sends notification emails to all assignees.
 /// Errors are logged internally — email delivery must never block or fail
 /// the calling operation.
 pub async fn notify_action_assigned(
@@ -435,10 +435,10 @@ pub async fn notify_action_assigned(
                 .await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        // Look up overarching goal for this session (use first if multiple exist).
+        // Look up goal for this session (use first if multiple exist).
         // This is optional metadata — a DB error here should not prevent the email
         // from being sent, so we fall back to an empty list on failure.
-        let goals = overarching_goal::find_by_coaching_session_id(db, session.id)
+        let goals = goal::find_by_coaching_session_id(db, session.id)
             .await
             .unwrap_or_default();
         let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
@@ -448,7 +448,7 @@ pub async fn notify_action_assigned(
             due_by: action.due_by,
             session_id: action.coaching_session_id,
             organization: &org,
-            overarching_goal: goal_title,
+            goal: goal_title,
         };
 
         send_action_assigned_email(config, &assignees, assigner, &ctx).await
@@ -941,7 +941,7 @@ mod tests {
                         "assigner_first_name": "Alex",
                         "assigner_last_name": "Smith",
                         "organization_name": "Acme Corp",
-                        "overarching_goal": "Improve communication",
+                        "goal": "Improve communication",
                         "session_url": session_url,
                     }
                 }]
@@ -956,7 +956,7 @@ mod tests {
             due_by: Some(due_by),
             session_id,
             organization: &org,
-            overarching_goal: "Improve communication",
+            goal: "Improve communication",
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -1000,7 +1000,7 @@ mod tests {
                         "assigner_first_name": "Alex",
                         "assigner_last_name": "Smith",
                         "organization_name": "Acme Corp",
-                        "overarching_goal": "",
+                        "goal": "",
                         "session_url": session_url,
                     }
                 }]
@@ -1015,7 +1015,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            overarching_goal: "",
+            goal: "",
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -1053,7 +1053,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            overarching_goal: "",
+            goal: "",
         };
 
         let result =
@@ -1088,7 +1088,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            overarching_goal: "",
+            goal: "",
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -1131,7 +1131,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            overarching_goal: "",
+            goal: "",
         };
 
         let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;

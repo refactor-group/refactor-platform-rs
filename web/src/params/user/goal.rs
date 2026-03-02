@@ -4,9 +4,9 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
-use domain::{overarching_goals, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
+use domain::{goals, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 
-/// Sortable fields for user overarching goals endpoint.
+/// Sortable fields for user goals endpoint.
 ///
 /// Maps query parameter values (e.g., `?sort_by=title`) to database columns.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -20,10 +20,10 @@ pub(crate) enum SortField {
     UpdatedAt,
 }
 
-/// Query parameters for GET `/users/{user_id}/overarching_goals` endpoint.
+/// Query parameters for GET `/users/{user_id}/goals` endpoint.
 ///
 /// Supports filtering by coaching session and standard sorting.
-/// Overarching goals are long-term objectives that span multiple coaching sessions.
+/// Goals are long-term objectives that span multiple coaching sessions.
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     /// User ID from URL path (not a query parameter)
@@ -49,7 +49,7 @@ impl IndexParams {
 
     /// Applies default sorting parameters if any sort parameter is provided.
     ///
-    /// Uses `Title` as the default sort field for overarching goals.
+    /// Uses `Title` as the default sort field for goals.
     /// This encapsulates the default field choice within the params module.
     pub fn apply_defaults(mut self) -> Self {
         <Self as WithSortDefaults>::apply_sort_defaults(
@@ -81,12 +81,12 @@ impl IntoQueryFilterMap for IndexParams {
     }
 }
 
-impl QuerySort<overarching_goals::Column> for IndexParams {
-    fn get_sort_column(&self) -> Option<overarching_goals::Column> {
+impl QuerySort<goals::Column> for IndexParams {
+    fn get_sort_column(&self) -> Option<goals::Column> {
         self.sort_by.as_ref().map(|field| match field {
-            SortField::Title => overarching_goals::Column::Title,
-            SortField::CreatedAt => overarching_goals::Column::CreatedAt,
-            SortField::UpdatedAt => overarching_goals::Column::UpdatedAt,
+            SortField::Title => goals::Column::Title,
+            SortField::CreatedAt => goals::Column::CreatedAt,
+            SortField::UpdatedAt => goals::Column::UpdatedAt,
         })
     }
 

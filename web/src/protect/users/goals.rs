@@ -16,7 +16,7 @@ pub(crate) async fn index(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    // check that we are only allowing authenticated users to read their own overarching goals (for now)
+    // check that we are only allowing authenticated users to read their own goals (for now)
     if authenticated_user.id == user_id {
         next.run(request).await
     } else {

@@ -21,7 +21,7 @@ pub enum IncludeParam {
     Relationship,
     /// Include organization (requires relationship)
     Organization,
-    /// Include overarching goal
+    /// Include goal
     Goal,
     /// Include session agreements
     Agreements,

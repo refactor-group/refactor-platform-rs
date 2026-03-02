@@ -9,9 +9,9 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller, jwt_controller,
-    note_controller, organization, organization_controller, overarching_goal_controller, user,
-    user_controller, user_session_controller,
+    action_controller, agreement_controller, coaching_session_controller, goal_controller,
+    jwt_controller, note_controller, organization, organization_controller, user, user_controller,
+    user_session_controller,
 };
 use crate::sse;
 
@@ -62,11 +62,11 @@ use self::organization::coaching_relationship_controller;
             organization::user_controller::index,
             organization::user_controller::create,
             organization::user_controller::delete,
-            overarching_goal_controller::create,
-            overarching_goal_controller::update,
-            overarching_goal_controller::index,
-            overarching_goal_controller::read,
-            overarching_goal_controller::update_status,
+            goal_controller::create,
+            goal_controller::update,
+            goal_controller::index,
+            goal_controller::read,
+            goal_controller::update_status,
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
@@ -74,7 +74,7 @@ use self::organization::coaching_relationship_controller;
             user::organization_controller::index,
             user::action_controller::index,
             user::coaching_session_controller::index,
-            user::overarching_goal_controller::index,
+            user::goal_controller::index,
             jwt_controller::generate_collab_token,
         ),
         components(
@@ -85,7 +85,7 @@ use self::organization::coaching_relationship_controller;
                 domain::coaching_relationships::Model,
                 domain::notes::Model,
                 domain::organizations::Model,
-                domain::overarching_goals::Model,
+                domain::goals::Model,
                 domain::users::Model,
                 domain::user::Credentials,
                 params::user::UpdateParams,
@@ -127,13 +127,13 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(note_routes(app_state.clone()))
         .merge(organization_coaching_relationship_routes(app_state.clone()))
         .merge(organization_user_routes(app_state.clone()))
-        .merge(overarching_goal_routes(app_state.clone()))
+        .merge(goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
         .merge(user_organizations_routes(app_state.clone()))
         .merge(user_actions_routes(app_state.clone()))
         .merge(user_coaching_sessions_routes(app_state.clone()))
-        .merge(user_overarching_goals_routes(app_state.clone()))
+        .merge(user_goals_routes(app_state.clone()))
         .merge(user_coaching_relationships_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
@@ -344,36 +344,18 @@ pub fn organization_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
-pub fn overarching_goal_routes(app_state: AppState) -> Router {
+pub fn goal_routes(app_state: AppState) -> Router {
     Router::new()
-        .route(
-            "/overarching_goals",
-            post(overarching_goal_controller::create),
-        )
-        .route(
-            "/overarching_goals/:id",
-            put(overarching_goal_controller::update),
-        )
+        .route("/goals", post(goal_controller::create))
+        .route("/goals/:id", put(goal_controller::update))
         .merge(
-            // GET /overarching_goals
+            // GET /goals
             Router::new()
-                .route(
-                    "/overarching_goals",
-                    get(overarching_goal_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::overarching_goals::index,
-                )),
+                .route("/goals", get(goal_controller::index))
+                .route_layer(from_fn_with_state(app_state.clone(), protect::goals::index)),
         )
-        .route(
-            "/overarching_goals/:id",
-            get(overarching_goal_controller::read),
-        )
-        .route(
-            "/overarching_goals/:id/status",
-            put(overarching_goal_controller::update_status),
-        )
+        .route("/goals/:id", get(goal_controller::read))
+        .route("/goals/:id/status", put(goal_controller::update_status))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -489,17 +471,14 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
-fn user_overarching_goals_routes(app_state: AppState) -> Router {
+fn user_goals_routes(app_state: AppState) -> Router {
     Router::new()
         .merge(
             Router::new()
-                .route(
-                    "/users/:user_id/overarching_goals",
-                    get(user::overarching_goal_controller::index),
-                )
+                .route("/users/:user_id/goals", get(user::goal_controller::index))
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
-                    protect::users::overarching_goals::index,
+                    protect::users::goals::index,
                 )),
         )
         .route_layer(from_fn(require_auth))
