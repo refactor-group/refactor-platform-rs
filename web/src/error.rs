@@ -124,6 +124,12 @@ impl Error {
                 );
                 (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
             }
+            ExternalErrorKind::OauthTokenRevoked => {
+                warn!(
+                    "ExternalErrorKind::OauthTokenRevoked: Responding with 401 Unauthorized. Error: {self:?}"
+                );
+                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+            }
             ExternalErrorKind::Other(_description) => {
                 warn!(
                     "ExternalErrorKind::Other: Responding with 500 Internal Server Error. Error: {self:?}"
