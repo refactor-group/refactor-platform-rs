@@ -121,7 +121,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         .iter()
         .any(|origin| origin == "*");
 
-    info!("allowed_origins: {:#?}", app_state.config.allowed_origins);
+    debug!("allowed_origins: {:#?}", app_state.config.allowed_origins);
 
     // Mirror the request origin when wildcard "*" is configured to keep credentials enabled
     // SECURITY: Refuse wildcard CORS in production — mirror_request() with credentials
