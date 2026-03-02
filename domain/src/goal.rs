@@ -1,28 +1,25 @@
 use crate::error::Error;
 use crate::events::{DomainEvent, EventPublisher};
-use crate::overarching_goals::Model;
+use crate::goals::Model;
 use crate::Id;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
-use entity_api::{
-    coaching_session, overarching_goal as OverarchingGoalApi, overarching_goals, query,
-};
+use entity_api::{coaching_session, goal as GoalApi, goals, query};
 use log::*;
 use sea_orm::DatabaseConnection;
 
-pub use entity_api::overarching_goal::{find_by_coaching_session_id, find_by_id};
+pub use entity_api::goal::{find_by_coaching_session_id, find_by_id};
 
 pub async fn create(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
-    overarching_goal_model: Model,
+    goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    // Create the overarching goal
-    let overarching_goal = OverarchingGoalApi::create(db, overarching_goal_model, user_id).await?;
+    // Create the goal
+    let goal = GoalApi::create(db, goal_model, user_id).await?;
 
     // Fetch the coaching session to get the relationship_id
-    let coaching_session =
-        coaching_session::find_by_id(db, overarching_goal.coaching_session_id).await?;
+    let coaching_session = coaching_session::find_by_id(db, goal.coaching_session_id).await?;
 
     // Fetch the coaching relationship to get the users to notify
     let relationship =
@@ -32,20 +29,19 @@ pub async fn create(
 
     // Publish domain event
     event_publisher
-        .publish(DomainEvent::OverarchingGoalCreated {
+        .publish(DomainEvent::GoalCreated {
             coaching_relationship_id: coaching_session.coaching_relationship_id,
-            overarching_goal: serde_json::to_value(&overarching_goal)
-                .unwrap_or(serde_json::Value::Null),
+            goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
             notify_user_ids,
         })
         .await;
 
     debug!(
-        "Published OverarchingGoalCreated event for goal {} in relationship {}",
-        overarching_goal.id, coaching_session.coaching_relationship_id
+        "Published GoalCreated event for goal {} in relationship {}",
+        goal.id, coaching_session.coaching_relationship_id
     );
 
-    Ok(overarching_goal)
+    Ok(goal)
 }
 
 pub async fn update(
@@ -54,12 +50,11 @@ pub async fn update(
     id: Id,
     model: Model,
 ) -> Result<Model, Error> {
-    // Update the overarching goal
-    let overarching_goal = OverarchingGoalApi::update(db, id, model).await?;
+    // Update the goal
+    let goal = GoalApi::update(db, id, model).await?;
 
     // Fetch the coaching session to get the relationship_id
-    let coaching_session =
-        coaching_session::find_by_id(db, overarching_goal.coaching_session_id).await?;
+    let coaching_session = coaching_session::find_by_id(db, goal.coaching_session_id).await?;
 
     // Fetch the coaching relationship to get the users to notify
     let relationship =
@@ -69,20 +64,19 @@ pub async fn update(
 
     // Publish domain event
     event_publisher
-        .publish(DomainEvent::OverarchingGoalUpdated {
+        .publish(DomainEvent::GoalUpdated {
             coaching_relationship_id: coaching_session.coaching_relationship_id,
-            overarching_goal: serde_json::to_value(&overarching_goal)
-                .unwrap_or(serde_json::Value::Null),
+            goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
             notify_user_ids,
         })
         .await;
 
     debug!(
-        "Published OverarchingGoalUpdated event for goal {} in relationship {}",
-        overarching_goal.id, coaching_session.coaching_relationship_id
+        "Published GoalUpdated event for goal {} in relationship {}",
+        goal.id, coaching_session.coaching_relationship_id
     );
 
-    Ok(overarching_goal)
+    Ok(goal)
 }
 
 pub async fn update_status(
@@ -91,12 +85,11 @@ pub async fn update_status(
     id: Id,
     status: entity_api::status::Status,
 ) -> Result<Model, Error> {
-    // Update the overarching goal status
-    let overarching_goal = OverarchingGoalApi::update_status(db, id, status).await?;
+    // Update the goal status
+    let goal = GoalApi::update_status(db, id, status).await?;
 
     // Fetch the coaching session to get the relationship_id
-    let coaching_session =
-        coaching_session::find_by_id(db, overarching_goal.coaching_session_id).await?;
+    let coaching_session = coaching_session::find_by_id(db, goal.coaching_session_id).await?;
 
     // Fetch the coaching relationship to get the users to notify
     let relationship =
@@ -106,28 +99,25 @@ pub async fn update_status(
 
     // Publish domain event
     event_publisher
-        .publish(DomainEvent::OverarchingGoalUpdated {
+        .publish(DomainEvent::GoalUpdated {
             coaching_relationship_id: coaching_session.coaching_relationship_id,
-            overarching_goal: serde_json::to_value(&overarching_goal)
-                .unwrap_or(serde_json::Value::Null),
+            goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
             notify_user_ids,
         })
         .await;
 
     debug!(
-        "Published OverarchingGoalUpdated event for goal {} in relationship {}",
-        overarching_goal.id, coaching_session.coaching_relationship_id
+        "Published GoalUpdated event for goal {} in relationship {}",
+        goal.id, coaching_session.coaching_relationship_id
     );
 
-    Ok(overarching_goal)
+    Ok(goal)
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where
-    P: IntoQueryFilterMap + QuerySort<overarching_goals::Column>,
+    P: IntoQueryFilterMap + QuerySort<goals::Column>,
 {
-    let overarching_goals =
-        query::find_by::<overarching_goals::Entity, overarching_goals::Column, P>(db, params)
-            .await?;
-    Ok(overarching_goals)
+    let goals = query::find_by::<goals::Entity, goals::Column, P>(db, params).await?;
+    Ok(goals)
 }

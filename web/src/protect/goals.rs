@@ -42,7 +42,7 @@ pub(crate) async fn index(
             }
         }
         Err(e) => {
-            error!("Error authorizing overarching goals index: {e:?}");
+            error!("Error authorizing goals index: {e:?}");
             crate::error::domain_error_into_response(e)
         }
     }

@@ -43,40 +43,40 @@ impl SseDomainEventHandler {
 impl EventHandler for SseDomainEventHandler {
     async fn handle(&self, event: &DomainEvent) {
         match event {
-            DomainEvent::OverarchingGoalCreated {
+            DomainEvent::GoalCreated {
                 coaching_relationship_id,
-                overarching_goal,
+                goal,
                 notify_user_ids,
             } => {
-                let sse_event = SseEvent::OverarchingGoalCreated {
+                let sse_event = SseEvent::GoalCreated {
                     coaching_relationship_id: coaching_relationship_id.to_string(),
-                    overarching_goal: overarching_goal.clone(),
+                    goal: goal.clone(),
                 };
 
                 self.send_to_users(sse_event, notify_user_ids);
             }
 
-            DomainEvent::OverarchingGoalUpdated {
+            DomainEvent::GoalUpdated {
                 coaching_relationship_id,
-                overarching_goal,
+                goal,
                 notify_user_ids,
             } => {
-                let sse_event = SseEvent::OverarchingGoalUpdated {
+                let sse_event = SseEvent::GoalUpdated {
                     coaching_relationship_id: coaching_relationship_id.to_string(),
-                    overarching_goal: overarching_goal.clone(),
+                    goal: goal.clone(),
                 };
 
                 self.send_to_users(sse_event, notify_user_ids);
             }
 
-            DomainEvent::OverarchingGoalDeleted {
+            DomainEvent::GoalDeleted {
                 coaching_relationship_id,
-                overarching_goal_id,
+                goal_id,
                 notify_user_ids,
             } => {
-                let sse_event = SseEvent::OverarchingGoalDeleted {
+                let sse_event = SseEvent::GoalDeleted {
                     coaching_relationship_id: coaching_relationship_id.to_string(),
-                    overarching_goal_id: overarching_goal_id.to_string(),
+                    goal_id: goal_id.to_string(),
                 };
 
                 self.send_to_users(sse_event, notify_user_ids);

@@ -147,7 +147,7 @@ struct ActionEmailContext<'a> {
     due_by: Option<DateTime<FixedOffset>>,
     session_id: Id,
     organization: &'a organizations::Model,
-    overarching_goal: &'a str,
+    goal: &'a str,
 }
 
 async fn send_email(
@@ -166,7 +166,7 @@ pub async fn send_email(
     due_by: Option<DateTime<FixedOffset>>,
     session_id: Id,
     organization: &organizations::Model,
-    overarching_goal: &str,
+    goal: &str,
 ) -> Result<(), Error> { ... }
 ```
 

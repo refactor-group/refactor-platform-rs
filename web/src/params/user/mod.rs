@@ -1,7 +1,7 @@
 pub(crate) mod action;
 pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
-pub(crate) mod overarching_goal;
+pub(crate) mod goal;
 
 // Re-export user profile update params for backward compatibility
 use domain::{IntoUpdateMap, UpdateMap};
