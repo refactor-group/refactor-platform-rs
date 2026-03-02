@@ -318,16 +318,21 @@ impl Config {
         let mut config =
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
-        // Capture the value source (Default, EnvVariable, CommandLine) for each field
-        for field in CONFIG_FIELD_KEYS {
-            if let Some(source) = matches.value_source(field) {
-                config.value_sources.insert(field.to_string(), source);
-            }
-        }
-
+        config.capture_value_sources(&matches);
         Self::warn_untracked_fields(&matches);
 
         config
+    }
+
+    /// Records the value source (Default, EnvVariable, CommandLine) for every
+    /// field listed in CONFIG_FIELD_KEYS. Called during construction so that
+    /// `source_suffix()` can annotate log output later.
+    fn capture_value_sources(&mut self, matches: &clap::ArgMatches) {
+        for field in CONFIG_FIELD_KEYS {
+            if let Some(source) = matches.value_source(field) {
+                self.value_sources.insert(field.to_string(), source);
+            }
+        }
     }
 
     /// Returns the names of any Clap args not listed in CONFIG_FIELD_KEYS.
@@ -365,86 +370,40 @@ impl Config {
         }
     }
 
+    /// Emits a single config field at DEBUG level with its value and source suffix.
+    fn debug_field(&self, name: &str, value: &dyn ConfigDisplay) {
+        debug!(
+            "  {}: {}{}",
+            name,
+            value.display_value(),
+            self.source_suffix(name)
+        );
+    }
+
     /// Logs all non-secret configuration values at DEBUG level.
     /// Secrets (API keys, auth keys, signing keys, database URL) are redacted.
     /// Appends " (default)" to any field not explicitly set via CLI or env var.
     pub fn log_non_secret_config(&self) {
         debug!("Configuration:");
-        debug!(
-            "  runtime_env: {}{}",
-            self.runtime_env.display_value(),
-            self.source_suffix("runtime_env")
+        self.debug_field("runtime_env", &self.runtime_env);
+        self.debug_field("api_version", &self.api_version);
+        self.debug_field("interface", &self.interface);
+        self.debug_field("port", &self.port);
+        self.debug_field("log_level_filter", &self.log_level_filter);
+        self.debug_field("allowed_origins", &self.allowed_origins);
+        self.debug_field("db_max_connections", &self.db_max_connections);
+        self.debug_field("db_min_connections", &self.db_min_connections);
+        self.debug_field("db_connect_timeout_secs", &self.db_connect_timeout_secs);
+        self.debug_field("db_acquire_timeout_secs", &self.db_acquire_timeout_secs);
+        self.debug_field("db_idle_timeout_secs", &self.db_idle_timeout_secs);
+        self.debug_field("db_max_lifetime_secs", &self.db_max_lifetime_secs);
+        self.debug_field(
+            "backend_session_expiry_seconds",
+            &self.backend_session_expiry_seconds,
         );
-        debug!(
-            "  api_version: {}{}",
-            self.api_version.display_value(),
-            self.source_suffix("api_version")
-        );
-        debug!(
-            "  interface: {}{}",
-            self.interface.display_value(),
-            self.source_suffix("interface")
-        );
-        debug!(
-            "  port: {}{}",
-            self.port.display_value(),
-            self.source_suffix("port")
-        );
-        debug!(
-            "  log_level_filter: {}{}",
-            self.log_level_filter.display_value(),
-            self.source_suffix("log_level_filter")
-        );
-        debug!(
-            "  allowed_origins: {}{}",
-            self.allowed_origins.display_value(),
-            self.source_suffix("allowed_origins")
-        );
-        debug!(
-            "  db_max_connections: {}{}",
-            self.db_max_connections.display_value(),
-            self.source_suffix("db_max_connections")
-        );
-        debug!(
-            "  db_min_connections: {}{}",
-            self.db_min_connections.display_value(),
-            self.source_suffix("db_min_connections")
-        );
-        debug!(
-            "  db_connect_timeout_secs: {}{}",
-            self.db_connect_timeout_secs.display_value(),
-            self.source_suffix("db_connect_timeout_secs")
-        );
-        debug!(
-            "  db_acquire_timeout_secs: {}{}",
-            self.db_acquire_timeout_secs.display_value(),
-            self.source_suffix("db_acquire_timeout_secs")
-        );
-        debug!(
-            "  db_idle_timeout_secs: {}{}",
-            self.db_idle_timeout_secs.display_value(),
-            self.source_suffix("db_idle_timeout_secs")
-        );
-        debug!(
-            "  db_max_lifetime_secs: {}{}",
-            self.db_max_lifetime_secs.display_value(),
-            self.source_suffix("db_max_lifetime_secs")
-        );
-        debug!(
-            "  backend_session_expiry_seconds: {}{}",
-            self.backend_session_expiry_seconds.display_value(),
-            self.source_suffix("backend_session_expiry_seconds")
-        );
-        debug!(
-            "  tiptap_app_id: {}{}",
-            self.tiptap_app_id.display_value(),
-            self.source_suffix("tiptap_app_id")
-        );
-        debug!(
-            "  mailersend_base_url: {}{}",
-            self.mailersend_base_url.display_value(),
-            self.source_suffix("mailersend_base_url")
-        );
+        self.debug_field("tiptap_app_id", &self.tiptap_app_id);
+        self.debug_field("mailersend_base_url", &self.mailersend_base_url);
+        // Redact secret — only show whether the key is configured
         debug!(
             "  mailersend_api_key: {}{}",
             if self.mailersend_api_key.is_some() {
@@ -454,35 +413,23 @@ impl Config {
             },
             self.source_suffix("mailersend_api_key")
         );
-        debug!(
-            "  welcome_email_template_id: {}{}",
-            self.welcome_email_template_id.display_value(),
-            self.source_suffix("welcome_email_template_id")
+        self.debug_field("welcome_email_template_id", &self.welcome_email_template_id);
+        self.debug_field(
+            "session_scheduled_email_template_id",
+            &self.session_scheduled_email_template_id,
         );
-        debug!(
-            "  session_scheduled_email_template_id: {}{}",
-            self.session_scheduled_email_template_id.display_value(),
-            self.source_suffix("session_scheduled_email_template_id")
+        self.debug_field(
+            "action_assigned_email_template_id",
+            &self.action_assigned_email_template_id,
         );
-        debug!(
-            "  action_assigned_email_template_id: {}{}",
-            self.action_assigned_email_template_id.display_value(),
-            self.source_suffix("action_assigned_email_template_id")
+        self.debug_field("frontend_base_url", &self.frontend_base_url);
+        self.debug_field(
+            "session_scheduled_email_url_path",
+            &self.session_scheduled_email_url_path,
         );
-        debug!(
-            "  frontend_base_url: {}{}",
-            self.frontend_base_url.display_value(),
-            self.source_suffix("frontend_base_url")
-        );
-        debug!(
-            "  session_scheduled_email_url_path: {}{}",
-            self.session_scheduled_email_url_path.display_value(),
-            self.source_suffix("session_scheduled_email_url_path")
-        );
-        debug!(
-            "  action_assigned_email_url_path: {}{}",
-            self.action_assigned_email_url_path.display_value(),
-            self.source_suffix("action_assigned_email_url_path")
+        self.debug_field(
+            "action_assigned_email_url_path",
+            &self.action_assigned_email_url_path,
         );
     }
 
@@ -648,11 +595,7 @@ mod tests {
         let mut config =
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
-        for field in CONFIG_FIELD_KEYS {
-            if let Some(source) = matches.value_source(field) {
-                config.value_sources.insert(field.to_string(), source);
-            }
-        }
+        config.capture_value_sources(&matches);
 
         config
     }
