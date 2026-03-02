@@ -1,4 +1,5 @@
 pub(crate) mod authenticated_user;
+pub(crate) mod coaching_session_access;
 pub(crate) mod compare_api_version;
 
 #[cfg(test)]

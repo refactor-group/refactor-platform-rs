@@ -1,4 +1,3 @@
-use crate::protect::{Predicate, UserCanAccessCoachingSession};
 use crate::{extractors::authenticated_user::AuthenticatedUser, AppState};
 use axum::{
     extract::{Path, Query, Request, State},
@@ -44,25 +43,6 @@ pub(crate) async fn index(
         // coaching relationship with given ID not found
         Err(_) => (StatusCode::NOT_FOUND, "NOT FOUND").into_response(),
     }
-}
-
-/// Checks that coaching session record referenced by `coaching_session_id`
-///     * exists
-///     * that the authenticated user is associated with it (coach or coachee)
-///  Intended to be given to axum::middleware::from_fn_with_state in the router
-pub(crate) async fn read(
-    State(app_state): State<AppState>,
-    AuthenticatedUser(authenticated_user): AuthenticatedUser,
-    Path(coaching_session_id): Path<Id>,
-    request: Request,
-    next: Next,
-) -> impl IntoResponse {
-    let checks: Vec<Predicate> = vec![Predicate::new(
-        UserCanAccessCoachingSession,
-        vec![coaching_session_id],
-    )];
-
-    crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
 }
 
 /// Checks that coaching session record referenced by `coaching_session_id`

@@ -203,15 +203,10 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
         )
         .merge(
             // GET /coaching_sessions/:id
-            Router::new()
-                .route(
-                    "/coaching_sessions/:id",
-                    get(coaching_session_controller::read),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::read,
-                )),
+            Router::new().route(
+                "/coaching_sessions/:id",
+                get(coaching_session_controller::read),
+            ),
         )
         .merge(
             // PUT /coaching_sessions/:id

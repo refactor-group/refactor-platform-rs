@@ -20,7 +20,7 @@ pub(crate) mod users;
 use crate::AppState;
 use async_trait::async_trait;
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::IntoResponse};
-use domain::{coaching_relationship, coaching_session, user as UserApi, Id};
+use domain::{user as UserApi, Id};
 use log::*;
 
 /// Trait representing a single authorization rule.
@@ -259,61 +259,5 @@ impl Check for UserIsSuperAdmin {
             .roles
             .iter()
             .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
-    }
-}
-
-/// Checks if the authenticated user can access a specific coaching session.
-///
-/// Returns `true` if the user is either the coach or coachee in the coaching
-/// relationship associated with the session.
-///
-/// # Arguments
-/// * `args[0]` - The coaching session ID to check access for
-pub struct UserCanAccessCoachingSession;
-
-#[async_trait]
-impl Check for UserCanAccessCoachingSession {
-    async fn eval(
-        &self,
-        app_state: &AppState,
-        authenticated_user: &domain::users::Model,
-        args: Vec<Id>,
-    ) -> bool {
-        let coaching_session_id = args[0];
-
-        // Get the coaching session
-        let coaching_session = match coaching_session::find_by_id(
-            app_state.db_conn_ref(),
-            coaching_session_id,
-        )
-        .await
-        {
-            Ok(session) => session,
-            Err(e) => {
-                error!("Error finding coaching session {coaching_session_id}: {e:?}");
-                return false;
-            }
-        };
-
-        // Get the coaching relationship
-        let coaching_relationship = match coaching_relationship::find_by_id(
-            app_state.db_conn_ref(),
-            coaching_session.coaching_relationship_id,
-        )
-        .await
-        {
-            Ok(relationship) => relationship,
-            Err(e) => {
-                error!(
-                    "Error finding coaching relationship {}: {e:?}",
-                    coaching_session.coaching_relationship_id
-                );
-                return false;
-            }
-        };
-
-        // Check if user is coach or coachee
-        coaching_relationship.coach_id == authenticated_user.id
-            || coaching_relationship.coachee_id == authenticated_user.id
     }
 }
