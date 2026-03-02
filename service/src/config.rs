@@ -328,58 +328,12 @@ impl Config {
         config
     }
 
-    /// Returns all loggable config fields as `(key, display_value)` tuples.
-    /// Iterates `CONFIG_FIELD_KEYS` and maps each key to its displayed value.
-    /// Secret fields are redacted; non-loggable fields (database_url, etc.) are skipped.
-    fn field_entries(&self) -> Vec<(&'static str, String)> {
-        CONFIG_FIELD_KEYS
-            .iter()
-            .filter_map(|&key| {
-                let value = match key {
-                    "runtime_env" => self.runtime_env.display_value(),
-                    "api_version" => self.api_version.display_value(),
-                    "interface" => self.interface.display_value(),
-                    "port" => self.port.display_value(),
-                    "log_level_filter" => self.log_level_filter.display_value(),
-                    "allowed_origins" => self.allowed_origins.display_value(),
-                    "db_max_connections" => self.db_max_connections.display_value(),
-                    "db_min_connections" => self.db_min_connections.display_value(),
-                    "db_connect_timeout_secs" => self.db_connect_timeout_secs.display_value(),
-                    "db_acquire_timeout_secs" => self.db_acquire_timeout_secs.display_value(),
-                    "db_idle_timeout_secs" => self.db_idle_timeout_secs.display_value(),
-                    "db_max_lifetime_secs" => self.db_max_lifetime_secs.display_value(),
-                    "backend_session_expiry_seconds" => {
-                        self.backend_session_expiry_seconds.display_value()
-                    }
-                    "tiptap_app_id" => self.tiptap_app_id.display_value(),
-                    "mailersend_base_url" => self.mailersend_base_url.display_value(),
-                    "mailersend_api_key" => {
-                        if self.mailersend_api_key.is_some() {
-                            "[set]".into()
-                        } else {
-                            "[not set]".into()
-                        }
-                    }
-                    "welcome_email_template_id" => self.welcome_email_template_id.display_value(),
-                    "session_scheduled_email_template_id" => {
-                        self.session_scheduled_email_template_id.display_value()
-                    }
-                    "action_assigned_email_template_id" => {
-                        self.action_assigned_email_template_id.display_value()
-                    }
-                    "frontend_base_url" => self.frontend_base_url.display_value(),
-                    "session_scheduled_email_url_path" => {
-                        self.session_scheduled_email_url_path.display_value()
-                    }
-                    "action_assigned_email_url_path" => {
-                        self.action_assigned_email_url_path.display_value()
-                    }
-                    // Skip fields not intended for logging (secrets, database URL, etc.)
-                    _ => return None,
-                };
-                Some((key, value))
-            })
-            .collect()
+    /// Returns " (default)" if the field was not explicitly set via CLI or env var.
+    fn source_suffix(&self, key: &str) -> &str {
+        match self.value_sources.get(key) {
+            Some(ValueSource::DefaultValue) => " (default)",
+            _ => "",
+        }
     }
 
     /// Logs all non-secret configuration values at DEBUG level.
@@ -387,13 +341,120 @@ impl Config {
     /// Appends " (default)" to any field not explicitly set via CLI or env var.
     pub fn log_non_secret_config(&self) {
         debug!("Configuration:");
-        for (key, display) in self.field_entries() {
-            let suffix = match self.value_sources.get(key) {
-                Some(ValueSource::DefaultValue) => " (default)",
-                _ => "",
-            };
-            debug!("  {}: {}{}", key, display, suffix);
-        }
+        debug!(
+            "  runtime_env: {}{}",
+            self.runtime_env.display_value(),
+            self.source_suffix("runtime_env")
+        );
+        debug!(
+            "  api_version: {}{}",
+            self.api_version.display_value(),
+            self.source_suffix("api_version")
+        );
+        debug!(
+            "  interface: {}{}",
+            self.interface.display_value(),
+            self.source_suffix("interface")
+        );
+        debug!(
+            "  port: {}{}",
+            self.port.display_value(),
+            self.source_suffix("port")
+        );
+        debug!(
+            "  log_level_filter: {}{}",
+            self.log_level_filter.display_value(),
+            self.source_suffix("log_level_filter")
+        );
+        debug!(
+            "  allowed_origins: {}{}",
+            self.allowed_origins.display_value(),
+            self.source_suffix("allowed_origins")
+        );
+        debug!(
+            "  db_max_connections: {}{}",
+            self.db_max_connections.display_value(),
+            self.source_suffix("db_max_connections")
+        );
+        debug!(
+            "  db_min_connections: {}{}",
+            self.db_min_connections.display_value(),
+            self.source_suffix("db_min_connections")
+        );
+        debug!(
+            "  db_connect_timeout_secs: {}{}",
+            self.db_connect_timeout_secs.display_value(),
+            self.source_suffix("db_connect_timeout_secs")
+        );
+        debug!(
+            "  db_acquire_timeout_secs: {}{}",
+            self.db_acquire_timeout_secs.display_value(),
+            self.source_suffix("db_acquire_timeout_secs")
+        );
+        debug!(
+            "  db_idle_timeout_secs: {}{}",
+            self.db_idle_timeout_secs.display_value(),
+            self.source_suffix("db_idle_timeout_secs")
+        );
+        debug!(
+            "  db_max_lifetime_secs: {}{}",
+            self.db_max_lifetime_secs.display_value(),
+            self.source_suffix("db_max_lifetime_secs")
+        );
+        debug!(
+            "  backend_session_expiry_seconds: {}{}",
+            self.backend_session_expiry_seconds.display_value(),
+            self.source_suffix("backend_session_expiry_seconds")
+        );
+        debug!(
+            "  tiptap_app_id: {}{}",
+            self.tiptap_app_id.display_value(),
+            self.source_suffix("tiptap_app_id")
+        );
+        debug!(
+            "  mailersend_base_url: {}{}",
+            self.mailersend_base_url.display_value(),
+            self.source_suffix("mailersend_base_url")
+        );
+        debug!(
+            "  mailersend_api_key: {}{}",
+            if self.mailersend_api_key.is_some() {
+                "[set]"
+            } else {
+                "[not set]"
+            },
+            self.source_suffix("mailersend_api_key")
+        );
+        debug!(
+            "  welcome_email_template_id: {}{}",
+            self.welcome_email_template_id.display_value(),
+            self.source_suffix("welcome_email_template_id")
+        );
+        debug!(
+            "  session_scheduled_email_template_id: {}{}",
+            self.session_scheduled_email_template_id.display_value(),
+            self.source_suffix("session_scheduled_email_template_id")
+        );
+        debug!(
+            "  action_assigned_email_template_id: {}{}",
+            self.action_assigned_email_template_id.display_value(),
+            self.source_suffix("action_assigned_email_template_id")
+        );
+        debug!(
+            "  frontend_base_url: {}{}",
+            self.frontend_base_url.display_value(),
+            self.source_suffix("frontend_base_url")
+        );
+        debug!(
+            "  session_scheduled_email_url_path: {}{}",
+            self.session_scheduled_email_url_path.display_value(),
+            self.source_suffix("session_scheduled_email_url_path")
+        );
+        debug!(
+            "  action_assigned_email_url_path: {}{}",
+            self.action_assigned_email_url_path.display_value(),
+            self.source_suffix("action_assigned_email_url_path")
+        );
     }
 
     pub fn api_version(&self) -> &str {
@@ -568,28 +629,18 @@ mod tests {
     }
 
     #[test]
-    fn field_entry_uses_default_when_unset() {
+    fn unset_field_shows_default_value_and_suffix() {
         let config = config_from_args(["test_binary"]);
-        let entries = config.field_entries();
-        let port_entry = entries.iter().find(|(key, _)| *key == "port").unwrap();
 
-        assert_eq!(port_entry.1, "4000");
-        assert_eq!(
-            config.value_sources.get("port"),
-            Some(&ValueSource::DefaultValue)
-        );
+        assert_eq!(config.port.display_value(), "4000");
+        assert_eq!(config.source_suffix("port"), " (default)");
     }
 
     #[test]
-    fn field_entry_uses_explicit_value_when_set() {
+    fn explicitly_set_field_shows_actual_value_without_suffix() {
         let config = config_from_args(["test_binary", "--port", "8080"]);
-        let entries = config.field_entries();
-        let port_entry = entries.iter().find(|(key, _)| *key == "port").unwrap();
 
-        assert_eq!(port_entry.1, "8080");
-        assert_eq!(
-            config.value_sources.get("port"),
-            Some(&ValueSource::CommandLine)
-        );
+        assert_eq!(config.port.display_value(), "8080");
+        assert_eq!(config.source_suffix("port"), "");
     }
 }
