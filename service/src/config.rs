@@ -1,9 +1,11 @@
 use clap::builder::TypedValueParser as _;
-use clap::Parser;
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use dotenvy::dotenv;
-use log::{debug, LevelFilter};
+use log::{debug, warn, LevelFilter};
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use utoipa::IntoParams;
@@ -25,6 +27,37 @@ const DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH: &str = "/coaching-sessions/{sess
 
 /// Default URL path for action-assigned email links.
 const DEFAULT_ACTION_ASSIGNED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}?tab=actions";
+
+/// All config field names registered with Clap, used for value source tracking.
+/// This is the single source of truth for field key names across the Config type.
+const CONFIG_FIELD_KEYS: &[&str] = &[
+    "allowed_origins",
+    "api_version",
+    "database_url",
+    "db_max_connections",
+    "db_min_connections",
+    "db_connect_timeout_secs",
+    "db_acquire_timeout_secs",
+    "db_idle_timeout_secs",
+    "db_max_lifetime_secs",
+    "tiptap_url",
+    "tiptap_auth_key",
+    "tiptap_jwt_signing_key",
+    "tiptap_app_id",
+    "mailersend_base_url",
+    "mailersend_api_key",
+    "welcome_email_template_id",
+    "session_scheduled_email_template_id",
+    "action_assigned_email_template_id",
+    "frontend_base_url",
+    "session_scheduled_email_url_path",
+    "action_assigned_email_url_path",
+    "interface",
+    "port",
+    "log_level_filter",
+    "runtime_env",
+    "backend_session_expiry_seconds",
+];
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Header)]
@@ -62,6 +95,63 @@ impl fmt::Display for RustEnv {
             RustEnv::Development => write!(f, "development"),
             RustEnv::Production => write!(f, "production"),
             RustEnv::Staging => write!(f, "staging"),
+        }
+    }
+}
+
+/// Trait for formatting config values in debug log output.
+/// Provides a unified interface so `Config::log_field` can accept any field type.
+trait ConfigDisplay {
+    fn display_value(&self) -> String;
+}
+
+impl ConfigDisplay for String {
+    fn display_value(&self) -> String {
+        self.clone()
+    }
+}
+
+impl ConfigDisplay for u16 {
+    fn display_value(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl ConfigDisplay for u32 {
+    fn display_value(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl ConfigDisplay for u64 {
+    fn display_value(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl ConfigDisplay for Vec<String> {
+    fn display_value(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
+impl ConfigDisplay for LevelFilter {
+    fn display_value(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl ConfigDisplay for RustEnv {
+    fn display_value(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
+impl<T: ConfigDisplay> ConfigDisplay for Option<T> {
+    fn display_value(&self) -> String {
+        match self {
+            Some(v) => v.display_value(),
+            None => "[unset]".to_string(),
         }
     }
 }
@@ -205,6 +295,11 @@ pub struct Config {
     /// Session expiry duration in seconds (default: 24 hours = 86400 seconds)
     #[arg(long, env, default_value_t = 86400)]
     pub backend_session_expiry_seconds: u64,
+
+    /// Tracks whether each config field was explicitly set or uses its default.
+    /// Populated during construction; not a CLI argument.
+    #[arg(skip)]
+    value_sources: HashMap<String, ValueSource>,
 }
 
 impl Default for Config {
@@ -217,66 +312,114 @@ impl Config {
     pub fn new() -> Self {
         // Load .env file first
         dotenv().ok();
-        // Then parse the command line parameters and flags
-        Config::parse()
+        // Parse CLI args and env vars, retaining ArgMatches so we can
+        // inspect which values came from defaults vs explicit configuration
+        let matches = Config::command().get_matches();
+        let mut config =
+            Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
+
+        config.capture_value_sources(&matches);
+        Self::warn_untracked_fields(&matches);
+
+        config
+    }
+
+    /// Records the value source (Default, EnvVariable, CommandLine) for every
+    /// field listed in CONFIG_FIELD_KEYS. Called during construction so that
+    /// `source_suffix()` can annotate log output later.
+    fn capture_value_sources(&mut self, matches: &clap::ArgMatches) {
+        for field in CONFIG_FIELD_KEYS {
+            if let Some(source) = matches.value_source(field) {
+                self.value_sources.insert(field.to_string(), source);
+            }
+        }
+    }
+
+    /// Returns the names of any Clap args not listed in CONFIG_FIELD_KEYS.
+    fn find_untracked_fields(matches: &clap::ArgMatches) -> Vec<String> {
+        matches
+            .ids()
+            .filter_map(|id| {
+                let name = id.as_str();
+                if CONFIG_FIELD_KEYS.contains(&name) {
+                    None
+                } else {
+                    Some(name.to_string())
+                }
+            })
+            .collect()
+    }
+
+    /// Warns about any Clap args not listed in CONFIG_FIELD_KEYS so developers
+    /// know they forgot to register a newly added config field.
+    fn warn_untracked_fields(matches: &clap::ArgMatches) {
+        for name in Self::find_untracked_fields(matches) {
+            warn!(
+                "Config field \"{}\" is not in CONFIG_FIELD_KEYS — \
+                 add it to track its value source",
+                name
+            );
+        }
+    }
+
+    /// Returns " (default)" if the field was not explicitly set via CLI or env var.
+    fn source_suffix(&self, key: &str) -> &str {
+        match self.value_sources.get(key) {
+            Some(ValueSource::DefaultValue) => " (default)",
+            _ => "",
+        }
+    }
+
+    /// Emits a single config field at DEBUG level with its value and source suffix.
+    fn debug_field(&self, name: &str, value: &dyn ConfigDisplay) {
+        debug!(
+            "  {}: {}{}",
+            name,
+            value.display_value(),
+            self.source_suffix(name)
+        );
     }
 
     /// Logs all non-secret configuration values at DEBUG level.
     /// Secrets (API keys, auth keys, signing keys, database URL) are redacted.
+    /// Appends " (default)" to any field not explicitly set via CLI or env var.
     pub fn log_non_secret_config(&self) {
         debug!("Configuration:");
-        debug!("  runtime_env: {:?}", self.runtime_env);
-        debug!("  api_version: {:?}", self.api_version);
-        debug!("  interface: {:?}", self.interface);
-        debug!("  port: {}", self.port);
-        debug!("  log_level_filter: {}", self.log_level_filter);
-        debug!("  allowed_origins: {:?}", self.allowed_origins);
-        debug!("  db_max_connections: {}", self.db_max_connections);
-        debug!("  db_min_connections: {}", self.db_min_connections);
-        debug!(
-            "  db_connect_timeout_secs: {}",
-            self.db_connect_timeout_secs
+        self.debug_field("runtime_env", &self.runtime_env);
+        self.debug_field("api_version", &self.api_version);
+        self.debug_field("interface", &self.interface);
+        self.debug_field("port", &self.port);
+        self.debug_field("log_level_filter", &self.log_level_filter);
+        self.debug_field("allowed_origins", &self.allowed_origins);
+        self.debug_field("db_max_connections", &self.db_max_connections);
+        self.debug_field("db_min_connections", &self.db_min_connections);
+        self.debug_field("db_connect_timeout_secs", &self.db_connect_timeout_secs);
+        self.debug_field("db_acquire_timeout_secs", &self.db_acquire_timeout_secs);
+        self.debug_field("db_idle_timeout_secs", &self.db_idle_timeout_secs);
+        self.debug_field("db_max_lifetime_secs", &self.db_max_lifetime_secs);
+        self.debug_field(
+            "backend_session_expiry_seconds",
+            &self.backend_session_expiry_seconds,
         );
-        debug!(
-            "  db_acquire_timeout_secs: {}",
-            self.db_acquire_timeout_secs
+        self.debug_field("tiptap_app_id", &self.tiptap_app_id);
+        self.debug_field("mailersend_base_url", &self.mailersend_base_url);
+        self.debug_field("welcome_email_template_id", &self.welcome_email_template_id);
+        self.debug_field(
+            "session_scheduled_email_template_id",
+            &self.session_scheduled_email_template_id,
         );
-        debug!("  db_idle_timeout_secs: {}", self.db_idle_timeout_secs);
-        debug!("  db_max_lifetime_secs: {}", self.db_max_lifetime_secs);
-        debug!(
-            "  backend_session_expiry_seconds: {}",
-            self.backend_session_expiry_seconds
+        self.debug_field(
+            "action_assigned_email_template_id",
+            &self.action_assigned_email_template_id,
         );
-        debug!("  tiptap_app_id: {:?}", self.tiptap_app_id);
-        debug!("  mailersend_base_url: {}", self.mailersend_base_url);
-        debug!(
-            "  mailersend_api_key: {}",
-            if self.mailersend_api_key.is_some() {
-                "[set]"
-            } else {
-                "[not set]"
-            }
+        self.debug_field("frontend_base_url", &self.frontend_base_url);
+        self.debug_field(
+            "session_scheduled_email_url_path",
+            &self.session_scheduled_email_url_path,
         );
-        debug!(
-            "  welcome_email_template_id: {:?}",
-            self.welcome_email_template_id
-        );
-        debug!(
-            "  session_scheduled_email_template_id: {:?}",
-            self.session_scheduled_email_template_id
-        );
-        debug!(
-            "  action_assigned_email_template_id: {:?}",
-            self.action_assigned_email_template_id
-        );
-        debug!("  frontend_base_url: {:?}", self.frontend_base_url);
-        debug!(
-            "  session_scheduled_email_url_path: {}",
-            self.session_scheduled_email_url_path
-        );
-        debug!(
-            "  action_assigned_email_url_path: {}",
-            self.action_assigned_email_url_path
+        self.debug_field(
+            "action_assigned_email_url_path",
+            &self.action_assigned_email_url_path,
         );
     }
 
@@ -421,5 +564,70 @@ impl Default for ApiVersion {
 impl fmt::Display for ApiVersion {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a Config from simulated CLI args, capturing value sources
+    /// the same way `Config::new()` does — but without parsing real process
+    /// args or loading `.env`.
+    fn config_from_args<I, T>(args: I) -> Config
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let matches = Config::command()
+            .try_get_matches_from(args)
+            .expect("Failed to parse test args");
+        let mut config =
+            Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
+
+        config.capture_value_sources(&matches);
+
+        config
+    }
+
+    #[test]
+    fn unset_field_shows_default_value_and_suffix() {
+        let config = config_from_args(["test_binary"]);
+
+        assert_eq!(config.port.display_value(), "4000");
+        assert_eq!(config.source_suffix("port"), " (default)");
+    }
+
+    #[test]
+    fn explicitly_set_field_shows_actual_value_without_suffix() {
+        let config = config_from_args(["test_binary", "--port", "8080"]);
+
+        assert_eq!(config.port.display_value(), "8080");
+        assert_eq!(config.source_suffix("port"), "");
+    }
+
+    #[test]
+    fn all_config_fields_are_tracked() {
+        let matches = Config::command()
+            .try_get_matches_from(["test_binary"])
+            .expect("Failed to parse test args");
+
+        let untracked = Config::find_untracked_fields(&matches);
+        assert!(
+            untracked.is_empty(),
+            "Config fields not in CONFIG_FIELD_KEYS: {:?}",
+            untracked
+        );
+    }
+
+    #[test]
+    fn untracked_field_is_detected() {
+        let matches = Config::command()
+            .arg(clap::Arg::new("extra_test_field").long("extra-test-field"))
+            .try_get_matches_from(["test_binary", "--extra-test-field", "value"])
+            .expect("Failed to parse test args");
+
+        let untracked = Config::find_untracked_fields(&matches);
+        assert_eq!(untracked, vec!["extra_test_field"]);
     }
 }
