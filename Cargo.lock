@@ -1007,7 +1007,6 @@ dependencies = [
  "serde_json",
  "serial_test",
  "service",
- "thiserror 2.0.18",
  "tokio",
  "urlencoding",
  "uuid",
