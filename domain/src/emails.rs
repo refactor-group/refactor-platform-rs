@@ -525,6 +525,8 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(15, 0, 0)
                 .unwrap(),
+            meeting_url: None,
+            provider: None,
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         }

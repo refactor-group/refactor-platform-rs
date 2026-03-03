@@ -56,6 +56,11 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "log_level_filter",
     "runtime_env",
     "backend_session_expiry_seconds",
+    "google_oauth_success_redirect_uri",
+    "google_oauth_auth_url",
+    "google_oauth_token_url",
+    "google_userinfo_url",
+    "google_meet_api_url",
 ];
 
 #[derive(Deserialize, IntoParams)]
