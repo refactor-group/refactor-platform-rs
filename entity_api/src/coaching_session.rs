@@ -2,7 +2,9 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    goals, organizations, provider::Provider, users, Id,
+    goals, organizations,
+    provider::Provider,
+    users, Id,
 };
 use log::debug;
 use sea_orm::{
