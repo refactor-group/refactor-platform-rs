@@ -1,4 +1,5 @@
 use crate::controller::ApiResponse;
+use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
@@ -34,8 +35,7 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    Path(organization_id): Path<Id>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
     Json(coaching_relationship_model): Json<coaching_relationships::Model>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("CREATE new Coaching Relationship from: {coaching_relationship_model:?}");
@@ -120,7 +120,7 @@ pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(organization_id): Path<Id>,
+    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
         "GET all CoachingRelationships for user {} in organization {}",

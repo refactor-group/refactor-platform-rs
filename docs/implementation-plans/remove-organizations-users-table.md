@@ -469,7 +469,6 @@ After running the migration:
 - [ ] Verify find_by_organization returns correct users
 - [ ] Verify organization.find_by_user returns correct organizations
 - [ ] Verify user creation for organization works
-- [ ] Verify UserInOrganization authorization check works
 
 ## Rollback Plan
 
