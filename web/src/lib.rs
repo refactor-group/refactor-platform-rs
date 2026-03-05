@@ -38,6 +38,7 @@ pub struct AppState {
     pub config: Config,
     pub sse_manager: Arc<::sse::Manager>,
     pub event_publisher: Arc<domain::events::EventPublisher>,
+    pub oauth_state_manager: meeting_auth::oauth::StateManager,
 }
 
 impl AppState {
@@ -51,6 +52,7 @@ impl AppState {
             config: service_state.config,
             sse_manager,
             event_publisher: Arc::new(event_publisher),
+            oauth_state_manager: meeting_auth::oauth::StateManager::new(),
         }
     }
 

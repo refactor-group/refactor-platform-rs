@@ -18,6 +18,7 @@ use axum::Json;
 use domain::{oauth_connection, oauth_connections, provider::Provider, Id};
 use sea_orm::prelude::DateTimeWithTimeZone;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::ToSchema;
 
 use crate::error::WebErrorKind;
@@ -82,7 +83,11 @@ pub async fn authorize(
         return Err(Error::Web(WebErrorKind::Auth));
     }
 
-    let url = oauth_connection::google_authorize_url(&app_state.config, params.user_id)?;
+    let mut metadata = HashMap::new();
+    metadata.insert("user_id".to_string(), params.user_id.to_string());
+    let state_token = app_state.oauth_state_manager.generate(None, metadata);
+
+    let url = oauth_connection::google_authorize_url(&app_state.config, &state_token)?;
     Ok(Redirect::temporary(&url))
 }
 
@@ -95,7 +100,7 @@ pub async fn authorize(
     path = "/oauth/google/callback",
     params(
         ("code" = String, Query, description = "Authorization code from Google"),
-        ("state" = Option<String>, Query, description = "State parameter (user ID)"),
+        ("state" = Option<String>, Query, description = "CSRF state token"),
     ),
     responses(
         (status = 302, description = "Redirect to settings page on success"),
@@ -107,9 +112,19 @@ pub async fn callback(
     State(app_state): State<AppState>,
     Query(params): Query<OAuthCallback>,
 ) -> Result<impl IntoResponse, Error> {
-    let user_id: Id = params
+    let state_token = params
         .state
-        .as_ref()
+        .as_deref()
+        .ok_or(Error::Web(WebErrorKind::Input))?;
+
+    let state_data = app_state
+        .oauth_state_manager
+        .validate(state_token)
+        .ok_or(Error::Web(WebErrorKind::Input))?;
+
+    let user_id: Id = state_data
+        .metadata
+        .get("user_id")
         .ok_or(Error::Web(WebErrorKind::Input))?
         .parse()
         .map_err(|_| Error::Web(WebErrorKind::Input))?;
