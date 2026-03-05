@@ -53,7 +53,7 @@ pub async fn exchange_and_store_tokens(
 
     let provider = create_google_provider(config)?;
 
-    let tokens = provider
+    let tokens_raw = provider
         .exchange_code(authorization_code, None)
         .await
         .inspect_err(|e| {
@@ -61,8 +61,9 @@ pub async fn exchange_and_store_tokens(
                 "Failed to exchange OAuth code for user {}: {:?}",
                 user_id, e
             )
-        })?
-        .into_plain();
+        })?;
+    let scopes = tokens_raw.scopes.join(" ");
+    let tokens = tokens_raw.into_plain();
 
     let user_info = provider
         .get_user_info(&tokens.access_token)
@@ -121,8 +122,7 @@ pub async fn exchange_and_store_tokens(
                 refresh_token: encrypted_refresh,
                 token_expires_at: tokens.expires_at.map(|dt| dt.into()),
                 token_type: "Bearer".to_string(),
-                scopes: "openid email https://www.googleapis.com/auth/meetings.space.created"
-                    .to_string(),
+                scopes,
                 created_at: now.into(),
                 updated_at: now.into(),
             };
