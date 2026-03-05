@@ -53,7 +53,6 @@ pub enum OAuthErrorKind {
 pub enum TokenErrorKind {
     NotFound,
     Expired,
-    Storage,
     Refresh,
 }
 
@@ -162,14 +161,6 @@ pub fn token_error(kind: TokenErrorKind, message: &str) -> Error {
     Error {
         source: Some(message.to_string().into()),
         error_kind: ErrorKind::Token(kind),
-    }
-}
-
-/// Helper function to create storage errors.
-pub fn storage_error(message: &str) -> Error {
-    Error {
-        source: Some(message.to_string().into()),
-        error_kind: ErrorKind::Token(TokenErrorKind::Storage),
     }
 }
 
