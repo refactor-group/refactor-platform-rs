@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use chrono::DateTime;
 use sea_orm::DatabaseConnection;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use entity_api::oauth_connection;
 use meeting_auth::{
@@ -19,11 +19,11 @@ use crate::{oauth_connections::Model, provider::Provider, Id};
 /// Database-backed token storage that encrypts tokens at rest.
 pub struct DbOAuthTokenStorage<'db> {
     db: &'db DatabaseConnection,
-    encryption_key: String,
+    encryption_key: SecretString,
 }
 
 impl<'db> DbOAuthTokenStorage<'db> {
-    pub fn new(db: &'db DatabaseConnection, encryption_key: String) -> Self {
+    pub fn new(db: &'db DatabaseConnection, encryption_key: SecretString) -> Self {
         Self { db, encryption_key }
     }
 }
@@ -50,7 +50,7 @@ impl<'db> Storage for DbOAuthTokenStorage<'db> {
     async fn store(&self, user_id: &str, provider_id: &str, tokens: Tokens) -> Result<(), Error> {
         let user_id = Id::parse_str(user_id).map_err(|e| storage_db_err(e.to_string()))?;
         let provider = parse_provider(provider_id)?;
-        let key = &self.encryption_key;
+        let key = self.encryption_key.expose_secret().as_str();
 
         let token_type = tokens.token_type.clone();
         let scopes = tokens.scopes.join(" ");
@@ -109,7 +109,7 @@ impl<'db> Storage for DbOAuthTokenStorage<'db> {
     async fn get(&self, user_id: &str, provider_id: &str) -> Result<Option<Tokens>, Error> {
         let user_id = Id::parse_str(user_id).map_err(|e| storage_db_err(e.to_string()))?;
         let provider = parse_provider(provider_id)?;
-        let key = &self.encryption_key;
+        let key = self.encryption_key.expose_secret().as_str();
 
         let conn = oauth_connection::find_by_user_and_provider(self.db, user_id, provider)
             .await
