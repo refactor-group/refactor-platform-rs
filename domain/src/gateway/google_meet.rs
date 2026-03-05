@@ -72,7 +72,7 @@ impl Client {
 
         let request = CreateSpaceRequest {
             config: SpaceConfig {
-                access_type: "OPEN".to_string(),
+                access_type: "TRUSTED".to_string(),
             },
         };
 
