@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -79,7 +79,7 @@ struct UserInfo {
 /// - User info retrieval from Google APIs
 pub struct Provider {
     client_id: String,
-    client_secret: String,
+    client_secret: SecretString,
     redirect_uri: String,
     http_client: reqwest::Client,
 }
@@ -92,7 +92,7 @@ impl Provider {
     /// * `client_id` - Google OAuth client ID
     /// * `client_secret` - Google OAuth client secret
     /// * `redirect_uri` - OAuth redirect URI
-    pub fn new(client_id: String, client_secret: String, redirect_uri: String) -> Self {
+    pub fn new(client_id: String, client_secret: SecretString, redirect_uri: String) -> Self {
         Self {
             client_id,
             client_secret,
@@ -142,7 +142,7 @@ impl crate::oauth::Provider for Provider {
         let request = TokenExchangeRequest {
             code: code.to_string(),
             client_id: self.client_id.clone(),
-            client_secret: self.client_secret.clone(),
+            client_secret: self.client_secret.expose_secret().to_string(),
             redirect_uri: self.redirect_uri.clone(),
             grant_type: "authorization_code".to_string(),
             code_verifier: pkce_verifier.map(|s| s.to_string()),
@@ -197,7 +197,7 @@ impl crate::oauth::Provider for Provider {
         let request = TokenRefreshRequest {
             refresh_token: refresh_token.to_string(),
             client_id: self.client_id.clone(),
-            client_secret: self.client_secret.clone(),
+            client_secret: self.client_secret.expose_secret().to_string(),
             grant_type: "refresh_token".to_string(),
         };
 
@@ -328,7 +328,7 @@ mod tests {
     fn create_test_provider() -> Provider {
         Provider::new(
             "test_client_id".to_string(),
-            "test_client_secret".to_string(),
+            SecretString::from("test_client_secret".to_string()),
             "https://example.com/callback".to_string(),
         )
     }

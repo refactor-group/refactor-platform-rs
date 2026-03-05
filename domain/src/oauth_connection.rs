@@ -8,7 +8,7 @@ use entity_api::oauth_connection;
 use log::*;
 use meeting_auth::oauth::token::{encryption, Manager};
 use sea_orm::DatabaseConnection;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use service::config::Config;
 
 pub use entity_api::oauth_connection::{
@@ -28,7 +28,8 @@ pub fn google_authorize_url(config: &Config, state: &str) -> Result<String, Erro
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
     })?;
 
-    let provider = oauth::google::new_provider(client_id, String::new(), redirect_uri);
+    let provider =
+        oauth::google::new_provider(client_id, SecretString::from(String::new()), redirect_uri);
     let auth_request = provider.authorization_url(state, None);
 
     Ok(auth_request.url)
@@ -45,10 +46,10 @@ pub async fn exchange_and_store_tokens(
 ) -> Result<String, Error> {
     info!("Processing Google OAuth callback for user {}", user_id);
 
-    let encryption_key = config.encryption_key().ok_or_else(|| Error {
+    let encryption_key = SecretString::from(config.encryption_key().ok_or_else(|| Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?;
+    })?);
 
     let provider = create_google_provider(config)?;
 
@@ -74,16 +75,18 @@ pub async fn exchange_and_store_tokens(
         })?;
 
     let encrypted_access =
-        encryption::encrypt(&tokens.access_token, &encryption_key).map_err(|e| Error {
-            source: Some(Box::new(e)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Failed to encrypt access token".to_string(),
-            )),
+        encryption::encrypt(&tokens.access_token, encryption_key.expose_secret()).map_err(|e| {
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                    "Failed to encrypt access token".to_string(),
+                )),
+            }
         })?;
     let encrypted_refresh = tokens
         .refresh_token
         .as_deref()
-        .map(|rt| encryption::encrypt(rt, &encryption_key))
+        .map(|rt| encryption::encrypt(rt, encryption_key.expose_secret()))
         .transpose()
         .map_err(|e: meeting_auth::Error| Error {
             source: Some(Box::new(e)),
@@ -145,10 +148,10 @@ pub async fn get_valid_access_token(
     user_id: Id,
     provider: OauthProvider,
 ) -> Result<String, Error> {
-    let encryption_key = config.encryption_key().ok_or_else(|| Error {
+    let encryption_key = SecretString::from(config.encryption_key().ok_or_else(|| Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?;
+    })?);
 
     let oauth_provider = create_google_provider(config)?;
     let storage = DbOAuthTokenStorage::new(db, encryption_key);
@@ -187,10 +190,10 @@ fn create_google_provider(config: &Config) -> Result<impl Provider, Error> {
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
     })?;
 
-    let client_secret = config.google_client_secret().ok_or_else(|| Error {
+    let client_secret = SecretString::from(config.google_client_secret().ok_or_else(|| Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?;
+    })?);
 
     let redirect_uri = config.google_redirect_uri().ok_or_else(|| Error {
         source: None,
