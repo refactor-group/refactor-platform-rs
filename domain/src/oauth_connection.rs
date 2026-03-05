@@ -16,8 +16,8 @@ pub use entity_api::oauth_connection::{
     get_by_user_and_provider,
 };
 
-/// Build the Google OAuth authorization URL for a user.
-pub fn google_authorize_url(config: &Config, user_id: Id) -> Result<String, Error> {
+/// Build the Google OAuth authorization URL with the given CSRF state token.
+pub fn google_authorize_url(config: &Config, state: &str) -> Result<String, Error> {
     let client_id = config.google_client_id().ok_or_else(|| Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
@@ -29,10 +29,8 @@ pub fn google_authorize_url(config: &Config, user_id: Id) -> Result<String, Erro
     })?;
 
     let provider = oauth::google::new_provider(client_id, String::new(), redirect_uri);
-    let state = user_id.to_string();
-    let auth_request = provider.authorization_url(&state, None);
+    let auth_request = provider.authorization_url(state, None);
 
-    info!("Redirecting user {} to Google OAuth", user_id);
     Ok(auth_request.url)
 }
 
