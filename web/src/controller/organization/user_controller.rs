@@ -1,3 +1,4 @@
+use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
@@ -35,7 +36,7 @@ pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(organization_id): Path<Id>,
+    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
 ) -> Result<impl IntoResponse, Error> {
     let users = UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await?;
 
@@ -66,7 +67,7 @@ pub(crate) async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     AuthenticatedUser(_authenticated_user): AuthenticatedUser,
-    Path(organization_id): Path<Id>,
+    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
     Json(user_model): Json<users::Model>,
 ) -> Result<impl IntoResponse, Error> {
     let user =
@@ -101,8 +102,8 @@ pub(crate) async fn create(
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(_authenticated_user): AuthenticatedUser,
-    Path((_organization_id, user_id)): Path<(Id, Id)>,
+    Path((_organization_id_1, user_id)): Path<(Id, Id)>,
+    OrganizationMemberAccess(_organization_id_2): OrganizationMemberAccess,
 ) -> Result<impl IntoResponse, Error> {
     info!("Deleting user: {user_id:?}");
     UserApi::delete(app_state.db_conn_ref(), user_id).await?;
