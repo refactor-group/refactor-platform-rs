@@ -53,7 +53,7 @@ pub enum EntityErrorKind {
 #[derive(Debug, PartialEq)]
 pub enum ExternalErrorKind {
     Network,
-    OauthTokenRevoked, // provider permanently revoked the refresh token
+    OauthTokenRevoked(String), // provider permanently revoked the refresh token
     Other(String),
 }
 
@@ -125,9 +125,9 @@ impl From<MeetingAuthError> for Error {
     fn from(err: MeetingAuthError) -> Self {
         let error_kind = match &err.error_kind {
             MeetingAuthErrorKind::Http(_) => DomainErrorKind::External(ExternalErrorKind::Network),
-            MeetingAuthErrorKind::OAuth(OAuthErrorKind::TokenRevoked) => {
-                DomainErrorKind::External(ExternalErrorKind::OauthTokenRevoked)
-            }
+            MeetingAuthErrorKind::OAuth(OAuthErrorKind::TokenRevoked) => DomainErrorKind::External(
+                ExternalErrorKind::Other("oauth_token_revoked".to_string()),
+            ),
             MeetingAuthErrorKind::OAuth(_) => {
                 DomainErrorKind::External(ExternalErrorKind::Other("OAuth error".to_string()))
             }
