@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
+    service::load_env_file();
     let config = Config::new();
     Logger::init_logger(&config as &Config);
 

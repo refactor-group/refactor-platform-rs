@@ -66,6 +66,7 @@ async fn main() {
 }
 
 fn get_config() -> Config {
+    service::load_env_file();
     Config::new()
 }
 

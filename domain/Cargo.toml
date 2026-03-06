@@ -24,7 +24,6 @@ features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
 
 [dev-dependencies]
 mockito = "1.6"
-serial_test = "3.1"
 
 [features]
 mock = ["entity_api/mock"]
