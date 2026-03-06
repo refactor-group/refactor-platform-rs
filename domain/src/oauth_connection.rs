@@ -1,4 +1,4 @@
-use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::oauth::{self, Provider};
 use crate::oauth_connections::Model as OauthConnectionModel;
 use crate::oauth_token_storage::DbOAuthTokenStorage;
@@ -164,7 +164,7 @@ pub async fn get_valid_access_token(
 
     match result {
         Ok(token) => Ok(token.expose_secret().to_string()),
-        Err(ref e)
+        Err(e)
             if matches!(
                 e.error_kind,
                 meeting_auth::error::ErrorKind::OAuth(
@@ -177,7 +177,12 @@ pub async fn get_valid_access_token(
                 user_id
             );
             let _ = delete_by_user_and_provider(db, user_id, provider).await;
-            Err(result.unwrap_err().into())
+            Err(Error {
+                error_kind: DomainErrorKind::External(ExternalErrorKind::OauthTokenRevoked(
+                    provider.to_string().to_lowercase(),
+                )),
+                source: Some(Box::new(e)),
+            })
         }
         Err(e) => Err(e.into()),
     }
