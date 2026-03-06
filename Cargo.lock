@@ -2217,7 +2217,6 @@ dependencies = [
  "dashmap",
  "hex",
  "hmac",
- "httpdate",
  "mockito",
  "oauth2",
  "rand 0.8.5",
