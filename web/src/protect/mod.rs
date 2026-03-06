@@ -261,4 +261,3 @@ impl Check for UserIsSuperAdmin {
             .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
     }
 }
-

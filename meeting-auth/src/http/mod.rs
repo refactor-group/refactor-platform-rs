@@ -3,5 +3,5 @@
 mod client;
 mod retry;
 
-pub use client::{AuthenticatedClient, AuthenticatedClientBuilder, HttpClientConfig};
+pub use client::{Builder, Client, Config};
 pub use retry::RetryAfterPolicy;

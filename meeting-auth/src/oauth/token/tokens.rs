@@ -43,7 +43,7 @@ impl Tokens {
 /// Use [`Tokens::into_plain`] to convert secret-wrapped tokens into plain strings
 /// suitable for database storage and API calls.
 #[derive(Debug, Clone)]
-pub struct PlainTokens {
+pub struct Plain {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -54,8 +54,8 @@ impl Tokens {
     ///
     /// Use this at trust boundaries (e.g. gateway layers) where tokens need
     /// to be stored or passed to external APIs as plain strings.
-    pub fn into_plain(self) -> PlainTokens {
-        PlainTokens {
+    pub fn into_plain(self) -> Plain {
+        Plain {
             access_token: self.access_token.expose_secret().to_string(),
             refresh_token: self.refresh_token.map(|rt| rt.expose_secret().to_string()),
             expires_at: self.expires_at,

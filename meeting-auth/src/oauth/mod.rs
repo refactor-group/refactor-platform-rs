@@ -10,5 +10,5 @@ pub mod providers;
 pub mod token;
 
 pub use pkce::{PkceChallenge, PkceVerifier};
-pub use provider::{AuthorizationRequest, Provider, ProviderKind, UserInfo};
+pub use provider::{AuthorizationRequest, Kind, Provider, UserInfo};
 pub use state::StateManager;

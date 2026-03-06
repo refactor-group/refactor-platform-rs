@@ -2,14 +2,14 @@
 
 mod hmac;
 
-pub use hmac::HmacWebhookValidator;
+pub use hmac::Validator as HmacValidator;
 
 use std::collections::HashMap;
 
 use crate::error::Error;
 
 /// Trait for validating webhook signatures.
-pub trait WebhookValidator: Send + Sync {
+pub trait Validator: Send + Sync {
     /// Validate a webhook request.
     ///
     /// # Arguments

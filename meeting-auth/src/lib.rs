@@ -17,9 +17,9 @@
 //!
 //! ```rust,ignore
 //! use meeting_auth::{
-//!     api_key::{ApiKeyAuth, ProviderAuth},
-//!     oauth::{OAuthProvider, token::{Manager, Storage}},
-//!     http::AuthenticatedClientBuilder,
+//!     api_key::{Auth, Authenticate},
+//!     oauth::{Provider, token::{Manager, Storage}},
+//!     http::Builder,
 //! };
 //! ```
 

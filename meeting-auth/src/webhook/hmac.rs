@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use super::WebhookValidator;
 use crate::error::{webhook_error, Error, WebhookErrorKind};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -13,13 +12,13 @@ type HmacSha256 = Hmac<Sha256>;
 /// HMAC-SHA256 webhook validator.
 ///
 /// Validates webhook signatures using HMAC-SHA256, as used by Recall.ai, AssemblyAI, and others.
-pub struct HmacWebhookValidator {
+pub struct Validator {
     provider_id: String,
     secret: String,
     signature_header: String,
 }
 
-impl HmacWebhookValidator {
+impl Validator {
     /// Create a new HMAC webhook validator.
     ///
     /// # Arguments
@@ -36,7 +35,7 @@ impl HmacWebhookValidator {
     }
 }
 
-impl WebhookValidator for HmacWebhookValidator {
+impl crate::webhook::Validator for Validator {
     fn validate(&self, headers: &HashMap<String, String>, body: &[u8]) -> Result<bool, Error> {
         // Get the signature from headers
         let signature = headers.get(&self.signature_header).ok_or_else(|| {
@@ -71,6 +70,7 @@ impl WebhookValidator for HmacWebhookValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::webhook::Validator as _;
 
     #[test]
     fn test_valid_signature() {
@@ -82,7 +82,7 @@ mod tests {
         mac.update(body);
         let signature = hex::encode(mac.finalize().into_bytes());
 
-        let validator = HmacWebhookValidator::new(
+        let validator = Validator::new(
             "test_provider".to_string(),
             secret.to_string(),
             "X-Webhook-Signature".to_string(),
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_invalid_signature() {
-        let validator = HmacWebhookValidator::new(
+        let validator = Validator::new(
             "test_provider".to_string(),
             "test_secret".to_string(),
             "X-Webhook-Signature".to_string(),

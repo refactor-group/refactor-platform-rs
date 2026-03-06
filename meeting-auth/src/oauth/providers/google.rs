@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::{oauth_error, Error, OAuthErrorKind};
 use crate::oauth::token::{RefreshResult, Tokens};
-use crate::oauth::{AuthorizationRequest, ProviderKind, UserInfo as OAuthUserInfo};
+use crate::oauth::{AuthorizationRequest, Kind, UserInfo as OAuthUserInfo};
 
 /// Google OAuth endpoints.
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -104,8 +104,8 @@ impl Provider {
 
 #[async_trait]
 impl crate::oauth::Provider for Provider {
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::Google
+    fn provider(&self) -> Kind {
+        Kind::Google
     }
 
     fn authorization_url(&self, state: &str, pkce_challenge: Option<&str>) -> AuthorizationRequest {
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn test_provider_kind() {
         let provider = create_test_provider();
-        assert_eq!(provider.provider(), ProviderKind::Google);
+        assert_eq!(provider.provider(), Kind::Google);
     }
 
     #[test]

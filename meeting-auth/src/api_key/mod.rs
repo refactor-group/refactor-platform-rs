@@ -6,5 +6,5 @@
 mod auth;
 mod bearer;
 
-pub use auth::{ApiKeyAuth, ApiKeyProvider, AuthMethod, ProviderAuth};
-pub use bearer::BearerTokenAuth;
+pub use auth::{Auth, AuthMethod, Authenticate, Provider};
+pub use bearer::Auth as BearerAuth;

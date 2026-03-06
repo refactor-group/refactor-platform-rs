@@ -2,4 +2,4 @@
 
 mod storage;
 
-pub use storage::{CredentialData, CredentialStorage};
+pub use storage::{Data, Storage};
