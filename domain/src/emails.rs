@@ -469,9 +469,7 @@ mod tests {
     use crate::{coaching_sessions, organizations, users, Id};
     use chrono::NaiveDate;
     use mockito::{Server, ServerGuard};
-    use serial_test::serial;
     use service::config::Config;
-    use std::env;
 
     async fn setup_test_server() -> ServerGuard {
         Server::new_async().await
@@ -544,54 +542,27 @@ mod tests {
     }
 
     fn create_config_with_mock(server_url: &str) -> Config {
-        env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
-        env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
-        env::set_var("MAILERSEND_BASE_URL", format!("{server_url}/v1"));
-        Config::default()
+        Config::from_args([
+            "test",
+            "--mailersend-api-key=test_api_key_123",
+            "--welcome-email-template-id=template_123",
+            &format!("--mailersend-base-url={server_url}/v1"),
+        ])
     }
 
     fn create_full_config_with_mock(server_url: &str) -> Config {
-        env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
-        env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
-        env::set_var(
-            "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
-            "session_template_456",
-        );
-        env::set_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID", "action_template_789");
-        env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
-        env::set_var("MAILERSEND_BASE_URL", format!("{server_url}/v1"));
-        Config::default()
-    }
-
-    /// Helper struct to manage environment variables in tests
-    struct EnvGuard {
-        saved_vars: Vec<(String, Option<String>)>,
-    }
-
-    impl EnvGuard {
-        fn new(vars: &[&str]) -> Self {
-            let saved_vars = vars
-                .iter()
-                .map(|var| (var.to_string(), env::var(var).ok()))
-                .collect();
-            EnvGuard { saved_vars }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // Restore all saved environment variables
-            for (key, value) in &self.saved_vars {
-                match value {
-                    Some(val) => env::set_var(key, val),
-                    None => env::remove_var(key),
-                }
-            }
-        }
+        Config::from_args([
+            "test",
+            "--mailersend-api-key=test_api_key_123",
+            "--welcome-email-template-id=template_123",
+            "--session-scheduled-email-template-id=session_template_456",
+            "--action-assigned-email-template-id=action_template_789",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--mailersend-base-url={server_url}/v1"),
+        ])
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_welcome_email_success() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
@@ -631,15 +602,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_welcome_email_missing_api_key() {
-        let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
-
-        // Set test state
-        env::remove_var("MAILERSEND_API_KEY");
-        env::set_var("WELCOME_EMAIL_TEMPLATE_ID", "template_123");
-
-        let config = Config::default();
+        let config = Config::from_args(["test", "--welcome-email-template-id=template_123"]);
         assert!(
             config.mailersend_api_key().is_none(),
             "API key should be None"
@@ -659,15 +623,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_welcome_email_missing_template_id() {
-        let _guard = EnvGuard::new(&["MAILERSEND_API_KEY", "WELCOME_EMAIL_TEMPLATE_ID"]);
-
-        // Set test state
-        env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
-        env::remove_var("WELCOME_EMAIL_TEMPLATE_ID");
-
-        let config = Config::default();
+        let config = Config::from_args(["test", "--mailersend-api-key=test_api_key_123"]);
         assert!(
             config.mailersend_api_key().is_some(),
             "API key should be present"
@@ -691,7 +648,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_welcome_email_http_error() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
@@ -711,7 +667,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_welcome_email_server_slow_response() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
@@ -734,7 +689,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_welcome_email_with_different_user_data() {
         let mut server = setup_test_server().await;
         let user = users::Model {
@@ -785,7 +739,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_welcome_email_validates_personalization() {
         let mut server = setup_test_server().await;
         let user = users::Model {
@@ -838,15 +791,7 @@ mod tests {
     // ── Session Scheduled Email Tests ──────────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_send_session_scheduled_email_personalization() {
-        let _guard = EnvGuard::new(&[
-            "MAILERSEND_API_KEY",
-            "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
-            "FRONTEND_BASE_URL",
-            "MAILERSEND_BASE_URL",
-        ]);
-
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
@@ -899,15 +844,7 @@ mod tests {
     // ── Action Assigned Email Tests ────────────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_send_action_assigned_email_success() {
-        let _guard = EnvGuard::new(&[
-            "MAILERSEND_API_KEY",
-            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
-            "FRONTEND_BASE_URL",
-            "MAILERSEND_BASE_URL",
-        ]);
-
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
@@ -964,15 +901,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_action_assigned_email_no_due_date() {
-        let _guard = EnvGuard::new(&[
-            "MAILERSEND_API_KEY",
-            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
-            "FRONTEND_BASE_URL",
-            "MAILERSEND_BASE_URL",
-        ]);
-
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
@@ -1023,15 +952,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_action_assigned_email_multiple_assignees() {
-        let _guard = EnvGuard::new(&[
-            "MAILERSEND_API_KEY",
-            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
-            "FRONTEND_BASE_URL",
-            "MAILERSEND_BASE_URL",
-        ]);
-
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
@@ -1062,21 +983,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_action_assigned_email_missing_template_id() {
-        let _guard = EnvGuard::new(&[
-            "MAILERSEND_API_KEY",
-            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
-            "FRONTEND_BASE_URL",
-            "MAILERSEND_BASE_URL",
-        ]);
-
         let server = setup_test_server().await;
-        env::set_var("MAILERSEND_API_KEY", "test_api_key_123");
-        env::set_var("MAILERSEND_BASE_URL", format!("{}/v1", server.url()));
-        env::set_var("FRONTEND_BASE_URL", "https://app.example.com");
-        env::remove_var("ACTION_ASSIGNED_EMAIL_TEMPLATE_ID");
-        let config = Config::default();
+        let config = Config::from_args([
+            "test",
+            "--mailersend-api-key=test_api_key_123",
+            &format!("--mailersend-base-url={}/v1", server.url()),
+            "--frontend-base-url=https://app.example.com",
+        ]);
 
         let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
         let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
@@ -1103,15 +1017,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_send_action_assigned_email_empty_assignees_sends_nothing() {
-        let _guard = EnvGuard::new(&[
-            "MAILERSEND_API_KEY",
-            "ACTION_ASSIGNED_EMAIL_TEMPLATE_ID",
-            "FRONTEND_BASE_URL",
-            "MAILERSEND_BASE_URL",
-        ]);
-
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
@@ -1155,7 +1061,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_build_session_url_success() {
         let server = setup_test_server().await;
         let email_config = create_test_email_config(
@@ -1178,7 +1083,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_build_session_url_custom_path_template() {
         let server = setup_test_server().await;
         let email_config = create_test_email_config(
@@ -1200,7 +1104,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_build_session_url_no_url_builder() {
         let server = setup_test_server().await;
         let email_config = create_test_email_config(&server.url(), None).await;

@@ -7,6 +7,15 @@ use tokio::time::Duration;
 pub mod config;
 pub mod logging;
 
+/// Load environment variables from the `.env` file into the process environment.
+///
+/// Call this at the application entry point (e.g. `main()`) before
+/// constructing [`Config`]. This is intentionally separate from `Config::new()`
+/// so that test code can construct configs without `.env` side effects.
+pub fn load_env_file() {
+    dotenvy::dotenv().ok();
+}
+
 pub async fn init_database(config: &Config) -> Result<DatabaseConnection, DbErr> {
     info!(
         "Database pool config: max_connections={}, min_connections={}, \
