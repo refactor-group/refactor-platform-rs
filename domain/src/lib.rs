@@ -12,7 +12,8 @@ pub use entity_api::{
 // Re-exports from `entity` crate via `entity_api`
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions, goals, jwts,
-    notes, organizations, query::QuerySort, status, user_roles, users, Id,
+    notes, oauth_connections, organizations, provider, query::QuerySort, status, user_roles, users,
+    Id,
 };
 
 pub mod action;
@@ -24,10 +25,12 @@ pub mod error;
 pub mod goal;
 pub mod jwt;
 pub mod note;
+pub mod oauth_connection;
+pub mod oauth_token_storage;
 pub mod organization;
 pub mod user;
 
-pub(crate) mod gateway;
+pub mod gateway;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;

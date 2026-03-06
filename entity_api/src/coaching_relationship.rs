@@ -257,6 +257,29 @@ pub async fn get_relationship_with_user_names(
     Ok(query.one(db).await?)
 }
 
+/// Updates an existing coaching relationship's updated_at timestamp.
+pub async fn update(
+    db: &DatabaseConnection,
+    id: Id,
+) -> Result<CoachingRelationshipWithUserNames, Error> {
+    let existing = find_by_id(db, id).await?;
+
+    let now = Utc::now();
+
+    let mut active_model: ActiveModel = existing.into();
+    active_model.updated_at = Set(now.into());
+
+    let _updated = active_model.update(db).await?;
+
+    // Return the full relationship with user names
+    get_relationship_with_user_names(db, id)
+        .await?
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
 pub async fn by_coaching_relationship(
     query: Select<coaching_relationships::Entity>,
     id: Id,
@@ -381,7 +404,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 7)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 9)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;

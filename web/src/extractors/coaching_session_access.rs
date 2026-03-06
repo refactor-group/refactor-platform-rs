@@ -139,6 +139,8 @@ mod tests {
             coaching_relationship_id: relationship_id,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -244,6 +246,8 @@ mod tests {
             coaching_relationship_id: relationship_id,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -404,6 +408,8 @@ mod tests {
             coaching_relationship_id: relationship_id,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };

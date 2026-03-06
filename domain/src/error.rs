@@ -1,5 +1,8 @@
 //! Error types for the `domain` layer.
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
+use meeting_auth::error::{
+    Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
+};
 use std::error::Error as StdError;
 use std::fmt;
 
@@ -50,6 +53,7 @@ pub enum EntityErrorKind {
 #[derive(Debug, PartialEq)]
 pub enum ExternalErrorKind {
     Network,
+    OauthTokenRevoked(String), // provider permanently revoked the refresh token
     Other(String),
 }
 
@@ -113,6 +117,32 @@ impl From<jsonwebtoken::errors::Error> for Error {
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
                 "JWT encoding related error".to_string(),
             )),
+        }
+    }
+}
+
+impl From<MeetingAuthError> for Error {
+    fn from(err: MeetingAuthError) -> Self {
+        let error_kind = match &err.error_kind {
+            MeetingAuthErrorKind::Http(_) => DomainErrorKind::External(ExternalErrorKind::Network),
+            MeetingAuthErrorKind::OAuth(OAuthErrorKind::TokenRevoked) => DomainErrorKind::External(
+                ExternalErrorKind::Other("oauth_token_revoked".to_string()),
+            ),
+            MeetingAuthErrorKind::OAuth(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Other("OAuth error".to_string()))
+            }
+            MeetingAuthErrorKind::Storage(_) | MeetingAuthErrorKind::Token(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Other(err.to_string()))
+            }
+            MeetingAuthErrorKind::ApiKey(_)
+            | MeetingAuthErrorKind::Credential(_)
+            | MeetingAuthErrorKind::Webhook(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Other(err.to_string()))
+            }
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
         }
     }
 }

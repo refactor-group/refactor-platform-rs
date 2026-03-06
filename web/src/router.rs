@@ -9,9 +9,9 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller, goal_controller,
-    jwt_controller, note_controller, organization, organization_controller, user, user_controller,
-    user_session_controller,
+    action_controller, agreement_controller, coaching_session_controller,
+    goal_controller, jwt_controller, note_controller, oauth_controller, organization,
+    organization_controller, user, user_controller, user_session_controller,
 };
 use crate::sse;
 
@@ -20,8 +20,6 @@ use utoipa::{
     Modify, OpenApi,
 };
 use utoipa_rapidoc::RapiDoc;
-
-use self::organization::coaching_relationship_controller;
 
 // This is the global definition of our OpenAPI spec. To be a part
 // of the rendered spec, a path and schema must be listed here.
@@ -129,6 +127,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_user_routes(app_state.clone()))
         .merge(goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
+        .merge(oauth_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
         .merge(user_organizations_routes(app_state.clone()))
         .merge(user_actions_routes(app_state.clone()))
@@ -259,7 +258,7 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
             "/organizations/:organization_id/coaching_relationships",
-            post(coaching_relationship_controller::create),
+            post(organization::coaching_relationship_controller::create),
         )
         .route_layer(from_fn_with_state(
             app_state.clone(),
@@ -503,6 +502,23 @@ fn sse_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/sse", get(sse::handler::sse_handler))
         .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for Google OAuth flow and connection management
+fn oauth_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route("/oauth/google/authorize", get(oauth_controller::authorize))
+        .route("/oauth/connections", get(oauth_controller::index))
+        .route(
+            "/oauth/connections/:provider",
+            get(oauth_controller::read).delete(oauth_controller::delete),
+        )
+        .route_layer(from_fn(require_auth))
+        .merge(
+            // Callback doesn't require auth (user is redirected back from Google)
+            Router::new().route("/oauth/google/callback", get(oauth_controller::callback)),
+        )
         .with_state(app_state)
 }
 

@@ -5,6 +5,7 @@ use std::error::Error as StdError;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
@@ -123,6 +124,19 @@ impl Error {
                     "ExternalErrorKind::Network: Responding with 502 Bad Gateway. Error: {self:?}"
                 );
                 (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
+            }
+            ExternalErrorKind::OauthTokenRevoked(ref provider) => {
+                warn!(
+                    "ExternalErrorKind::OauthTokenRevoked: Responding with 409 Conflict. Error: {self:?}"
+                );
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": "oauth_token_revoked",
+                        "provider": provider,
+                    })),
+                )
+                    .into_response()
             }
             ExternalErrorKind::Other(_description) => {
                 warn!(
