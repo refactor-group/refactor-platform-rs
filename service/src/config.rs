@@ -1,7 +1,6 @@
 use clap::builder::TypedValueParser as _;
 use clap::parser::ValueSource;
 use clap::{CommandFactory, FromArgMatches, Parser};
-use dotenvy::dotenv;
 use log::{debug, warn, LevelFilter};
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::Deserialize;
@@ -303,23 +302,49 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// Returns a `Config` with clap's compiled-in defaults. Does not read
+    /// real CLI args or `.env` files. Shell env vars are still read via
+    /// clap's `#[arg(env)]` attributes.
     fn default() -> Self {
-        Self::new()
+        Self::from_args(["refactor-platform-rs"])
     }
 }
 
 impl Config {
+    /// Parse config from real process CLI args and env vars.
+    ///
+    /// **Important:** Call [`service::load_env_file`] before this if you want
+    /// `.env` file values to be available. This method intentionally does not
+    /// load `.env` itself so that test code can use [`Config::default`] or
+    /// [`Config::from_args`] without side effects.
     pub fn new() -> Self {
-        // Load .env file first
-        dotenv().ok();
-        // Parse CLI args and env vars, retaining ArgMatches so we can
-        // inspect which values came from defaults vs explicit configuration
         let matches = Config::command().get_matches();
         let mut config =
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
         config.capture_value_sources(&matches);
         Self::warn_untracked_fields(&matches);
+
+        config
+    }
+
+    /// Parse config from an explicit argument list. Does not read real CLI
+    /// args. Clap's `#[arg(env)]` fields still read from process env vars,
+    /// but `.env` is not loaded.
+    ///
+    /// Primarily useful for tests that need a `Config` with specific values.
+    pub fn from_args<I, T>(args: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let matches = Config::command()
+            .try_get_matches_from(args)
+            .expect("Failed to parse args");
+        let mut config =
+            Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
+
+        config.capture_value_sources(&matches);
 
         config
     }
@@ -571,28 +596,9 @@ impl fmt::Display for ApiVersion {
 mod tests {
     use super::*;
 
-    /// Builds a Config from simulated CLI args, capturing value sources
-    /// the same way `Config::new()` does — but without parsing real process
-    /// args or loading `.env`.
-    fn config_from_args<I, T>(args: I) -> Config
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<std::ffi::OsString> + Clone,
-    {
-        let matches = Config::command()
-            .try_get_matches_from(args)
-            .expect("Failed to parse test args");
-        let mut config =
-            Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
-
-        config.capture_value_sources(&matches);
-
-        config
-    }
-
     #[test]
     fn unset_field_shows_default_value_and_suffix() {
-        let config = config_from_args(["test_binary"]);
+        let config = Config::from_args(["test_binary"]);
 
         assert_eq!(config.port.display_value(), "4000");
         assert_eq!(config.source_suffix("port"), " (default)");
@@ -600,7 +606,7 @@ mod tests {
 
     #[test]
     fn explicitly_set_field_shows_actual_value_without_suffix() {
-        let config = config_from_args(["test_binary", "--port", "8080"]);
+        let config = Config::from_args(["test_binary", "--port", "8080"]);
 
         assert_eq!(config.port.display_value(), "8080");
         assert_eq!(config.source_suffix("port"), "");
