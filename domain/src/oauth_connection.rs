@@ -176,7 +176,12 @@ pub async fn get_valid_access_token(
                 "Refresh token revoked for user {}, removing connection",
                 user_id
             );
-            let _ = delete_by_user_and_provider(db, user_id, provider).await;
+            if let Err(del_err) = delete_by_user_and_provider(db, user_id, provider).await {
+                warn!(
+                    "Failed to delete revoked OAuth connection for user {}: {:?}",
+                    user_id, del_err
+                );
+            }
             Err(Error {
                 error_kind: DomainErrorKind::External(ExternalErrorKind::OauthTokenRevoked(
                     provider.to_string().to_lowercase(),
