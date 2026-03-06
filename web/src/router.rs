@@ -9,7 +9,7 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session, coaching_session_controller,
+    action_controller, agreement_controller, coaching_session_controller,
     goal_controller, jwt_controller, note_controller, oauth_controller, organization,
     organization_controller, user, user_controller, user_session_controller,
 };
@@ -45,7 +45,6 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_controller::create,
             coaching_session_controller::update,
             coaching_session_controller::delete,
-            coaching_session::meeting_controller::create,
             note_controller::create,
             note_controller::update,
             note_controller::index,
@@ -89,7 +88,6 @@ use utoipa_rapidoc::RapiDoc;
                 domain::user::Credentials,
                 params::user::UpdateParams,
                 params::coaching_session::UpdateParams,
-                params::coaching_session::meeting::CreateParams,
             )
         ),
         modifiers(&SecurityAddon),
@@ -231,18 +229,6 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::coaching_sessions::delete,
-                )),
-        )
-        .merge(
-            // POST /coaching_sessions/:id/meetings
-            Router::new()
-                .route(
-                    "/coaching_sessions/:id/meetings",
-                    post(coaching_session::meeting_controller::create),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::create_meeting,
                 )),
         )
         .route_layer(from_fn(require_auth))
