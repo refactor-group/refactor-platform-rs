@@ -6,11 +6,11 @@ use reqwest_middleware::ClientBuilder;
 use reqwest_retry::RetryTransientMiddleware;
 
 use super::RetryAfterPolicy;
-use crate::api_key::ProviderAuth;
+use crate::api_key::Authenticate;
 
 /// HTTP client configuration.
 #[derive(Debug, Clone)]
-pub struct HttpClientConfig {
+pub struct Config {
     /// Request timeout.
     pub timeout: Duration,
     /// Maximum number of retries.
@@ -19,7 +19,7 @@ pub struct HttpClientConfig {
     pub user_agent: String,
 }
 
-impl Default for HttpClientConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
@@ -30,7 +30,7 @@ impl Default for HttpClientConfig {
 }
 
 /// Authenticated HTTP client with middleware.
-pub type AuthenticatedClient = reqwest_middleware::ClientWithMiddleware;
+pub type Client = reqwest_middleware::ClientWithMiddleware;
 
 /// Builder for creating authenticated HTTP clients with middleware.
 ///
@@ -39,22 +39,22 @@ pub type AuthenticatedClient = reqwest_middleware::ClientWithMiddleware;
 /// - Retry logic with Retry-After header support
 /// - Timeout configuration
 /// - Custom middleware
-pub struct AuthenticatedClientBuilder {
-    config: HttpClientConfig,
-    auth: Option<Box<dyn ProviderAuth>>,
+pub struct Builder {
+    config: Config,
+    auth: Option<Box<dyn Authenticate>>,
 }
 
-impl AuthenticatedClientBuilder {
+impl Builder {
     /// Create a new client builder with default configuration.
     pub fn new() -> Self {
         Self {
-            config: HttpClientConfig::default(),
+            config: Config::default(),
             auth: None,
         }
     }
 
     /// Set the authentication provider.
-    pub fn with_auth(mut self, auth: Box<dyn ProviderAuth>) -> Self {
+    pub fn with_auth(mut self, auth: Box<dyn Authenticate>) -> Self {
         self.auth = Some(auth);
         self
     }
@@ -82,7 +82,7 @@ impl AuthenticatedClientBuilder {
     /// # Returns
     ///
     /// An authenticated HTTP client with middleware configured.
-    pub fn build(self) -> Result<AuthenticatedClient, reqwest::Error> {
+    pub fn build(self) -> Result<Client, reqwest::Error> {
         // Build the base reqwest client
         let client = reqwest::Client::builder()
             .timeout(self.config.timeout)
@@ -99,7 +99,7 @@ impl AuthenticatedClientBuilder {
     }
 }
 
-impl Default for AuthenticatedClientBuilder {
+impl Default for Builder {
     fn default() -> Self {
         Self::new()
     }
@@ -111,26 +111,26 @@ mod tests {
 
     #[test]
     fn test_builder_default() {
-        let builder = AuthenticatedClientBuilder::new();
+        let builder = Builder::new();
         assert_eq!(builder.config.timeout, Duration::from_secs(30));
         assert_eq!(builder.config.max_retries, 3);
     }
 
     #[test]
     fn test_builder_with_timeout() {
-        let builder = AuthenticatedClientBuilder::new().with_timeout(Duration::from_secs(60));
+        let builder = Builder::new().with_timeout(Duration::from_secs(60));
         assert_eq!(builder.config.timeout, Duration::from_secs(60));
     }
 
     #[test]
     fn test_builder_with_max_retries() {
-        let builder = AuthenticatedClientBuilder::new().with_max_retries(5);
+        let builder = Builder::new().with_max_retries(5);
         assert_eq!(builder.config.max_retries, 5);
     }
 
     #[tokio::test]
     async fn test_build_client() {
-        let builder = AuthenticatedClientBuilder::new();
+        let builder = Builder::new();
         let result = builder.build();
         assert!(result.is_ok());
     }

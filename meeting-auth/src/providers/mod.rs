@@ -2,4 +2,4 @@
 
 mod config;
 
-pub use config::{assemblyai_config, recall_ai_config, ProviderConfig};
+pub use config::{assemblyai_config, recall_ai_config, Config};

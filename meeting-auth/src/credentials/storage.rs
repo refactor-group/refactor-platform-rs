@@ -7,7 +7,7 @@ use crate::error::Error;
 
 /// Credential data for storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialData {
+pub struct Data {
     /// API key or secret.
     pub api_key: String,
     /// Optional region (e.g., for Recall.ai).
@@ -24,24 +24,20 @@ pub struct CredentialData {
 /// - Encrypt credentials at rest (e.g., using AES-256-GCM)
 /// - Handle concurrent access safely
 #[async_trait]
-pub trait CredentialStorage: Send + Sync {
+pub trait Storage: Send + Sync {
     /// Store credentials for a user and provider.
-    async fn store(
-        &self,
-        user_id: &str,
-        provider_id: &str,
-        credentials: CredentialData,
-    ) -> Result<(), Error>;
+    async fn store(&self, user_id: &str, provider_id: &str, credentials: Data)
+        -> Result<(), Error>;
 
     /// Retrieve credentials for a user and provider.
-    async fn get(&self, user_id: &str, provider_id: &str) -> Result<Option<CredentialData>, Error>;
+    async fn get(&self, user_id: &str, provider_id: &str) -> Result<Option<Data>, Error>;
 
     /// Update credentials for a user and provider.
     async fn update(
         &self,
         user_id: &str,
         provider_id: &str,
-        credentials: CredentialData,
+        credentials: Data,
     ) -> Result<(), Error>;
 
     /// Delete credentials for a user and provider.

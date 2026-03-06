@@ -9,9 +9,9 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller,
-    goal_controller, jwt_controller, note_controller, oauth_controller, organization,
-    organization_controller, user, user_controller, user_session_controller,
+    action_controller, agreement_controller, coaching_session_controller, goal_controller,
+    jwt_controller, note_controller, oauth_controller, organization, organization_controller, user,
+    user_controller, user_session_controller,
 };
 use crate::sse;
 

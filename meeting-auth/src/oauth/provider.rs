@@ -9,19 +9,19 @@ use crate::error::Error;
 /// Known OAuth providers for video meetings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
+pub enum Kind {
     Google,
     Zoom,
     Microsoft,
 }
 
-impl ProviderKind {
+impl Kind {
     /// Get the provider identifier string.
     pub fn as_str(&self) -> &'static str {
         match self {
-            ProviderKind::Google => "google",
-            ProviderKind::Zoom => "zoom",
-            ProviderKind::Microsoft => "microsoft",
+            Kind::Google => "google",
+            Kind::Zoom => "zoom",
+            Kind::Microsoft => "microsoft",
         }
     }
 }
@@ -63,7 +63,7 @@ pub struct UserInfo {
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// Get the provider kind.
-    fn provider(&self) -> ProviderKind;
+    fn provider(&self) -> Kind;
 
     /// Generate authorization URL with state and optional PKCE challenge.
     ///

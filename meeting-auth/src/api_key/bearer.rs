@@ -4,20 +4,20 @@ use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use secrecy::{ExposeSecret, SecretString};
 
-use super::{ApiKeyProvider, AuthMethod, ProviderAuth};
+use super::{AuthMethod, Authenticate, Provider};
 use crate::error::Error;
 
 /// Standard Bearer token authentication.
 ///
 /// Uses the standard `Authorization: Bearer <token>` header pattern.
-pub struct BearerTokenAuth {
-    provider: ApiKeyProvider,
+pub struct Auth {
+    provider: Provider,
     token: SecretString,
 }
 
-impl BearerTokenAuth {
+impl Auth {
     /// Create a new Bearer token authenticator.
-    pub fn new(provider: ApiKeyProvider, token: SecretString) -> Self {
+    pub fn new(provider: Provider, token: SecretString) -> Self {
         Self { provider, token }
     }
 
@@ -28,8 +28,8 @@ impl BearerTokenAuth {
 }
 
 #[async_trait]
-impl ProviderAuth for BearerTokenAuth {
-    fn provider(&self) -> ApiKeyProvider {
+impl Authenticate for Auth {
+    fn provider(&self) -> Provider {
         self.provider
     }
 
@@ -54,8 +54,8 @@ mod tests {
     #[test]
     fn test_bearer_token_auth_creation() {
         let token = SecretString::from("test_token".to_string());
-        let auth = BearerTokenAuth::new(ApiKeyProvider::RecallAi, token);
+        let auth = Auth::new(Provider::RecallAi, token);
 
-        assert_eq!(auth.provider(), ApiKeyProvider::RecallAi);
+        assert_eq!(auth.provider(), Provider::RecallAi);
     }
 }

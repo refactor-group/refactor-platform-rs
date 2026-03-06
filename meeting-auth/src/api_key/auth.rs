@@ -8,17 +8,17 @@ use crate::error::Error;
 
 /// Known API key providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiKeyProvider {
+pub enum Provider {
     RecallAi,
     AssemblyAi,
 }
 
-impl ApiKeyProvider {
+impl Provider {
     /// Get the provider identifier string.
     pub fn as_str(&self) -> &'static str {
         match self {
-            ApiKeyProvider::RecallAi => "recall_ai",
-            ApiKeyProvider::AssemblyAi => "assemblyai",
+            Provider::RecallAi => "recall_ai",
+            Provider::AssemblyAi => "assemblyai",
         }
     }
 }
@@ -27,7 +27,7 @@ impl ApiKeyProvider {
 #[derive(Debug, Clone)]
 pub enum AuthMethod {
     /// Custom header with optional prefix (e.g., "Authorization: Token xxx")
-    ApiKeyHeader {
+    Header {
         header_name: String,
         prefix: Option<String>,
     },
@@ -43,9 +43,9 @@ pub enum AuthMethod {
 /// - Recall.ai: `Authorization: Token xxx`
 /// - AssemblyAI: `authorization: xxx`
 #[async_trait]
-pub trait ProviderAuth: Send + Sync {
+pub trait Authenticate: Send + Sync {
     /// Get the provider identifier.
-    fn provider(&self) -> ApiKeyProvider;
+    fn provider(&self) -> Provider;
 
     /// Get the authentication method used by this provider.
     fn auth_method(&self) -> AuthMethod;
@@ -66,27 +66,27 @@ pub trait ProviderAuth: Send + Sync {
 ///
 /// ```rust,ignore
 /// // Recall.ai: Authorization: Token xxx
-/// let auth = ApiKeyAuth::new(
-///     ApiKeyProvider::RecallAi,
+/// let auth = Auth::new(
+///     Provider::RecallAi,
 ///     SecretString::from("api_key_here"),
 ///     "Token",
 /// );
 ///
 /// // AssemblyAI: authorization: xxx (no prefix)
-/// let auth = ApiKeyAuth::new(
-///     ApiKeyProvider::AssemblyAi,
+/// let auth = Auth::new(
+///     Provider::AssemblyAi,
 ///     SecretString::from("api_key_here"),
 ///     "",
 /// );
 /// ```
-pub struct ApiKeyAuth {
-    provider: ApiKeyProvider,
+pub struct Auth {
+    provider: Provider,
     api_key: SecretString,
     header_name: String,
     prefix: Option<String>,
 }
 
-impl ApiKeyAuth {
+impl Auth {
     /// Create a new API key authenticator.
     ///
     /// # Arguments
@@ -94,10 +94,10 @@ impl ApiKeyAuth {
     /// * `provider` - The API provider
     /// * `api_key` - The API key (stored securely)
     /// * `prefix` - Optional prefix for the authorization value (e.g., "Token", "Bearer")
-    pub fn new(provider: ApiKeyProvider, api_key: SecretString, prefix: &str) -> Self {
+    pub fn new(provider: Provider, api_key: SecretString, prefix: &str) -> Self {
         let (header_name, prefix_opt) = match provider {
-            ApiKeyProvider::RecallAi => ("Authorization".to_string(), Some(prefix.to_string())),
-            ApiKeyProvider::AssemblyAi => ("authorization".to_string(), None),
+            Provider::RecallAi => ("Authorization".to_string(), Some(prefix.to_string())),
+            Provider::AssemblyAi => ("authorization".to_string(), None),
         };
 
         Self {
@@ -115,13 +115,13 @@ impl ApiKeyAuth {
 }
 
 #[async_trait]
-impl ProviderAuth for ApiKeyAuth {
-    fn provider(&self) -> ApiKeyProvider {
+impl Authenticate for Auth {
+    fn provider(&self) -> Provider {
         self.provider
     }
 
     fn auth_method(&self) -> AuthMethod {
-        AuthMethod::ApiKeyHeader {
+        AuthMethod::Header {
             header_name: self.header_name.clone(),
             prefix: self.prefix.clone(),
         }
@@ -151,16 +151,16 @@ mod tests {
 
     #[test]
     fn test_api_key_provider_as_str() {
-        assert_eq!(ApiKeyProvider::RecallAi.as_str(), "recall_ai");
-        assert_eq!(ApiKeyProvider::AssemblyAi.as_str(), "assemblyai");
+        assert_eq!(Provider::RecallAi.as_str(), "recall_ai");
+        assert_eq!(Provider::AssemblyAi.as_str(), "assemblyai");
     }
 
     #[test]
     fn test_api_key_auth_creation() {
         let api_key = SecretString::from("test_key".to_string());
-        let auth = ApiKeyAuth::new(ApiKeyProvider::RecallAi, api_key, "Token");
+        let auth = Auth::new(Provider::RecallAi, api_key, "Token");
 
-        assert_eq!(auth.provider(), ApiKeyProvider::RecallAi);
+        assert_eq!(auth.provider(), Provider::RecallAi);
         assert_eq!(auth.header_name, "Authorization");
         assert_eq!(auth.prefix, Some("Token".to_string()));
     }
@@ -168,9 +168,9 @@ mod tests {
     #[test]
     fn test_assemblyai_auth_no_prefix() {
         let api_key = SecretString::from("test_key".to_string());
-        let auth = ApiKeyAuth::new(ApiKeyProvider::AssemblyAi, api_key, "");
+        let auth = Auth::new(Provider::AssemblyAi, api_key, "");
 
-        assert_eq!(auth.provider(), ApiKeyProvider::AssemblyAi);
+        assert_eq!(auth.provider(), Provider::AssemblyAi);
         assert_eq!(auth.header_name, "authorization");
         assert_eq!(auth.prefix, None);
     }

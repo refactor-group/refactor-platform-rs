@@ -121,8 +121,6 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
     Ok(())
 }
 
-
-
 /// Create a meeting URL for the given provider using the coach's OAuth connection.
 async fn create_meeting_url(
     db: &DatabaseConnection,

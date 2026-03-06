@@ -126,4 +126,3 @@ pub(crate) async fn delete(
         (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
     }
 }
-

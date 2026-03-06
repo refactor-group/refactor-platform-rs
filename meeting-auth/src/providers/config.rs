@@ -1,10 +1,10 @@
 //! Pre-configured provider settings.
 
-use crate::api_key::ApiKeyProvider;
+use crate::api_key::Provider as ApiKeyProvider;
 
 /// Provider configuration with endpoints and settings.
 #[derive(Debug, Clone)]
-pub struct ProviderConfig {
+pub struct Config {
     /// Provider identifier.
     pub provider: ApiKeyProvider,
     /// Base API URL.
@@ -21,8 +21,8 @@ pub struct ProviderConfig {
 ///
 /// * `region` - AWS region (e.g., "us-west-2")
 /// * `base_domain` - Base domain (typically "api.recall.ai")
-pub fn recall_ai_config(region: &str, base_domain: &str) -> ProviderConfig {
-    ProviderConfig {
+pub fn recall_ai_config(region: &str, base_domain: &str) -> Config {
+    Config {
         provider: ApiKeyProvider::RecallAi,
         base_url: format!("https://{}/{}", base_domain, region),
         region: Some(region.to_string()),
@@ -31,8 +31,8 @@ pub fn recall_ai_config(region: &str, base_domain: &str) -> ProviderConfig {
 }
 
 /// Get AssemblyAI configuration.
-pub fn assemblyai_config() -> ProviderConfig {
-    ProviderConfig {
+pub fn assemblyai_config() -> Config {
+    Config {
         provider: ApiKeyProvider::AssemblyAi,
         base_url: "https://api.assemblyai.com".to_string(),
         region: None,
