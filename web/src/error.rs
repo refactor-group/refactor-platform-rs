@@ -5,6 +5,7 @@ use std::error::Error as StdError;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
@@ -124,11 +125,18 @@ impl Error {
                 );
                 (StatusCode::BAD_GATEWAY, "BAD GATEWAY").into_response()
             }
-            ExternalErrorKind::OauthTokenRevoked => {
+            ExternalErrorKind::OauthTokenRevoked(ref provider) => {
                 warn!(
-                    "ExternalErrorKind::OauthTokenRevoked: Responding with 401 Unauthorized. Error: {self:?}"
+                    "ExternalErrorKind::OauthTokenRevoked: Responding with 409 Conflict. Error: {self:?}"
                 );
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": "oauth_token_revoked",
+                        "provider": provider,
+                    })),
+                )
+                    .into_response()
             }
             ExternalErrorKind::Other(_description) => {
                 warn!(
