@@ -104,6 +104,14 @@ impl Client {
             })?;
             info!("Created Google Meet space: {}", space.meeting_code);
             Ok(space)
+        } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            warn!("Google Meet API returned 401 Unauthorized: access token expired or revoked");
+            Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::OauthTokenRevoked(
+                    "google".to_string(),
+                )),
+            })
         } else {
             let error_text = response.text().await.unwrap_or_default();
             warn!("Google Meet API error: {}", error_text);
