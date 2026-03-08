@@ -122,7 +122,7 @@ mod tests {
         organizations::Model {
             id: organization_id,
             name: "Refactor Group".to_owned(),
-            slug: "refcator-group".to_owned(),
+            slug: "refactor-group".to_owned(),
             logo: None,
             created_at: now.into(),
             updated_at: now.into(),
