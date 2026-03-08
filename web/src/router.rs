@@ -303,7 +303,7 @@ fn organization_user_routes(app_state: AppState) -> Router {
                 )),
         )
         .merge(
-            // DELETE /organizations/:organization_id/users
+            // DELETE /organizations/:organization_id/users/:user_id
             Router::new()
                 .route(
                     "/organizations/:organization_id/users/:user_id",

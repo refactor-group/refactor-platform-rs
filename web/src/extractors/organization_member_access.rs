@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{
     async_trait,
     extract::{FromRef, FromRequestParts, Path},
@@ -27,16 +29,25 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let state = AppState::from_ref(state);
-
-        let Path(organization_id) = match Path::<Id>::from_request_parts(parts, &state).await {
-            Ok(path) => path,
-            Err(_e) => {
-                return Err((
+        let Path(path_params) = Path::<HashMap<String, String>>::from_request_parts(parts, &state)
+            .await
+            .map_err(|_| {
+                (
                     StatusCode::BAD_REQUEST,
-                    "Invalid organization id".to_string(),
-                ));
-            }
-        };
+                    "Invalid path parameters".to_string(),
+                )
+            })?;
+
+        let organization_id_str = path_params.get("organization_id").ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid organization id".to_string(),
+            )
+        })?;
+
+        let organization_id = organization_id_str
+            .parse::<Id>()
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid organization id".to_string()))?;
 
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, &state).await?;
