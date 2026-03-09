@@ -5,9 +5,9 @@ use crate::extractors::{
 use crate::{controller::ApiResponse, AppState, Error};
 use axum::extract::Path;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use domain::Id;
 use domain::{emails as EmailsAPI, user as UserApi, users};
 use service::config::ApiVersion;
-use domain::Id;
 
 use log::*;
 
@@ -100,7 +100,7 @@ pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
-    Path((_organization_id_1, user_id)): Path<(Id, Id)>
+    Path((_organization_id_1, user_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
     info!("Deleting user: {user_id:?}");
     UserApi::delete(app_state.db_conn_ref(), user_id).await?;
