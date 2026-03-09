@@ -20,7 +20,7 @@ pub(crate) mod users;
 use crate::AppState;
 use async_trait::async_trait;
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::IntoResponse};
-use domain::{user as UserApi, Id};
+use domain::Id;
 use log::*;
 
 /// Trait representing a single authorization rule.
@@ -73,7 +73,6 @@ pub trait Check: Send + Sync {
 /// [`Predicate::new`]:
 /// ```rust,ignore
 /// let checks = vec![
-///     Predicate::new(UserInOrganization, vec![org_id]),
 ///     Predicate::new(UserIsAdmin, vec![]),
 /// ];
 /// ```
@@ -114,7 +113,6 @@ impl Predicate {
 ///     next: Next,
 /// ) -> impl IntoResponse {
 ///     let checks = vec![
-///         Predicate::new(UserInOrganization, vec![org_id]),
 ///         Predicate::new(UserIsAdmin, vec![org_id]),
 ///     ];
 ///     authorize(&app_state, user, request, next, checks).await
@@ -133,44 +131,6 @@ pub(crate) async fn authorize(
         }
     }
     next.run(request).await
-}
-
-/// Checks if the authenticated user is associated with the specified organization.
-///
-/// Returns `true` if:
-/// * User is a SuperAdmin (has `SuperAdmin` role with `organization_id = NULL`), OR
-/// * User has any role in the specified organization
-///
-/// # Arguments
-/// * `args[0]` - The organization ID to check
-pub struct UserInOrganization;
-
-#[async_trait]
-impl Check for UserInOrganization {
-    async fn eval(
-        &self,
-        app_state: &AppState,
-        authenticated_user: &domain::users::Model,
-        args: Vec<Id>,
-    ) -> bool {
-        // SuperAdmins have access to all organizations
-        if authenticated_user
-            .roles
-            .iter()
-            .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
-        {
-            return true;
-        }
-
-        let organization_id = args[0];
-        match UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await {
-            Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
-            Err(_) => {
-                error!("Organization not found with ID {organization_id:?}");
-                false
-            }
-        }
-    }
 }
 
 /// Checks if the authenticated user is NOT the user specified in args.

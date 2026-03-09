@@ -257,6 +257,7 @@ fn note_routes(app_state: AppState) -> Router {
 
 fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
     Router::new()
+        // POST /organizations/:organization_id/coaching_relationships
         .route(
             "/organizations/:organization_id/coaching_relationships",
             post(coaching_relationship_controller::create),
@@ -267,15 +268,10 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
         ))
         .merge(
             // GET /organizations/:organization_id/coaching_relationships
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/coaching_relationships",
-                    get(organization::coaching_relationship_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::coaching_relationships::index,
-                )),
+            Router::new().route(
+                "/organizations/:organization_id/coaching_relationships",
+                get(organization::coaching_relationship_controller::index),
+            ),
         )
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id",
@@ -289,15 +285,10 @@ fn organization_user_routes(app_state: AppState) -> Router {
     Router::new()
         .merge(
             // GET /organizations/:organization_id/users
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/users",
-                    get(organization::user_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::users::index,
-                )),
+            Router::new().route(
+                "/organizations/:organization_id/users",
+                get(organization::user_controller::index),
+            ),
         )
         .merge(
             // POST /organizations/:organization_id/users
@@ -312,7 +303,7 @@ fn organization_user_routes(app_state: AppState) -> Router {
                 )),
         )
         .merge(
-            // POST /organizations/:organization_id/users
+            // DELETE /organizations/:organization_id/users/:user_id
             Router::new()
                 .route(
                     "/organizations/:organization_id/users/:user_id",
