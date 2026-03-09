@@ -4,7 +4,7 @@
 //! between coaching sessions and goals.
 
 use entity::coaching_sessions_goals::{Column, Entity, Model};
-use entity::Id;
+use entity::{goals, Id};
 use sea_orm::{entity::prelude::*, ActiveValue::Set, DatabaseConnection, ModelTrait, TryIntoModel};
 
 use log::*;
@@ -75,6 +75,30 @@ pub async fn find_by_session_id(
         .filter(Column::CoachingSessionId.eq(coaching_session_id))
         .all(db)
         .await?)
+}
+
+/// Finds all goal models linked to a given coaching session by eager-loading
+/// through the join table.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_goals_by_session_id(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> Result<Vec<goals::Model>, Error> {
+    debug!("Finding goal models linked to session {coaching_session_id}");
+
+    let links_with_goals = Entity::find()
+        .filter(Column::CoachingSessionId.eq(coaching_session_id))
+        .find_also_related(goals::Entity)
+        .all(db)
+        .await?;
+
+    Ok(links_with_goals
+        .into_iter()
+        .filter_map(|(_, goal)| goal)
+        .collect())
 }
 
 /// Finds all sessions linked to a given goal.
@@ -152,6 +176,49 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].coaching_session_id, session_id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_goals_by_session_id_returns_goal_models() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let session_id = Id::new_v4();
+        let link_id = Id::new_v4();
+        let goal_id = Id::new_v4();
+
+        let link = Model {
+            id: link_id,
+            coaching_session_id: session_id,
+            goal_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let goal = goals::Model {
+            id: goal_id,
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: Some(session_id),
+            user_id: Id::new_v4(),
+            title: Some("Test Goal".to_string()),
+            body: Some("Goal body".to_string()),
+            status: entity::status::Status::InProgress,
+            status_changed_at: Some(now.into()),
+            completed_at: None,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![(link.clone(), Some(goal.clone()))]])
+            .into_connection();
+
+        let results = find_goals_by_session_id(&db, session_id).await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, goal_id);
+        assert_eq!(results[0].title, Some("Test Goal".to_string()));
 
         Ok(())
     }

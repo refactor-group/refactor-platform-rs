@@ -84,7 +84,7 @@ pub async fn delete(
     Ok(Json(json!({"id": id})))
 }
 
-/// GET goals linked to a specific coaching session
+/// GET goals linked to a specific coaching session (eager-loaded)
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{session_id}/goals",
@@ -93,7 +93,7 @@ pub async fn delete(
         ("session_id" = Id, Path, description = "Coaching session id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved goals linked to session", body = [entity::coaching_sessions_goals::Model]),
+        (status = 200, description = "Successfully retrieved goals linked to session", body = [entity::goals::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -109,10 +109,11 @@ pub async fn goals_by_session(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET goals linked to session {session_id}");
 
-    let links =
-        CoachingSessionGoalApi::find_by_session_id(app_state.db_conn_ref(), session_id).await?;
+    let goals =
+        CoachingSessionGoalApi::find_goals_by_session_id(app_state.db_conn_ref(), session_id)
+            .await?;
 
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), links)))
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), goals)))
 }
 
 /// GET sessions linked to a specific goal
