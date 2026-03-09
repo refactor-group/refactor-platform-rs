@@ -45,9 +45,12 @@ where
             )
         })?;
 
-        let organization_id = organization_id_str
-            .parse::<Id>()
-            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid organization id".to_string()))?;
+        let organization_id = organization_id_str.parse::<Id>().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid organization id".to_string(),
+            )
+        })?;
 
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, &state).await?;
