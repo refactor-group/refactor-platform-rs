@@ -63,6 +63,8 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     Coachees,
+    #[sea_orm(has_many = "super::goals::Entity")]
+    Goals,
 }
 
 impl Related<super::organizations::Entity> for Entity {
@@ -80,6 +82,12 @@ impl Related<super::coaches::Entity> for Entity {
 impl Related<super::coachees::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Coachees.def()
+    }
+}
+
+impl Related<super::goals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Goals.def()
     }
 }
 

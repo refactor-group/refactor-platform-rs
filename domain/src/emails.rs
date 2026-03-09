@@ -5,7 +5,7 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_session, coaching_sessions,
+    actions, coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
@@ -316,7 +316,7 @@ struct ActionEmailContext<'a> {
     due_by: Option<DateTime<FixedOffset>>,
     session_id: Id,
     organization: &'a organizations::Model,
-    goal: &'a str,
+    goal: String,
 }
 
 /// Send action-assigned notification emails to all assignees.
@@ -358,7 +358,7 @@ async fn send_action_assigned_email(
             .add_personalization("assigner_first_name", &assigner.first_name)
             .add_personalization("assigner_last_name", &assigner.last_name)
             .add_personalization("organization_name", &ctx.organization.name)
-            .add_personalization("goal", ctx.goal)
+            .add_personalization("goal", &ctx.goal)
             .add_personalization("session_url", &session_url)
             .build()
             .await;
@@ -412,10 +412,41 @@ pub async fn notify_session_scheduled(
     }
 }
 
+/// Returns a comma-separated string of up to 3 active goal titles linked to a session.
+///
+/// "Active" means status is `NotStarted` or `InProgress`. This is best-effort:
+/// any DB error returns an empty string so email delivery is never blocked.
+async fn get_active_goal_titles_for_session(db: &DatabaseConnection, session_id: Id) -> String {
+    let links = match coaching_session_goal::find_by_session_id(db, session_id).await {
+        Ok(links) => links,
+        Err(_) => return String::new(),
+    };
+
+    let mut titles = Vec::new();
+    for link in &links {
+        if let Ok(g) = goal::find_by_id(db, link.goal_id).await {
+            let is_active = matches!(
+                g.status,
+                entity_api::status::Status::NotStarted | entity_api::status::Status::InProgress
+            );
+            if is_active {
+                if let Some(title) = &g.title {
+                    titles.push(title.clone());
+                }
+            }
+        }
+        if titles.len() >= 3 {
+            break;
+        }
+    }
+
+    titles.join(", ")
+}
+
 /// Orchestrate sending action-assigned emails (best-effort).
 ///
 /// Looks up assignee users, the coaching session, relationship, organization,
-/// and goal, then sends notification emails to all assignees.
+/// and goals, then sends notification emails to all assignees.
 /// Errors are logged internally — email delivery must never block or fail
 /// the calling operation.
 pub async fn notify_action_assigned(
@@ -435,20 +466,14 @@ pub async fn notify_action_assigned(
                 .await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        // Look up goal for this session (use first if multiple exist).
-        // This is optional metadata — a DB error here should not prevent the email
-        // from being sent, so we fall back to an empty list on failure.
-        let goals = goal::find_by_coaching_session_id(db, session.id)
-            .await
-            .unwrap_or_default();
-        let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
+        let goal_text = get_active_goal_titles_for_session(db, session.id).await;
 
         let ctx = ActionEmailContext {
             action_body: action.body.as_deref().unwrap_or(""),
             due_by: action.due_by,
             session_id: action.coaching_session_id,
             organization: &org,
-            goal: goal_title,
+            goal: goal_text,
         };
 
         send_action_assigned_email(config, &assignees, assigner, &ctx).await
@@ -895,7 +920,7 @@ mod tests {
             due_by: Some(due_by),
             session_id,
             organization: &org,
-            goal: "Improve communication",
+            goal: "Improve communication".to_string(),
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -946,7 +971,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: String::new(),
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -976,7 +1001,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: String::new(),
         };
 
         let result =
@@ -1004,7 +1029,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: String::new(),
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -1039,7 +1064,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: String::new(),
         };
 
         let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;

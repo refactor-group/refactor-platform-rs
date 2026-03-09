@@ -20,7 +20,8 @@ use log::*;
     params(
         ApiVersion,
         ("user_id" = Id, Path, description = "User ID to retrieve goals for"),
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id"),
+        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching_relationship_id"),
+        ("status" = Option<String>, Query, description = "Filter by status (e.g., 'in_progress', 'completed')"),
         ("sort_by" = Option<crate::params::user::goal::SortField>, Query, description = "Sort by field. Valid values: 'title', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "title"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),

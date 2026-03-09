@@ -21,13 +21,15 @@ pub async fn create(
     let now = chrono::Utc::now();
 
     let goal_active_model: ActiveModel = ActiveModel {
-        coaching_session_id: Set(goal_model.coaching_session_id),
+        coaching_relationship_id: Set(goal_model.coaching_relationship_id),
+        created_in_session_id: Set(goal_model.created_in_session_id),
         user_id: Set(user_id),
         title: Set(goal_model.title),
         body: Set(goal_model.body),
         status: Set(goal_model.status),
         status_changed_at: Set(Some(now.into())),
         completed_at: Unchanged(goal_model.completed_at),
+        target_date: Set(goal_model.target_date),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -54,13 +56,15 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(goal.id),
-                coaching_session_id: Unchanged(goal.coaching_session_id),
+                coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
+                created_in_session_id: Unchanged(goal.created_in_session_id),
                 user_id: Unchanged(goal.user_id),
                 body: Set(model.body),
                 title: Set(model.title),
                 status: Set(model.status),
                 status_changed_at: av_status_changed_at,
                 completed_at: Set(model.completed_at),
+                target_date: Set(model.target_date),
                 updated_at: Set(chrono::Utc::now().into()),
                 created_at: Unchanged(goal.created_at),
             };
@@ -91,13 +95,15 @@ pub async fn update_status(
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(goal.id),
-                coaching_session_id: Unchanged(goal.coaching_session_id),
+                coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
+                created_in_session_id: Unchanged(goal.created_in_session_id),
                 user_id: Unchanged(goal.user_id),
                 body: Unchanged(goal.body),
                 title: Unchanged(goal.title),
                 status: Set(status),
                 status_changed_at: Set(Some(chrono::Utc::now().into())),
                 completed_at: Unchanged(goal.completed_at),
+                target_date: Unchanged(goal.target_date),
                 updated_at: Set(chrono::Utc::now().into()),
                 created_at: Unchanged(goal.created_at),
             };
@@ -115,15 +121,10 @@ pub async fn update_status(
     }
 }
 
-/// Finds all goals associated with the given coaching session.
-pub async fn find_by_coaching_session_id(
-    db: &DatabaseConnection,
-    coaching_session_id: Id,
-) -> Result<Vec<Model>, Error> {
-    Ok(Entity::find()
-        .filter(entity::goals::Column::CoachingSessionId.eq(coaching_session_id))
-        .all(db)
-        .await?)
+pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    let goal = find_by_id(db, id).await?;
+    goal.clone().delete(db).await?;
+    Ok(goal)
 }
 
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
@@ -150,12 +151,14 @@ mod tests {
         let goal_model = Model {
             id: Id::new_v4(),
             user_id: Id::new_v4(),
-            coaching_session_id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: Some(Id::new_v4()),
             title: Some("title".to_owned()),
             body: Some("This is a goal".to_owned()),
             status_changed_at: None,
             status: Default::default(),
             completed_at: Some(now.into()),
+            target_date: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -177,13 +180,15 @@ mod tests {
 
         let goal_model = Model {
             id: Id::new_v4(),
-            coaching_session_id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: Some(Id::new_v4()),
             title: Some("title".to_owned()),
             body: Some("This is a goal".to_owned()),
             user_id: Id::new_v4(),
             completed_at: Some(now.into()),
             status_changed_at: None,
             status: Default::default(),
+            target_date: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -205,26 +210,30 @@ mod tests {
 
         let goal_model = Model {
             id: Id::new_v4(),
-            coaching_session_id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: Some(Id::new_v4()),
             title: Some("title".to_owned()),
             body: Some("This is a goal".to_owned()),
             user_id: Id::new_v4(),
             completed_at: Some(now.into()),
             status_changed_at: None,
             status: Default::default(),
+            target_date: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
 
         let updated_goal_model = Model {
             id: Id::new_v4(),
-            coaching_session_id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: Some(Id::new_v4()),
             title: Some("title".to_owned()),
             body: Some("This is a goal".to_owned()),
             user_id: Id::new_v4(),
             completed_at: Some(now.into()),
             status_changed_at: Some(now.into()),
             status: Status::Completed,
+            target_date: None,
             created_at: now.into(),
             updated_at: now.into(),
         };

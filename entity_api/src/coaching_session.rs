@@ -454,11 +454,11 @@ async fn batch_load_goals(
     }
 
     Ok(goals::Entity::find()
-        .filter(goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()))
+        .filter(goals::Column::CreatedInSessionId.is_in(session_ids.iter().copied()))
         .all(db)
         .await?
         .into_iter()
-        .map(|g| (g.coaching_session_id, g))
+        .filter_map(|g| g.created_in_session_id.map(|sid| (sid, g)))
         .collect())
 }
 

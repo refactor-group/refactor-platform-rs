@@ -9,9 +9,10 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller, goal_controller,
-    jwt_controller, note_controller, oauth_controller, organization, organization_controller, user,
-    user_controller, user_session_controller,
+    action_controller, agreement_controller, coaching_session_controller,
+    coaching_session_goal_controller, goal_controller, jwt_controller, note_controller,
+    oauth_controller, organization, organization_controller, user, user_controller,
+    user_session_controller,
 };
 use crate::sse;
 
@@ -65,6 +66,11 @@ use utoipa_rapidoc::RapiDoc;
             goal_controller::index,
             goal_controller::read,
             goal_controller::update_status,
+            goal_controller::delete,
+            coaching_session_goal_controller::create,
+            coaching_session_goal_controller::delete,
+            coaching_session_goal_controller::goals_by_session,
+            coaching_session_goal_controller::sessions_by_goal,
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
@@ -84,6 +90,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::notes::Model,
                 domain::organizations::Model,
                 domain::goals::Model,
+                domain::coaching_sessions_goals::Model,
                 domain::users::Model,
                 domain::user::Credentials,
                 params::user::UpdateParams,
@@ -126,6 +133,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_coaching_relationship_routes(app_state.clone()))
         .merge(organization_user_routes(app_state.clone()))
         .merge(goal_routes(app_state.clone()))
+        .merge(coaching_session_goal_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
         .merge(oauth_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
@@ -338,6 +346,7 @@ pub fn goal_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/goals", post(goal_controller::create))
         .route("/goals/:id", put(goal_controller::update))
+        .route("/goals/:id", delete(goal_controller::delete))
         .merge(
             // GET /goals
             Router::new()
@@ -346,6 +355,28 @@ pub fn goal_routes(app_state: AppState) -> Router {
         )
         .route("/goals/:id", get(goal_controller::read))
         .route("/goals/:id/status", put(goal_controller::update_status))
+        .route(
+            "/goals/:goal_id/sessions",
+            get(coaching_session_goal_controller::sessions_by_goal),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_goal_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_session_goals",
+            post(coaching_session_goal_controller::create),
+        )
+        .route(
+            "/coaching_session_goals/:id",
+            delete(coaching_session_goal_controller::delete),
+        )
+        .route(
+            "/coaching_sessions/:session_id/goals",
+            get(coaching_session_goal_controller::goals_by_session),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }

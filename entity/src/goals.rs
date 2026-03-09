@@ -13,7 +13,8 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[sea_orm(primary_key)]
     pub id: Id,
-    pub coaching_session_id: Id,
+    pub coaching_relationship_id: Id,
+    pub created_in_session_id: Option<Id>,
     #[serde(skip_deserializing)]
     pub user_id: Id,
     pub title: Option<String>,
@@ -23,6 +24,7 @@ pub struct Model {
     pub status_changed_at: Option<DateTimeWithTimeZone>,
     #[serde(skip_deserializing)]
     pub completed_at: Option<DateTimeWithTimeZone>,
+    pub target_date: Option<Date>,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
@@ -32,8 +34,16 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
+        belongs_to = "super::coaching_relationships::Entity",
+        from = "Column::CoachingRelationshipId",
+        to = "super::coaching_relationships::Column::Id",
+        on_update = "Cascade",
+        on_delete = "Cascade"
+    )]
+    CoachingRelationships,
+    #[sea_orm(
         belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CoachingSessionId",
+        from = "Column::CreatedInSessionId",
         to = "super::coaching_sessions::Column::Id",
         on_update = "NoAction",
         on_delete = "NoAction"
@@ -47,6 +57,12 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     Users,
+}
+
+impl Related<super::coaching_relationships::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CoachingRelationships.def()
+    }
 }
 
 impl Related<super::coaching_sessions::Entity> for Entity {
