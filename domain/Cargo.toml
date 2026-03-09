@@ -4,19 +4,27 @@ version = "1.0.0-beta3"
 edition = "2021"
 
 [dependencies]
+aes-gcm = "0.10"
 async-trait = "0.1.83"
+base64 = "0.22"
 chrono = { version = "0.4.38", features = ["serde"] }
 chrono-tz = "0.10"
 email_address = "0.2"
 entity_api = { path = "../entity_api" }
 events = { path = "../events" }
+hex = "0.4"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+meeting-ai = { path = "../meeting-ai" }
+meeting-auth = { path = "../meeting-auth" }
+secrecy = { version = "0.8", features = ["serde"] }
 service = { path = "../service" }
 log = "0.4.22"
 reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
 serde_json = "1.0.128"
 serde = {version = "1.0.210", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
+urlencoding = "2.1"
+uuid = { version = "1.0", features = ["v4"] }
 
 [dependencies.sea-orm]
 version = "1.1.0"                                                       # sea-orm version

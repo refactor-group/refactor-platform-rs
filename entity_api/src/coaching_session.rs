@@ -2,7 +2,9 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    goals, organizations, users, Id,
+    goals, organizations,
+    provider::Provider,
+    users, Id,
 };
 use log::debug;
 use sea_orm::{
@@ -22,6 +24,8 @@ pub async fn create(
         coaching_relationship_id: Set(coaching_session_model.coaching_relationship_id),
         date: Set(coaching_session_model.date),
         collab_document_name: Set(coaching_session_model.collab_document_name),
+        meeting_url: Set(coaching_session_model.meeting_url),
+        provider: Set(coaching_session_model.provider),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -62,6 +66,21 @@ pub async fn find_by_id_with_coaching_relationship(
 pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(coaching_session_id).exec(db).await?;
     Ok(())
+}
+
+pub async fn update_meeting(
+    db: &DatabaseConnection,
+    id: Id,
+    meeting_url: String,
+    provider: Provider,
+) -> Result<Model, Error> {
+    let session = find_by_id(db, id).await?;
+    let mut active_model: ActiveModel = session.into();
+    active_model.meeting_url = Set(Some(meeting_url));
+    active_model.provider = Set(Some(provider));
+    active_model.updated_at = Set(chrono::Utc::now().into());
+
+    Ok(active_model.save(db).await?.try_into_model()?)
 }
 
 pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
@@ -530,6 +549,8 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -556,7 +577,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -578,7 +599,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -619,7 +640,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -639,6 +660,8 @@ mod tests {
             coaching_relationship_id: relationship_id,
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -673,6 +696,8 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             date: from_date.into(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -740,6 +765,8 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
         };

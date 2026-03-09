@@ -381,7 +381,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 7)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 9)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;

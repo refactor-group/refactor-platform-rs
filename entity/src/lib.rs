@@ -2,6 +2,7 @@ use uuid::Uuid;
 
 pub mod prelude;
 
+// Core entities
 pub mod actions;
 pub mod actions_users;
 pub mod agreements;
@@ -12,7 +13,9 @@ pub mod coaching_sessions;
 pub mod goals;
 pub mod jwts;
 pub mod notes;
+pub mod oauth_connections;
 pub mod organizations;
+pub mod provider;
 pub mod roles;
 pub mod status;
 pub mod user_roles;

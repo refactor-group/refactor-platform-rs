@@ -28,6 +28,7 @@ pub struct Model {
     // We'll need to add a migration for that eventually.
     #[sea_orm(unique)]
     pub slug: String,
+
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub created_at: DateTimeWithTimeZone,

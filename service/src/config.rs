@@ -56,6 +56,11 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "log_level_filter",
     "runtime_env",
     "backend_session_expiry_seconds",
+    "google_oauth_success_redirect_uri",
+    "google_oauth_auth_url",
+    "google_oauth_token_url",
+    "google_userinfo_url",
+    "google_meet_api_url",
 ];
 
 #[derive(Deserialize, IntoParams)]
@@ -232,6 +237,7 @@ pub struct Config {
     /// The API key to use when calling the MailerSend API.
     #[arg(long, env)]
     mailersend_api_key: Option<String>,
+
     /// The MailerSend template ID for welcome emails.
     #[arg(long, env)]
     welcome_email_template_id: Option<String>,
@@ -294,6 +300,50 @@ pub struct Config {
     /// Session expiry duration in seconds (default: 24 hours = 86400 seconds)
     #[arg(long, env, default_value_t = 86400)]
     pub backend_session_expiry_seconds: u64,
+
+    /// 32-byte AES encryption key for encrypting sensitive API keys in database (hex-encoded)
+    #[arg(long, env)]
+    encryption_key: Option<String>,
+
+    /// Google OAuth client ID
+    #[arg(long, env)]
+    google_client_id: Option<String>,
+
+    /// Google OAuth client secret
+    #[arg(long, env)]
+    google_client_secret: Option<String>,
+
+    /// Google OAuth redirect URI (callback from Google to backend)
+    #[arg(long, env)]
+    google_redirect_uri: Option<String>,
+
+    /// URL to redirect to after successful Google OAuth (frontend settings page)
+    #[arg(long, env, default_value = "http://localhost:3000/settings")]
+    google_oauth_success_redirect_uri: String,
+
+    /// Google OAuth authorization URL
+    #[arg(
+        long,
+        env,
+        default_value = "https://accounts.google.com/o/oauth2/v2/auth"
+    )]
+    google_oauth_auth_url: String,
+
+    /// Google OAuth token URL
+    #[arg(long, env, default_value = "https://oauth2.googleapis.com/token")]
+    google_oauth_token_url: String,
+
+    /// Google user info URL
+    #[arg(
+        long,
+        env,
+        default_value = "https://www.googleapis.com/oauth2/v2/userinfo"
+    )]
+    google_userinfo_url: String,
+
+    /// Google Meet API base URL
+    #[arg(long, env, default_value = "https://meet.googleapis.com/v2")]
+    google_meet_api_url: String,
 
     /// Tracks whether each config field was explicitly set or uses its default.
     /// Populated during construction; not a CLI argument.
@@ -543,6 +593,44 @@ impl Config {
     pub fn is_production(&self) -> bool {
         // This could check an environment variable, or a config field
         self.runtime_env() == RustEnv::Production
+    }
+
+    // AI Meeting Integration accessors
+
+    pub fn encryption_key(&self) -> Option<String> {
+        self.encryption_key.clone()
+    }
+
+    pub fn google_client_id(&self) -> Option<String> {
+        self.google_client_id.clone()
+    }
+
+    pub fn google_client_secret(&self) -> Option<String> {
+        self.google_client_secret.clone()
+    }
+
+    pub fn google_redirect_uri(&self) -> Option<String> {
+        self.google_redirect_uri.clone()
+    }
+
+    pub fn google_oauth_success_redirect_uri(&self) -> &str {
+        &self.google_oauth_success_redirect_uri
+    }
+
+    pub fn google_oauth_auth_url(&self) -> &str {
+        &self.google_oauth_auth_url
+    }
+
+    pub fn google_oauth_token_url(&self) -> &str {
+        &self.google_oauth_token_url
+    }
+
+    pub fn google_userinfo_url(&self) -> &str {
+        &self.google_userinfo_url
+    }
+
+    pub fn google_meet_api_url(&self) -> &str {
+        &self.google_meet_api_url
     }
 }
 
