@@ -29,7 +29,7 @@ pub fn google_authorize_url(config: &Config, state: &str) -> Result<String, Erro
     })?;
 
     let provider =
-        oauth::google::new_provider(client_id, SecretString::from(String::new()), redirect_uri);
+        oauth::google::new_provider(client_id, SecretString::from(String::new()), redirect_uri)?;
     let auth_request = provider.authorization_url(state, None);
 
     Ok(auth_request.url)
@@ -214,5 +214,5 @@ fn create_google_provider(config: &Config) -> Result<impl Provider, Error> {
         client_id,
         client_secret,
         redirect_uri,
-    ))
+    )?)
 }
