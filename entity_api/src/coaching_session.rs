@@ -445,6 +445,11 @@ async fn batch_load_organizations(
 }
 
 /// Batch load goals by session IDs
+///
+/// CHANGEME: This queries goals via the `created_in_session_id` column, which only works
+/// because PR2's auto-linking always populates that field. When PR3 removes auto-linking,
+/// this must be refactored to query through the `coaching_sessions_goals` join table instead,
+/// otherwise goals linked only via the join table will be invisible here.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
