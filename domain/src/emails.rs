@@ -412,15 +412,21 @@ pub async fn notify_session_scheduled(
     }
 }
 
-/// Returns a comma-separated string of up to 3 active goal titles linked to a session.
+/// Returns a comma-separated string of up to 3 active goal titles linked to a coaching session.
 ///
 /// "Active" means status is `NotStarted` or `InProgress`. This is best-effort:
 /// any DB error returns an empty string so email delivery is never blocked.
-async fn get_active_goal_titles_for_session(db: &DatabaseConnection, session_id: Id) -> String {
-    let goals = match coaching_session_goal::find_goals_by_session_id(db, session_id).await {
-        Ok(goals) => goals,
-        Err(_) => return String::new(),
-    };
+async fn get_active_goal_titles_for_coaching_session(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> String {
+    let goals =
+        match coaching_session_goal::find_goals_by_coaching_session_id(db, coaching_session_id)
+            .await
+        {
+            Ok(goals) => goals,
+            Err(_) => return String::new(),
+        };
 
     goals
         .iter()
@@ -454,7 +460,7 @@ pub async fn notify_action_assigned(
                 .await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        let goal_text = get_active_goal_titles_for_session(db, session.id).await;
+        let goal_text = get_active_goal_titles_for_coaching_session(db, session.id).await;
 
         let ctx = ActionEmailContext {
             action_body: action.body.as_deref().unwrap_or(""),

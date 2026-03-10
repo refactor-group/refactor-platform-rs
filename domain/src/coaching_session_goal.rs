@@ -16,20 +16,20 @@ pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> 
     Ok(CoachingSessionGoalApi::delete_by_id(db, id).await?)
 }
 
-pub async fn find_by_session_id(
+pub async fn find_by_coaching_session_id(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    Ok(CoachingSessionGoalApi::find_by_session_id(db, coaching_session_id).await?)
+    Ok(CoachingSessionGoalApi::find_by_coaching_session_id(db, coaching_session_id).await?)
 }
 
 /// Finds all goal models linked to a given coaching session,
 /// eager-loaded through the join table.
-pub async fn find_goals_by_session_id(
+pub async fn find_goals_by_coaching_session_id(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> Result<Vec<goals::Model>, Error> {
-    Ok(CoachingSessionGoalApi::find_goals_by_session_id(db, coaching_session_id).await?)
+    Ok(CoachingSessionGoalApi::find_goals_by_coaching_session_id(db, coaching_session_id).await?)
 }
 
 pub async fn find_by_goal_id(db: &DatabaseConnection, goal_id: Id) -> Result<Vec<Model>, Error> {

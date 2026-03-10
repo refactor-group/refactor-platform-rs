@@ -109,9 +109,11 @@ pub async fn goals_by_session(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET goals linked to session {session_id}");
 
-    let goals =
-        CoachingSessionGoalApi::find_goals_by_session_id(app_state.db_conn_ref(), session_id)
-            .await?;
+    let goals = CoachingSessionGoalApi::find_goals_by_coaching_session_id(
+        app_state.db_conn_ref(),
+        session_id,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goals)))
 }

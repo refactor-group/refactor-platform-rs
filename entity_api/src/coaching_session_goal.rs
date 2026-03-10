@@ -60,12 +60,12 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     })
 }
 
-/// Finds all goals linked to a given coaching session.
+/// Finds all join-table records for a given coaching session.
 ///
 /// # Errors
 ///
 /// Returns `Error` if the database query fails.
-pub async fn find_by_session_id(
+pub async fn find_by_coaching_session_id(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> Result<Vec<Model>, Error> {
@@ -83,7 +83,7 @@ pub async fn find_by_session_id(
 /// # Errors
 ///
 /// Returns `Error` if the database query fails.
-pub async fn find_goals_by_session_id(
+pub async fn find_goals_by_coaching_session_id(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> Result<Vec<goals::Model>, Error> {
@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_by_session_id_returns_linked_goals() -> Result<(), Error> {
+    async fn find_by_coaching_session_id_returns_linked_goals() -> Result<(), Error> {
         let now = chrono::Utc::now();
         let session_id = Id::new_v4();
 
@@ -172,7 +172,7 @@ mod tests {
             .append_query_results(vec![vec![link1.clone(), link2.clone()]])
             .into_connection();
 
-        let results = find_by_session_id(&db, session_id).await?;
+        let results = find_by_coaching_session_id(&db, session_id).await?;
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].coaching_session_id, session_id);
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_goals_by_session_id_returns_goal_models() -> Result<(), Error> {
+    async fn find_goals_by_coaching_session_id_returns_goal_models() -> Result<(), Error> {
         let now = chrono::Utc::now();
         let session_id = Id::new_v4();
         let link_id = Id::new_v4();
@@ -214,7 +214,7 @@ mod tests {
             .append_query_results(vec![vec![(link.clone(), Some(goal.clone()))]])
             .into_connection();
 
-        let results = find_goals_by_session_id(&db, session_id).await?;
+        let results = find_goals_by_coaching_session_id(&db, session_id).await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, goal_id);
