@@ -2,6 +2,7 @@ use crate::error::Error;
 use crate::events::{DomainEvent, EventPublisher};
 use crate::goals::Model;
 use crate::Id;
+use entity_api::coaching_session_goal as CoachingSessionGoalApi;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{goal as GoalApi, goals, query};
 use log::*;
@@ -16,6 +17,9 @@ pub async fn create(
     user_id: Id,
 ) -> Result<Model, Error> {
     let goal = GoalApi::create(db, goal_model, user_id).await?;
+
+    // CHANGEME: Remove when carry-forward workflow (PR3) replaces auto-linking
+    link_to_originating_session(db, &goal).await?;
 
     let relationship =
         crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
@@ -35,6 +39,24 @@ pub async fn create(
     );
 
     Ok(goal)
+}
+
+/// If the goal was created within a session context, automatically link it
+/// to that session in the coaching_sessions_goals join table.
+///
+/// CHANGEME: Remove this when the full goals rework carry-forward workflow
+/// is in place (PR3). At that point, coaching_sessions_goals rows will be
+/// created at session-creation time and the frontend will manage linking
+/// explicitly via POST /coaching_session_goals.
+async fn link_to_originating_session(db: &DatabaseConnection, goal: &Model) -> Result<(), Error> {
+    if let Some(session_id) = goal.created_in_session_id {
+        debug!(
+            "Auto-linking goal {} to originating session {}",
+            goal.id, session_id
+        );
+        CoachingSessionGoalApi::create(db, session_id, goal.id).await?;
+    }
+    Ok(())
 }
 
 pub async fn update(
