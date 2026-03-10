@@ -92,13 +92,18 @@ impl Provider {
     /// * `client_id` - Google OAuth client ID
     /// * `client_secret` - Google OAuth client secret
     /// * `redirect_uri` - OAuth redirect URI
-    pub fn new(client_id: String, client_secret: SecretString, redirect_uri: String) -> Self {
-        Self {
+    pub fn new(
+        client_id: String,
+        client_secret: SecretString,
+        redirect_uri: String,
+    ) -> Result<Self, reqwest::Error> {
+        let http_client = reqwest::Client::builder().use_rustls_tls().build()?;
+        Ok(Self {
             client_id,
             client_secret,
             redirect_uri,
-            http_client: reqwest::Client::new(),
-        }
+            http_client,
+        })
     }
 }
 
