@@ -9,7 +9,7 @@ use crate::{
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
-    goal, organization, organizations, user, users, Id,
+    organization, organizations, user, users, Id,
 };
 
 /// Trait for email notifications that need common config prerequisites.
@@ -417,30 +417,18 @@ pub async fn notify_session_scheduled(
 /// "Active" means status is `NotStarted` or `InProgress`. This is best-effort:
 /// any DB error returns an empty string so email delivery is never blocked.
 async fn get_active_goal_titles_for_session(db: &DatabaseConnection, session_id: Id) -> String {
-    let links = match coaching_session_goal::find_by_session_id(db, session_id).await {
-        Ok(links) => links,
+    let goals = match coaching_session_goal::find_goals_by_session_id(db, session_id).await {
+        Ok(goals) => goals,
         Err(_) => return String::new(),
     };
 
-    let mut titles = Vec::new();
-    for link in &links {
-        if let Ok(g) = goal::find_by_id(db, link.goal_id).await {
-            let is_active = matches!(
-                g.status,
-                entity_api::status::Status::NotStarted | entity_api::status::Status::InProgress
-            );
-            if is_active {
-                if let Some(title) = &g.title {
-                    titles.push(title.clone());
-                }
-            }
-        }
-        if titles.len() >= 3 {
-            break;
-        }
-    }
-
-    titles.join(", ")
+    goals
+        .iter()
+        .filter(|g| g.is_active())
+        .filter_map(|g| g.title.as_deref())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Orchestrate sending action-assigned emails (best-effort).

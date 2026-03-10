@@ -49,7 +49,8 @@ impl MigrationTrait for Migration {
         .await?;
 
         // Step 6: Rename coaching_session_id → created_in_session_id
-        // Column is already nullable in the original schema, no constraint change needed
+        // Column was nullable (uuid without NOT NULL) in the original base SQL schema,
+        // even though the old Rust entity used non-optional Id. No constraint change needed.
         db.execute_unprepared(
             "ALTER TABLE refactor_platform.goals
              RENAME COLUMN coaching_session_id TO created_in_session_id",
@@ -150,7 +151,7 @@ impl MigrationTrait for Migration {
         .await?;
 
         // Step 4: Rename created_in_session_id back to coaching_session_id
-        // Column stays nullable (it was nullable in the original schema)
+        // Column stays nullable (was nullable uuid in the original base SQL schema)
         db.execute_unprepared(
             "ALTER TABLE refactor_platform.goals
              RENAME COLUMN created_in_session_id TO coaching_session_id",

@@ -187,6 +187,7 @@ pub async fn update_status(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {

@@ -345,19 +345,24 @@ pub fn organization_routes(app_state: AppState) -> Router {
 pub fn goal_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/goals", post(goal_controller::create))
-        .route("/goals/:id", put(goal_controller::update))
-        .route("/goals/:id", delete(goal_controller::delete))
         .merge(
-            // GET /goals
+            // GET /goals — protected by coaching_relationship_id query param
             Router::new()
                 .route("/goals", get(goal_controller::index))
                 .route_layer(from_fn_with_state(app_state.clone(), protect::goals::index)),
         )
-        .route("/goals/:id", get(goal_controller::read))
-        .route("/goals/:id/status", put(goal_controller::update_status))
-        .route(
-            "/goals/:goal_id/sessions",
-            get(coaching_session_goal_controller::sessions_by_goal),
+        .merge(
+            // Routes protected by goal :id path param
+            Router::new()
+                .route("/goals/:id", put(goal_controller::update))
+                .route("/goals/:id", delete(goal_controller::delete))
+                .route("/goals/:id", get(goal_controller::read))
+                .route("/goals/:id/status", put(goal_controller::update_status))
+                .route(
+                    "/goals/:goal_id/sessions",
+                    get(coaching_session_goal_controller::sessions_by_goal),
+                )
+                .route_layer(from_fn_with_state(app_state.clone(), protect::goals::by_id)),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -373,9 +378,17 @@ fn coaching_session_goal_routes(app_state: AppState) -> Router {
             "/coaching_session_goals/:id",
             delete(coaching_session_goal_controller::delete),
         )
-        .route(
-            "/coaching_sessions/:session_id/goals",
-            get(coaching_session_goal_controller::goals_by_session),
+        .merge(
+            // GET goals by session — protected by session_id path param
+            Router::new()
+                .route(
+                    "/coaching_sessions/:session_id/goals",
+                    get(coaching_session_goal_controller::goals_by_session),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::goals::by_session_id,
+                )),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

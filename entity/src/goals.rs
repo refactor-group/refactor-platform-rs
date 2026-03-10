@@ -77,4 +77,58 @@ impl Related<super::users::Entity> for Entity {
     }
 }
 
+impl Model {
+    /// Returns `true` if this goal is considered active (not yet finished).
+    ///
+    /// A goal is active when its status is `NotStarted` or `InProgress`.
+    /// This definition is goal-specific — other entities using `Status`
+    /// (e.g. actions) may define "active" differently.
+    pub fn is_active(&self) -> bool {
+        matches!(self.status, Status::NotStarted | Status::InProgress)
+    }
+}
+
 impl ActiveModelBehavior for ActiveModel {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_goal(status: Status) -> Model {
+        let now = chrono::Utc::now().fixed_offset();
+        Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title: Some("Test goal".to_string()),
+            body: None,
+            status,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn is_active_returns_true_for_not_started() {
+        assert!(create_test_goal(Status::NotStarted).is_active());
+    }
+
+    #[test]
+    fn is_active_returns_true_for_in_progress() {
+        assert!(create_test_goal(Status::InProgress).is_active());
+    }
+
+    #[test]
+    fn is_active_returns_false_for_completed() {
+        assert!(!create_test_goal(Status::Completed).is_active());
+    }
+
+    #[test]
+    fn is_active_returns_false_for_wont_do() {
+        assert!(!create_test_goal(Status::WontDo).is_active());
+    }
+}
