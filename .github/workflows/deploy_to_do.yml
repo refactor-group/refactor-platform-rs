@@ -141,11 +141,11 @@ jobs:
           # 32-byte AES encryption key for encrypting sensitive API keys in database (hex-encoded)
           ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
           # Google OAuth client ID
-          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}
           # Google OAuth client secret
           GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
           # Google OAuth redirect URI (callback from Google to backend)
-          GOOGLE_REDIRECT_URI=${{ secrets.GOOGLE_REDIRECT_URI }}
+          GOOGLE_REDIRECT_URI=${{ vars.GOOGLE_REDIRECT_URI }}
           # URL to redirect to after successful Google OAuth (frontend settings page)
           GOOGLE_OAUTH_SUCCESS_REDIRECT_URI=${{ vars.GOOGLE_OAUTH_SUCCESS_REDIRECT_URI }}
           # Google OAuth authorization URL
