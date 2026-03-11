@@ -74,7 +74,7 @@ impl From<oauth_connections::Model> for ConnectionResponse {
         ("cookie_auth" = [])
     )
 )]
-pub async fn authorize(
+pub async fn authorize_google(
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<OAuthStart>,
@@ -108,7 +108,7 @@ pub async fn authorize(
         (status = 500, description = "Token exchange failed"),
     )
 )]
-pub async fn callback(
+pub async fn google_callback(
     State(app_state): State<AppState>,
     Query(params): Query<OAuthCallback>,
 ) -> Result<impl IntoResponse, Error> {
@@ -129,7 +129,92 @@ pub async fn callback(
         .parse()
         .map_err(|_| Error::Web(WebErrorKind::Input))?;
 
-    let redirect_url = oauth_connection::exchange_and_store_tokens(
+    let redirect_url = oauth_connection::exchange_and_store_google_tokens(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        user_id,
+        &params.code,
+    )
+    .await?;
+
+    Ok(Redirect::temporary(&redirect_url))
+}
+
+/// GET /oauth/zoom/authorize
+///
+/// Initiates Zoom OAuth flow by redirecting to Zoom's authorization endpoint.
+/// Note: This endpoint doesn't require x-version header as it's called via browser redirect.
+#[utoipa::path(
+    get,
+    path = "/oauth/zoom/authorize",
+    params(
+        ("user_id" = Id, Query, description = "User ID to associate with Zoom account"),
+    ),
+    responses(
+        (status = 302, description = "Redirect to Zoom OAuth"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Server error (OAuth not configured)"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn authorize_zoom(
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Query(params): Query<OAuthStart>,
+) -> Result<impl IntoResponse, Error> {
+    if user.id != params.user_id {
+        return Err(Error::Web(WebErrorKind::Auth));
+    }
+
+    let mut metadata = HashMap::new();
+    metadata.insert("user_id".to_string(), params.user_id.to_string());
+    let state_token = app_state.oauth_state_manager.generate(None, metadata);
+
+    let url = oauth_connection::zoom_authorize_url(&app_state.config, &state_token)?;
+    Ok(Redirect::temporary(&url))
+}
+
+/// GET /oauth/zoom/callback
+///
+/// Handles the OAuth callback from Zoom after user authorization.
+/// Note: This endpoint doesn't require x-version header as it's called via Zoom's redirect.
+#[utoipa::path(
+    get,
+    path = "/oauth/zoom/callback",
+    params(
+        ("code" = String, Query, description = "Authorization code from Zoom"),
+        ("state" = Option<String>, Query, description = "CSRF state token"),
+    ),
+    responses(
+        (status = 302, description = "Redirect to settings page on success"),
+        (status = 400, description = "Invalid callback parameters"),
+        (status = 500, description = "Token exchange failed"),
+    )
+)]
+pub async fn zoom_callback(
+    State(app_state): State<AppState>,
+    Query(params): Query<OAuthCallback>,
+) -> Result<impl IntoResponse, Error> {
+    let state_token = params
+        .state
+        .as_deref()
+        .ok_or(Error::Web(WebErrorKind::Input))?;
+
+    let state_data = app_state
+        .oauth_state_manager
+        .validate(state_token)
+        .ok_or(Error::Web(WebErrorKind::Input))?;
+
+    let user_id: Id = state_data
+        .metadata
+        .get("user_id")
+        .ok_or(Error::Web(WebErrorKind::Input))?
+        .parse()
+        .map_err(|_| Error::Web(WebErrorKind::Input))?;
+
+    let redirect_url = oauth_connection::exchange_and_store_zoom_tokens(
         app_state.db_conn_ref(),
         &app_state.config,
         user_id,

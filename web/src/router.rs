@@ -499,16 +499,28 @@ fn sse_routes(app_state: AppState) -> Router {
 /// Routes for Google OAuth flow and connection management
 fn oauth_routes(app_state: AppState) -> Router {
     Router::new()
-        .route("/oauth/google/authorize", get(oauth_controller::authorize))
+        .route(
+            "/oauth/google/authorize",
+            get(oauth_controller::authorize_google),
+        )
         .route("/oauth/connections", get(oauth_controller::index))
         .route(
             "/oauth/connections/:provider",
             get(oauth_controller::read).delete(oauth_controller::delete),
         )
+        .route(
+            "/oauth/zoom/authorize",
+            get(oauth_controller::authorize_zoom),
+        )
         .route_layer(from_fn(require_auth))
         .merge(
-            // Callback doesn't require auth (user is redirected back from Google)
-            Router::new().route("/oauth/google/callback", get(oauth_controller::callback)),
+            // Callback doesn't require auth (user is redirected back from Google, or Zoom)
+            Router::new()
+                .route(
+                    "/oauth/google/callback",
+                    get(oauth_controller::google_callback),
+                )
+                .route("/oauth/zoom/callback", get(oauth_controller::zoom_callback)),
         )
         .with_state(app_state)
 }

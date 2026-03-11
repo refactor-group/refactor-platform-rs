@@ -31,6 +31,7 @@ impl<'db> DbOAuthTokenStorage<'db> {
 fn parse_provider(provider_id: &str) -> Result<Provider, Error> {
     match provider_id {
         "google" => Ok(Provider::Google),
+        "zoom" => Ok(Provider::Zoom),
         other => Err(Error {
             source: Some(other.to_string().into()),
             error_kind: ErrorKind::Storage(StorageErrorKind::Database),
