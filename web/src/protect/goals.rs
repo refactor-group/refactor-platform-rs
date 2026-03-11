@@ -82,23 +82,24 @@ pub(crate) async fn by_id(
     }
 }
 
-/// Checks that the coaching session referenced by path `session_id` belongs to
-/// a coaching relationship that the authenticated user is a member of.
-pub(crate) async fn by_session_id(
+/// Checks that the coaching session referenced by path `coaching_session_id`
+/// belongs to a coaching relationship that the authenticated user is a member of.
+pub(crate) async fn by_coaching_session_id(
     State(app_state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(session_id): Path<Id>,
+    Path(coaching_session_id): Path<Id>,
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let session = match coaching_session::find_by_id(app_state.db_conn_ref(), session_id).await {
-        Ok(session) => session,
-        Err(e) => {
-            let domain_err: domain::error::Error = e.into();
-            error!("Error finding session for authorization: {domain_err:?}");
-            return crate::error::domain_error_into_response(domain_err);
-        }
-    };
+    let session =
+        match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
+            Ok(session) => session,
+            Err(e) => {
+                let domain_err: domain::error::Error = e.into();
+                error!("Error finding session for authorization: {domain_err:?}");
+                return crate::error::domain_error_into_response(domain_err);
+            }
+        };
 
     let relationship_result: Result<_, domain::error::Error> = coaching_relationship::find_by_id(
         app_state.db_conn_ref(),

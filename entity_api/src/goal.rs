@@ -123,7 +123,7 @@ pub async fn update_status(
 
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
     let goal = find_by_id(db, id).await?;
-    goal.clone().delete(db).await?;
+    Entity::delete_by_id(id).exec(db).await?;
     Ok(goal)
 }
 

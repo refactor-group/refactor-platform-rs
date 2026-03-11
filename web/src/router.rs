@@ -9,10 +9,9 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use crate::controller::{
-    action_controller, agreement_controller, coaching_session_controller,
-    coaching_session_goal_controller, goal_controller, jwt_controller, note_controller,
-    oauth_controller, organization, organization_controller, user, user_controller,
-    user_session_controller,
+    action_controller, agreement_controller, coaching_session, coaching_session_controller,
+    goal_controller, jwt_controller, note_controller, oauth_controller, organization,
+    organization_controller, user, user_controller, user_session_controller,
 };
 use crate::sse;
 
@@ -67,10 +66,10 @@ use utoipa_rapidoc::RapiDoc;
             goal_controller::read,
             goal_controller::update_status,
             goal_controller::delete,
-            coaching_session_goal_controller::create,
-            coaching_session_goal_controller::delete,
-            coaching_session_goal_controller::goals_by_session,
-            coaching_session_goal_controller::sessions_by_goal,
+            coaching_session::goal_controller::create,
+            coaching_session::goal_controller::delete,
+            coaching_session::goal_controller::index,
+            goal_controller::coaching_sessions_by_goal,
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
@@ -360,7 +359,7 @@ pub fn goal_routes(app_state: AppState) -> Router {
                 .route("/goals/:id/status", put(goal_controller::update_status))
                 .route(
                     "/goals/:goal_id/sessions",
-                    get(coaching_session_goal_controller::sessions_by_goal),
+                    get(goal_controller::coaching_sessions_by_goal),
                 )
                 .route_layer(from_fn_with_state(app_state.clone(), protect::goals::by_id)),
         )
@@ -371,23 +370,23 @@ pub fn goal_routes(app_state: AppState) -> Router {
 fn coaching_session_goal_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
-            "/coaching_session_goals",
-            post(coaching_session_goal_controller::create),
+            "/coaching_sessions/:coaching_session_id/goals",
+            post(coaching_session::goal_controller::create),
         )
         .route(
-            "/coaching_session_goals/:id",
-            delete(coaching_session_goal_controller::delete),
+            "/coaching_sessions/:coaching_session_id/goals/:id",
+            delete(coaching_session::goal_controller::delete),
         )
         .merge(
-            // GET goals by session — protected by session_id path param
+            // GET goals by session — protected by coaching_session_id path param
             Router::new()
                 .route(
-                    "/coaching_sessions/:session_id/goals",
-                    get(coaching_session_goal_controller::goals_by_session),
+                    "/coaching_sessions/:coaching_session_id/goals",
+                    get(coaching_session::goal_controller::index),
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
-                    protect::goals::by_session_id,
+                    protect::goals::by_coaching_session_id,
                 )),
         )
         .route_layer(from_fn(require_auth))

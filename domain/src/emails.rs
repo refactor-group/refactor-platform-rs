@@ -5,11 +5,11 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions,
+    actions, coaching_relationship, coaching_session, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
-    organization, organizations, user, users, Id,
+    goal, organization, organizations, user, users, Id,
 };
 
 /// Trait for email notifications that need common config prerequisites.
@@ -420,13 +420,10 @@ async fn get_active_goal_titles_for_coaching_session(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> String {
-    let goals =
-        match coaching_session_goal::find_goals_by_coaching_session_id(db, coaching_session_id)
-            .await
-        {
-            Ok(goals) => goals,
-            Err(_) => return String::new(),
-        };
+    let goals = match goal::find_goals_by_coaching_session_id(db, coaching_session_id).await {
+        Ok(goals) => goals,
+        Err(_) => return String::new(),
+    };
 
     goals
         .iter()

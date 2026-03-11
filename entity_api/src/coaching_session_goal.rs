@@ -5,7 +5,7 @@
 
 use entity::coaching_sessions_goals::{Column, Entity, Model};
 use entity::{goals, Id};
-use sea_orm::{entity::prelude::*, ActiveValue::Set, DatabaseConnection, ModelTrait, TryIntoModel};
+use sea_orm::{entity::prelude::*, ActiveValue::Set, DatabaseConnection, TryIntoModel};
 
 use log::*;
 
@@ -43,8 +43,15 @@ pub async fn create(
 ///
 /// Returns `Error` if the record is not found or the database delete fails.
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
-    let record = find_by_id(db, id).await?;
-    record.delete(db).await?;
+    let result = Entity::delete_by_id(id).exec(db).await?;
+
+    if result.rows_affected == 0 {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        });
+    }
+
     Ok(())
 }
 

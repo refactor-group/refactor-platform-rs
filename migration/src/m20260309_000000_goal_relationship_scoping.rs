@@ -106,72 +106,44 @@ impl MigrationTrait for Migration {
         )
         .await?;
 
-        // Step 12: Backfill join table from existing created_in_session_id links
-        db.execute_unprepared(
-            "INSERT INTO refactor_platform.coaching_sessions_goals
-                (coaching_session_id, goal_id)
-             SELECT created_in_session_id, id
-             FROM refactor_platform.goals
-             WHERE created_in_session_id IS NOT NULL",
-        )
-        .await?;
-
         Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
 
-        // Step 1: Before dropping the join table, backfill created_in_session_id NULLs
-        // from the join table. Goals created after PR2 with NULL created_in_session_id
-        // may have been linked to sessions via the join table — recover that link.
-        // Uses the earliest linked session (MIN) as a best-effort recovery.
-        db.execute_unprepared(
-            "UPDATE refactor_platform.goals g
-             SET created_in_session_id = sub.coaching_session_id
-             FROM (
-                 SELECT goal_id, MIN(coaching_session_id) AS coaching_session_id
-                 FROM refactor_platform.coaching_sessions_goals
-                 GROUP BY goal_id
-             ) sub
-             WHERE g.id = sub.goal_id
-             AND g.created_in_session_id IS NULL",
-        )
-        .await?;
-
-        // Step 2: Drop the join table (also drops its indexes and FKs)
+        // Step 1: Drop the join table (also drops its indexes and FKs)
         db.execute_unprepared("DROP TABLE IF EXISTS refactor_platform.coaching_sessions_goals")
             .await?;
 
-        // Step 3: Remove target_date column
+        // Step 2: Remove target_date column
         db.execute_unprepared(
             "ALTER TABLE refactor_platform.goals
              DROP COLUMN IF EXISTS target_date",
         )
         .await?;
 
-        // Step 4: Rename created_in_session_id back to coaching_session_id
-        // Column stays nullable (was nullable uuid in the original base SQL schema)
+        // Step 3: Rename created_in_session_id back to coaching_session_id
         db.execute_unprepared(
             "ALTER TABLE refactor_platform.goals
              RENAME COLUMN created_in_session_id TO coaching_session_id",
         )
         .await?;
 
-        // Step 5: Drop coaching_relationship_id index
+        // Step 4: Drop coaching_relationship_id index
         db.execute_unprepared(
             "DROP INDEX IF EXISTS refactor_platform.goals_coaching_relationship_id_idx",
         )
         .await?;
 
-        // Step 6: Drop coaching_relationship_id FK constraint
+        // Step 5: Drop coaching_relationship_id FK constraint
         db.execute_unprepared(
             "ALTER TABLE refactor_platform.goals
              DROP CONSTRAINT IF EXISTS fk_goals_coaching_relationship",
         )
         .await?;
 
-        // Step 7: Remove coaching_relationship_id column
+        // Step 6: Remove coaching_relationship_id column
         db.execute_unprepared(
             "ALTER TABLE refactor_platform.goals
              DROP COLUMN IF EXISTS coaching_relationship_id",

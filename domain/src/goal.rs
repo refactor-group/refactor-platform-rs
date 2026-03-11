@@ -4,6 +4,7 @@ use crate::goals::Model;
 use crate::status::Status;
 use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
+use entity_api::coaching_sessions_goals;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{goal as GoalApi, goals, query};
 use log::*;
@@ -182,6 +183,38 @@ where
 {
     let goals = query::find_by::<goals::Entity, goals::Column, P>(db, params).await?;
     Ok(goals)
+}
+
+// ── Coaching-session ↔ goal association (join table as implementation detail) ──
+
+/// Links an existing goal to a coaching session.
+pub async fn link_to_coaching_session(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+    goal_id: Id,
+) -> Result<coaching_sessions_goals::Model, Error> {
+    Ok(CoachingSessionGoalApi::create(db, coaching_session_id, goal_id).await?)
+}
+
+/// Unlinks a goal from a coaching session by the join-table record id.
+pub async fn unlink_from_coaching_session(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
+    Ok(CoachingSessionGoalApi::delete_by_id(db, id).await?)
+}
+
+/// Returns all goal models linked to a coaching session (eager-loaded).
+pub async fn find_goals_by_coaching_session_id(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(CoachingSessionGoalApi::find_goals_by_coaching_session_id(db, coaching_session_id).await?)
+}
+
+/// Returns all join-table records for a given goal (sessions linked to it).
+pub async fn find_coaching_sessions_by_goal_id(
+    db: &DatabaseConnection,
+    goal_id: Id,
+) -> Result<Vec<coaching_sessions_goals::Model>, Error> {
+    Ok(CoachingSessionGoalApi::find_by_goal_id(db, goal_id).await?)
 }
 
 impl From<Model> for GoalSummary {

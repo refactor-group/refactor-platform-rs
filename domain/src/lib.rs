@@ -20,7 +20,6 @@ pub mod action;
 pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
-pub mod coaching_session_goal;
 pub mod emails;
 pub mod error;
 pub mod goal;
