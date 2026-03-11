@@ -280,4 +280,49 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn find_active_goals_returns_only_in_progress() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let relationship_id = Id::new_v4();
+
+        let in_progress_goal = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title: Some("Active goal".to_owned()),
+            body: None,
+            status: Status::InProgress,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![in_progress_goal.clone()]])
+            .into_connection();
+
+        let results = find_active_goals_by_coaching_relationship_id(&db, relationship_id).await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, Status::InProgress);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_active_goals_returns_empty_when_none() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let results = find_active_goals_by_coaching_relationship_id(&db, Id::new_v4()).await?;
+
+        assert!(results.is_empty());
+
+        Ok(())
+    }
 }
