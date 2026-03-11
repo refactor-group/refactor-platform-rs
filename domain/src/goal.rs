@@ -1,6 +1,7 @@
-use crate::error::Error;
+use crate::error::{Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::goals::Model;
+use crate::status::Status;
 use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
@@ -10,12 +11,27 @@ use sea_orm::DatabaseConnection;
 
 pub use entity_api::goal::find_by_id;
 
+/// Maximum number of active (`InProgress`) goals allowed per coaching relationship.
+pub const MAX_ACTIVE_GOALS: usize = 3;
+
+/// Lightweight projection of a goal for use in the `ActiveGoalLimitReached` error.
+/// Carries just enough info for the frontend to present a "swap" dialog.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GoalSummary {
+    pub id: Id,
+    pub title: String,
+}
+
 pub async fn create(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
+    if goal_model.status == Status::InProgress {
+        check_active_goal_limit(db, goal_model.coaching_relationship_id).await?;
+    }
+
     let goal = GoalApi::create(db, goal_model, user_id).await?;
 
     // CHANGEME: Remove when carry-forward workflow (PR3) replaces auto-linking
@@ -65,6 +81,14 @@ pub async fn update(
     id: Id,
     model: Model,
 ) -> Result<Model, Error> {
+    // Check active goal limit if the update would transition to InProgress.
+    if model.status == Status::InProgress {
+        let current_goal = GoalApi::find_by_id(db, id).await?;
+        if current_goal.status != Status::InProgress {
+            check_active_goal_limit(db, current_goal.coaching_relationship_id).await?;
+        }
+    }
+
     let goal = GoalApi::update(db, id, model).await?;
 
     let relationship =
@@ -93,6 +117,14 @@ pub async fn update_status(
     id: Id,
     status: entity_api::status::Status,
 ) -> Result<Model, Error> {
+    // Only check the limit when transitioning TO InProgress from a non-InProgress status.
+    if status == Status::InProgress {
+        let current_goal = GoalApi::find_by_id(db, id).await?;
+        if current_goal.status != Status::InProgress {
+            check_active_goal_limit(db, current_goal.coaching_relationship_id).await?;
+        }
+    }
+
     let goal = GoalApi::update_status(db, id, status).await?;
 
     let relationship =
@@ -150,4 +182,56 @@ where
 {
     let goals = query::find_by::<goals::Entity, goals::Column, P>(db, params).await?;
     Ok(goals)
+}
+
+impl From<Model> for GoalSummary {
+    fn from(goal: Model) -> Self {
+        Self {
+            id: goal.id,
+            title: goal.title.unwrap_or_default(),
+        }
+    }
+}
+
+impl GoalSummary {
+    /// Converts a list of goal models into summaries, optionally excluding one goal by id.
+    pub fn from_goals(goals: Vec<Model>, exclude_id: Option<Id>) -> Vec<Self> {
+        goals
+            .into_iter()
+            .filter(|g| exclude_id != Some(g.id))
+            .map(Self::from)
+            .collect()
+    }
+}
+
+impl Error {
+    fn active_goal_limit_reached(active_goals: Vec<GoalSummary>) -> Self {
+        Self {
+            source: None,
+            error_kind: crate::error::DomainErrorKind::Internal(
+                InternalErrorKind::ActiveGoalLimitReached { active_goals },
+            ),
+        }
+    }
+}
+
+/// Checks that adding one more `InProgress` goal to a coaching relationship
+/// would not exceed `MAX_ACTIVE_GOALS`. If it would, returns an
+/// `ActiveGoalLimitReached` error carrying summaries of the current active goals.
+async fn check_active_goal_limit(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+) -> Result<(), Error> {
+    let active_goals =
+        GoalApi::find_active_goals_by_coaching_relationship_id(db, coaching_relationship_id)
+            .await?;
+
+    if active_goals.len() >= MAX_ACTIVE_GOALS {
+        return Err(Error::active_goal_limit_reached(GoalSummary::from_goals(
+            active_goals,
+            None,
+        )));
+    }
+
+    Ok(())
 }

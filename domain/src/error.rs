@@ -33,6 +33,9 @@ pub enum DomainErrorKind {
 pub enum InternalErrorKind {
     Entity(EntityErrorKind),
     Config,
+    ActiveGoalLimitReached {
+        active_goals: Vec<crate::goal::GoalSummary>,
+    },
     Other(String),
 }
 

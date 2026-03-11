@@ -10,6 +10,7 @@ use axum::Json;
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
 };
+use domain::goal::MAX_ACTIVE_GOALS;
 
 use log::*;
 
@@ -68,6 +69,22 @@ impl Error {
                     "InternalErrorKind::Config: Responding with 500 Internal Server Error. Error: {self:?}"
                 );
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
+            }
+            InternalErrorKind::ActiveGoalLimitReached { ref active_goals } => {
+                warn!(
+                    "InternalErrorKind::ActiveGoalLimitReached: Responding with 409 Conflict. Error: {self:?}"
+                );
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "status_code": 409,
+                        "error": "active_goal_limit_reached",
+                        "message": format!("A coaching relationship can have at most {MAX_ACTIVE_GOALS} active goals."),
+                        "max_active_goals": MAX_ACTIVE_GOALS,
+                        "active_goals": active_goals,
+                    })),
+                )
+                    .into_response()
             }
             InternalErrorKind::Other(_description) => {
                 warn!(

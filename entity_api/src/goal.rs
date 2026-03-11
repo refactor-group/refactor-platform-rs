@@ -1,12 +1,12 @@
 use super::error::{EntityApiErrorKind, Error};
-use entity::goals::{ActiveModel, Entity, Model};
+use entity::goals::{ActiveModel, Column, Entity, Model};
 use entity::{status::Status, Id};
 use sea_orm::ActiveValue;
 use sea_orm::{
     entity::prelude::*,
     ActiveModelTrait,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, TryIntoModel,
+    DatabaseConnection, QueryFilter, TryIntoModel,
 };
 
 use log::*;
@@ -132,6 +132,24 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// Finds all active goals (`InProgress` status) for a given coaching relationship.
+///
+/// Used by the domain layer to enforce the 3-active-goals-per-relationship limit.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_active_goals_by_coaching_relationship_id(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Status.eq(Status::InProgress))
+        .all(db)
+        .await?)
 }
 
 #[cfg(test)]
