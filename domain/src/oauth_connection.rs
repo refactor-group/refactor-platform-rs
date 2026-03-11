@@ -376,3 +376,27 @@ fn create_zoom_provider(config: &Config) -> Result<impl Provider, Error> {
         redirect_uri,
     ))
 }
+
+/// Create a Zoom OAuth provider from config.
+fn create_zoom_provider(config: &Config) -> Result<impl Provider, Error> {
+    let client_id = config.zoom_client_id().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+    })?;
+
+    let client_secret = SecretString::from(config.zoom_client_secret().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+    })?);
+
+    let redirect_uri = config.zoom_redirect_uri().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+    })?;
+
+    Ok(oauth::zoom::new_provider(
+        client_id,
+        client_secret,
+        redirect_uri,
+    ))
+}
