@@ -55,18 +55,6 @@ pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> 
     Ok(())
 }
 
-/// Finds a specific coaching_sessions_goals record by id.
-///
-/// # Errors
-///
-/// Returns `Error` with `RecordNotFound` if no record exists with the given id.
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
-    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
-        source: None,
-        error_kind: EntityApiErrorKind::RecordNotFound,
-    })
-}
-
 /// Finds all join-table records for a given coaching session.
 ///
 /// # Errors

@@ -316,7 +316,7 @@ struct ActionEmailContext<'a> {
     due_by: Option<DateTime<FixedOffset>>,
     session_id: Id,
     organization: &'a organizations::Model,
-    goal: String,
+    goal: &'a str,
 }
 
 /// Send action-assigned notification emails to all assignees.
@@ -358,7 +358,7 @@ async fn send_action_assigned_email(
             .add_personalization("assigner_first_name", &assigner.first_name)
             .add_personalization("assigner_last_name", &assigner.last_name)
             .add_personalization("organization_name", &ctx.organization.name)
-            .add_personalization("goal", &ctx.goal)
+            .add_personalization("goal", ctx.goal)
             .add_personalization("session_url", &session_url)
             .build()
             .await;
@@ -464,7 +464,7 @@ pub async fn notify_action_assigned(
             due_by: action.due_by,
             session_id: action.coaching_session_id,
             organization: &org,
-            goal: goal_text,
+            goal: &goal_text,
         };
 
         send_action_assigned_email(config, &assignees, assigner, &ctx).await
@@ -911,7 +911,7 @@ mod tests {
             due_by: Some(due_by),
             session_id,
             organization: &org,
-            goal: "Improve communication".to_string(),
+            goal: "Improve communication",
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -962,7 +962,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: String::new(),
+            goal: "",
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -992,7 +992,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: String::new(),
+            goal: "",
         };
 
         let result =
@@ -1020,7 +1020,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: String::new(),
+            goal: "",
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -1055,7 +1055,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: String::new(),
+            goal: "",
         };
 
         let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;

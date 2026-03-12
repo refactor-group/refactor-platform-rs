@@ -6,7 +6,7 @@ use sea_orm::{
     entity::prelude::*,
     ActiveModelTrait,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, QueryFilter, TryIntoModel,
+    DatabaseConnection, QueryFilter, TransactionTrait, TryIntoModel,
 };
 
 use log::*;
@@ -144,8 +144,16 @@ pub async fn update_status(
 }
 
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
-    let goal = find_by_id(db, id).await?;
-    Entity::delete_by_id(id).exec(db).await?;
+    let txn = db.begin().await?;
+    let goal = Entity::find_by_id(id)
+        .one(&txn)
+        .await?
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })?;
+    Entity::delete_by_id(id).exec(&txn).await?;
+    txn.commit().await?;
     Ok(goal)
 }
 
