@@ -81,12 +81,7 @@ pub async fn authorize(
     metadata.insert("user_id".to_string(), params.user_id.to_string());
     let state_token = app_state.oauth_state_manager.generate(None, metadata);
 
-    let url = match provider {
-        Provider::Google => {
-            oauth_connection::google_authorize_url(&app_state.config, &state_token)?
-        }
-        Provider::Zoom => oauth_connection::zoom_authorize_url(&app_state.config, &state_token)?,
-    };
+    let url = oauth_connection::authorize_url(&app_state.config, &state_token, provider)?;
 
     Ok(Redirect::temporary(&url))
 }

@@ -17,40 +17,18 @@ pub use entity_api::oauth_connection::{
     get_by_user_and_provider,
 };
 
-/// Build the Google OAuth authorization URL with the given CSRF state token.
-pub fn google_authorize_url(config: &Config, state: &str) -> Result<String, Error> {
-    let client_id = config.google_client_id().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?;
+/// Build the Provider's OAuth authorization URL with the given CSRF state token.
+pub fn authorize_url(
+    config: &Config,
+    state: &str,
+    provider: OauthProvider,
+) -> Result<String, Error> {
+    let oauth_provider: Box<dyn Provider> = match provider {
+        OauthProvider::Google => Box::new(create_google_provider(config)?),
+        OauthProvider::Zoom => Box::new(create_zoom_provider(config)?),
+    };
 
-    let redirect_uri = config.google_redirect_uri().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?;
-
-    let provider =
-        oauth::google::new_provider(client_id, SecretString::from(String::new()), redirect_uri)?;
-    let auth_request = provider.authorization_url(state, None);
-
-    Ok(auth_request.url)
-}
-
-/// Build the Zoom OAuth authorization URL with the given CSRF state token.
-pub fn zoom_authorize_url(config: &Config, state: &str) -> Result<String, Error> {
-    let client_id = config.zoom_client_id().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?;
-
-    let redirect_uri = config.zoom_redirect_uri().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?;
-
-    let provider =
-        oauth::zoom::new_provider(client_id, SecretString::from(String::new()), redirect_uri);
-    let auth_request = provider.authorization_url(state, None);
+    let auth_request = oauth_provider.authorization_url(state, None);
 
     Ok(auth_request.url)
 }
