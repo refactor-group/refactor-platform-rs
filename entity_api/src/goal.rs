@@ -26,7 +26,7 @@ pub async fn create(
 ) -> Result<Model, Error> {
     debug!("New Goal Model to be inserted: {goal_model:?}");
 
-    if goal_model.status == Status::InProgress {
+    if goal_model.in_progress() {
         check_active_goal_limit(db, goal_model.coaching_relationship_id).await?;
     }
 
@@ -57,8 +57,8 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
         Some(goal) => {
             debug!("Existing Goal model to be Updated: {goal:?}");
 
-            // Check active goal limit if transitioning to InProgress from a different status.
-            if model.status == Status::InProgress && goal.status != Status::InProgress {
+            // Check active goal limit if transitioning into active from a non-active status.
+            if model.in_progress() && !goal.in_progress() {
                 check_active_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 
@@ -110,8 +110,8 @@ pub async fn update_status(
         Some(goal) => {
             debug!("Existing Goal model to be Updated: {goal:?}");
 
-            // Check active goal limit if transitioning to InProgress from a different status.
-            if status == Status::InProgress && goal.status != Status::InProgress {
+            // Check active goal limit if transitioning into active from a non-active status.
+            if status == Status::InProgress && !goal.in_progress() {
                 check_active_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 

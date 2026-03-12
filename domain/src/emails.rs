@@ -414,7 +414,7 @@ pub async fn notify_session_scheduled(
 
 /// Returns a comma-separated string of up to 3 active goal titles linked to a coaching session.
 ///
-/// "Active" means status is `NotStarted` or `InProgress`. This is best-effort:
+/// "Active" means status is `InProgress`. This is best-effort:
 /// any DB error returns an empty string so email delivery is never blocked.
 async fn get_active_goal_titles_for_coaching_session(
     db: &DatabaseConnection,
@@ -427,7 +427,7 @@ async fn get_active_goal_titles_for_coaching_session(
 
     goals
         .iter()
-        .filter(|g| g.is_active())
+        .filter(|g| g.in_progress())
         .filter_map(|g| g.title.as_deref())
         .take(3)
         .collect::<Vec<_>>()

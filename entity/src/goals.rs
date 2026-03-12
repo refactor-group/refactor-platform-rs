@@ -78,13 +78,9 @@ impl Related<super::users::Entity> for Entity {
 }
 
 impl Model {
-    /// Returns `true` if this goal is considered active (not yet finished).
-    ///
-    /// A goal is active when its status is `NotStarted` or `InProgress`.
-    /// This definition is goal-specific — other entities using `Status`
-    /// (e.g. actions) may define "active" differently.
-    pub fn is_active(&self) -> bool {
-        matches!(self.status, Status::NotStarted | Status::InProgress)
+    /// Returns `true` if this goal has `InProgress` status.
+    pub fn in_progress(&self) -> bool {
+        self.status == Status::InProgress
     }
 }
 
@@ -113,22 +109,22 @@ mod tests {
     }
 
     #[test]
-    fn is_active_returns_true_for_not_started() {
-        assert!(create_test_goal(Status::NotStarted).is_active());
+    fn in_progress_returns_false_for_not_started() {
+        assert!(!create_test_goal(Status::NotStarted).in_progress());
     }
 
     #[test]
-    fn is_active_returns_true_for_in_progress() {
-        assert!(create_test_goal(Status::InProgress).is_active());
+    fn in_progress_returns_true_for_in_progress() {
+        assert!(create_test_goal(Status::InProgress).in_progress());
     }
 
     #[test]
-    fn is_active_returns_false_for_completed() {
-        assert!(!create_test_goal(Status::Completed).is_active());
+    fn in_progress_returns_false_for_completed() {
+        assert!(!create_test_goal(Status::Completed).in_progress());
     }
 
     #[test]
-    fn is_active_returns_false_for_wont_do() {
-        assert!(!create_test_goal(Status::WontDo).is_active());
+    fn in_progress_returns_false_for_wont_do() {
+        assert!(!create_test_goal(Status::WontDo).in_progress());
     }
 }
