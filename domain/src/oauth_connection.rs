@@ -33,7 +33,7 @@ pub fn authorize_url(
     Ok(auth_request.url)
 }
 
-/// Exchange an authorization code for Google tokens and store them in oauth_connections.
+/// Exchange an authorization code for a Provider's tokens and store them in oauth_connections.
 ///
 /// Returns the success redirect URL for the frontend.
 pub async fn exchange_and_store_tokens(
@@ -135,7 +135,11 @@ pub async fn exchange_and_store_tokens(
 
     let base_url = config.oauth_success_redirect_uri();
 
-    Ok(format!("{}?{}=connected", base_url, provider))
+    Ok(format!(
+        "{}?{}=connected",
+        base_url,
+        provider.to_string().to_lowercase()
+    ))
 }
 
 /// Get a valid (non-expired) access token for a user and provider.
