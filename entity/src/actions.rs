@@ -12,6 +12,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: Id,
     pub coaching_session_id: Id,
+    pub goal_id: Option<Id>,
     #[serde(skip_deserializing)]
     pub user_id: Id,
     pub body: Option<String>,
@@ -40,6 +41,14 @@ pub enum Relation {
     )]
     CoachingSessions,
     #[sea_orm(
+        belongs_to = "super::goals::Entity",
+        from = "Column::GoalId",
+        to = "super::goals::Column::Id",
+        on_update = "Cascade",
+        on_delete = "SetNull"
+    )]
+    Goals,
+    #[sea_orm(
         belongs_to = "super::users::Entity",
         from = "Column::UserId",
         to = "super::users::Column::Id",
@@ -58,6 +67,12 @@ impl Related<super::actions_users::Entity> for Entity {
 impl Related<super::coaching_sessions::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::CoachingSessions.def()
+    }
+}
+
+impl Related<super::goals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Goals.def()
     }
 }
 

@@ -444,27 +444,37 @@ async fn batch_load_organizations(
         .collect())
 }
 
-/// Batch load goals by session IDs
+/// Batch load goals by session IDs via the coaching_sessions_goals join table.
 ///
-/// CHANGEME: This queries goals via the `created_in_session_id` column, which only works
-/// because PR2's auto-linking always populates that field. When PR3 removes auto-linking,
-/// this must be refactored to query through the `coaching_sessions_goals` join table instead,
-/// otherwise goals linked only via the join table will be invisible here.
+/// Returns at most one goal per session (the first linked goal). For full per-session
+/// goal lists, use `GET /coaching_sessions/{id}/goals` instead.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
 ) -> Result<HashMap<Id, goals::Model>, Error> {
+    use entity::coaching_sessions_goals;
+
     if session_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    Ok(goals::Entity::find()
-        .filter(goals::Column::CreatedInSessionId.is_in(session_ids.iter().copied()))
+    let links_with_goals = coaching_sessions_goals::Entity::find()
+        .filter(
+            coaching_sessions_goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
+        )
+        .find_also_related(goals::Entity)
         .all(db)
-        .await?
-        .into_iter()
-        .filter_map(|g| g.created_in_session_id.map(|sid| (sid, g)))
-        .collect())
+        .await?;
+
+    let mut map = HashMap::new();
+    for (link, goal_opt) in links_with_goals {
+        if let Some(goal) = goal_opt {
+            // First goal per session wins (HashMap::entry preserves the first insert)
+            map.entry(link.coaching_session_id).or_insert(goal);
+        }
+    }
+
+    Ok(map)
 }
 
 /// Batch load agreements by session IDs
