@@ -26,7 +26,7 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(
-                "DELETE FROM refactor_platform.coaching_sessions WHERE provider = 'zoom'",
+                "UPDATE refactor_platform.coaching_sessions SET provider = NULL, meeting_url = NULL WHERE provider = 'zoom'",
             )
             .await?;
 
@@ -42,7 +42,7 @@ impl MigrationTrait for Migration {
             .execute_unprepared("CREATE TYPE refactor_platform.provider AS ENUM ('google')")
             .await?;
 
-        // 4. Update the oauth_connections and coaching_sessions to use the new enum
+        // 4. Update the oauth_connections to use the new enum, by this time all zoom connections are deleted
         manager
             .get_connection()
             .execute_unprepared(
@@ -51,6 +51,8 @@ impl MigrationTrait for Migration {
                 USING provider::text::refactor_platform.provider",
             )
             .await?;
+
+        // 5. Update coaching_sessions to use the new enum, by this time all coaching sessions formerly of zoom have provider set to null
         manager
             .get_connection()
             .execute_unprepared(
@@ -60,7 +62,7 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // 5. Drop the old enum
+        // 6. Drop the old enum
         manager
             .get_connection()
             .execute_unprepared("DROP TYPE refactor_platform.provider_old")
