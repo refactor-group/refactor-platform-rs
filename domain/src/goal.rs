@@ -251,7 +251,7 @@ mod integration_tests {
 
         let current_goal = create_test_goal_with(
             Status::InProgress,
-            Some("Already active".to_string()),
+            Some("Already in-progress".to_string()),
             relationship_id,
         );
         let relationship = create_test_relationship(relationship_id);

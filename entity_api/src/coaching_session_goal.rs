@@ -5,7 +5,10 @@
 
 use entity::coaching_sessions_goals::{Column, Entity, Model};
 use entity::{goals, Id};
-use sea_orm::{entity::prelude::*, ActiveValue::Set, DatabaseConnection, TryIntoModel};
+use sea_orm::{
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, DatabaseConnection, TransactionTrait,
+    TryIntoModel,
+};
 
 use log::*;
 
@@ -18,7 +21,7 @@ use super::error::{EntityApiErrorKind, Error};
 /// Returns `Error` if the database insert fails (e.g., duplicate link
 /// or foreign key constraint violation).
 pub async fn create(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_session_id: Id,
     goal_id: Id,
 ) -> Result<Model, Error> {
@@ -118,26 +121,33 @@ pub async fn find_in_progress_goals_by_coaching_session_id(
 /// Links all in-progress goals from a coaching relationship to a session.
 ///
 /// Queries for goals with `InProgress` status on the given relationship,
-/// then creates a join table record for each one. Returns the number of
-/// goals linked.
+/// then creates a join table record for each one inside a transaction.
+/// Returns the number of goals linked.
 ///
 /// # Errors
 ///
-/// Returns `Error` if any database query or insert fails.
-pub async fn link_active_goals_to_session(
+/// Returns `Error` if any database query or insert fails. On failure the
+/// transaction is rolled back so no partial links are left behind.
+pub async fn link_in_progress_goals_to_session(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
     session_id: Id,
 ) -> Result<usize, Error> {
-    let active_goals =
-        super::goal::find_active_goals_by_coaching_relationship_id(db, coaching_relationship_id)
+    let in_progress_goals =
+        super::goal::find_in_progress_goals_by_coaching_relationship_id(db, coaching_relationship_id)
             .await?;
 
-    for g in &active_goals {
-        create(db, session_id, g.id).await?;
+    if in_progress_goals.is_empty() {
+        return Ok(0);
     }
 
-    Ok(active_goals.len())
+    let txn = db.begin().await?;
+    for g in &in_progress_goals {
+        create(&txn, session_id, g.id).await?;
+    }
+    txn.commit().await?;
+
+    Ok(in_progress_goals.len())
 }
 
 /// Finds all sessions linked to a given goal.
@@ -309,7 +319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn link_active_goals_to_session_links_in_progress_goals() -> Result<(), Error> {
+    async fn link_in_progress_goals_to_session_links_goals() -> Result<(), Error> {
         let relationship_id = Id::new_v4();
         let session_id = Id::new_v4();
         let goal1 = create_test_goal(relationship_id, entity::status::Status::InProgress);
@@ -331,21 +341,21 @@ mod tests {
             updated_at: now.into(),
         };
 
-        // Mock sequence: 1 SELECT (active goals) + 2 INSERTs (one per goal)
+        // Mock sequence: 1 SELECT (in-progress goals) + 2 INSERTs (one per goal)
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![goal1, goal2]])
             .append_query_results(vec![vec![join1]])
             .append_query_results(vec![vec![join2]])
             .into_connection();
 
-        let count = link_active_goals_to_session(&db, relationship_id, session_id).await?;
-        assert_eq!(count, 2, "should link 2 active goals");
+        let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
+        assert_eq!(count, 2, "should link 2 in-progress goals");
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn link_active_goals_to_session_skips_when_no_active_goals() -> Result<(), Error> {
+    async fn link_in_progress_goals_to_session_skips_when_none() -> Result<(), Error> {
         let relationship_id = Id::new_v4();
         let session_id = Id::new_v4();
 
@@ -354,8 +364,8 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let count = link_active_goals_to_session(&db, relationship_id, session_id).await?;
-        assert_eq!(count, 0, "should link 0 goals when none are active");
+        let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
+        assert_eq!(count, 0, "should link 0 goals when none are in-progress");
 
         Ok(())
     }

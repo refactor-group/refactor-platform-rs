@@ -416,7 +416,7 @@ pub async fn notify_session_scheduled(
 /// limited to the maximum number of in-progress goals allowed per relationship.
 ///
 /// This is best-effort: any DB error returns an empty string so email delivery is never blocked.
-async fn get_active_goal_titles_for_coaching_session(
+async fn get_in_progress_goal_titles_for_coaching_session(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> String {
@@ -462,7 +462,7 @@ pub async fn notify_action_assigned(
                 .await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        let goal_text = get_active_goal_titles_for_coaching_session(db, session.id).await;
+        let goal_text = get_in_progress_goal_titles_for_coaching_session(db, session.id).await;
 
         let ctx = ActionEmailContext {
             action_body: action.body.as_deref().unwrap_or(""),

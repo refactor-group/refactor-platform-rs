@@ -108,8 +108,8 @@ pub async fn find_user(id: Id) -> User {
 ```rust
 // ✅ Good - generic variant, specific context in fields
 EntityApiErrorKind::ValidationError {
-    message: "A coaching relationship can have at most 3 active goals.".into(),
-    details: Some(serde_json::json!({ "active_goals": summaries })),
+    message: "A coaching relationship can have at most 3 in-progress goals.".into(),
+    details: Some(serde_json::json!({ "in_progress_goals": summaries })),
 }
 
 // ✅ Good - different validation, same variant
