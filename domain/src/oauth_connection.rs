@@ -155,10 +155,7 @@ pub async fn exchange_and_store_tokens(
         provider, user_id
     );
 
-    let base_url = match provider {
-        OauthProvider::Google => config.google_oauth_success_redirect_uri(),
-        OauthProvider::Zoom => config.zoom_oauth_success_redirect_uri(),
-    };
+    let base_url = config.oauth_success_redirect_uri();
 
     Ok(format!("{}?{}=connected", base_url, provider))
 }

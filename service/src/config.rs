@@ -56,12 +56,11 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "log_level_filter",
     "runtime_env",
     "backend_session_expiry_seconds",
-    "google_oauth_success_redirect_uri",
+    "oauth_success_redirect_uri",
     "google_oauth_auth_url",
     "google_oauth_token_url",
     "google_userinfo_url",
     "google_meet_api_url",
-    "zoom_oauth_success_redirect_uri",
     "zoom_api_url",
 ];
 
@@ -319,9 +318,9 @@ pub struct Config {
     #[arg(long, env)]
     google_redirect_uri: Option<String>,
 
-    /// URL to redirect to after successful Google OAuth (frontend settings page)
+    /// URL to redirect to after successful Provider OAuth (frontend settings page)
     #[arg(long, env, default_value = "http://localhost:3000/settings")]
-    google_oauth_success_redirect_uri: String,
+    oauth_success_redirect_uri: String,
 
     /// Google OAuth authorization URL
     #[arg(
@@ -358,10 +357,6 @@ pub struct Config {
     /// Zoom OAuth redirect URI (callback from Zoom to backend)
     #[arg(long, env)]
     zoom_redirect_uri: Option<String>,
-
-    /// URL to redirect to after successful Zoom OAuth (frontend settings page)
-    #[arg(long, env, default_value = "http://localhost:3000/settings")]
-    zoom_oauth_success_redirect_uri: String,
 
     /// Zoom meeting API base URL
     #[arg(long, env, default_value = "https://api.zoom.us/v2")]
@@ -635,8 +630,8 @@ impl Config {
         self.google_redirect_uri.clone()
     }
 
-    pub fn google_oauth_success_redirect_uri(&self) -> &str {
-        &self.google_oauth_success_redirect_uri
+    pub fn oauth_success_redirect_uri(&self) -> &str {
+        &self.oauth_success_redirect_uri
     }
 
     pub fn google_oauth_auth_url(&self) -> &str {
@@ -665,10 +660,6 @@ impl Config {
 
     pub fn zoom_redirect_uri(&self) -> Option<String> {
         self.zoom_redirect_uri.clone()
-    }
-
-    pub fn zoom_oauth_success_redirect_uri(&self) -> &str {
-        &self.zoom_oauth_success_redirect_uri
     }
 
     pub fn zoom_api_url(&self) -> &str {
