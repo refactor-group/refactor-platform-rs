@@ -412,26 +412,31 @@ pub async fn notify_session_scheduled(
     }
 }
 
-/// Returns a comma-separated string of up to 3 active goal titles linked to a coaching session.
+/// Returns an HTML ordered list of in-progress goal titles linked to a coaching session,
+/// limited to the maximum number of in-progress goals allowed per relationship.
 ///
-/// "Active" means status is `InProgress`. This is best-effort:
-/// any DB error returns an empty string so email delivery is never blocked.
+/// This is best-effort: any DB error returns an empty string so email delivery is never blocked.
 async fn get_active_goal_titles_for_coaching_session(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> String {
-    let goals = match goal::find_goals_by_coaching_session_id(db, coaching_session_id).await {
-        Ok(goals) => goals,
-        Err(_) => return String::new(),
-    };
+    let goals =
+        match goal::find_in_progress_goals_by_coaching_session_id(db, coaching_session_id).await {
+            Ok(goals) => goals,
+            Err(_) => return String::new(),
+        };
 
-    goals
+    let items: Vec<_> = goals
         .iter()
-        .filter(|g| g.in_progress())
         .filter_map(|g| g.title.as_deref())
-        .take(3)
-        .collect::<Vec<_>>()
-        .join(", ")
+        .map(|title| format!("<li>{title}</li>"))
+        .collect();
+
+    if items.is_empty() {
+        String::new()
+    } else {
+        format!("<ol>{}</ol>", items.join(""))
+    }
 }
 
 /// Orchestrate sending action-assigned emails (best-effort).

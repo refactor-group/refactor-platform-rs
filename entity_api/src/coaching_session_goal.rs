@@ -96,6 +96,25 @@ pub async fn find_goals_by_coaching_session_id(
         .collect())
 }
 
+/// Returns up to [`super::goal::max_in_progress_goals`] in-progress goals
+/// linked to a coaching session.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_in_progress_goals_by_coaching_session_id(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> Result<Vec<goals::Model>, Error> {
+    let all_goals = find_goals_by_coaching_session_id(db, coaching_session_id).await?;
+
+    Ok(all_goals
+        .into_iter()
+        .filter(|g| g.in_progress())
+        .take(super::goal::max_in_progress_goals())
+        .collect())
+}
+
 /// Finds all sessions linked to a given goal.
 ///
 /// # Errors

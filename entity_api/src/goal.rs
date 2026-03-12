@@ -11,12 +11,12 @@ use sea_orm::{
 
 use log::*;
 
-/// Maximum number of active (`InProgress`) goals allowed per coaching relationship.
-const MAX_ACTIVE_GOALS: usize = 3;
+/// Maximum number of `InProgress` goals allowed per coaching relationship.
+const MAX_IN_PROGRESS_GOALS: usize = 3;
 
-/// Returns the maximum number of active (`InProgress`) goals allowed per coaching relationship.
-pub fn max_active_goals() -> usize {
-    MAX_ACTIVE_GOALS
+/// Returns the maximum number of `InProgress` goals allowed per coaching relationship.
+pub fn max_in_progress_goals() -> usize {
+    MAX_IN_PROGRESS_GOALS
 }
 
 pub async fn create(
@@ -181,7 +181,7 @@ pub async fn find_active_goals_by_coaching_relationship_id(
 }
 
 /// Checks that adding one more `InProgress` goal to a coaching relationship
-/// would not exceed `MAX_ACTIVE_GOALS`. Returns a `ValidationError` carrying
+/// would not exceed `MAX_IN_PROGRESS_GOALS`. Returns a `ValidationError` carrying
 /// summaries of the current active goals so the caller can present a "swap" dialog.
 async fn check_active_goal_limit(
     db: &DatabaseConnection,
@@ -190,7 +190,7 @@ async fn check_active_goal_limit(
     let active_goals =
         find_active_goals_by_coaching_relationship_id(db, coaching_relationship_id).await?;
 
-    if active_goals.len() >= MAX_ACTIVE_GOALS {
+    if active_goals.len() >= MAX_IN_PROGRESS_GOALS {
         let summaries: Vec<serde_json::Value> = active_goals
             .iter()
             .map(|g| {
@@ -205,10 +205,10 @@ async fn check_active_goal_limit(
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
                 message: format!(
-                    "A coaching relationship can have at most {MAX_ACTIVE_GOALS} active goals."
+                    "A coaching relationship can have at most {MAX_IN_PROGRESS_GOALS} active goals."
                 ),
                 details: Some(serde_json::json!({
-                    "max_active_goals": MAX_ACTIVE_GOALS,
+                    "max_active_goals": MAX_IN_PROGRESS_GOALS,
                     "active_goals": summaries,
                 })),
             },
@@ -420,7 +420,7 @@ mod tests {
     async fn create_rejects_in_progress_when_at_limit() {
         let relationship_id = Id::new_v4();
 
-        let active_goals: Vec<Model> = (0..MAX_ACTIVE_GOALS)
+        let active_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS)
             .map(|i| {
                 create_test_goal(
                     Status::InProgress,
@@ -454,7 +454,7 @@ mod tests {
     async fn create_allows_in_progress_when_under_limit() {
         let relationship_id = Id::new_v4();
 
-        let active_goals: Vec<Model> = (0..MAX_ACTIVE_GOALS - 1)
+        let active_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS - 1)
             .map(|i| {
                 create_test_goal(
                     Status::InProgress,
@@ -512,7 +512,7 @@ mod tests {
             relationship_id,
         );
 
-        let active_goals: Vec<Model> = (0..MAX_ACTIVE_GOALS)
+        let active_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS)
             .map(|i| {
                 create_test_goal(
                     Status::InProgress,

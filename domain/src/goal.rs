@@ -177,6 +177,20 @@ pub async fn find_goals_by_coaching_session_id(
     Ok(CoachingSessionGoalApi::find_goals_by_coaching_session_id(db, coaching_session_id).await?)
 }
 
+/// Returns up to the maximum allowed in-progress goals linked to a coaching session.
+pub async fn find_in_progress_goals_by_coaching_session_id(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(
+        CoachingSessionGoalApi::find_in_progress_goals_by_coaching_session_id(
+            db,
+            coaching_session_id,
+        )
+        .await?,
+    )
+}
+
 /// Returns all join-table records for a given goal (sessions linked to it).
 pub async fn find_coaching_sessions_by_goal_id(
     db: &DatabaseConnection,
