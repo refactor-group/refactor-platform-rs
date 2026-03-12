@@ -6,8 +6,8 @@ use crate::provider::Provider as OauthProvider;
 use crate::Id;
 use entity_api::oauth_connection;
 use log::*;
+use meeting_auth::oauth::token::{encryption, Manager, Plain};
 use meeting_auth::oauth::UserInfo;
-use meeting_auth::oauth::token::{Manager, Plain, encryption};
 use sea_orm::DatabaseConnection;
 use secrecy::{ExposeSecret, SecretString};
 use service::config::Config;
@@ -65,7 +65,10 @@ pub async fn exchange_and_store_tokens(
     authorization_code: &str,
     provider: OauthProvider,
 ) -> Result<String, Error> {
-    info!("Processing {} OAuth callback for user {}", provider, user_id);
+    info!(
+        "Processing {} OAuth callback for user {}",
+        provider, user_id
+    );
 
     let encryption_key = SecretString::from(config.encryption_key().ok_or_else(|| Error {
         source: None,
@@ -120,8 +123,7 @@ pub async fn exchange_and_store_tokens(
             )),
         })?;
 
-    let existing =
-        oauth_connection::find_by_user_and_provider(db, user_id, provider).await?;
+    let existing = oauth_connection::find_by_user_and_provider(db, user_id, provider).await?;
 
     match existing {
         Some(conn) => {
@@ -137,14 +139,20 @@ pub async fn exchange_and_store_tokens(
         None => {
             let model = create_oauth_connection_model(
                 user_id,
-                provider, user_info, &tokens, scopes, encrypted_access, encrypted_refresh);
+                provider,
+                user_info,
+                &tokens,
+                scopes,
+                encrypted_access,
+                encrypted_refresh,
+            );
             oauth_connection::create(db, model).await?;
         }
     }
 
     info!(
-        "Successfully stored {} OAuth tokens for user {}", provider,
-        user_id
+        "Successfully stored {} OAuth tokens for user {}",
+        provider, user_id
     );
 
     let base_url = match provider {

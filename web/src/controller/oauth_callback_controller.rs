@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Redirect};
 
 use domain::provider::Provider;
 use domain::{oauth_connection, Id};
-use serde::{Deserialize};
+use serde::Deserialize;
 
 use crate::error::WebErrorKind;
 
@@ -67,7 +67,7 @@ pub async fn callback(
         &app_state.config,
         user_id,
         &params.code,
-        provider
+        provider,
     )
     .await?;
 

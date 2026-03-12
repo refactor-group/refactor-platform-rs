@@ -10,8 +10,8 @@ use tower_http::services::ServeDir;
 
 use crate::controller::{
     action_controller, agreement_controller, coaching_session_controller, goal_controller,
-    jwt_controller, note_controller, oauth_controller, oauth_callback_controller, organization, organization_controller, user,
-    user_controller, user_session_controller,
+    jwt_controller, note_controller, oauth_callback_controller, oauth_controller, organization,
+    organization_controller, user, user_controller, user_session_controller,
 };
 use crate::sse;
 
@@ -511,11 +511,10 @@ fn oauth_routes(app_state: AppState) -> Router {
         .route_layer(from_fn(require_auth))
         .merge(
             // Callback doesn't require auth (user is redirected back from Google, or Zoom)
-            Router::new()
-                .route(
-                    "/oauth/:provider/callback",
-                    get(oauth_callback_controller::callback),
-                ),
+            Router::new().route(
+                "/oauth/:provider/callback",
+                get(oauth_callback_controller::callback),
+            ),
         )
         .with_state(app_state)
 }
