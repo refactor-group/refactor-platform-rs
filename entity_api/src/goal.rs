@@ -11,12 +11,24 @@ use sea_orm::{
 
 use log::*;
 
+/// Maximum number of active (`InProgress`) goals allowed per coaching relationship.
+const MAX_ACTIVE_GOALS: usize = 3;
+
+/// Returns the maximum number of active (`InProgress`) goals allowed per coaching relationship.
+pub fn max_active_goals() -> usize {
+    MAX_ACTIVE_GOALS
+}
+
 pub async fn create(
     db: &DatabaseConnection,
     goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
     debug!("New Goal Model to be inserted: {goal_model:?}");
+
+    if goal_model.status == Status::InProgress {
+        check_active_goal_limit(db, goal_model.coaching_relationship_id).await?;
+    }
 
     let now = chrono::Utc::now();
 
@@ -44,6 +56,11 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
     match result {
         Some(goal) => {
             debug!("Existing Goal model to be Updated: {goal:?}");
+
+            // Check active goal limit if transitioning to InProgress from a different status.
+            if model.status == Status::InProgress && goal.status != Status::InProgress {
+                check_active_goal_limit(db, goal.coaching_relationship_id).await?;
+            }
 
             // Automatically update status_changed_at if the last status and new status differ:
             let av_status_changed_at: ActiveValue<Option<DateTimeWithTimeZone>> =
@@ -93,6 +110,11 @@ pub async fn update_status(
         Some(goal) => {
             debug!("Existing Goal model to be Updated: {goal:?}");
 
+            // Check active goal limit if transitioning to InProgress from a different status.
+            if status == Status::InProgress && goal.status != Status::InProgress {
+                check_active_goal_limit(db, goal.coaching_relationship_id).await?;
+            }
+
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(goal.id),
                 coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
@@ -136,8 +158,6 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
 
 /// Finds all active goals (`InProgress` status) for a given coaching relationship.
 ///
-/// Used by the domain layer to enforce the 3-active-goals-per-relationship limit.
-///
 /// # Errors
 ///
 /// Returns `Error` if the database query fails.
@@ -150,6 +170,44 @@ pub async fn find_active_goals_by_coaching_relationship_id(
         .filter(Column::Status.eq(Status::InProgress))
         .all(db)
         .await?)
+}
+
+/// Checks that adding one more `InProgress` goal to a coaching relationship
+/// would not exceed `MAX_ACTIVE_GOALS`. Returns a `ValidationError` carrying
+/// summaries of the current active goals so the caller can present a "swap" dialog.
+async fn check_active_goal_limit(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+) -> Result<(), Error> {
+    let active_goals =
+        find_active_goals_by_coaching_relationship_id(db, coaching_relationship_id).await?;
+
+    if active_goals.len() >= MAX_ACTIVE_GOALS {
+        let summaries: Vec<serde_json::Value> = active_goals
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "id": g.id,
+                    "title": g.title.clone().unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: format!(
+                    "A coaching relationship can have at most {MAX_ACTIVE_GOALS} active goals."
+                ),
+                details: Some(serde_json::json!({
+                    "max_active_goals": MAX_ACTIVE_GOALS,
+                    "active_goals": summaries,
+                })),
+            },
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -181,7 +239,9 @@ mod tests {
             updated_at: now.into(),
         };
 
+        // Default status is InProgress, so the limit check runs first (returns empty → under limit)
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
             .append_query_results(vec![vec![goal_model.clone()]])
             .into_connection();
 
@@ -324,5 +384,171 @@ mod tests {
         assert!(results.is_empty());
 
         Ok(())
+    }
+
+    fn create_test_goal(
+        status: Status,
+        title: Option<String>,
+        coaching_relationship_id: Id,
+    ) -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: Id::new_v4(),
+            coaching_relationship_id,
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title,
+            body: None,
+            status,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_rejects_in_progress_when_at_limit() {
+        let relationship_id = Id::new_v4();
+
+        let active_goals: Vec<Model> = (0..MAX_ACTIVE_GOALS)
+            .map(|i| {
+                create_test_goal(
+                    Status::InProgress,
+                    Some(format!("Goal {i}")),
+                    relationship_id,
+                )
+            })
+            .collect();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![active_goals])
+            .into_connection();
+
+        let new_goal = create_test_goal(
+            Status::InProgress,
+            Some("One too many".to_string()),
+            relationship_id,
+        );
+
+        let result = create(&db, new_goal, Id::new_v4()).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::ValidationError { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_allows_in_progress_when_under_limit() {
+        let relationship_id = Id::new_v4();
+
+        let active_goals: Vec<Model> = (0..MAX_ACTIVE_GOALS - 1)
+            .map(|i| {
+                create_test_goal(
+                    Status::InProgress,
+                    Some(format!("Goal {i}")),
+                    relationship_id,
+                )
+            })
+            .collect();
+
+        let new_goal = create_test_goal(
+            Status::InProgress,
+            Some("Fits under limit".to_string()),
+            relationship_id,
+        );
+
+        // Mock sequence: active goals query → goal save
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![active_goals])
+            .append_query_results(vec![vec![new_goal.clone()]])
+            .into_connection();
+
+        let result = create(&db, new_goal, Id::new_v4()).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_allows_not_started_even_at_limit() {
+        let relationship_id = Id::new_v4();
+
+        // NotStarted bypasses the limit check — no active goals query needed
+        let new_goal = create_test_goal(
+            Status::NotStarted,
+            Some("Queued goal".to_string()),
+            relationship_id,
+        );
+
+        // Mock sequence: goal save only (no limit check)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![new_goal.clone()]])
+            .into_connection();
+
+        let result = create(&db, new_goal, Id::new_v4()).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_status_rejects_in_progress_when_at_limit() {
+        let relationship_id = Id::new_v4();
+
+        let current_goal = create_test_goal(
+            Status::NotStarted,
+            Some("My goal".to_string()),
+            relationship_id,
+        );
+
+        let active_goals: Vec<Model> = (0..MAX_ACTIVE_GOALS)
+            .map(|i| {
+                create_test_goal(
+                    Status::InProgress,
+                    Some(format!("Active {i}")),
+                    relationship_id,
+                )
+            })
+            .collect();
+
+        // Mock sequence: find_by_id (current goal) → active goals query → error
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![current_goal.clone()]])
+            .append_query_results(vec![active_goals])
+            .into_connection();
+
+        let result = update_status(&db, current_goal.id, Status::InProgress).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::ValidationError { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_status_allows_in_progress_to_in_progress() {
+        let relationship_id = Id::new_v4();
+
+        // Goal is already InProgress — no-op transition, skips limit check
+        let current_goal = create_test_goal(
+            Status::InProgress,
+            Some("Already active".to_string()),
+            relationship_id,
+        );
+
+        // Mock sequence: find_by_id → already InProgress so skip limit check → save
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![current_goal.clone()]])
+            .append_query_results(vec![vec![current_goal.clone()]])
+            .into_connection();
+
+        let result = update_status(&db, current_goal.id, Status::InProgress).await;
+
+        assert!(result.is_ok());
     }
 }

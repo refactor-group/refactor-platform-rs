@@ -10,7 +10,6 @@ use axum::Json;
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
 };
-use domain::goal::MAX_ACTIVE_GOALS;
 
 use log::*;
 
@@ -70,22 +69,6 @@ impl Error {
                 );
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
             }
-            InternalErrorKind::ActiveGoalLimitReached { ref active_goals } => {
-                warn!(
-                    "InternalErrorKind::ActiveGoalLimitReached: Responding with 409 Conflict. Error: {self:?}"
-                );
-                (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "status_code": 409,
-                        "error": "active_goal_limit_reached",
-                        "message": format!("A coaching relationship can have at most {MAX_ACTIVE_GOALS} active goals."),
-                        "max_active_goals": MAX_ACTIVE_GOALS,
-                        "active_goals": active_goals,
-                    })),
-                )
-                    .into_response()
-            }
             InternalErrorKind::Other(_description) => {
                 warn!(
                     "InternalErrorKind::Other: Responding with 500 Internal Server Error. Error:: {self:?}"
@@ -118,6 +101,21 @@ impl Error {
                     "EntityErrorKind::Invalid: Responding with 422 Unprocessable Entity. Error: {self:?}"
                 );
                 (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
+            }
+            EntityErrorKind::Conflict {
+                ref message,
+                ref details,
+            } => {
+                warn!("EntityErrorKind::Conflict: Responding with 409 Conflict. Error: {self:?}");
+                let mut body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "conflict",
+                    "message": message,
+                });
+                if let Some(d) = details {
+                    body["details"] = d.clone();
+                }
+                (StatusCode::CONFLICT, Json(body)).into_response()
             }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
