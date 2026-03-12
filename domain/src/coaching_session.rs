@@ -4,8 +4,8 @@ use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions, goal,
-    mutate, organization, query,
+    coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions, mutate,
+    organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
@@ -77,7 +77,16 @@ pub async fn create(
     let session = coaching_session::create(db, coaching_session_model).await?;
 
     // Carry-forward: auto-link all InProgress goals from the relationship to the new session
-    carry_forward_active_goals(db, &session).await?;
+    let linked = coaching_session_goal::link_active_goals_to_session(
+        db,
+        session.coaching_relationship_id,
+        session.id,
+    )
+    .await?;
+    debug!(
+        "Carried forward {linked} active goal(s) to session {}",
+        session.id
+    );
 
     Ok(session)
 }
@@ -178,29 +187,6 @@ async fn create_meeting_url(
     }
 }
 
-/// Links all InProgress goals from the session's coaching relationship to the new session.
-///
-/// This implements the carry-forward workflow: when a new session is created, active goals
-/// are pre-linked so the coach sees them immediately. The coach can unlink goals during
-/// the session via DELETE /coaching_sessions/{id}/goals/{id}.
-async fn carry_forward_active_goals(db: &DatabaseConnection, session: &Model) -> Result<(), Error> {
-    let active_goals =
-        goal::find_active_goals_by_coaching_relationship_id(db, session.coaching_relationship_id)
-            .await?;
-
-    for g in &active_goals {
-        coaching_session_goal::create(db, session.id, g.id).await?;
-    }
-
-    debug!(
-        "Carried forward {} active goal(s) to session {}",
-        active_goals.len(),
-        session.id
-    );
-
-    Ok(())
-}
-
 fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> String {
     format!(
         "{}.{}.{}-v0",
@@ -214,8 +200,6 @@ fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> S
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::goals;
-    use crate::status::Status;
     use crate::{
         coaching_relationships, coaching_sessions, oauth_connections, organizations,
         provider::Provider,
@@ -272,52 +256,6 @@ mod tests {
             "--tiptap-auth-key=test-auth-key",
             &format!("--tiptap-url={tiptap_url}"),
         ])
-    }
-
-    fn create_test_session(coaching_relationship_id: Id) -> Model {
-        let now = chrono::Utc::now().naive_utc();
-        Model {
-            id: Id::new_v4(),
-            coaching_relationship_id,
-            collab_document_name: Some("test-doc".to_string()),
-            date: now,
-            meeting_url: None,
-            provider: None,
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-        }
-    }
-
-    fn create_test_goal(coaching_relationship_id: Id, status: Status) -> goals::Model {
-        let now = chrono::Utc::now().fixed_offset();
-        goals::Model {
-            id: Id::new_v4(),
-            coaching_relationship_id,
-            created_in_session_id: None,
-            user_id: Id::new_v4(),
-            title: Some("Test goal".to_string()),
-            body: None,
-            status,
-            status_changed_at: None,
-            completed_at: None,
-            target_date: None,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    fn create_test_join_record(
-        session_id: Id,
-        goal_id: Id,
-    ) -> crate::coaching_sessions_goals::Model {
-        let now = chrono::Utc::now().fixed_offset();
-        crate::coaching_sessions_goals::Model {
-            id: Id::new_v4(),
-            coaching_session_id: session_id,
-            goal_id,
-            created_at: now,
-            updated_at: now,
-        }
     }
 
     /// When no provider is set, the oauth credentials lookup is skipped entirely.
@@ -384,40 +322,5 @@ mod tests {
 
         assert!(result.meeting_url.is_none());
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn carry_forward_links_active_goals_to_new_session() {
-        let relationship_id = Id::new_v4();
-        let session = create_test_session(relationship_id);
-        let goal1 = create_test_goal(relationship_id, Status::InProgress);
-        let goal2 = create_test_goal(relationship_id, Status::InProgress);
-
-        let join1 = create_test_join_record(session.id, goal1.id);
-        let join2 = create_test_join_record(session.id, goal2.id);
-
-        // Mock sequence: 1 SELECT (active goals) + 2 INSERTs (one per goal)
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![goal1.clone(), goal2.clone()]])
-            .append_query_results(vec![vec![join1]])
-            .append_query_results(vec![vec![join2]])
-            .into_connection();
-
-        let result = carry_forward_active_goals(&db, &session).await;
-        assert!(result.is_ok(), "carry_forward should succeed: {result:?}");
-    }
-
-    #[tokio::test]
-    async fn carry_forward_skips_when_no_active_goals() {
-        let relationship_id = Id::new_v4();
-        let session = create_test_session(relationship_id);
-
-        // Mock: SELECT returns empty vec — no INSERTs expected
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![Vec::<goals::Model>::new()])
-            .into_connection();
-
-        let result = carry_forward_active_goals(&db, &session).await;
-        assert!(result.is_ok(), "carry_forward with no goals should succeed");
     }
 }
