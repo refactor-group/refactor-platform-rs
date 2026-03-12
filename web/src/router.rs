@@ -500,17 +500,13 @@ fn sse_routes(app_state: AppState) -> Router {
 fn oauth_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
-            "/oauth/google/authorize",
-            get(oauth_controller::authorize_google),
+            "/oauth/:provider/authorize",
+            get(oauth_controller::authorize),
         )
         .route("/oauth/connections", get(oauth_controller::index))
         .route(
             "/oauth/connections/:provider",
             get(oauth_controller::read).delete(oauth_controller::delete),
-        )
-        .route(
-            "/oauth/zoom/authorize",
-            get(oauth_controller::authorize_zoom),
         )
         .route_layer(from_fn(require_auth))
         .merge(

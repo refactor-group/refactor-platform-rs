@@ -55,13 +55,13 @@ impl From<oauth_connections::Model> for ConnectionResponse {
     }
 }
 
-/// GET /oauth/google/authorize
+/// GET /oauth/:provider/authorize
 ///
-/// Initiates Google OAuth flow by redirecting to Google's authorization endpoint.
+/// Initiates a Provider's OAuth flow by redirecting to their authorization endpoint.
 /// Note: This endpoint doesn't require x-version header as it's called via browser redirect.
 #[utoipa::path(
     get,
-    path = "/oauth/google/authorize",
+    path = "/oauth/{provider}/authorize",
     params(
         ("user_id" = Id, Query, description = "User ID to associate with Google account"),
     ),
@@ -74,10 +74,11 @@ impl From<oauth_connections::Model> for ConnectionResponse {
         ("cookie_auth" = [])
     )
 )]
-pub async fn authorize_google(
+pub async fn authorize(
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<OAuthStart>,
+    Path(provider): Path<Provider>,
 ) -> Result<impl IntoResponse, Error> {
     if user.id != params.user_id {
         return Err(Error::Web(WebErrorKind::Auth));
@@ -87,14 +88,18 @@ pub async fn authorize_google(
     metadata.insert("user_id".to_string(), params.user_id.to_string());
     let state_token = app_state.oauth_state_manager.generate(None, metadata);
 
-    let url = oauth_connection::google_authorize_url(&app_state.config, &state_token)?;
+    let url = match provider {
+        Provider::Google => oauth_connection::google_authorize_url(&app_state.config, &state_token)?,
+        Provider::Zoom => oauth_connection::zoom_authorize_url(&app_state.config, &state_token)?,
+    };
+
     Ok(Redirect::temporary(&url))
 }
 
 /// GET /oauth/google/callback
 ///
-/// Handles the OAuth callback from Google after user authorization.
-/// Note: This endpoint doesn't require x-version header as it's called via Google's redirect.
+/// Handles the OAuth callback from a provider after user authorization.
+/// Note: This endpoint doesn't require x-version header as it's called via the provider's redirect.
 #[utoipa::path(
     get,
     path = "/oauth/google/callback",
@@ -138,42 +143,6 @@ pub async fn google_callback(
     .await?;
 
     Ok(Redirect::temporary(&redirect_url))
-}
-
-/// GET /oauth/zoom/authorize
-///
-/// Initiates Zoom OAuth flow by redirecting to Zoom's authorization endpoint.
-/// Note: This endpoint doesn't require x-version header as it's called via browser redirect.
-#[utoipa::path(
-    get,
-    path = "/oauth/zoom/authorize",
-    params(
-        ("user_id" = Id, Query, description = "User ID to associate with Zoom account"),
-    ),
-    responses(
-        (status = 302, description = "Redirect to Zoom OAuth"),
-        (status = 401, description = "Unauthorized"),
-        (status = 500, description = "Server error (OAuth not configured)"),
-    ),
-    security(
-        ("cookie_auth" = [])
-    )
-)]
-pub async fn authorize_zoom(
-    AuthenticatedUser(user): AuthenticatedUser,
-    State(app_state): State<AppState>,
-    Query(params): Query<OAuthStart>,
-) -> Result<impl IntoResponse, Error> {
-    if user.id != params.user_id {
-        return Err(Error::Web(WebErrorKind::Auth));
-    }
-
-    let mut metadata = HashMap::new();
-    metadata.insert("user_id".to_string(), params.user_id.to_string());
-    let state_token = app_state.oauth_state_manager.generate(None, metadata);
-
-    let url = oauth_connection::zoom_authorize_url(&app_state.config, &state_token)?;
-    Ok(Redirect::temporary(&url))
 }
 
 /// GET /oauth/zoom/callback
