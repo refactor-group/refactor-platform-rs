@@ -513,10 +513,9 @@ fn oauth_routes(app_state: AppState) -> Router {
             // Callback doesn't require auth (user is redirected back from Google, or Zoom)
             Router::new()
                 .route(
-                    "/oauth/google/callback",
-                    get(oauth_callback_controller::google_callback),
-                )
-                .route("/oauth/zoom/callback", get(oauth_callback_controller::zoom_callback)),
+                    "/oauth/:provider/callback",
+                    get(oauth_callback_controller::callback),
+                ),
         )
         .with_state(app_state)
 }

@@ -57,22 +57,26 @@ pub fn zoom_authorize_url(config: &Config, state: &str) -> Result<String, Error>
 /// Exchange an authorization code for Google tokens and store them in oauth_connections.
 ///
 /// Returns the success redirect URL for the frontend.
-pub async fn exchange_and_store_google_tokens(
+pub async fn exchange_and_store_tokens(
     db: &DatabaseConnection,
     config: &Config,
     user_id: Id,
     authorization_code: &str,
+    provider: OauthProvider,
 ) -> Result<String, Error> {
-    info!("Processing Google OAuth callback for user {}", user_id);
+    info!("Processing {} OAuth callback for user {}", provider, user_id);
 
     let encryption_key = SecretString::from(config.encryption_key().ok_or_else(|| Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
     })?);
 
-    let provider = create_google_provider(config)?;
+    let oauth_provider: Box<dyn Provider> = match provider {
+        OauthProvider::Google => Box::new(create_google_provider(config)?),
+        OauthProvider::Zoom => Box::new(create_zoom_provider(config)?),
+    };
 
-    let tokens_raw = provider
+    let tokens_raw = oauth_provider
         .exchange_code(authorization_code, None)
         .await
         .inspect_err(|e| {
@@ -84,13 +88,13 @@ pub async fn exchange_and_store_google_tokens(
     let scopes = tokens_raw.scopes.join(" ");
     let tokens = tokens_raw.into_plain();
 
-    let user_info = provider
+    let user_info = oauth_provider
         .get_user_info(&tokens.access_token)
         .await
         .inspect_err(|e| {
             warn!(
-                "Failed to get Google user info for user {}: {:?}",
-                user_id, e
+                "Failed to get {} user info for user {}: {:?}",
+                provider, user_id, e
             )
         })?;
 
@@ -116,7 +120,7 @@ pub async fn exchange_and_store_google_tokens(
         })?;
 
     let existing =
-        oauth_connection::find_by_user_and_provider(db, user_id, OauthProvider::Google).await?;
+        oauth_connection::find_by_user_and_provider(db, user_id, provider).await?;
 
     match existing {
         Some(conn) => {
@@ -131,127 +135,56 @@ pub async fn exchange_and_store_google_tokens(
         }
         None => {
             let now = chrono::Utc::now();
-            let model = OauthConnectionModel {
-                id: Id::new_v4(),
-                user_id,
-                provider: OauthProvider::Google,
-                external_account_id: None,
-                external_email: Some(user_info.email),
-                access_token: encrypted_access,
-                refresh_token: encrypted_refresh,
-                token_expires_at: tokens.expires_at.map(|dt| dt.into()),
-                token_type: "Bearer".to_string(),
-                scopes,
-                created_at: now.into(),
-                updated_at: now.into(),
+
+            let model = match provider {
+                OauthProvider::Google => {
+                    OauthConnectionModel {
+                        id: Id::new_v4(),
+                        user_id,
+                        provider,
+                        external_account_id: None,
+                        external_email: Some(user_info.email),
+                        access_token: encrypted_access,
+                        refresh_token: encrypted_refresh,
+                        token_expires_at: tokens.expires_at.map(|dt| dt.into()),
+                        token_type: "Bearer".to_string(),
+                        scopes,
+                        created_at: now.into(),
+                        updated_at: now.into(),
+                    }
+                },
+                OauthProvider::Zoom => {
+                    OauthConnectionModel {
+                        id: Id::new_v4(),
+                        user_id,
+                        provider,
+                        external_account_id: Some(user_info.id),
+                        external_email: Some(user_info.email),
+                        access_token: encrypted_access,
+                        refresh_token: encrypted_refresh,
+                        token_expires_at: tokens.expires_at.map(|dt| dt.into()),
+                        token_type: "Bearer".to_string(),
+                        scopes,
+                        created_at: now.into(),
+                        updated_at: now.into(),
+                    }
+                }
             };
             oauth_connection::create(db, model).await?;
         }
     }
 
     info!(
-        "Successfully stored Google OAuth tokens for user {}",
+        "Successfully stored {} OAuth tokens for user {}", provider,
         user_id
     );
 
-    let base_url = config.google_oauth_success_redirect_uri();
-    Ok(format!("{}?google=connected", base_url))
-}
+    let base_url = match provider {
+        OauthProvider::Google => config.google_oauth_success_redirect_uri(),
+        OauthProvider::Zoom => config.zoom_oauth_success_redirect_uri(),
+    };
 
-/// Exchange an authorization code for Zoom tokens and store them in oauth_connections.
-///
-/// Returns the success redirect URL for the frontend.
-pub async fn exchange_and_store_zoom_tokens(
-    db: &DatabaseConnection,
-    config: &Config,
-    user_id: Id,
-    authorization_code: &str,
-) -> Result<String, Error> {
-    info!("Processing Zoom OAuth callback for user {}", user_id);
-
-    let encryption_key = SecretString::from(config.encryption_key().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-    })?);
-
-    let provider = create_zoom_provider(config)?;
-
-    let tokens_raw = provider
-        .exchange_code(authorization_code, None)
-        .await
-        .inspect_err(|e| {
-            warn!(
-                "Failed to exchange OAuth code for user {}: {:?}",
-                user_id, e
-            )
-        })?;
-    let scopes = tokens_raw.scopes.join(" ");
-    let tokens = tokens_raw.into_plain();
-
-    let user_info = provider
-        .get_user_info(&tokens.access_token)
-        .await
-        .inspect_err(|e| warn!("Failed to get Zoom user info for user {}: {:?}", user_id, e))?;
-
-    let encrypted_access =
-        encryption::encrypt(&tokens.access_token, encryption_key.expose_secret()).map_err(|e| {
-            Error {
-                source: Some(Box::new(e)),
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                    "Failed to encrypt access token".to_string(),
-                )),
-            }
-        })?;
-    let encrypted_refresh = tokens
-        .refresh_token
-        .as_deref()
-        .map(|rt| encryption::encrypt(rt, encryption_key.expose_secret()))
-        .transpose()
-        .map_err(|e: meeting_auth::Error| Error {
-            source: Some(Box::new(e)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Failed to encrypt refresh token".to_string(),
-            )),
-        })?;
-
-    let existing =
-        oauth_connection::find_by_user_and_provider(db, user_id, OauthProvider::Zoom).await?;
-
-    match existing {
-        Some(conn) => {
-            oauth_connection::update_tokens(
-                db,
-                conn.id,
-                encrypted_access,
-                encrypted_refresh,
-                tokens.expires_at,
-            )
-            .await?;
-        }
-        None => {
-            let now = chrono::Utc::now();
-            let model = OauthConnectionModel {
-                id: Id::new_v4(),
-                user_id,
-                provider: OauthProvider::Zoom,
-                external_account_id: Some(user_info.id),
-                external_email: Some(user_info.email),
-                access_token: encrypted_access,
-                refresh_token: encrypted_refresh,
-                token_expires_at: tokens.expires_at.map(|dt| dt.into()),
-                token_type: "Bearer".to_string(),
-                scopes,
-                created_at: now.into(),
-                updated_at: now.into(),
-            };
-            oauth_connection::create(db, model).await?;
-        }
-    }
-
-    info!("Successfully stored Zoom OAuth tokens for user {}", user_id);
-
-    let base_url = config.zoom_oauth_success_redirect_uri();
-    Ok(format!("{}?zoom=connected", base_url))
+    Ok(format!("{}?{}=connected", base_url, provider))
 }
 
 /// Get a valid (non-expired) access token for a user and provider.
