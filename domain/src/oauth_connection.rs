@@ -6,7 +6,8 @@ use crate::provider::Provider as OauthProvider;
 use crate::Id;
 use entity_api::oauth_connection;
 use log::*;
-use meeting_auth::oauth::token::{encryption, Manager};
+use meeting_auth::oauth::UserInfo;
+use meeting_auth::oauth::token::{Manager, Plain, encryption};
 use sea_orm::DatabaseConnection;
 use secrecy::{ExposeSecret, SecretString};
 use service::config::Config;
@@ -134,42 +135,9 @@ pub async fn exchange_and_store_tokens(
             .await?;
         }
         None => {
-            let now = chrono::Utc::now();
-
-            let model = match provider {
-                OauthProvider::Google => {
-                    OauthConnectionModel {
-                        id: Id::new_v4(),
-                        user_id,
-                        provider,
-                        external_account_id: None,
-                        external_email: Some(user_info.email),
-                        access_token: encrypted_access,
-                        refresh_token: encrypted_refresh,
-                        token_expires_at: tokens.expires_at.map(|dt| dt.into()),
-                        token_type: "Bearer".to_string(),
-                        scopes,
-                        created_at: now.into(),
-                        updated_at: now.into(),
-                    }
-                },
-                OauthProvider::Zoom => {
-                    OauthConnectionModel {
-                        id: Id::new_v4(),
-                        user_id,
-                        provider,
-                        external_account_id: Some(user_info.id),
-                        external_email: Some(user_info.email),
-                        access_token: encrypted_access,
-                        refresh_token: encrypted_refresh,
-                        token_expires_at: tokens.expires_at.map(|dt| dt.into()),
-                        token_type: "Bearer".to_string(),
-                        scopes,
-                        created_at: now.into(),
-                        updated_at: now.into(),
-                    }
-                }
-            };
+            let model = create_oauth_connection_model(
+                user_id,
+                provider, user_info, &tokens, scopes, encrypted_access, encrypted_refresh);
             oauth_connection::create(db, model).await?;
         }
     }
@@ -332,4 +300,48 @@ fn create_zoom_provider(config: &Config) -> Result<impl Provider, Error> {
         client_secret,
         redirect_uri,
     ))
+}
+
+fn create_oauth_connection_model(
+    user_id: Id,
+    provider: OauthProvider,
+    user_info: UserInfo,
+    tokens: &Plain,
+    scopes: String,
+    encrypted_access: String,
+    encrypted_refresh: Option<String>,
+) -> OauthConnectionModel {
+    let now = chrono::Utc::now();
+
+    // Start with common fields
+    let mut model = OauthConnectionModel {
+        id: Id::new_v4(),
+        user_id,
+        provider,
+        external_account_id: None,
+        external_email: None,
+        access_token: encrypted_access,
+        refresh_token: encrypted_refresh,
+        token_expires_at: tokens.expires_at.map(|dt| dt.into()),
+        token_type: "Bearer".to_string(),
+        scopes,
+        created_at: now.into(),
+        updated_at: now.into(),
+    };
+
+    match provider {
+        OauthProvider::Google => apply_google_fields(&mut model, user_info),
+        OauthProvider::Zoom => apply_zoom_fields(&mut model, user_info),
+    }
+
+    model
+}
+
+fn apply_google_fields(model: &mut OauthConnectionModel, user_info: UserInfo) {
+    model.external_email = Some(user_info.email);
+}
+
+fn apply_zoom_fields(model: &mut OauthConnectionModel, user_info: UserInfo) {
+    model.external_account_id = Some(user_info.id);
+    model.external_email = Some(user_info.email);
 }
