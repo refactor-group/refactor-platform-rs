@@ -10,12 +10,16 @@ pub enum Provider {
     #[sea_orm(string_value = "google")]
     #[default]
     Google,
+
+    #[sea_orm(string_value = "zoom")]
+    Zoom,
 }
 
 impl std::fmt::Display for Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Google => write!(f, "Google"),
+            Self::Zoom => write!(f, "Zoom"),
         }
     }
 }

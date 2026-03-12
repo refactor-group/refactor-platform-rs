@@ -23,13 +23,6 @@ use utoipa::ToSchema;
 
 use crate::error::WebErrorKind;
 
-/// Query parameters for OAuth callback
-#[derive(Debug, Deserialize)]
-pub struct OAuthCallback {
-    pub code: String,
-    pub state: Option<String>,
-}
-
 /// Query parameters for starting OAuth
 #[derive(Debug, Deserialize)]
 pub struct OAuthStart {
@@ -55,13 +48,13 @@ impl From<oauth_connections::Model> for ConnectionResponse {
     }
 }
 
-/// GET /oauth/google/authorize
+/// GET /oauth/:provider/authorize
 ///
-/// Initiates Google OAuth flow by redirecting to Google's authorization endpoint.
+/// Initiates a Provider's OAuth flow by redirecting to their authorization endpoint.
 /// Note: This endpoint doesn't require x-version header as it's called via browser redirect.
 #[utoipa::path(
     get,
-    path = "/oauth/google/authorize",
+    path = "/oauth/{provider}/authorize",
     params(
         ("user_id" = Id, Query, description = "User ID to associate with Google account"),
     ),
@@ -78,6 +71,7 @@ pub async fn authorize(
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<OAuthStart>,
+    Path(provider): Path<Provider>,
 ) -> Result<impl IntoResponse, Error> {
     if user.id != params.user_id {
         return Err(Error::Web(WebErrorKind::Auth));
@@ -87,57 +81,9 @@ pub async fn authorize(
     metadata.insert("user_id".to_string(), params.user_id.to_string());
     let state_token = app_state.oauth_state_manager.generate(None, metadata);
 
-    let url = oauth_connection::google_authorize_url(&app_state.config, &state_token)?;
+    let url = oauth_connection::authorize_url(&app_state.config, &state_token, provider)?;
+
     Ok(Redirect::temporary(&url))
-}
-
-/// GET /oauth/google/callback
-///
-/// Handles the OAuth callback from Google after user authorization.
-/// Note: This endpoint doesn't require x-version header as it's called via Google's redirect.
-#[utoipa::path(
-    get,
-    path = "/oauth/google/callback",
-    params(
-        ("code" = String, Query, description = "Authorization code from Google"),
-        ("state" = Option<String>, Query, description = "CSRF state token"),
-    ),
-    responses(
-        (status = 302, description = "Redirect to settings page on success"),
-        (status = 400, description = "Invalid callback parameters"),
-        (status = 500, description = "Token exchange failed"),
-    )
-)]
-pub async fn callback(
-    State(app_state): State<AppState>,
-    Query(params): Query<OAuthCallback>,
-) -> Result<impl IntoResponse, Error> {
-    let state_token = params
-        .state
-        .as_deref()
-        .ok_or(Error::Web(WebErrorKind::Input))?;
-
-    let state_data = app_state
-        .oauth_state_manager
-        .validate(state_token)
-        .ok_or(Error::Web(WebErrorKind::Input))?;
-
-    let user_id: Id = state_data
-        .metadata
-        .get("user_id")
-        .ok_or(Error::Web(WebErrorKind::Input))?
-        .parse()
-        .map_err(|_| Error::Web(WebErrorKind::Input))?;
-
-    let redirect_url = oauth_connection::exchange_and_store_tokens(
-        app_state.db_conn_ref(),
-        &app_state.config,
-        user_id,
-        &params.code,
-    )
-    .await?;
-
-    Ok(Redirect::temporary(&redirect_url))
 }
 
 /// GET /oauth/connections

@@ -3,6 +3,7 @@
 //! Re-exports OAuth types from meeting-auth and provides provider-specific clients.
 
 pub mod google;
+pub mod zoom;
 
 // Re-export OAuth types from meeting-auth
 pub use meeting_auth::oauth::{

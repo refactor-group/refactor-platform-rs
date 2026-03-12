@@ -3,6 +3,7 @@ use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
+use entity_api::oauth_connection;
 use entity_api::{
     coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
@@ -64,8 +65,14 @@ pub async fn create(
 
     // If a provider is specified, create a meeting space and populate meeting_url
     if let Some(provider) = &coaching_session_model.provider {
-        let meeting_url =
-            create_meeting_url(db, config, coaching_relationship.coach_id, provider).await?;
+        let meeting_url = create_meeting_url(
+            db,
+            config,
+            coaching_relationship.coach_id,
+            provider,
+            &coaching_session_model.date,
+        )
+        .await?;
         coaching_session_model.meeting_url = Some(meeting_url);
     }
 
@@ -127,6 +134,7 @@ async fn create_meeting_url(
     config: &Config,
     coach_id: Id,
     provider: &crate::provider::Provider,
+    start_time: &NaiveDateTime,
 ) -> Result<String, Error> {
     let access_token =
         crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
@@ -145,6 +153,45 @@ async fn create_meeting_url(
             );
 
             Ok(space.meeting_uri)
+        }
+        crate::provider::Provider::Zoom => {
+            let existing_connection = oauth_connection::find_by_user_and_provider(
+                db,
+                coach_id,
+                crate::provider::Provider::Zoom,
+            )
+            .await?
+            .ok_or_else(|| {
+                warn!(
+                    "Failed to find Zoom oauth connection for coach: {}",
+                    coach_id
+                );
+                Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+                }
+            })?;
+
+            let external_account_id = existing_connection.external_account_id.ok_or_else(|| {
+                warn!("Zoom oauth connection for does not have an external_account_id");
+                Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+                }
+            })?;
+
+            let client = crate::gateway::zoom::Client::new(&access_token, config.zoom_api_url())?;
+
+            let meeting = client
+                .create_meeting(start_time, &external_account_id)
+                .await?;
+
+            info!(
+                "Created Zoom meeting {} for coaching session",
+                meeting.join_url,
+            );
+
+            Ok(meeting.join_url)
         }
     }
 }
