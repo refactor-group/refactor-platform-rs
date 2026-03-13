@@ -48,6 +48,7 @@ pub async fn create(
 
     let link = GoalApi::link_to_coaching_session(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         coaching_session_id,
         model.goal_id,
     )
@@ -83,7 +84,12 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, Error> {
     debug!("DELETE coaching_session_goal link by id: {id}");
 
-    GoalApi::unlink_from_coaching_session(app_state.db_conn_ref(), id).await?;
+    GoalApi::unlink_from_coaching_session(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+    )
+    .await?;
 
     Ok(Json(serde_json::json!({"id": id})))
 }

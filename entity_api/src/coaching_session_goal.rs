@@ -39,6 +39,18 @@ pub async fn create(
     Ok(active_model.insert(db).await?.try_into_model()?)
 }
 
+/// Finds a single linked goal to a coaching session join-table record by its primary key.
+///
+/// # Errors
+///
+/// Returns `Error` with `RecordNotFound` if the record does not exist.
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
+}
+
 /// Unlinks a goal from a coaching session by the join table record id.
 ///
 /// # Errors
