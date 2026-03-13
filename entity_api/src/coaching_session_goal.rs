@@ -136,11 +136,14 @@ pub async fn link_in_progress_goals_to_session(
 ) -> Result<usize, Error> {
     // Defensive cap: the write path enforces the limit, but we cap here too for safety.
     let in_progress_goals: Vec<_> =
-        super::goal::find_in_progress_goals_by_coaching_relationship_id(db, coaching_relationship_id)
-            .await?
-            .into_iter()
-            .take(super::goal::max_in_progress_goals())
-            .collect();
+        super::goal::find_in_progress_goals_by_coaching_relationship_id(
+            db,
+            coaching_relationship_id,
+        )
+        .await?
+        .into_iter()
+        .take(super::goal::max_in_progress_goals())
+        .collect();
 
     if in_progress_goals.is_empty() {
         return Ok(0);

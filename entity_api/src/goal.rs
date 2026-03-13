@@ -388,8 +388,7 @@ mod tests {
             .append_query_results(vec![Vec::<Model>::new()])
             .into_connection();
 
-        let results =
-            find_in_progress_goals_by_coaching_relationship_id(&db, Id::new_v4()).await?;
+        let results = find_in_progress_goals_by_coaching_relationship_id(&db, Id::new_v4()).await?;
 
         assert!(results.is_empty());
 
