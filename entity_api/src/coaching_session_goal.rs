@@ -6,8 +6,7 @@
 use entity::coaching_sessions_goals::{Column, Entity, Model};
 use entity::{goals, Id};
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Set, ConnectionTrait, DatabaseConnection, TransactionTrait,
-    TryIntoModel,
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, DatabaseConnection, TryIntoModel,
 };
 
 use log::*;
@@ -122,15 +121,17 @@ pub async fn find_in_progress_goals_by_coaching_session_id(
 /// Links all in-progress goals from a coaching relationship to a session.
 ///
 /// Queries for goals with `InProgress` status on the given relationship,
-/// then creates a join table record for each one inside a transaction.
+/// then creates a join table record for each one.
 /// Returns the number of goals linked.
+///
+/// This function does not manage its own transaction — callers are expected
+/// to wrap it in a transaction when atomicity with other operations is needed.
 ///
 /// # Errors
 ///
-/// Returns `Error` if any database query or insert fails. On failure the
-/// transaction is rolled back so no partial links are left behind.
+/// Returns `Error` if any database query or insert fails.
 pub async fn link_in_progress_goals_to_session(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     session_id: Id,
 ) -> Result<usize, Error> {
@@ -149,11 +150,9 @@ pub async fn link_in_progress_goals_to_session(
         return Ok(0);
     }
 
-    let txn = db.begin().await?;
     for g in &in_progress_goals {
-        create(&txn, session_id, g.id).await?;
+        create(db, session_id, g.id).await?;
     }
-    txn.commit().await?;
 
     Ok(in_progress_goals.len())
 }

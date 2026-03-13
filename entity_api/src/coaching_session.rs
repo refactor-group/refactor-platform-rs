@@ -8,12 +8,13 @@ use entity::{
 };
 use log::debug;
 use sea_orm::{
-    entity::prelude::*, DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, TryIntoModel,
+    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QueryOrder, QuerySelect,
+    Set, TryIntoModel,
 };
 use std::collections::HashMap;
 
 pub async fn create(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_session_model: Model,
 ) -> Result<Model, Error> {
     debug!("New Coaching Session Model to be inserted: {coaching_session_model:?}");

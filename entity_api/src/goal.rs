@@ -6,7 +6,7 @@ use sea_orm::{
     entity::prelude::*,
     ActiveModelTrait,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, QueryFilter, TransactionTrait, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, QueryFilter, TransactionTrait, TryIntoModel,
 };
 
 use log::*;
@@ -170,7 +170,7 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
 ///
 /// Returns `Error` if the database query fails.
 pub async fn find_in_progress_goals_by_coaching_relationship_id(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
 ) -> Result<Vec<Model>, Error> {
     Ok(Entity::find()
