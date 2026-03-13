@@ -10,8 +10,8 @@ name: PR Preview (Backend)
 
 on:
   pull_request:
-    # Trigger on PR lifecycle events
-    types: [opened, synchronize, reopened]
+    # Trigger on PR lifecycle events (ready_for_review needed to deploy when draft → ready)
+    types: [opened, synchronize, reopened, ready_for_review]
     # Only run for backend code changes
     paths-ignore:
       - '**.md'
@@ -38,6 +38,8 @@ jobs:
   # ===========================================================================
   deploy-backend-pr:
     name: Deploy Backend PR Preview
+    # Skip draft PRs — deploy only when the PR is ready for review
+    if: github.event.pull_request.draft == false
     # Call the reusable workflow located in this repository
     uses: ./.github/workflows/ci-deploy-pr-preview.yml
     with:
