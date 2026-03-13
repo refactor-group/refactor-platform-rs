@@ -7,7 +7,7 @@ use entity_api::coaching_sessions_goals;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{goal as GoalApi, goals, query};
 use log::*;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
 pub use entity_api::goal::find_by_id;
 
@@ -17,7 +17,12 @@ pub async fn create(
     goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    let goal = GoalApi::create(db, goal_model, user_id).await?;
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    let goal = GoalApi::create(&txn, goal_model, user_id).await?;
+    link_to_created_in_session(&txn, &goal).await?;
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     let relationship =
         crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
@@ -37,6 +42,19 @@ pub async fn create(
     );
 
     Ok(goal)
+}
+
+/// Links a newly created goal to its `created_in_session` in the join table
+/// so that "goals linked to session X" queries return it immediately.
+async fn link_to_created_in_session(db: &impl ConnectionTrait, goal: &Model) -> Result<(), Error> {
+    if let Some(session_id) = goal.created_in_session_id {
+        CoachingSessionGoalApi::create(db, session_id, goal.id).await?;
+        debug!(
+            "Auto-linked goal {} to created-in session {}",
+            goal.id, session_id
+        );
+    }
+    Ok(())
 }
 
 pub async fn update(
