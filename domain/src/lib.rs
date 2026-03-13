@@ -23,6 +23,7 @@ pub mod coaching_session;
 pub mod emails;
 pub mod error;
 pub mod goal;
+pub mod goal_health;
 pub mod jwt;
 pub mod note;
 pub mod oauth_connection;

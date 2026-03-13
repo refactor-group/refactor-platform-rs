@@ -16,6 +16,7 @@ pub mod coaching_session;
 pub mod coaching_session_goal;
 pub mod error;
 pub mod goal;
+pub mod goal_health;
 pub mod mutate;
 pub mod note;
 pub mod oauth_connection;

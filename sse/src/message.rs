@@ -60,6 +60,20 @@ pub enum Event {
         goal_id: String,
     },
 
+    // Coaching Session Goals (join table, relationship-scoped)
+    #[serde(rename = "coaching_session_goal_created")]
+    CoachingSessionGoalCreated {
+        coaching_relationship_id: String,
+        coaching_session_id: String,
+        goal_id: String,
+    },
+    #[serde(rename = "coaching_session_goal_deleted")]
+    CoachingSessionGoalDeleted {
+        coaching_relationship_id: String,
+        coaching_session_id: String,
+        goal_id: String,
+    },
+
     // System events
     #[serde(rename = "force_logout")]
     ForceLogout { reason: String },
@@ -77,6 +91,8 @@ impl EventType for Event {
             Event::GoalCreated { .. } => "goal_created",
             Event::GoalUpdated { .. } => "goal_updated",
             Event::GoalDeleted { .. } => "goal_deleted",
+            Event::CoachingSessionGoalCreated { .. } => "coaching_session_goal_created",
+            Event::CoachingSessionGoalDeleted { .. } => "coaching_session_goal_deleted",
             Event::ForceLogout { .. } => "force_logout",
         }
     }

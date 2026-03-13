@@ -152,18 +152,71 @@ where
 
 // ── Coaching-session ↔ goal association (join table as implementation detail) ──
 
-/// Links an existing goal to a coaching session.
+/// Links an existing goal to a coaching session and publishes an SSE event.
 pub async fn link_to_coaching_session(
     db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
     coaching_session_id: Id,
     goal_id: Id,
 ) -> Result<coaching_sessions_goals::Model, Error> {
-    Ok(CoachingSessionGoalApi::create(db, coaching_session_id, goal_id).await?)
+    let link = CoachingSessionGoalApi::create(db, coaching_session_id, goal_id).await?;
+
+    let (_, relationship) =
+        crate::coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id)
+            .await?;
+    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+
+    event_publisher
+        .publish(DomainEvent::CoachingSessionGoalCreated {
+            coaching_relationship_id: relationship.id,
+            coaching_session_id,
+            goal_id,
+            notify_user_ids,
+        })
+        .await;
+
+    debug!(
+        "Published CoachingSessionGoalCreated event for goal {} in session {}",
+        goal_id, coaching_session_id
+    );
+
+    Ok(link)
 }
 
-/// Unlinks a goal from a coaching session by the join-table record id.
-pub async fn unlink_from_coaching_session(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
-    Ok(CoachingSessionGoalApi::delete_by_id(db, id).await?)
+/// Unlinks a goal from a coaching session by the join-table record id
+/// and publishes an SSE event.
+pub async fn unlink_from_coaching_session(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+) -> Result<(), Error> {
+    // Look up the link before deleting so we have the IDs for the event
+    let link = CoachingSessionGoalApi::find_by_id(db, id).await?;
+
+    let (_, relationship) = crate::coaching_session::find_by_id_with_coaching_relationship(
+        db,
+        link.coaching_session_id,
+    )
+    .await?;
+    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+
+    CoachingSessionGoalApi::delete_by_id(db, id).await?;
+
+    event_publisher
+        .publish(DomainEvent::CoachingSessionGoalDeleted {
+            coaching_relationship_id: relationship.id,
+            coaching_session_id: link.coaching_session_id,
+            goal_id: link.goal_id,
+            notify_user_ids,
+        })
+        .await;
+
+    debug!(
+        "Published CoachingSessionGoalDeleted event for goal {} in session {}",
+        link.goal_id, link.coaching_session_id
+    );
+
+    Ok(())
 }
 
 /// Returns all goal models linked to a coaching session (eager-loaded).
