@@ -25,7 +25,7 @@ pub enum Health {
 }
 
 /// Computed health metrics returned by the health endpoint.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HealthMetrics {
     pub health: Health,
     pub actions_completed: usize,

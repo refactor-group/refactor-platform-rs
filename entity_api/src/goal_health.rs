@@ -100,6 +100,8 @@ fn summarize_action_stats(actions: &[actions::Model]) -> ActionStats {
     for action in actions {
         if action.status == Status::Completed {
             completed += 1;
+            // Note: status_changed_at reflects creation time if the action was created
+            // directly as Completed (rare). This is acceptable for cadence heuristics.
             completed_dates.push(action.status_changed_at);
         } else if let Some(due) = action.due_by {
             next_due = Some(match next_due {

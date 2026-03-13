@@ -20,10 +20,10 @@ use log::*;
 /// GET sessions linked to a specific goal
 #[utoipa::path(
     get,
-    path = "/goals/{goal_id}/sessions",
+    path = "/goals/{id}/sessions",
     params(
         ApiVersion,
-        ("goal_id" = Id, Path, description = "Goal id"),
+        ("id" = Id, Path, description = "Goal id"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved sessions linked to goal", body = [entity::coaching_sessions_goals::Model]),
@@ -38,12 +38,11 @@ pub async fn coaching_sessions_by_goal(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(goal_id): Path<Id>,
+    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET sessions linked to goal {goal_id}");
+    debug!("GET sessions linked to goal {id}");
 
-    let links =
-        GoalApi::find_coaching_sessions_by_goal_id(app_state.db_conn_ref(), goal_id).await?;
+    let links = GoalApi::find_coaching_sessions_by_goal_id(app_state.db_conn_ref(), id).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), links)))
 }

@@ -359,7 +359,7 @@ pub fn goal_routes(app_state: AppState) -> Router {
                 .route("/goals/:id", get(goal_controller::read))
                 .route("/goals/:id/status", put(goal_controller::update_status))
                 .route(
-                    "/goals/:goal_id/sessions",
+                    "/goals/:id/sessions",
                     get(goal_controller::coaching_sessions_by_goal),
                 )
                 .route("/goals/:id/health", get(goal_controller::health))
