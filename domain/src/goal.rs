@@ -2,12 +2,14 @@ use crate::error::Error;
 use crate::events::{DomainEvent, EventPublisher};
 use crate::goals::Model;
 use crate::Id;
+use entity_api::coaching_session_goal as CoachingSessionGoalApi;
+use entity_api::coaching_sessions_goals;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
-use entity_api::{coaching_session, goal as GoalApi, goals, query};
+use entity_api::{goal as GoalApi, goals, query};
 use log::*;
 use sea_orm::DatabaseConnection;
 
-pub use entity_api::goal::{find_by_coaching_session_id, find_by_id};
+pub use entity_api::goal::find_by_id;
 
 pub async fn create(
     db: &DatabaseConnection,
@@ -15,22 +17,18 @@ pub async fn create(
     goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    // Create the goal
     let goal = GoalApi::create(db, goal_model, user_id).await?;
 
-    // Fetch the coaching session to get the relationship_id
-    let coaching_session = coaching_session::find_by_id(db, goal.coaching_session_id).await?;
+    // CHANGEME: Remove when carry-forward workflow (PR3) replaces auto-linking
+    link_to_originating_session(db, &goal).await?;
 
-    // Fetch the coaching relationship to get the users to notify
     let relationship =
-        crate::coaching_relationship::find_by_id(db, coaching_session.coaching_relationship_id)
-            .await?;
+        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
     let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
 
-    // Publish domain event
     event_publisher
         .publish(DomainEvent::GoalCreated {
-            coaching_relationship_id: coaching_session.coaching_relationship_id,
+            coaching_relationship_id: goal.coaching_relationship_id,
             goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
             notify_user_ids,
         })
@@ -38,10 +36,28 @@ pub async fn create(
 
     debug!(
         "Published GoalCreated event for goal {} in relationship {}",
-        goal.id, coaching_session.coaching_relationship_id
+        goal.id, goal.coaching_relationship_id
     );
 
     Ok(goal)
+}
+
+/// If the goal was created within a session context, automatically link it
+/// to that session in the coaching_sessions_goals join table.
+///
+/// CHANGEME: Remove this when the full goals rework carry-forward workflow
+/// is in place (PR3). At that point, coaching_sessions_goals rows will be
+/// created at session-creation time and the frontend will manage linking
+/// explicitly via POST /coaching_session_goals.
+async fn link_to_originating_session(db: &DatabaseConnection, goal: &Model) -> Result<(), Error> {
+    if let Some(session_id) = goal.created_in_session_id {
+        debug!(
+            "Auto-linking goal {} to originating session {}",
+            goal.id, session_id
+        );
+        CoachingSessionGoalApi::create(db, session_id, goal.id).await?;
+    }
+    Ok(())
 }
 
 pub async fn update(
@@ -50,22 +66,15 @@ pub async fn update(
     id: Id,
     model: Model,
 ) -> Result<Model, Error> {
-    // Update the goal
     let goal = GoalApi::update(db, id, model).await?;
 
-    // Fetch the coaching session to get the relationship_id
-    let coaching_session = coaching_session::find_by_id(db, goal.coaching_session_id).await?;
-
-    // Fetch the coaching relationship to get the users to notify
     let relationship =
-        crate::coaching_relationship::find_by_id(db, coaching_session.coaching_relationship_id)
-            .await?;
+        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
     let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
 
-    // Publish domain event
     event_publisher
         .publish(DomainEvent::GoalUpdated {
-            coaching_relationship_id: coaching_session.coaching_relationship_id,
+            coaching_relationship_id: goal.coaching_relationship_id,
             goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
             notify_user_ids,
         })
@@ -73,7 +82,7 @@ pub async fn update(
 
     debug!(
         "Published GoalUpdated event for goal {} in relationship {}",
-        goal.id, coaching_session.coaching_relationship_id
+        goal.id, goal.coaching_relationship_id
     );
 
     Ok(goal)
@@ -85,22 +94,15 @@ pub async fn update_status(
     id: Id,
     status: entity_api::status::Status,
 ) -> Result<Model, Error> {
-    // Update the goal status
     let goal = GoalApi::update_status(db, id, status).await?;
 
-    // Fetch the coaching session to get the relationship_id
-    let coaching_session = coaching_session::find_by_id(db, goal.coaching_session_id).await?;
-
-    // Fetch the coaching relationship to get the users to notify
     let relationship =
-        crate::coaching_relationship::find_by_id(db, coaching_session.coaching_relationship_id)
-            .await?;
+        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
     let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
 
-    // Publish domain event
     event_publisher
         .publish(DomainEvent::GoalUpdated {
-            coaching_relationship_id: coaching_session.coaching_relationship_id,
+            coaching_relationship_id: goal.coaching_relationship_id,
             goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
             notify_user_ids,
         })
@@ -108,10 +110,39 @@ pub async fn update_status(
 
     debug!(
         "Published GoalUpdated event for goal {} in relationship {}",
-        goal.id, coaching_session.coaching_relationship_id
+        goal.id, goal.coaching_relationship_id
     );
 
     Ok(goal)
+}
+
+/// Deletes a goal by id and publishes a GoalDeleted domain event.
+pub async fn delete(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+) -> Result<(), Error> {
+    // delete_by_id returns the model before deletion so we can publish the event
+    let goal = GoalApi::delete_by_id(db, id).await?;
+
+    let relationship =
+        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
+    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+
+    event_publisher
+        .publish(DomainEvent::GoalDeleted {
+            coaching_relationship_id: goal.coaching_relationship_id,
+            goal_id: goal.id,
+            notify_user_ids,
+        })
+        .await;
+
+    debug!(
+        "Published GoalDeleted event for goal {} in relationship {}",
+        goal.id, goal.coaching_relationship_id
+    );
+
+    Ok(())
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -120,4 +151,141 @@ where
 {
     let goals = query::find_by::<goals::Entity, goals::Column, P>(db, params).await?;
     Ok(goals)
+}
+
+// ── Coaching-session ↔ goal association (join table as implementation detail) ──
+
+/// Links an existing goal to a coaching session.
+pub async fn link_to_coaching_session(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+    goal_id: Id,
+) -> Result<coaching_sessions_goals::Model, Error> {
+    Ok(CoachingSessionGoalApi::create(db, coaching_session_id, goal_id).await?)
+}
+
+/// Unlinks a goal from a coaching session by the join-table record id.
+pub async fn unlink_from_coaching_session(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
+    Ok(CoachingSessionGoalApi::delete_by_id(db, id).await?)
+}
+
+/// Returns all goal models linked to a coaching session (eager-loaded).
+pub async fn find_goals_by_coaching_session_id(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(CoachingSessionGoalApi::find_goals_by_coaching_session_id(db, coaching_session_id).await?)
+}
+
+/// Returns up to the maximum allowed in-progress goals linked to a coaching session.
+pub async fn find_in_progress_goals_by_coaching_session_id(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(
+        CoachingSessionGoalApi::find_in_progress_goals_by_coaching_session_id(
+            db,
+            coaching_session_id,
+        )
+        .await?,
+    )
+}
+
+/// Returns all join-table records for a given goal (sessions linked to it).
+pub async fn find_coaching_sessions_by_goal_id(
+    db: &DatabaseConnection,
+    goal_id: Id,
+) -> Result<Vec<coaching_sessions_goals::Model>, Error> {
+    Ok(CoachingSessionGoalApi::find_by_goal_id(db, goal_id).await?)
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod integration_tests {
+    use super::*;
+    use entity_api::status::Status;
+    use events::EventPublisher;
+    use sea_orm::{DatabaseBackend, MockDatabase};
+
+    fn create_test_goal_with(
+        status: Status,
+        title: Option<String>,
+        coaching_relationship_id: Id,
+    ) -> Model {
+        let now = chrono::Utc::now().fixed_offset();
+        Model {
+            id: Id::new_v4(),
+            coaching_relationship_id,
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title,
+            body: None,
+            status,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn create_test_relationship(id: Id) -> crate::coaching_relationships::Model {
+        let now = chrono::Utc::now().fixed_offset();
+        crate::coaching_relationships::Model {
+            id,
+            organization_id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            slug: "test-slug".to_string(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_publishes_event_on_success() {
+        let relationship_id = Id::new_v4();
+        let event_publisher = EventPublisher::new();
+
+        let new_goal = create_test_goal_with(
+            Status::NotStarted,
+            Some("New goal".to_string()),
+            relationship_id,
+        );
+        let relationship = create_test_relationship(relationship_id);
+
+        // Mock sequence: goal save → relationship lookup
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![vec![relationship]])
+            .into_connection();
+
+        let result = create(&db, &event_publisher, new_goal, Id::new_v4()).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_status_publishes_event_on_success() {
+        let relationship_id = Id::new_v4();
+        let event_publisher = EventPublisher::new();
+
+        let current_goal = create_test_goal_with(
+            Status::InProgress,
+            Some("Already active".to_string()),
+            relationship_id,
+        );
+        let relationship = create_test_relationship(relationship_id);
+
+        // Mock sequence: find_by_id → update_status save → relationship lookup
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![current_goal.clone()]])
+            .append_query_results(vec![vec![current_goal.clone()]])
+            .append_query_results(vec![vec![relationship]])
+            .into_connection();
+
+        let result = update_status(&db, &event_publisher, current_goal.id, Status::Completed).await;
+
+        assert!(result.is_ok());
+    }
 }

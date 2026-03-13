@@ -412,10 +412,37 @@ pub async fn notify_session_scheduled(
     }
 }
 
+/// Returns an HTML ordered list of in-progress goal titles linked to a coaching session,
+/// limited to the maximum number of in-progress goals allowed per relationship.
+///
+/// This is best-effort: any DB error returns an empty string so email delivery is never blocked.
+async fn get_active_goal_titles_for_coaching_session(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+) -> String {
+    let goals =
+        match goal::find_in_progress_goals_by_coaching_session_id(db, coaching_session_id).await {
+            Ok(goals) => goals,
+            Err(_) => return String::new(),
+        };
+
+    let items: Vec<_> = goals
+        .iter()
+        .filter_map(|g| g.title.as_deref())
+        .map(|title| format!("<li>{title}</li>"))
+        .collect();
+
+    if items.is_empty() {
+        String::new()
+    } else {
+        format!("<ol>{}</ol>", items.join(""))
+    }
+}
+
 /// Orchestrate sending action-assigned emails (best-effort).
 ///
 /// Looks up assignee users, the coaching session, relationship, organization,
-/// and goal, then sends notification emails to all assignees.
+/// and goals, then sends notification emails to all assignees.
 /// Errors are logged internally — email delivery must never block or fail
 /// the calling operation.
 pub async fn notify_action_assigned(
@@ -435,20 +462,14 @@ pub async fn notify_action_assigned(
                 .await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        // Look up goal for this session (use first if multiple exist).
-        // This is optional metadata — a DB error here should not prevent the email
-        // from being sent, so we fall back to an empty list on failure.
-        let goals = goal::find_by_coaching_session_id(db, session.id)
-            .await
-            .unwrap_or_default();
-        let goal_title = goals.first().and_then(|g| g.title.as_deref()).unwrap_or("");
+        let goal_text = get_active_goal_titles_for_coaching_session(db, session.id).await;
 
         let ctx = ActionEmailContext {
             action_body: action.body.as_deref().unwrap_or(""),
             due_by: action.due_by,
             session_id: action.coaching_session_id,
             organization: &org,
-            goal: goal_title,
+            goal: &goal_text,
         };
 
         send_action_assigned_email(config, &assignees, assigner, &ctx).await

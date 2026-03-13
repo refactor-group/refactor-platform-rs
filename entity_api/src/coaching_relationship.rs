@@ -46,7 +46,10 @@ pub async fn create(
         error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, organization_id);
         return Err(Error {
             source: None,
-            error_kind: EntityApiErrorKind::ValidationError,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "Coach and coachee must belong to the specified organization.".into(),
+                details: None,
+            },
         });
     }
 
@@ -62,7 +65,10 @@ pub async fn create(
         error!("Coaching relationship already exists for coach: {} and coachee: {} in organization: {}", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, coaching_relationship_model.organization_id);
         return Err(Error {
             source: None,
-            error_kind: EntityApiErrorKind::ValidationError,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "Coaching relationship already exists for this coach and coachee in the organization.".into(),
+                details: None,
+            },
         });
     }
 
@@ -576,13 +582,11 @@ mod tests {
 
         let result = create(&db, organization_id, model).await;
         println!("Result: {:?}", result);
-        assert!(
-            result
-                == Err(Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::ValidationError,
-                })
-        );
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::ValidationError { .. }
+        ));
         Ok(())
     }
 

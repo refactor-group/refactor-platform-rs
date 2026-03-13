@@ -445,6 +445,11 @@ async fn batch_load_organizations(
 }
 
 /// Batch load goals by session IDs
+///
+/// CHANGEME: This queries goals via the `created_in_session_id` column, which only works
+/// because PR2's auto-linking always populates that field. When PR3 removes auto-linking,
+/// this must be refactored to query through the `coaching_sessions_goals` join table instead,
+/// otherwise goals linked only via the join table will be invisible here.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
@@ -454,11 +459,11 @@ async fn batch_load_goals(
     }
 
     Ok(goals::Entity::find()
-        .filter(goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()))
+        .filter(goals::Column::CreatedInSessionId.is_in(session_ids.iter().copied()))
         .all(db)
         .await?
         .into_iter()
-        .map(|g| (g.coaching_session_id, g))
+        .filter_map(|g| g.created_in_session_id.map(|sid| (sid, g)))
         .collect())
 }
 
