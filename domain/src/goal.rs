@@ -209,11 +209,20 @@ mod integration_tests {
         title: Option<String>,
         coaching_relationship_id: Id,
     ) -> Model {
+        create_test_goal(status, title, coaching_relationship_id, None)
+    }
+
+    fn create_test_goal(
+        status: Status,
+        title: Option<String>,
+        coaching_relationship_id: Id,
+        created_in_session_id: Option<Id>,
+    ) -> Model {
         let now = chrono::Utc::now().fixed_offset();
         Model {
             id: Id::new_v4(),
             coaching_relationship_id,
-            created_in_session_id: None,
+            created_in_session_id,
             user_id: Id::new_v4(),
             title,
             body: None,
@@ -251,9 +260,44 @@ mod integration_tests {
         );
         let relationship = create_test_relationship(relationship_id);
 
-        // Mock sequence: goal save → relationship lookup
+        // Mock sequence (inside txn): goal save → (no session link) → relationship lookup
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![vec![relationship]])
+            .into_connection();
+
+        let result = create(&db, &event_publisher, new_goal, Id::new_v4()).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_with_session_links_to_join_table() {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let event_publisher = EventPublisher::new();
+
+        let new_goal = create_test_goal(
+            Status::NotStarted,
+            Some("Session-linked goal".to_string()),
+            relationship_id,
+            Some(session_id),
+        );
+        let relationship = create_test_relationship(relationship_id);
+
+        let now = chrono::Utc::now().fixed_offset();
+        let join_row = coaching_sessions_goals::Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: new_goal.id,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // Mock sequence (inside txn): goal save → join table save → relationship lookup
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![vec![join_row]])
             .append_query_results(vec![vec![relationship]])
             .into_connection();
 
