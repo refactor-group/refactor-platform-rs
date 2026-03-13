@@ -76,7 +76,7 @@ pub async fn create(
 
     let session = coaching_session::create(db, coaching_session_model).await?;
 
-    // Carry-forward: auto-link all InProgress goals from the relationship to the new session
+    // Auto-link all InProgress goals from the relationship to the new session
     let linked = coaching_session_goal::link_in_progress_goals_to_session(
         db,
         session.coaching_relationship_id,
@@ -84,7 +84,7 @@ pub async fn create(
     )
     .await?;
     debug!(
-        "Carried forward {linked} in-progress goal(s) to session {}",
+        "Linked {linked} in-progress goal(s) to session {}",
         session.id
     );
 
