@@ -190,14 +190,9 @@ pub async fn unlink_from_coaching_session(
     event_publisher: &EventPublisher,
     id: Id,
 ) -> Result<(), Error> {
-    // Look up the link before deleting so we have the IDs for the event
-    let link = CoachingSessionGoalApi::find_by_id(db, id).await?;
-
-    let (_, relationship) = crate::coaching_session::find_by_id_with_coaching_relationship(
-        db,
-        link.coaching_session_id,
-    )
-    .await?;
+    // Single query: join table record + relationship (via two JOINs)
+    let (link, relationship) =
+        CoachingSessionGoalApi::find_by_id_with_coaching_relationship(db, id).await?;
     let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
 
     CoachingSessionGoalApi::delete_by_id(db, id).await?;
