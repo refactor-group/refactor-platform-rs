@@ -20,7 +20,7 @@ pub fn max_in_progress_goals() -> usize {
 }
 
 pub async fn create(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
@@ -184,7 +184,7 @@ pub async fn find_in_progress_goals_by_coaching_relationship_id(
 /// would not exceed `MAX_IN_PROGRESS_GOALS`. Returns a `ValidationError` carrying
 /// summaries of the current in-progress goals so the caller can present a "swap" dialog.
 async fn check_in_progress_goal_limit(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
 ) -> Result<(), Error> {
     let in_progress_goals =

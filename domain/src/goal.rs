@@ -7,7 +7,7 @@ use entity_api::coaching_sessions_goals;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{goal as GoalApi, goals, query};
 use log::*;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
 pub use entity_api::goal::find_by_id;
 
@@ -17,7 +17,12 @@ pub async fn create(
     goal_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
-    let goal = GoalApi::create(db, goal_model, user_id).await?;
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    let goal = GoalApi::create(&txn, goal_model, user_id).await?;
+    link_to_created_in_session(&txn, &goal).await?;
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     let relationship =
         crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
@@ -37,6 +42,19 @@ pub async fn create(
     );
 
     Ok(goal)
+}
+
+/// Links a newly created goal to its `created_in_session` in the join table
+/// so that "goals linked to session X" queries return it immediately.
+async fn link_to_created_in_session(db: &impl ConnectionTrait, goal: &Model) -> Result<(), Error> {
+    if let Some(session_id) = goal.created_in_session_id {
+        CoachingSessionGoalApi::create(db, session_id, goal.id).await?;
+        debug!(
+            "Auto-linked goal {} to created-in session {}",
+            goal.id, session_id
+        );
+    }
+    Ok(())
 }
 
 pub async fn update(
@@ -191,11 +209,20 @@ mod integration_tests {
         title: Option<String>,
         coaching_relationship_id: Id,
     ) -> Model {
+        create_test_goal(status, title, coaching_relationship_id, None)
+    }
+
+    fn create_test_goal(
+        status: Status,
+        title: Option<String>,
+        coaching_relationship_id: Id,
+        created_in_session_id: Option<Id>,
+    ) -> Model {
         let now = chrono::Utc::now().fixed_offset();
         Model {
             id: Id::new_v4(),
             coaching_relationship_id,
-            created_in_session_id: None,
+            created_in_session_id,
             user_id: Id::new_v4(),
             title,
             body: None,
@@ -233,9 +260,44 @@ mod integration_tests {
         );
         let relationship = create_test_relationship(relationship_id);
 
-        // Mock sequence: goal save → relationship lookup
+        // Mock sequence (inside txn): goal save → (no session link) → relationship lookup
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![vec![relationship]])
+            .into_connection();
+
+        let result = create(&db, &event_publisher, new_goal, Id::new_v4()).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_with_session_links_to_join_table() {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let event_publisher = EventPublisher::new();
+
+        let new_goal = create_test_goal(
+            Status::NotStarted,
+            Some("Session-linked goal".to_string()),
+            relationship_id,
+            Some(session_id),
+        );
+        let relationship = create_test_relationship(relationship_id);
+
+        let now = chrono::Utc::now().fixed_offset();
+        let join_row = coaching_sessions_goals::Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: new_goal.id,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // Mock sequence (inside txn): goal save → join table save → relationship lookup
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![vec![join_row]])
             .append_query_results(vec![vec![relationship]])
             .into_connection();
 
