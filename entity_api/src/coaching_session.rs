@@ -2,7 +2,7 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    goals, organizations,
+    coaching_sessions_goals, goals, organizations,
     provider::Provider,
     users, Id,
 };
@@ -453,8 +453,6 @@ async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
 ) -> Result<HashMap<Id, goals::Model>, Error> {
-    use entity::coaching_sessions_goals;
-
     if session_ids.is_empty() {
         return Ok(HashMap::new());
     }

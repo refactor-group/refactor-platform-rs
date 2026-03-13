@@ -40,6 +40,8 @@ use std::sync::Arc;
 use axum::Json;
 ```
 
+**No imports inside functions:** All `use` statements must be placed at the top of the file, never inside function bodies. Imports inside functions reduce discoverability and make it harder to see a module's full dependency surface at a glance.
+
 **Rationale**:
 - Improves code readability by grouping related imports
 - Makes it easy to identify external dependencies
