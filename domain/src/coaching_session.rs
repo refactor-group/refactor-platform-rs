@@ -4,11 +4,12 @@ use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
+    coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions, mutate,
+    organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
-use sea_orm::{DatabaseConnection, IntoActiveModel};
+use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
@@ -73,7 +74,36 @@ pub async fn create(
     let tiptap = TiptapDocument::new(config).await?;
     tiptap.create(&document_name).await?;
 
-    Ok(coaching_session::create(db, coaching_session_model).await?)
+    // Wrap all DB writes in a transaction so the session and its goal links
+    // succeed or fail atomically. If the transaction fails, compensate by
+    // deleting the Tiptap document we just created.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let result: Result<Model, Error> = async {
+        let session = coaching_session::create(&txn, coaching_session_model).await?;
+
+        let linked = coaching_session_goal::link_in_progress_goals_to_session(
+            &txn,
+            session.coaching_relationship_id,
+            session.id,
+        )
+        .await?;
+        debug!(
+            "Linked {linked} in-progress goal(s) to session {}",
+            session.id
+        );
+
+        txn.commit().await.map_err(entity_api::error::Error::from)?;
+        Ok(session)
+    }
+    .await;
+
+    if result.is_err() {
+        if let Err(e) = tiptap.delete(&document_name).await {
+            warn!("Failed to clean up Tiptap document '{document_name}' after DB error: {e}");
+        }
+    }
+
+    result
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>

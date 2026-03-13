@@ -5,7 +5,9 @@
 
 use entity::coaching_sessions_goals::{Column, Entity, Model};
 use entity::{goals, Id};
-use sea_orm::{entity::prelude::*, ActiveValue::Set, DatabaseConnection, TryIntoModel};
+use sea_orm::{
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, DatabaseConnection, TryIntoModel,
+};
 
 use log::*;
 
@@ -18,7 +20,7 @@ use super::error::{EntityApiErrorKind, Error};
 /// Returns `Error` if the database insert fails (e.g., duplicate link
 /// or foreign key constraint violation).
 pub async fn create(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_session_id: Id,
     goal_id: Id,
 ) -> Result<Model, Error> {
@@ -108,11 +110,51 @@ pub async fn find_in_progress_goals_by_coaching_session_id(
 ) -> Result<Vec<goals::Model>, Error> {
     let all_goals = find_goals_by_coaching_session_id(db, coaching_session_id).await?;
 
+    // Defensive cap: the write path enforces the limit, but we cap here too for safety.
     Ok(all_goals
         .into_iter()
         .filter(|g| g.in_progress())
         .take(super::goal::max_in_progress_goals())
         .collect())
+}
+
+/// Links all in-progress goals from a coaching relationship to a session.
+///
+/// Queries for goals with `InProgress` status on the given relationship,
+/// then creates a join table record for each one.
+/// Returns the number of goals linked.
+///
+/// This function does not manage its own transaction — callers are expected
+/// to wrap it in a transaction when atomicity with other operations is needed.
+///
+/// # Errors
+///
+/// Returns `Error` if any database query or insert fails.
+pub async fn link_in_progress_goals_to_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    session_id: Id,
+) -> Result<usize, Error> {
+    // Defensive cap: the write path enforces the limit, but we cap here too for safety.
+    let in_progress_goals: Vec<_> =
+        super::goal::find_in_progress_goals_by_coaching_relationship_id(
+            db,
+            coaching_relationship_id,
+        )
+        .await?
+        .into_iter()
+        .take(super::goal::max_in_progress_goals())
+        .collect();
+
+    if in_progress_goals.is_empty() {
+        return Ok(0);
+    }
+
+    for g in &in_progress_goals {
+        create(db, session_id, g.id).await?;
+    }
+
+    Ok(in_progress_goals.len())
 }
 
 /// Finds all sessions linked to a given goal.
@@ -258,6 +300,79 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].goal_id, goal_id);
+
+        Ok(())
+    }
+
+    fn create_test_goal(
+        coaching_relationship_id: Id,
+        status: entity::status::Status,
+    ) -> goals::Model {
+        let now = chrono::Utc::now().fixed_offset();
+        goals::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id,
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title: Some("Test goal".to_string()),
+            body: None,
+            status,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn link_in_progress_goals_to_session_links_goals() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let goal1 = create_test_goal(relationship_id, entity::status::Status::InProgress);
+        let goal2 = create_test_goal(relationship_id, entity::status::Status::InProgress);
+
+        let now = chrono::Utc::now();
+        let join1 = Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: goal1.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let join2 = Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: goal2.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Mock sequence: 1 SELECT (in-progress goals) + 2 INSERTs (one per goal)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal1, goal2]])
+            .append_query_results(vec![vec![join1]])
+            .append_query_results(vec![vec![join2]])
+            .into_connection();
+
+        let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
+        assert_eq!(count, 2, "should link 2 in-progress goals");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn link_in_progress_goals_to_session_skips_when_none() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+
+        // Mock: SELECT returns empty vec — no INSERTs expected
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
+        assert_eq!(count, 0, "should link 0 goals when none are in-progress");
 
         Ok(())
     }

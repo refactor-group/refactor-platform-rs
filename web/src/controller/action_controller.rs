@@ -257,6 +257,7 @@ pub async fn update_status(
     params(
         ApiVersion,
         ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id"),
+        ("goal_id" = Option<Id>, Query, description = "Filter by goal_id"),
         ("sort_by" = Option<crate::params::action::SortField>, Query, description = "Sort by field. Valid values: 'due_by', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "due_by"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),

@@ -40,6 +40,8 @@ use std::sync::Arc;
 use axum::Json;
 ```
 
+**No imports inside functions:** All `use` statements must be placed at the top of the file, never inside function bodies. Imports inside functions reduce discoverability and make it harder to see a module's full dependency surface at a glance.
+
 **Rationale**:
 - Improves code readability by grouping related imports
 - Makes it easy to identify external dependencies
@@ -108,8 +110,8 @@ pub async fn find_user(id: Id) -> User {
 ```rust
 // ✅ Good - generic variant, specific context in fields
 EntityApiErrorKind::ValidationError {
-    message: "A coaching relationship can have at most 3 active goals.".into(),
-    details: Some(serde_json::json!({ "active_goals": summaries })),
+    message: "A coaching relationship can have at most 3 in-progress goals.".into(),
+    details: Some(serde_json::json!({ "in_progress_goals": summaries })),
 }
 
 // ✅ Good - different validation, same variant

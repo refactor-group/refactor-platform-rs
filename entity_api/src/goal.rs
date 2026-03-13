@@ -6,7 +6,7 @@ use sea_orm::{
     entity::prelude::*,
     ActiveModelTrait,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, QueryFilter, TransactionTrait, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, QueryFilter, TransactionTrait, TryIntoModel,
 };
 
 use log::*;
@@ -27,7 +27,7 @@ pub async fn create(
     debug!("New Goal Model to be inserted: {goal_model:?}");
 
     if goal_model.in_progress() {
-        check_active_goal_limit(db, goal_model.coaching_relationship_id).await?;
+        check_in_progress_goal_limit(db, goal_model.coaching_relationship_id).await?;
     }
 
     let now = chrono::Utc::now();
@@ -57,9 +57,9 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
         Some(goal) => {
             debug!("Existing Goal model to be Updated: {goal:?}");
 
-            // Check active goal limit if transitioning into active from a non-active status.
+            // Check in-progress goal limit if transitioning to InProgress from another status.
             if model.in_progress() && !goal.in_progress() {
-                check_active_goal_limit(db, goal.coaching_relationship_id).await?;
+                check_in_progress_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 
             // Automatically update status_changed_at if the last status and new status differ:
@@ -110,9 +110,9 @@ pub async fn update_status(
         Some(goal) => {
             debug!("Existing Goal model to be Updated: {goal:?}");
 
-            // Check active goal limit if transitioning into active from a non-active status.
+            // Check in-progress goal limit if transitioning to InProgress from another status.
             if status == Status::InProgress && !goal.in_progress() {
-                check_active_goal_limit(db, goal.coaching_relationship_id).await?;
+                check_in_progress_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 
             let active_model: ActiveModel = ActiveModel {
@@ -164,13 +164,13 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     })
 }
 
-/// Finds all active goals (`InProgress` status) for a given coaching relationship.
+/// Finds all in-progress goals (`InProgress` status) for a given coaching relationship.
 ///
 /// # Errors
 ///
 /// Returns `Error` if the database query fails.
-pub async fn find_active_goals_by_coaching_relationship_id(
-    db: &DatabaseConnection,
+pub async fn find_in_progress_goals_by_coaching_relationship_id(
+    db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
 ) -> Result<Vec<Model>, Error> {
     Ok(Entity::find()
@@ -182,16 +182,16 @@ pub async fn find_active_goals_by_coaching_relationship_id(
 
 /// Checks that adding one more `InProgress` goal to a coaching relationship
 /// would not exceed `MAX_IN_PROGRESS_GOALS`. Returns a `ValidationError` carrying
-/// summaries of the current active goals so the caller can present a "swap" dialog.
-async fn check_active_goal_limit(
+/// summaries of the current in-progress goals so the caller can present a "swap" dialog.
+async fn check_in_progress_goal_limit(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
 ) -> Result<(), Error> {
-    let active_goals =
-        find_active_goals_by_coaching_relationship_id(db, coaching_relationship_id).await?;
+    let in_progress_goals =
+        find_in_progress_goals_by_coaching_relationship_id(db, coaching_relationship_id).await?;
 
-    if active_goals.len() >= MAX_IN_PROGRESS_GOALS {
-        let summaries: Vec<serde_json::Value> = active_goals
+    if in_progress_goals.len() >= MAX_IN_PROGRESS_GOALS {
+        let summaries: Vec<serde_json::Value> = in_progress_goals
             .iter()
             .map(|g| {
                 serde_json::json!({
@@ -205,11 +205,11 @@ async fn check_active_goal_limit(
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
                 message: format!(
-                    "A coaching relationship can have at most {MAX_IN_PROGRESS_GOALS} active goals."
+                    "A coaching relationship can have at most {MAX_IN_PROGRESS_GOALS} in-progress goals."
                 ),
                 details: Some(serde_json::json!({
-                    "max_active_goals": MAX_IN_PROGRESS_GOALS,
-                    "active_goals": summaries,
+                    "max_in_progress_goals": MAX_IN_PROGRESS_GOALS,
+                    "in_progress_goals": summaries,
                 })),
             },
         });
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_active_goals_returns_only_in_progress() -> Result<(), Error> {
+    async fn find_in_progress_goals_returns_only_in_progress() -> Result<(), Error> {
         let now = chrono::Utc::now();
         let relationship_id = Id::new_v4();
 
@@ -359,7 +359,7 @@ mod tests {
             coaching_relationship_id: relationship_id,
             created_in_session_id: None,
             user_id: Id::new_v4(),
-            title: Some("Active goal".to_owned()),
+            title: Some("In-progress goal".to_owned()),
             body: None,
             status: Status::InProgress,
             status_changed_at: None,
@@ -373,7 +373,8 @@ mod tests {
             .append_query_results(vec![vec![in_progress_goal.clone()]])
             .into_connection();
 
-        let results = find_active_goals_by_coaching_relationship_id(&db, relationship_id).await?;
+        let results =
+            find_in_progress_goals_by_coaching_relationship_id(&db, relationship_id).await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, Status::InProgress);
@@ -382,12 +383,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_active_goals_returns_empty_when_none() -> Result<(), Error> {
+    async fn find_in_progress_goals_returns_empty_when_none() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![Vec::<Model>::new()])
             .into_connection();
 
-        let results = find_active_goals_by_coaching_relationship_id(&db, Id::new_v4()).await?;
+        let results = find_in_progress_goals_by_coaching_relationship_id(&db, Id::new_v4()).await?;
 
         assert!(results.is_empty());
 
@@ -420,7 +421,7 @@ mod tests {
     async fn create_rejects_in_progress_when_at_limit() {
         let relationship_id = Id::new_v4();
 
-        let active_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS)
+        let in_progress_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS)
             .map(|i| {
                 create_test_goal(
                     Status::InProgress,
@@ -431,7 +432,7 @@ mod tests {
             .collect();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![active_goals])
+            .append_query_results(vec![in_progress_goals])
             .into_connection();
 
         let new_goal = create_test_goal(
@@ -454,7 +455,7 @@ mod tests {
     async fn create_allows_in_progress_when_under_limit() {
         let relationship_id = Id::new_v4();
 
-        let active_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS - 1)
+        let in_progress_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS - 1)
             .map(|i| {
                 create_test_goal(
                     Status::InProgress,
@@ -470,9 +471,9 @@ mod tests {
             relationship_id,
         );
 
-        // Mock sequence: active goals query → goal save
+        // Mock sequence: in-progress goals query → goal save
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![active_goals])
+            .append_query_results(vec![in_progress_goals])
             .append_query_results(vec![vec![new_goal.clone()]])
             .into_connection();
 
@@ -485,7 +486,7 @@ mod tests {
     async fn create_allows_not_started_even_at_limit() {
         let relationship_id = Id::new_v4();
 
-        // NotStarted bypasses the limit check — no active goals query needed
+        // NotStarted bypasses the limit check — no in-progress goals query needed
         let new_goal = create_test_goal(
             Status::NotStarted,
             Some("Queued goal".to_string()),
@@ -512,20 +513,20 @@ mod tests {
             relationship_id,
         );
 
-        let active_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS)
+        let in_progress_goals: Vec<Model> = (0..MAX_IN_PROGRESS_GOALS)
             .map(|i| {
                 create_test_goal(
                     Status::InProgress,
-                    Some(format!("Active {i}")),
+                    Some(format!("In-progress {i}")),
                     relationship_id,
                 )
             })
             .collect();
 
-        // Mock sequence: find_by_id (current goal) → active goals query → error
+        // Mock sequence: find_by_id (current goal) → in-progress goals query → error
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![current_goal.clone()]])
-            .append_query_results(vec![active_goals])
+            .append_query_results(vec![in_progress_goals])
             .into_connection();
 
         let result = update_status(&db, current_goal.id, Status::InProgress).await;
@@ -545,7 +546,7 @@ mod tests {
         // Goal is already InProgress — no-op transition, skips limit check
         let current_goal = create_test_goal(
             Status::InProgress,
-            Some("Already active".to_string()),
+            Some("Already in-progress".to_string()),
             relationship_id,
         );
 
