@@ -62,7 +62,13 @@ pub async fn create(
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
 
-    maybe_attach_meeting_url(db, config, &mut coaching_session_model, coaching_relationship.coach_id).await?;
+    maybe_attach_meeting_url(
+        db,
+        config,
+        &mut coaching_session_model,
+        coaching_relationship.coach_id,
+    )
+    .await?;
 
     let tiptap = TiptapDocument::new(config).await?;
     tiptap.create(&document_name).await?;
@@ -125,13 +131,10 @@ async fn maybe_attach_meeting_url(
     coach_id: Id,
 ) -> Result<(), Error> {
     if let Some(provider) = &coaching_session_model.provider {
-        let has_credentials = crate::oauth_connection::find_by_user_and_provider(
-            db,
-            coach_id,
-            *provider,
-        )
-        .await?
-        .is_some();
+        let has_credentials =
+            crate::oauth_connection::find_by_user_and_provider(db, coach_id, *provider)
+                .await?
+                .is_some();
 
         if has_credentials {
             let meeting_url = create_meeting_url(db, config, coach_id, provider).await?;
