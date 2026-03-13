@@ -466,6 +466,9 @@ async fn batch_load_goals(
         .all(db)
         .await?;
 
+    // CHANGEME(PR4): Return up to 3 in-progress goals per coaching session instead of just one.
+    // Change map type to HashMap<Id, Vec<Goal>>, collect with entry().or_default().push(goal),
+    // filter by goal.status == in_progress, and cap each vec at 3 entries.
     let mut map = HashMap::new();
     for (link, goal_opt) in links_with_goals {
         if let Some(goal) = goal_opt {

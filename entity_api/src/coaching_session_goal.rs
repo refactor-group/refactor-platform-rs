@@ -111,6 +111,7 @@ pub async fn find_in_progress_goals_by_coaching_session_id(
 ) -> Result<Vec<goals::Model>, Error> {
     let all_goals = find_goals_by_coaching_session_id(db, coaching_session_id).await?;
 
+    // Defensive cap: the write path enforces the limit, but we cap here too for safety.
     Ok(all_goals
         .into_iter()
         .filter(|g| g.in_progress())
@@ -133,9 +134,13 @@ pub async fn link_in_progress_goals_to_session(
     coaching_relationship_id: Id,
     session_id: Id,
 ) -> Result<usize, Error> {
-    let in_progress_goals =
+    // Defensive cap: the write path enforces the limit, but we cap here too for safety.
+    let in_progress_goals: Vec<_> =
         super::goal::find_in_progress_goals_by_coaching_relationship_id(db, coaching_relationship_id)
-            .await?;
+            .await?
+            .into_iter()
+            .take(super::goal::max_in_progress_goals())
+            .collect();
 
     if in_progress_goals.is_empty() {
         return Ok(0);
