@@ -62,23 +62,7 @@ pub async fn create(
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
 
-    // If a provider is specified, attempt to create a meeting space if the coach has OAuth
-    // credentials. If no credentials exist, skip meeting creation and proceed normally.
-    if let Some(provider) = &coaching_session_model.provider {
-        let has_credentials = crate::oauth_connection::find_by_user_and_provider(
-            db,
-            coaching_relationship.coach_id,
-            *provider,
-        )
-        .await?
-        .is_some();
-
-        if has_credentials {
-            let meeting_url =
-                create_meeting_url(db, config, coaching_relationship.coach_id, provider).await?;
-            coaching_session_model.meeting_url = Some(meeting_url);
-        }
-    }
+    maybe_attach_meeting_url(db, config, &mut coaching_session_model, coaching_relationship.coach_id).await?;
 
     let tiptap = TiptapDocument::new(config).await?;
     tiptap.create(&document_name).await?;
@@ -129,6 +113,31 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
     tiptap.delete(&document_name).await?;
 
     coaching_session::delete(db, id).await?;
+    Ok(())
+}
+
+/// If a provider is specified on the session, attempt to create a meeting space if the coach has
+/// OAuth credentials. If no credentials exist, skip meeting creation and proceed normally.
+async fn maybe_attach_meeting_url(
+    db: &DatabaseConnection,
+    config: &Config,
+    coaching_session_model: &mut Model,
+    coach_id: Id,
+) -> Result<(), Error> {
+    if let Some(provider) = &coaching_session_model.provider {
+        let has_credentials = crate::oauth_connection::find_by_user_and_provider(
+            db,
+            coach_id,
+            *provider,
+        )
+        .await?
+        .is_some();
+
+        if has_credentials {
+            let meeting_url = create_meeting_url(db, config, coach_id, provider).await?;
+            coaching_session_model.meeting_url = Some(meeting_url);
+        }
+    }
     Ok(())
 }
 
