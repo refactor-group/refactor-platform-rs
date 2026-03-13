@@ -13,7 +13,8 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[sea_orm(primary_key)]
     pub id: Id,
-    pub coaching_session_id: Id,
+    pub coaching_relationship_id: Id,
+    pub created_in_session_id: Option<Id>,
     #[serde(skip_deserializing)]
     pub user_id: Id,
     pub title: Option<String>,
@@ -23,6 +24,7 @@ pub struct Model {
     pub status_changed_at: Option<DateTimeWithTimeZone>,
     #[serde(skip_deserializing)]
     pub completed_at: Option<DateTimeWithTimeZone>,
+    pub target_date: Option<Date>,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
@@ -32,8 +34,16 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
+        belongs_to = "super::coaching_relationships::Entity",
+        from = "Column::CoachingRelationshipId",
+        to = "super::coaching_relationships::Column::Id",
+        on_update = "Cascade",
+        on_delete = "Cascade"
+    )]
+    CoachingRelationships,
+    #[sea_orm(
         belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CoachingSessionId",
+        from = "Column::CreatedInSessionId",
         to = "super::coaching_sessions::Column::Id",
         on_update = "NoAction",
         on_delete = "NoAction"
@@ -49,6 +59,12 @@ pub enum Relation {
     Users,
 }
 
+impl Related<super::coaching_relationships::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CoachingRelationships.def()
+    }
+}
+
 impl Related<super::coaching_sessions::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::CoachingSessions.def()
@@ -61,4 +77,54 @@ impl Related<super::users::Entity> for Entity {
     }
 }
 
+impl Model {
+    /// Returns `true` if this goal has `InProgress` status.
+    pub fn in_progress(&self) -> bool {
+        self.status == Status::InProgress
+    }
+}
+
 impl ActiveModelBehavior for ActiveModel {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_goal(status: Status) -> Model {
+        let now = chrono::Utc::now().fixed_offset();
+        Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title: Some("Test goal".to_string()),
+            body: None,
+            status,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn in_progress_returns_false_for_not_started() {
+        assert!(!create_test_goal(Status::NotStarted).in_progress());
+    }
+
+    #[test]
+    fn in_progress_returns_true_for_in_progress() {
+        assert!(create_test_goal(Status::InProgress).in_progress());
+    }
+
+    #[test]
+    fn in_progress_returns_false_for_completed() {
+        assert!(!create_test_goal(Status::Completed).in_progress());
+    }
+
+    #[test]
+    fn in_progress_returns_false_for_wont_do() {
+        assert!(!create_test_goal(Status::WontDo).in_progress());
+    }
+}

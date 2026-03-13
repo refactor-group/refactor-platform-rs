@@ -58,7 +58,7 @@ fn is_current_api_version(
 ) -> Result<CompareApiVersion, RejectionType> {
     let version_str = normalize_version(&version);
     let api_version_str = normalize_version(&api_version);
-    warn!(
+    trace!(
         "API version comparison {:?} == {:?}: {}",
         version_str,
         api_version_str,
@@ -67,6 +67,10 @@ fn is_current_api_version(
     if version_str == api_version_str {
         Ok(CompareApiVersion(version))
     } else {
+        warn!(
+            "API version mismatch: client sent {:?}, server expects {:?}",
+            version_str, api_version_str
+        );
         Err((
             StatusCode::BAD_REQUEST,
             format!(

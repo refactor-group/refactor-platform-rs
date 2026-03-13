@@ -53,6 +53,7 @@ pub async fn create(
 
     let action_active_model: ActiveModel = ActiveModel {
         coaching_session_id: Set(action_model.coaching_session_id),
+        goal_id: Set(action_model.goal_id),
         user_id: Set(user_id),
         body: Set(action_model.body),
         status: Set(action_model.status),
@@ -76,6 +77,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(action.id),
                 coaching_session_id: Unchanged(action.coaching_session_id),
+                goal_id: Set(model.goal_id),
                 user_id: Unchanged(model.user_id),
                 body: Set(model.body),
                 due_by: Set(model.due_by),
@@ -112,6 +114,7 @@ pub async fn update_status(
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(action.id),
                 coaching_session_id: Unchanged(action.coaching_session_id),
+                goal_id: Unchanged(action.goal_id),
                 user_id: Unchanged(action.user_id),
                 body: Unchanged(action.body),
                 due_by: Unchanged(action.due_by),
@@ -271,6 +274,7 @@ pub struct FindByUserParams {
     pub scope: Scope,
     pub coaching_session_id: Option<Id>,
     pub coaching_relationship_id: Option<Id>,
+    pub goal_id: Option<Id>,
     pub status: Option<entity::status::Status>,
     pub assignee_filter: AssigneeFilter,
     pub sort_column: Option<entity::actions::Column>,
@@ -349,6 +353,10 @@ pub async fn find_by_user(
             select.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
     }
 
+    if let Some(goal_id) = params.goal_id {
+        select = select.filter(actions::Column::GoalId.eq(goal_id));
+    }
+
     if let Some(status) = &params.status {
         select = select.filter(actions::Column::Status.eq(status.clone()));
     }
@@ -410,6 +418,7 @@ mod tests {
             id: Id::new_v4(),
             user_id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             body: Some("This is a action".to_owned()),
             due_by: Some(now.into()),
             status_changed_at: now.into(),
@@ -436,6 +445,7 @@ mod tests {
         let action_model = Model {
             id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             due_by: Some(now.into()),
             body: Some("This is a action".to_owned()),
             user_id: Id::new_v4(),
@@ -463,6 +473,7 @@ mod tests {
         let action_model = Model {
             id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             due_by: Some(now.into()),
             body: Some("This is a action".to_owned()),
             user_id: Id::new_v4(),
@@ -475,6 +486,7 @@ mod tests {
         let updated_action_model = Model {
             id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             due_by: Some(now.into()),
             body: Some("This is a action".to_owned()),
             user_id: Id::new_v4(),
@@ -520,6 +532,7 @@ mod tests {
             id: action_id,
             user_id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             body: Some("Assigned action".to_owned()),
             due_by: Some(now.into()),
             status_changed_at: now.into(),
@@ -602,6 +615,7 @@ mod tests {
             id: action_id,
             user_id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             body: Some("Session action".to_owned()),
             due_by: Some(now.into()),
             status_changed_at: now.into(),
@@ -650,6 +664,7 @@ mod tests {
             id: action_id,
             user_id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             body: Some("Action with assignee".to_owned()),
             due_by: Some(now.into()),
             status_changed_at: now.into(),
@@ -698,6 +713,7 @@ mod tests {
             id: action_id,
             user_id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
+            goal_id: None,
             body: Some("Action without assignee".to_owned()),
             due_by: Some(now.into()),
             status_changed_at: now.into(),
@@ -828,6 +844,41 @@ mod tests {
         Ok(())
     }
 
+    /// Tests that find_by_user with goal_id filter generates SQL with a goal_id WHERE clause.
+    /// This proves the filter is applied at the database level.
+    #[tokio::test]
+    async fn find_by_user_with_goal_id_filter() -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let goal_id = Id::new_v4();
+
+        // Empty mock — we only care about the generated SQL, not the results
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let _ = find_by_user(
+            &db,
+            user_id,
+            FindByUserParams {
+                scope: Scope::Sessions,
+                goal_id: Some(goal_id),
+                assignee_filter: AssigneeFilter::All,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let log = db.into_transaction_log();
+        let sql = format!("{:?}", log[0]);
+
+        assert!(
+            sql.contains(r#"\"actions\".\"goal_id\" ="#),
+            "SQL WHERE clause must filter by goal_id, got: {sql}"
+        );
+
+        Ok(())
+    }
+
     /// Helper to construct a minimal ActionWithAssignees for pure unit tests.
     fn action_with_assignees(assignee_ids: Vec<Id>) -> ActionWithAssignees {
         let now = chrono::Utc::now();
@@ -836,6 +887,7 @@ mod tests {
                 id: Id::new_v4(),
                 user_id: Id::new_v4(),
                 coaching_session_id: Id::new_v4(),
+                goal_id: None,
                 body: None,
                 due_by: None,
                 status_changed_at: now.into(),

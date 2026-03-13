@@ -63,6 +63,8 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     Coachees,
+    #[sea_orm(has_many = "super::goals::Entity")]
+    Goals,
 }
 
 impl Related<super::organizations::Entity> for Entity {
@@ -83,6 +85,20 @@ impl Related<super::coachees::Entity> for Entity {
     }
 }
 
+impl Related<super::goals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Goals.def()
+    }
+}
+
+impl Model {
+    /// Returns `true` if the given user is a participant (coach or coachee)
+    /// in this coaching relationship.
+    pub fn includes_user(&self, user_id: Id) -> bool {
+        self.coach_id == user_id || self.coachee_id == user_id
+    }
+}
+
 impl ActiveModelBehavior for ActiveModel {}
 
 // Alias to be used with queries
@@ -92,3 +108,49 @@ pub struct RelationshipAsCoach;
 // Alias to be used with queries
 #[derive(DeriveIden, Clone, Copy)]
 pub struct RelationshipAsCoachee;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_relationship(coach_id: Id, coachee_id: Id) -> Model {
+        let now = chrono::Utc::now().fixed_offset();
+        Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id,
+            slug: "test-slug".to_string(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn includes_user_returns_true_for_coach() {
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+        let relationship = create_test_relationship(coach_id, coachee_id);
+
+        assert!(relationship.includes_user(coach_id));
+    }
+
+    #[test]
+    fn includes_user_returns_true_for_coachee() {
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+        let relationship = create_test_relationship(coach_id, coachee_id);
+
+        assert!(relationship.includes_user(coachee_id));
+    }
+
+    #[test]
+    fn includes_user_returns_false_for_unrelated_user() {
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+        let other_user_id = Id::new_v4();
+        let relationship = create_test_relationship(coach_id, coachee_id);
+
+        assert!(!relationship.includes_user(other_user_id));
+    }
+}

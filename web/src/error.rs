@@ -102,6 +102,21 @@ impl Error {
                 );
                 (StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE ENTITY").into_response()
             }
+            EntityErrorKind::Conflict {
+                ref message,
+                ref details,
+            } => {
+                warn!("EntityErrorKind::Conflict: Responding with 409 Conflict. Error: {self:?}");
+                let mut body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "conflict",
+                    "message": message,
+                });
+                if let Some(d) = details {
+                    body["details"] = d.clone();
+                }
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
                     "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"
