@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::goal as GoalApi;
-use domain::goal_health as GoalHealthApi;
+use domain::goal_progress as GoalProgressApi;
 use domain::{goals::Model, Id};
 use serde_json::json;
 use service::config::ApiVersion;
@@ -278,16 +278,16 @@ pub async fn index(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goals)))
 }
 
-/// GET health metrics for a specific goal
+/// GET progress metrics for a specific goal
 #[utoipa::path(
     get,
-    path = "/goals/{id}/health",
+    path = "/goals/{id}/progress",
     params(
         ApiVersion,
         ("id" = Id, Path, description = "Goal id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved goal health metrics"),
+        (status = 200, description = "Successfully retrieved goal progress metrics"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Goal not found"),
         (status = 503, description = "Service temporarily unavailable")
@@ -296,15 +296,15 @@ pub async fn index(
         ("cookie_auth" = [])
     )
 )]
-pub async fn health(
+pub async fn progress(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Goal health metrics for id: {id}");
+    debug!("GET Goal progress metrics for id: {id}");
 
-    let metrics = GoalHealthApi::health_metrics(app_state.db_conn_ref(), id).await?;
+    let metrics = GoalProgressApi::progress_metrics(app_state.db_conn_ref(), id).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), metrics)))
 }

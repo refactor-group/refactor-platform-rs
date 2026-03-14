@@ -87,7 +87,7 @@ The rename from `overarching_goals` → `goals` is motivated by the broadening s
 - New migration: `m20260XXX_000000_add_goal_scoping.rs`
 - **Step 1a**: Add `coaching_relationship_id UUID` column to `goals` (initially nullable for the data migration)
   - FK constraint → `coaching_relationships(id)`, ON DELETE CASCADE
-- **Step 1b**: Add `target_date DATE NULL` column to `goals` — optional intended achieve-by date for dynamic health signal computation
+- **Step 1b**: Add `target_date DATE NULL` column to `goals` — optional intended achieve-by date for dynamic progress signal computation
 - **Step 2**: Data migration — populate `coaching_relationship_id` for all existing goals:
   ```sql
   UPDATE refactor_platform.goals g
@@ -181,9 +181,9 @@ The rename from `overarching_goals` → `goals` is motivated by the broadening s
 
 ---
 
-## PR 4 / Milestone 4: SSE Events + Health Signals (Q3)
+## PR 4 / Milestone 4: SSE Events + Progress Signals (Q3)
 
-**Goal:** Add SSE events for the join table and backend-computed health signals.
+**Goal:** Add SSE events for the join table and backend-computed progress signals.
 
 ### New SSE Events (for join table from PR2)
 - `events/src/lib.rs`: Add `DomainEvent` variants:
@@ -196,26 +196,26 @@ The rename from `overarching_goals` → `goals` is motivated by the broadening s
 - `sse/src/domain_event_handler.rs`: Add match arms
 - Update `domain/src/coaching_session_goal.rs`: Publish events on create/delete
 
-### Health Signals (synchronous, computed on read)
+### Progress Signals (synchronous, computed on read)
 - New enum in `entity/src/goals.rs` or a shared location:
   ```rust
-  enum GoalHealth {
+  enum Progress {
       SolidMomentum,
       NeedsAttention,
       LetsRefocus,
   }
   ```
-- New response struct `GoalHealthMetrics`:
+- New response struct `ProgressMetrics`:
   - `actions_completed: i32`
   - `actions_total: i32`
   - `linked_session_count: i32`
-  - `health: GoalHealth`
+  - `progress: Progress`
   - `last_session_date: Option<Date>`
   - `next_action_due: Option<DateTimeWithTimeZone>`
-- `entity_api/src/goal.rs`: Add `compute_health_metrics(db, goal_id)` — queries actions + sessions
-- `domain/src/goal.rs`: Expose health computation
-- `web/src/controller/goal_controller.rs`: New endpoint `GET /goals/:id/health` or enrich goal responses
-- Health computation logic — **dynamic, based on goal's `target_date`** when set:
+- `entity_api/src/goal_progress.rs`: Add `gather_progress_data(db, goal_id)` — queries actions + sessions
+- `domain/src/goal_progress.rs`: Expose progress computation
+- `web/src/controller/goal_controller.rs`: New endpoint `GET /goals/:id/progress` or enrich goal responses
+- Progress computation logic — **dynamic, based on goal's `target_date`** when set:
   - When `target_date` is set, compute `elapsed_pct` = (now - created_at) / (target_date - created_at) and `progress_pct` = actions_completed / actions_total
   - `SolidMomentum`: `progress_pct >= elapsed_pct` (on track or ahead of schedule) AND at least one session discussed it recently (within 25% of remaining duration or 2 weeks, whichever is shorter)
   - `NeedsAttention`: `progress_pct < elapsed_pct` (falling behind) OR no recent session within the threshold above
@@ -326,11 +326,11 @@ No new endpoints. Existing endpoints gain `goal_id` support:
 | GET | `/actions?goal_id=X` | New filter param — actions for a specific goal |
 | GET | `/users/:user_id/actions?goal_id=X` | Same filter on user-scoped endpoint |
 
-### PR4 — New Endpoints (health signals)
+### PR4 — New Endpoints (progress signals)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/goals/:id/health` | Returns `GoalHealthMetrics` with health signal, action stats, session stats |
+| GET | `/goals/:id/progress` | Returns `ProgressMetrics` with progress signal, action stats, session stats |
 
 **New SSE event types:**
 - `coaching_session_goal_created` — fires when a goal is linked to a session
