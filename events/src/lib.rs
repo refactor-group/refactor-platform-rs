@@ -70,6 +70,30 @@ pub enum DomainEvent {
         /// SSE manager routes events only to these users' active connections.
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when a goal is linked to a coaching session via the join table.
+    /// Triggers SSE notifications so participants see updated session-goal associations.
+    CoachingSessionGoalCreated {
+        /// Parent coaching relationship ID for scoped event routing.
+        coaching_relationship_id: Id,
+        /// The coaching session that the goal was linked to.
+        coaching_session_id: Id,
+        /// The goal that was linked to the session.
+        goal_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when a goal is unlinked from a coaching session.
+    /// Triggers SSE notifications so participants see the removed association.
+    CoachingSessionGoalDeleted {
+        /// Parent coaching relationship ID for scoped event routing.
+        coaching_relationship_id: Id,
+        /// The coaching session that the goal was unlinked from.
+        coaching_session_id: Id,
+        /// The goal that was unlinked from the session.
+        goal_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from relationship).
+        notify_user_ids: Vec<Id>,
+    },
 }
 
 /// Trait for handling domain events.
