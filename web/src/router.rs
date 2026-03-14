@@ -70,7 +70,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::goal_controller::delete,
             coaching_session::goal_controller::index,
             goal_controller::coaching_sessions_by_goal,
-            goal_controller::health,
+            goal_controller::progress,
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
@@ -362,7 +362,7 @@ pub fn goal_routes(app_state: AppState) -> Router {
                     "/goals/:id/sessions",
                     get(goal_controller::coaching_sessions_by_goal),
                 )
-                .route("/goals/:id/health", get(goal_controller::health))
+                .route("/goals/:id/progress", get(goal_controller::progress))
                 .route_layer(from_fn_with_state(app_state.clone(), protect::goals::by_id)),
         )
         .route_layer(from_fn(require_auth))

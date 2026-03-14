@@ -1,7 +1,7 @@
-//! Data gathering for goal health computation.
+//! Data gathering for goal progress computation.
 //!
 //! This module spans multiple entity types (goals, actions, coaching_sessions_goals)
-//! and gathers the raw data needed by the domain layer to compute health heuristics.
+//! and gathers the raw data needed by the domain layer to compute progress heuristics.
 
 use sea_orm::{entity::prelude::*, ConnectionTrait};
 
@@ -10,8 +10,8 @@ use log::*;
 use super::error::{EntityApiErrorKind, Error};
 use entity::{actions, coaching_sessions, coaching_sessions_goals, goals, status::Status, Id};
 
-/// Raw data gathered from multiple entities for health computation.
-pub struct HealthData {
+/// Raw data gathered from multiple entities for progress computation.
+pub struct ProgressData {
     /// The goal itself.
     pub goal: goals::Model,
     /// Total number of actions linked to this goal.
@@ -29,29 +29,29 @@ pub struct HealthData {
     pub last_coaching_session_date: Option<DateTime>,
 }
 
-/// Gathers all data needed to compute health metrics for a goal.
+/// Gathers all data needed to compute progress metrics for a goal.
 ///
 /// Queries across goals, actions, and coaching_sessions_goals to build
-/// a complete picture of goal health data.
+/// a complete picture of goal progress data.
 ///
 /// # Errors
 ///
 /// Returns `Error` if the goal is not found or any database query fails.
-pub async fn gather_health_data(
+pub async fn gather_progress_data(
     db: &impl ConnectionTrait,
     goal_id: Id,
-) -> Result<HealthData, Error> {
+) -> Result<ProgressData, Error> {
     let goal = find_goal(db, goal_id).await?;
     let actions = find_actions_for_goal(db, goal_id).await?;
     let action_stats = summarize_action_stats(&actions);
     let coaching_session_stats = find_linked_coaching_session_stats(db, goal_id).await?;
 
     debug!(
-        "Health data for goal {goal_id}: {}/{} actions completed, {} sessions linked",
+        "Progress data for goal {goal_id}: {}/{} actions completed, {} sessions linked",
         action_stats.completed, action_stats.total, coaching_session_stats.count
     );
 
-    Ok(HealthData {
+    Ok(ProgressData {
         goal,
         actions_total: action_stats.total,
         actions_completed: action_stats.completed,
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gather_health_data_returns_data_for_goal_with_no_actions_or_sessions(
+    async fn gather_progress_data_returns_data_for_goal_with_no_actions_or_sessions(
     ) -> Result<(), Error> {
         let goal = create_test_goal(None);
         let goal_id = goal.id;
@@ -248,7 +248,7 @@ mod tests {
             )>::new()])
             .into_connection();
 
-        let data = gather_health_data(&db, goal_id).await?;
+        let data = gather_progress_data(&db, goal_id).await?;
 
         assert_eq!(data.goal.id, goal_id);
         assert_eq!(data.actions_total, 0);
