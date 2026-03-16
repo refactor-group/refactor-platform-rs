@@ -161,13 +161,19 @@ async fn maybe_attach_meeting_url(
     coach_id: Id,
 ) -> Result<(), Error> {
     if let Some(provider) = &coaching_session_model.provider {
-        let has_credentials =
-            crate::oauth_connection::find_by_user_and_provider(db, coach_id, *provider)
-                .await?
-                .is_some();
+        let credentials =
+            crate::oauth_connection::find_by_user_and_provider(db, coach_id, *provider).await?;
 
-        if has_credentials {
-            let meeting_url = create_meeting_url(db, config, coach_id, provider).await?;
+        if let Some(credentials) = credentials {
+            let meeting_url = create_meeting_url(
+                db,
+                config,
+                coach_id,
+                provider,
+                &coaching_session_model.date,
+                credentials.external_account_id,
+            )
+            .await?;
             coaching_session_model.meeting_url = Some(meeting_url);
         }
     }
@@ -180,6 +186,8 @@ async fn create_meeting_url(
     config: &Config,
     coach_id: Id,
     provider: &crate::provider::Provider,
+    start_time: &NaiveDateTime,
+    external_account_id: Option<String>,
 ) -> Result<String, Error> {
     let access_token =
         crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
@@ -198,6 +206,28 @@ async fn create_meeting_url(
             );
 
             Ok(space.meeting_uri)
+        }
+        crate::provider::Provider::Zoom => {
+            let external_account_id = external_account_id.ok_or_else(|| {
+                warn!("Zoom oauth connection for does not have an external_account_id");
+                Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+                }
+            })?;
+
+            let client = crate::gateway::zoom::Client::new(&access_token, config.zoom_api_url())?;
+
+            let meeting = client
+                .create_meeting(start_time, &external_account_id)
+                .await?;
+
+            info!(
+                "Created Zoom meeting {} for coaching session",
+                meeting.join_url,
+            );
+
+            Ok(meeting.join_url)
         }
     }
 }

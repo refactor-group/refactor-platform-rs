@@ -18,6 +18,7 @@ mod m20251228_000001_add_actions_users_table;
 mod m20260228_000000_rename_overarching_goals_to_goals;
 mod m20260309_000000_goal_relationship_scoping;
 mod m20260309_000001_backfill_coaching_sessions_goals;
+mod m20260311_064303_add_zoom_to_provider_enum;
 mod m20260312_000000_add_goal_id_to_actions;
 
 pub struct Migrator;
@@ -42,6 +43,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20251220_000002_add_meeting_fields_to_sessions::Migration),
             Box::new(m20251228_000001_add_actions_users_table::Migration),
             Box::new(m20260228_000000_rename_overarching_goals_to_goals::Migration),
+            Box::new(m20260311_064303_add_zoom_to_provider_enum::Migration),
             Box::new(m20260309_000000_goal_relationship_scoping::Migration),
             Box::new(m20260309_000001_backfill_coaching_sessions_goals::Migration),
             Box::new(m20260312_000000_add_goal_id_to_actions::Migration),

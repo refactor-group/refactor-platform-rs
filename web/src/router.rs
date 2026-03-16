@@ -1,5 +1,7 @@
 use crate::{
-    controller::health_check_controller, middleware::auth::require_auth, params, protect, AppState,
+    controller::{health_check_controller, oauth_callback_controller},
+    middleware::auth::require_auth,
+    params, protect, AppState,
 };
 use axum::{
     middleware::{from_fn, from_fn_with_state},
@@ -542,7 +544,10 @@ fn sse_routes(app_state: AppState) -> Router {
 /// Routes for Google OAuth flow and connection management
 fn oauth_routes(app_state: AppState) -> Router {
     Router::new()
-        .route("/oauth/google/authorize", get(oauth_controller::authorize))
+        .route(
+            "/oauth/:provider/authorize",
+            get(oauth_controller::authorize),
+        )
         .route("/oauth/connections", get(oauth_controller::index))
         .route(
             "/oauth/connections/:provider",
@@ -550,8 +555,11 @@ fn oauth_routes(app_state: AppState) -> Router {
         )
         .route_layer(from_fn(require_auth))
         .merge(
-            // Callback doesn't require auth (user is redirected back from Google)
-            Router::new().route("/oauth/google/callback", get(oauth_controller::callback)),
+            // Callback doesn't require auth (user is redirected back from Google, or Zoom)
+            Router::new().route(
+                "/oauth/:provider/callback",
+                get(oauth_callback_controller::callback),
+            ),
         )
         .with_state(app_state)
 }
