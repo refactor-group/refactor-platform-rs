@@ -59,6 +59,7 @@ use utoipa_rapidoc::RapiDoc;
             organization::coaching_relationship_controller::create,
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
+            organization::coaching_relationship_controller::goal_progress,
             organization::user_controller::index,
             organization::user_controller::create,
             organization::user_controller::delete,
@@ -285,6 +286,10 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id",
             get(organization::coaching_relationship_controller::read),
+        )
+        .route(
+            "/organizations/:organization_id/coaching_relationships/:relationship_id/goal_progress",
+            get(organization::coaching_relationship_controller::goal_progress),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

@@ -13,6 +13,7 @@ use sea_orm::ConnectionTrait;
 use serde::Serialize;
 
 use crate::error::Error;
+use crate::status::Status;
 use crate::Id;
 
 /// Overall progress signal for a goal.
@@ -55,6 +56,75 @@ pub async fn progress_metrics(
         last_coaching_session_date: data.last_coaching_session_date,
         next_action_due: data.next_action_due,
     })
+}
+
+/// A single goal's identity combined with its computed progress metrics.
+#[derive(Debug, Clone, Serialize)]
+pub struct GoalProgressEntry {
+    pub goal_id: Id,
+    pub coaching_relationship_id: Id,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub status: Status,
+    pub status_changed_at: Option<DateTimeWithTimeZone>,
+    pub target_date: Option<NaiveDate>,
+    pub created_at: DateTimeWithTimeZone,
+    pub updated_at: DateTimeWithTimeZone,
+    pub progress_metrics: ProgressMetrics,
+}
+
+/// Aggregate goal progress for all goals in a coaching relationship.
+#[derive(Debug, Clone, Serialize)]
+pub struct RelationshipGoalProgress {
+    pub goal_progress: Vec<GoalProgressEntry>,
+}
+
+/// Computes progress metrics for all goals in a coaching relationship.
+///
+/// Uses batch-optimized aggregate queries (3-4 total, regardless of goal count)
+/// to gather data, then applies the same `compute_progress()` heuristics used
+/// by the single-goal endpoint.
+///
+/// # Errors
+///
+/// Returns `Error` if any database query fails.
+pub async fn relationship_goal_progress(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+) -> Result<RelationshipGoalProgress, Error> {
+    let batch_data =
+        entity_api::goal_progress::gather_batch_progress_data(db, coaching_relationship_id).await?;
+
+    let goal_progress = batch_data
+        .into_iter()
+        .map(|data| {
+            let progress = compute_progress(&data);
+
+            let metrics = ProgressMetrics {
+                progress,
+                actions_completed: data.actions_completed,
+                actions_total: data.actions_total,
+                linked_coaching_session_count: data.linked_coaching_session_count,
+                last_coaching_session_date: data.last_coaching_session_date,
+                next_action_due: data.next_action_due,
+            };
+
+            GoalProgressEntry {
+                goal_id: data.goal.id,
+                coaching_relationship_id: data.goal.coaching_relationship_id,
+                title: data.goal.title,
+                body: data.goal.body,
+                status: data.goal.status,
+                status_changed_at: data.goal.status_changed_at,
+                target_date: data.goal.target_date,
+                created_at: data.goal.created_at,
+                updated_at: data.goal.updated_at,
+                progress_metrics: metrics,
+            }
+        })
+        .collect();
+
+    Ok(RelationshipGoalProgress { goal_progress })
 }
 
 // ── Progress heuristics ───────────────────────────────────────────────
@@ -292,5 +362,123 @@ mod tests {
             now - Duration::days(45),
         ];
         assert_eq!(compute_progress(&data), Progress::LetsRefocus);
+    }
+}
+
+/// Tests for `relationship_goal_progress` that require MockDatabase.
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod batch_tests {
+    use super::*;
+    use chrono::Duration;
+    use sea_orm::{DatabaseBackend, MockDatabase};
+
+    use crate::goals;
+    use crate::status::Status;
+
+    fn create_test_goal_for_relationship(
+        coaching_relationship_id: Id,
+        target_date: Option<NaiveDate>,
+        age_days: i64,
+    ) -> goals::Model {
+        let now = Utc::now().fixed_offset();
+        let created_at = now - Duration::days(age_days);
+        goals::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id,
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title: Some("Test goal".to_string()),
+            body: Some("Test body".to_string()),
+            status: Status::InProgress,
+            status_changed_at: None,
+            completed_at: None,
+            target_date,
+            created_at,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn relationship_goal_progress_returns_empty_for_no_goals() {
+        let relationship_id = Id::new_v4();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let result = relationship_goal_progress(&db, relationship_id)
+            .await
+            .unwrap();
+
+        assert!(result.goal_progress.is_empty());
+    }
+
+    #[tokio::test]
+    async fn relationship_goal_progress_assembles_entries_with_correct_fields() {
+        let relationship_id = Id::new_v4();
+        let target = Utc::now().date_naive() + Duration::days(30);
+        let goal = create_test_goal_for_relationship(relationship_id, Some(target), 14);
+
+        // All goals have target_date → 3 queries (no completed dates query)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let result = relationship_goal_progress(&db, relationship_id)
+            .await
+            .unwrap();
+
+        assert_eq!(result.goal_progress.len(), 1);
+
+        let entry = &result.goal_progress[0];
+        assert_eq!(entry.goal_id, goal.id);
+        assert_eq!(entry.coaching_relationship_id, relationship_id);
+        assert_eq!(entry.title, Some("Test goal".to_string()));
+        assert_eq!(entry.body, Some("Test body".to_string()));
+        assert_eq!(entry.status, Status::InProgress);
+        assert_eq!(entry.target_date, Some(target));
+        assert_eq!(entry.progress_metrics.actions_total, 0);
+        assert_eq!(entry.progress_metrics.actions_completed, 0);
+        assert_eq!(entry.progress_metrics.linked_coaching_session_count, 0);
+    }
+
+    #[tokio::test]
+    async fn relationship_goal_progress_computes_progress_per_goal() {
+        let relationship_id = Id::new_v4();
+        // Brand new goal (3 days old) → SolidMomentum (grace period)
+        let new_goal = create_test_goal_for_relationship(
+            relationship_id,
+            Some(Utc::now().date_naive() + Duration::days(30)),
+            3,
+        );
+        // Old goal with no actions (14 days old, no target) → NeedsAttention
+        let old_goal = create_test_goal_for_relationship(relationship_id, None, 14);
+
+        // 4 queries: goals, action stats, session stats, completed dates (for momentum goal)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![new_goal.clone(), old_goal.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let result = relationship_goal_progress(&db, relationship_id)
+            .await
+            .unwrap();
+
+        assert_eq!(result.goal_progress.len(), 2);
+        // Brand new goal gets grace period → SolidMomentum
+        assert_eq!(
+            result.goal_progress[0].progress_metrics.progress,
+            Progress::SolidMomentum
+        );
+        // Old momentum goal with 0 actions → NeedsAttention
+        assert_eq!(
+            result.goal_progress[1].progress_metrics.progress,
+            Progress::NeedsAttention
+        );
     }
 }

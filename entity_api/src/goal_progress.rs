@@ -3,7 +3,11 @@
 //! This module spans multiple entity types (goals, actions, coaching_sessions_goals)
 //! and gathers the raw data needed by the domain layer to compute progress heuristics.
 
-use sea_orm::{entity::prelude::*, ConnectionTrait};
+use std::collections::HashMap;
+
+use sea_orm::{
+    entity::prelude::*, ConnectionTrait, FromQueryResult, JoinType, QueryOrder, QuerySelect,
+};
 
 use log::*;
 
@@ -60,6 +64,182 @@ pub async fn gather_progress_data(
         linked_coaching_session_count: coaching_session_stats.count,
         last_coaching_session_date: coaching_session_stats.last_date,
     })
+}
+
+/// Aggregate row for action stats per goal.
+#[derive(Debug, FromQueryResult)]
+struct ActionStatsRow {
+    goal_id: Id,
+    actions_total: i64,
+    actions_completed: i64,
+    next_action_due: Option<DateTimeWithTimeZone>,
+}
+
+/// Aggregate row for session stats per goal.
+#[derive(Debug, FromQueryResult)]
+struct SessionStatsRow {
+    goal_id: Id,
+    linked_session_count: i64,
+    last_session_date: Option<DateTime>,
+}
+
+/// Row for completed action timestamps (momentum-based progress computation).
+#[derive(Debug, FromQueryResult)]
+struct CompletedDateRow {
+    goal_id: Id,
+    status_changed_at: DateTimeWithTimeZone,
+}
+
+/// Gathers progress data for all goals in a coaching relationship using aggregate queries.
+///
+/// Uses 3-4 optimized queries regardless of goal count:
+/// 1. All goals for the relationship
+/// 2. Action stats per goal (total, completed, next due) via `GROUP BY` with `CASE WHEN`
+/// 3. Session stats per goal (count, last date) via `GROUP BY` with `JOIN`
+/// 4. (conditional) Completed action dates for momentum-based goals only
+///
+/// # Errors
+///
+/// Returns `Error` if any database query fails.
+pub async fn gather_batch_progress_data(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+) -> Result<Vec<ProgressData>, Error> {
+    // Query 1: All goals for the coaching relationship
+    let goals = goals::Entity::find()
+        .filter(goals::Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .all(db)
+        .await?;
+
+    if goals.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let goal_ids: Vec<Id> = goals.iter().map(|g| g.id).collect();
+
+    // Query 2: Action stats aggregated per goal — single query with CASE WHEN
+    // for conditional count (completed) and conditional MIN (next due for non-completed)
+    let action_stats_rows: Vec<ActionStatsRow> = actions::Entity::find()
+        .select_only()
+        .column(actions::Column::GoalId)
+        .column_as(actions::Column::Id.count(), "actions_total")
+        .column_as(
+            Expr::cust("SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)"),
+            "actions_completed",
+        )
+        .column_as(
+            Expr::cust("MIN(CASE WHEN status != 'completed' THEN due_by END)"),
+            "next_action_due",
+        )
+        .filter(actions::Column::GoalId.is_in(goal_ids.clone()))
+        .group_by(actions::Column::GoalId)
+        .into_model::<ActionStatsRow>()
+        .all(db)
+        .await?;
+
+    let action_stats: HashMap<Id, &ActionStatsRow> =
+        action_stats_rows.iter().map(|r| (r.goal_id, r)).collect();
+
+    // Query 3: Session stats aggregated per goal via JOIN to coaching_sessions
+    let session_stats_rows: Vec<SessionStatsRow> = coaching_sessions_goals::Entity::find()
+        .select_only()
+        .column(coaching_sessions_goals::Column::GoalId)
+        .column_as(
+            coaching_sessions_goals::Column::Id.count(),
+            "linked_session_count",
+        )
+        .column_as(coaching_sessions::Column::Date.max(), "last_session_date")
+        .join(
+            JoinType::InnerJoin,
+            coaching_sessions_goals::Relation::CoachingSessions.def(),
+        )
+        .filter(coaching_sessions_goals::Column::GoalId.is_in(goal_ids.clone()))
+        .group_by(coaching_sessions_goals::Column::GoalId)
+        .into_model::<SessionStatsRow>()
+        .all(db)
+        .await?;
+
+    let session_stats: HashMap<Id, &SessionStatsRow> =
+        session_stats_rows.iter().map(|r| (r.goal_id, r)).collect();
+
+    // Query 4 (conditional): Completed action dates for momentum-based goals only.
+    // Duration-based goals (with target_date) don't use cadence calculations.
+    let momentum_goal_ids: Vec<Id> = goals
+        .iter()
+        .filter(|g| g.target_date.is_none())
+        .map(|g| g.id)
+        .collect();
+
+    let completed_dates_by_goal: HashMap<Id, Vec<DateTimeWithTimeZone>> =
+        if momentum_goal_ids.is_empty() {
+            HashMap::new()
+        } else {
+            let date_rows: Vec<CompletedDateRow> = actions::Entity::find()
+                .select_only()
+                .column(actions::Column::GoalId)
+                .column(actions::Column::StatusChangedAt)
+                .filter(actions::Column::GoalId.is_in(momentum_goal_ids))
+                .filter(actions::Column::Status.eq("completed"))
+                .order_by_asc(actions::Column::GoalId)
+                .order_by_asc(actions::Column::StatusChangedAt)
+                .into_model::<CompletedDateRow>()
+                .all(db)
+                .await?;
+
+            let mut map: HashMap<Id, Vec<DateTimeWithTimeZone>> = HashMap::new();
+            for row in date_rows {
+                map.entry(row.goal_id)
+                    .or_default()
+                    .push(row.status_changed_at);
+            }
+            map
+        };
+
+    // Assemble ProgressData for each goal from aggregate results
+    let result: Vec<ProgressData> = goals
+        .into_iter()
+        .map(|goal| {
+            let goal_id = goal.id;
+
+            let (actions_total, actions_completed, next_action_due) =
+                match action_stats.get(&goal_id) {
+                    Some(stats) => (
+                        stats.actions_total as usize,
+                        stats.actions_completed as usize,
+                        stats.next_action_due,
+                    ),
+                    None => (0, 0, None),
+                };
+
+            let (linked_coaching_session_count, last_coaching_session_date) =
+                match session_stats.get(&goal_id) {
+                    Some(stats) => (stats.linked_session_count as usize, stats.last_session_date),
+                    None => (0, None),
+                };
+
+            let completed_action_dates = completed_dates_by_goal
+                .get(&goal_id)
+                .cloned()
+                .unwrap_or_default();
+
+            ProgressData {
+                goal,
+                actions_total,
+                actions_completed,
+                completed_action_dates,
+                next_action_due,
+                linked_coaching_session_count,
+                last_coaching_session_date,
+            }
+        })
+        .collect();
+
+    debug!(
+        "Batch progress data for relationship {coaching_relationship_id}: {} goals",
+        result.len()
+    );
+
+    Ok(result)
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
@@ -163,10 +343,17 @@ mod tests {
     use sea_orm::{DatabaseBackend, MockDatabase};
 
     fn create_test_goal(target_date: Option<Date>) -> goals::Model {
+        create_test_goal_for_relationship(Id::new_v4(), target_date)
+    }
+
+    fn create_test_goal_for_relationship(
+        coaching_relationship_id: Id,
+        target_date: Option<Date>,
+    ) -> goals::Model {
         let now = chrono::Utc::now().fixed_offset();
         goals::Model {
             id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
+            coaching_relationship_id,
             created_in_session_id: None,
             user_id: Id::new_v4(),
             title: Some("Test goal".to_string()),
@@ -255,6 +442,85 @@ mod tests {
         assert_eq!(data.actions_completed, 0);
         assert_eq!(data.linked_coaching_session_count, 0);
         assert!(data.last_coaching_session_date.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gather_batch_progress_data_returns_empty_for_no_goals() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+
+        // Query 1: goals → empty (no further queries executed)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let result = gather_batch_progress_data(&db, relationship_id).await?;
+
+        assert!(result.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gather_batch_progress_data_assembles_data_for_duration_based_goals(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let target = chrono::Utc::now().date_naive() + chrono::Duration::days(30);
+        let goal1 = create_test_goal_for_relationship(relationship_id, Some(target));
+        let goal2 = create_test_goal_for_relationship(relationship_id, Some(target));
+
+        // All goals have target_date → momentum_goal_ids is empty → query 4 is skipped.
+        // Mock sequence: goals → action stats (empty) → session stats (empty)
+        // Empty result sets use goals::Model as a dummy type (type is irrelevant for 0 rows).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal1.clone(), goal2.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let result = gather_batch_progress_data(&db, relationship_id).await?;
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].goal.id, goal1.id);
+        assert_eq!(result[1].goal.id, goal2.id);
+        // No actions or sessions → defaults to zero
+        for data in &result {
+            assert_eq!(data.actions_total, 0);
+            assert_eq!(data.actions_completed, 0);
+            assert_eq!(data.linked_coaching_session_count, 0);
+            assert!(data.next_action_due.is_none());
+            assert!(data.last_coaching_session_date.is_none());
+            assert!(data.completed_action_dates.is_empty());
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gather_batch_progress_data_runs_completed_dates_query_for_momentum_goals(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        // One momentum-based goal (no target_date) → query 4 executes
+        let goal = create_test_goal_for_relationship(relationship_id, None);
+
+        // Mock sequence: goals → action stats (empty) → session stats (empty) → completed dates (empty)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let result = gather_batch_progress_data(&db, relationship_id).await?;
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].goal.id, goal.id);
+        assert!(result[0].goal.target_date.is_none());
+        assert!(result[0].completed_action_dates.is_empty());
+
+        // Verify that 4 queries were executed (not 3)
+        let log = db.into_transaction_log();
+        assert_eq!(log.len(), 4);
 
         Ok(())
     }
