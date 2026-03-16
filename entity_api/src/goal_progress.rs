@@ -79,8 +79,8 @@ struct ActionStatsRow {
 #[derive(Debug, FromQueryResult)]
 struct SessionStatsRow {
     goal_id: Id,
-    linked_session_count: i64,
-    last_session_date: Option<DateTime>,
+    linked_coaching_session_count: i64,
+    last_coaching_session_date: Option<DateTime>,
 }
 
 /// Row for completed action timestamps (momentum-based progress computation).
@@ -146,9 +146,12 @@ pub async fn gather_batch_progress_data(
         .column(coaching_sessions_goals::Column::GoalId)
         .column_as(
             coaching_sessions_goals::Column::Id.count(),
-            "linked_session_count",
+            "linked_coaching_session_count",
         )
-        .column_as(coaching_sessions::Column::Date.max(), "last_session_date")
+        .column_as(
+            coaching_sessions::Column::Date.max(),
+            "last_coaching_session_date",
+        )
         .join(
             JoinType::InnerJoin,
             coaching_sessions_goals::Relation::CoachingSessions.def(),
@@ -213,7 +216,10 @@ pub async fn gather_batch_progress_data(
 
             let (linked_coaching_session_count, last_coaching_session_date) =
                 match session_stats.get(&goal_id) {
-                    Some(stats) => (stats.linked_session_count as usize, stats.last_session_date),
+                    Some(stats) => (
+                        stats.linked_coaching_session_count as usize,
+                        stats.last_coaching_session_date,
+                    ),
                     None => (0, None),
                 };
 
