@@ -40,6 +40,8 @@ use std::sync::Arc;
 use axum::Json;
 ```
 
+**No imports inside functions:** All `use` statements must be placed at the top of the file, never inside function bodies. Imports inside functions reduce discoverability and make it harder to see a module's full dependency surface at a glance.
+
 **Rationale**:
 - Improves code readability by grouping related imports
 - Makes it easy to identify external dependencies
@@ -78,7 +80,6 @@ fn GetActiveUsers() -> Vec<User> { ... }
 
 - Use `Result<T, E>` for fallible operations
 - Prefer the `?` operator for error propagation
-- Create domain-specific error types when appropriate
 - Avoid `.unwrap()` and `.expect()` in production code paths
 
 ```rust
@@ -100,6 +101,37 @@ pub async fn find_user(id: Id) -> User {
 }
 ```
 
+### Error Variant Reuse
+
+**CRITICAL:** Before adding a new error variant, check whether an existing generic variant can carry the information you need. Adding resource-specific or feature-specific error variants (e.g., `ActiveGoalLimitReached`, `MaxSessionsExceeded`, `DuplicateSlugDetected`) causes enum proliferation and forces changes at every layer in the error chain.
+
+**Prefer generic, reusable error variants that carry context via fields:**
+
+```rust
+// ✅ Good - generic variant, specific context in fields
+EntityApiErrorKind::ValidationError {
+    message: "A coaching relationship can have at most 3 in-progress goals.".into(),
+    details: Some(serde_json::json!({ "in_progress_goals": summaries })),
+}
+
+// ✅ Good - different validation, same variant
+EntityApiErrorKind::ValidationError {
+    message: "Coach and coachee must belong to the same organization.".into(),
+    details: None,
+}
+
+// ❌ Bad - one-off variant per validation rule
+EntityApiErrorKind::ActiveGoalLimitReached { active_goals: Vec<GoalSummary> }
+EntityApiErrorKind::DuplicateCoachingRelationship
+EntityApiErrorKind::CoachOrgMismatch
+```
+
+**When IS a new variant warranted?**
+
+A new variant is appropriate when the error represents a **fundamentally different category** that requires different handling at higher layers (different HTTP status code, different retry behavior, different logging level). Examples of good distinct variants: `RecordNotFound` (→ 404), `SystemError` (→ 503), `RecordUnauthenticated` (→ 401).
+
+**Rule of thumb:** If two errors would map to the same HTTP status code and the same programmatic handling by the caller, they belong in the same variant with different messages/details.
+
 ### Cross-Layer Error Propagation
 
 Errors must flow through the layer chain `entity_api` -> `domain` -> `web` without skipping layers. Each layer defines its own error types, and conversions happen at layer boundaries using `From` impls and the `?` operator.
@@ -114,7 +146,7 @@ Errors must flow through the layer chain `entity_api` -> `domain` -> `web` witho
 
 1. **Never import `entity_api` types in the `web` layer.** The web layer should only depend on `domain` types. If you find yourself importing `entity_api::error::EntityApiErrorKind` in web code, you are violating the layer boundary.
 
-2. **Adding a new error variant** requires changes at each layer:
+2. **Adding a new error variant** requires changes at each layer and should be rare — see [Error Variant Reuse](#error-variant-reuse) above. First check whether an existing variant (e.g., `ValidationError`) can carry your context. If a genuinely new category is needed:
    - Add the variant to `EntityApiErrorKind` in `entity_api/src/error.rs`
    - Map it to an `EntityErrorKind` variant in the `From<EntityApiError>` impl in `domain/src/error.rs`
    - Handle the `EntityErrorKind` variant in `web/src/error.rs` to return the appropriate HTTP status code

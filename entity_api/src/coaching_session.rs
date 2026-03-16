@@ -2,18 +2,19 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    goals, organizations,
+    coaching_sessions_goals, goals, organizations,
     provider::Provider,
     users, Id,
 };
 use log::debug;
 use sea_orm::{
-    entity::prelude::*, DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, TryIntoModel,
+    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QueryOrder, QuerySelect,
+    Set, TryIntoModel,
 };
 use std::collections::HashMap;
 
 pub async fn create(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_session_model: Model,
 ) -> Result<Model, Error> {
     debug!("New Coaching Session Model to be inserted: {coaching_session_model:?}");
@@ -444,7 +445,10 @@ async fn batch_load_organizations(
         .collect())
 }
 
-/// Batch load goals by session IDs
+/// Batch load goals by session IDs via the coaching_sessions_goals join table.
+///
+/// Returns at most one goal per session (the first linked goal). For full per-session
+/// goal lists, use `GET /coaching_sessions/{id}/goals` instead.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
@@ -453,13 +457,26 @@ async fn batch_load_goals(
         return Ok(HashMap::new());
     }
 
-    Ok(goals::Entity::find()
-        .filter(goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()))
+    let links_with_goals = coaching_sessions_goals::Entity::find()
+        .filter(
+            coaching_sessions_goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
+        )
+        .find_also_related(goals::Entity)
         .all(db)
-        .await?
-        .into_iter()
-        .map(|g| (g.coaching_session_id, g))
-        .collect())
+        .await?;
+
+    // CHANGEME(PR4): Return up to 3 in-progress goals per coaching session instead of just one.
+    // Change map type to HashMap<Id, Vec<Goal>>, collect with entry().or_default().push(goal),
+    // filter by goal.status == in_progress, and cap each vec at 3 entries.
+    let mut map = HashMap::new();
+    for (link, goal_opt) in links_with_goals {
+        if let Some(goal) = goal_opt {
+            // First goal per session wins (HashMap::entry preserves the first insert)
+            map.entry(link.coaching_session_id).or_insert(goal);
+        }
+    }
+
+    Ok(map)
 }
 
 /// Batch load agreements by session IDs

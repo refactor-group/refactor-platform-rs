@@ -30,8 +30,11 @@ pub enum EntityApiErrorKind {
     RecordUnauthenticated,
     // Errors related to interactions with the database itself. Ex DbError::Conn
     SystemError,
-    // Validation error
-    ValidationError,
+    // Validation error with descriptive message and optional structured details
+    ValidationError {
+        message: String,
+        details: Option<serde_json::Value>,
+    },
     // Other errors
     Other(String),
 }

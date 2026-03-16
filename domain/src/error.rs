@@ -44,6 +44,10 @@ pub enum EntityErrorKind {
     NotFound,
     Invalid,
     Unauthenticated,
+    Conflict {
+        message: String,
+        details: Option<serde_json::Value>,
+    },
     DbTransaction,
     ServiceUnavailable,
     Other(String),
@@ -74,10 +78,14 @@ impl StdError for Error {
 // This is where we translate errors from the `entity_api`` layer to the `domain`` layer.
 impl From<EntityApiError> for Error {
     fn from(err: EntityApiError) -> Self {
-        let entity_error_kind = match err.error_kind {
+        let entity_error_kind = match &err.error_kind {
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
             EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,
+            EntityApiErrorKind::ValidationError { message, details } => EntityErrorKind::Conflict {
+                message: message.clone(),
+                details: details.clone(),
+            },
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };

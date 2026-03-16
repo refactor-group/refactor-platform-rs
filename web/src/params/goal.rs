@@ -20,7 +20,8 @@ pub(crate) enum SortField {
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
-    pub(crate) coaching_session_id: Id,
+    pub(crate) coaching_relationship_id: Id,
+    pub(crate) status: Option<String>,
     pub(crate) sort_by: Option<SortField>,
     pub(crate) sort_order: Option<SortOrder>,
 }
@@ -29,9 +30,16 @@ impl IntoQueryFilterMap for IndexParams {
     fn into_query_filter_map(self) -> QueryFilterMap {
         let mut query_filter_map = QueryFilterMap::new();
         query_filter_map.insert(
-            "coaching_session_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.coaching_session_id)))),
+            "coaching_relationship_id".to_string(),
+            Some(Value::Uuid(Some(Box::new(self.coaching_relationship_id)))),
         );
+
+        if let Some(status) = self.status {
+            query_filter_map.insert(
+                "status".to_string(),
+                Some(Value::String(Some(Box::new(status)))),
+            );
+        }
 
         query_filter_map
     }

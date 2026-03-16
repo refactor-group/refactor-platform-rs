@@ -11,9 +11,41 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::goal as GoalApi;
 use domain::{goals::Model, Id};
+use serde_json::json;
 use service::config::ApiVersion;
 
 use log::*;
+
+/// GET sessions linked to a specific goal
+#[utoipa::path(
+    get,
+    path = "/goals/{goal_id}/sessions",
+    params(
+        ApiVersion,
+        ("goal_id" = Id, Path, description = "Goal id"),
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved sessions linked to goal", body = [entity::coaching_sessions_goals::Model]),
+        (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn coaching_sessions_by_goal(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path(goal_id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("GET sessions linked to goal {goal_id}");
+
+    let links =
+        GoalApi::find_coaching_sessions_by_goal_id(app_state.db_conn_ref(), goal_id).await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), links)))
+}
 
 /// POST create a new Goal
 #[utoipa::path(
@@ -35,8 +67,6 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Json(goal_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
@@ -107,8 +137,6 @@ pub async fn read(
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
     Json(goal_model): Json<Model>,
@@ -169,12 +197,50 @@ pub async fn update_status(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goal)))
 }
 
+/// DELETE a Goal by id
+#[utoipa::path(
+    delete,
+    path = "/goals/{id}",
+    params(
+        ApiVersion,
+        ("id" = Id, Path, description = "Id of goal to delete"),
+    ),
+    responses(
+        (status = 200, description = "Successfully Deleted Goal"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Goal not found"),
+        (status = 405, description = "Method not allowed"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn delete(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path(id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("DELETE Goal by id: {id}");
+
+    GoalApi::delete(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+    )
+    .await?;
+
+    Ok(Json(json!({"id": id})))
+}
+
 #[utoipa::path(
     get,
     path = "/goals",
     params(
         ApiVersion,
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id"),
+        ("coaching_relationship_id" = Id, Query, description = "Filter by coaching_relationship_id"),
+        ("status" = Option<String>, Query, description = "Filter by status (e.g., 'in_progress', 'completed')"),
         ("sort_by" = Option<crate::params::goal::SortField>, Query, description = "Sort by field. Valid values: 'title', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "title"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
@@ -191,8 +257,6 @@ pub async fn update_status(
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
