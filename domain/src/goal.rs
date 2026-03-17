@@ -214,6 +214,42 @@ pub async fn unlink_from_coaching_session(
     Ok(())
 }
 
+/// Unlinks a goal from a coaching session by the (coaching_session_id, goal_id) pair
+/// and publishes an SSE event.
+pub async fn unlink_goal_from_coaching_session(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    coaching_session_id: Id,
+    goal_id: Id,
+) -> Result<(), Error> {
+    let (link, relationship) =
+        CoachingSessionGoalApi::find_by_session_and_goal_with_coaching_relationship(
+            db,
+            coaching_session_id,
+            goal_id,
+        )
+        .await?;
+    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+
+    CoachingSessionGoalApi::delete_by_id(db, link.id).await?;
+
+    event_publisher
+        .publish(DomainEvent::CoachingSessionGoalDeleted {
+            coaching_relationship_id: relationship.id,
+            coaching_session_id: link.coaching_session_id,
+            goal_id: link.goal_id,
+            notify_user_ids,
+        })
+        .await;
+
+    debug!(
+        "Published CoachingSessionGoalDeleted event for goal {} in session {}",
+        link.goal_id, link.coaching_session_id
+    );
+
+    Ok(())
+}
+
 /// Returns all goal models linked to a coaching session (eager-loaded).
 pub async fn find_goals_by_coaching_session_id(
     db: &DatabaseConnection,

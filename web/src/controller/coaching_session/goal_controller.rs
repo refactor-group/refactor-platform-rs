@@ -60,11 +60,11 @@ pub async fn create(
 /// DELETE unlink a goal from a coaching session
 #[utoipa::path(
     delete,
-    path = "/coaching_sessions/{coaching_session_id}/goals/{id}",
+    path = "/coaching_sessions/{coaching_session_id}/goals/{goal_id}",
     params(
         ApiVersion,
         ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("id" = Id, Path, description = "Id of the coaching_session_goal link to remove"),
+        ("goal_id" = Id, Path, description = "Goal id to unlink from this session"),
     ),
     responses(
         (status = 200, description = "Successfully unlinked goal from session"),
@@ -80,18 +80,19 @@ pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path((_coaching_session_id, id)): Path<(Id, Id)>,
+    Path((coaching_session_id, goal_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("DELETE coaching_session_goal link by id: {id}");
+    debug!("DELETE unlink goal {goal_id} from session {coaching_session_id}");
 
-    GoalApi::unlink_from_coaching_session(
+    GoalApi::unlink_goal_from_coaching_session(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
-        id,
+        coaching_session_id,
+        goal_id,
     )
     .await?;
 
-    Ok(Json(serde_json::json!({"id": id})))
+    Ok(Json(serde_json::json!({"goal_id": goal_id})))
 }
 
 /// GET goals linked to a specific coaching session (eager-loaded)
