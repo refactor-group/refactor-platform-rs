@@ -2,12 +2,12 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::coaching_session::goal::LinkParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::coaching_sessions_goals::Model;
 use domain::goal as GoalApi;
 use domain::Id;
 use service::config::ApiVersion;
@@ -22,7 +22,7 @@ use log::*;
         ApiVersion,
         ("coaching_session_id" = Id, Path, description = "Coaching session id"),
     ),
-    request_body = entity::coaching_sessions_goals::Model,
+    request_body = LinkParams,
     responses(
         (status = 201, description = "Successfully linked goal to session", body = [entity::coaching_sessions_goals::Model]),
         (status = 401, description = "Unauthorized"),
@@ -39,18 +39,18 @@ pub async fn create(
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(coaching_session_id): Path<Id>,
-    Json(model): Json<Model>,
+    Json(params): Json<LinkParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
         "POST Link goal {} to session {}",
-        model.goal_id, coaching_session_id
+        params.goal_id, coaching_session_id
     );
 
     let link = GoalApi::link_to_coaching_session(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         coaching_session_id,
-        model.goal_id,
+        params.goal_id,
     )
     .await?;
 
