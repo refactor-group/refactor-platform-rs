@@ -13,6 +13,8 @@ pub enum Status {
     InProgress,
     #[sea_orm(string_value = "completed")]
     Completed,
+    #[sea_orm(string_value = "on_hold")]
+    OnHold,
     #[sea_orm(string_value = "wont_do")]
     WontDo,
 }
@@ -23,6 +25,7 @@ impl From<&str> for Status {
             "not_started" => Self::NotStarted,
             "in_progress" => Self::InProgress,
             "completed" => Self::Completed,
+            "on_hold" => Self::OnHold,
             "wont_do" => Self::WontDo,
             _ => Self::InProgress,
         }
@@ -35,6 +38,7 @@ impl std::fmt::Display for Status {
             Self::NotStarted => write!(f, "Not Started"),
             Self::InProgress => write!(f, "In Progress"),
             Self::Completed => write!(f, "Completed"),
+            Self::OnHold => write!(f, "On Hold"),
             Self::WontDo => write!(f, "Won't Do"),
         }
     }
