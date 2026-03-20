@@ -167,7 +167,7 @@ pub struct Provider {
 ```
 
 Key API calls:
-- `POST /bot` — body includes `meeting_url`, `bot_name`, `webhook_url`, `recording_config`
+- `POST /bot` — body includes `meeting_url`, `bot_name`, `webhook_url`, `recording_config`, and `metadata: { "coaching_session_id": "<uuid>" }`
 - `DELETE /bot/{id}` — stop and remove the recording bot
 
 **`domain/src/gateway/assembly_ai/mod.rs`**
@@ -263,10 +263,11 @@ POST /webhooks/recall_ai
     → Return 401 Unauthorized on invalid signature (prevents pointless Svix retries)
   - Deserialize event type from JSON body
   - Route:
-    - "bot.done"  → look up meeting_recording by bot_id (return 500 on DB error so Svix retries)
+    - "bot.done"  → read coaching_session_id from data.bot.metadata.coaching_session_id
+                  → look up meeting_recording by bot_id (data.bot.id) (return 500 on DB error so Svix retries)
                   → check transcription::find_by_coaching_session — if row already exists, log warn! + return 200 (idempotent)
                   → update meeting_recording status=completed, video_url + audio_url from artifacts, duration_seconds
-                  → look up coaching_session → get coach's AssemblyAI key from api_credentials
+                  → get coach's AssemblyAI key from api_credentials using coaching_session_id
                   → tokio::spawn { domain::transcription::start(); on Err: error! + update meeting_recording status=failed }
     - "bot.fatal" → update meeting_recording status=failed, error_message
     - other bot.* → update meeting_recording status accordingly
