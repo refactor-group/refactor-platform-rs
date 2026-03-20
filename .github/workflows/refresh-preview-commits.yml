@@ -68,12 +68,14 @@ jobs:
                   cat /tmp/frontend_commits.txt
 
             - name: Update dispatch workflow choices
+              id: update-backend
               run: |
                   set -euo pipefail
                   WORKFLOW=".github/workflows/dispatch-pr-preview.yml"
 
                   if [[ ! -f "$WORKFLOW" ]]; then
                       echo "::notice::$WORKFLOW not found on main — skipping (will be available after merge)"
+                      echo "skipped=true" >> $GITHUB_OUTPUT
                       exit 0
                   fi
 
@@ -88,6 +90,7 @@ jobs:
                   echo "Updated dispatch workflow choices"
 
             - name: Commit and push if changed
+              if: steps.update-backend.outputs.skipped != 'true'
               run: |
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   git config user.name "github-actions[bot]"
@@ -140,12 +143,14 @@ jobs:
                   cat /tmp/frontend_commits.txt
 
             - name: Update dispatch workflow choices
+              id: update-frontend
               run: |
                   set -euo pipefail
                   WORKFLOW=".github/workflows/dispatch-pr-preview-frontend.yml"
 
                   if [[ ! -f "$WORKFLOW" ]]; then
                       echo "::notice::$WORKFLOW not found on main — skipping (will be available after merge)"
+                      echo "skipped=true" >> $GITHUB_OUTPUT
                       exit 0
                   fi
 
@@ -160,6 +165,7 @@ jobs:
                   echo "Updated dispatch workflow choices"
 
             - name: Commit and push if changed
+              if: steps.update-frontend.outputs.skipped != 'true'
               run: |
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   git config user.name "github-actions[bot]"
