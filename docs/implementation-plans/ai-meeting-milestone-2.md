@@ -231,6 +231,17 @@ Key API calls:
   7. Parse JSON response → map to `actions::ActiveModel` → insert into `actions` table
   8. Update `transcriptions` row: `summary` = LLM output, `analysis_completed = true`
 
+**Logging conventions** — use the `log` crate throughout domain processing code:
+
+| Situation | Level | Fields to include |
+|-----------|-------|-------------------|
+| Processing started (inside spawned task) | `info!` | `session_id` or `external_id` |
+| Idempotent skip (duplicate webhook) | `warn!` | entity ID, reason |
+| DB lookup failure (sync handler phase) | `error!` | entity ID, error |
+| Spawned task failure | `error!` | entity ID, full error chain |
+| Invalid webhook signature | `warn!` | provider, header values (no secret values) |
+| Processing completed successfully | `info!` | `session_id`, segment count |
+
 ---
 
 ### Step 5: Webhook Infrastructure
@@ -249,27 +260,50 @@ Add `SvixValidator` to `meeting-auth/src/webhook/`:
 POST /webhooks/recall_ai
   Headers required: svix-id, svix-timestamp, svix-signature
   - Validate Svix HMAC using RECALL_AI_WEBHOOK_SECRET
+    → Return 401 Unauthorized on invalid signature (prevents pointless Svix retries)
   - Deserialize event type from JSON body
   - Route:
-    - "bot.done"  → update meeting_recording status=completed, video_url + audio_url from artifacts, duration_seconds
+    - "bot.done"  → look up meeting_recording by bot_id (return 500 on DB error so Svix retries)
+                  → check transcription::find_by_coaching_session — if row already exists, log warn! + return 200 (idempotent)
+                  → update meeting_recording status=completed, video_url + audio_url from artifacts, duration_seconds
                   → look up coaching_session → get coach's AssemblyAI key from api_credentials
-                  → call domain::transcription::start()
+                  → tokio::spawn { domain::transcription::start(); on Err: error! + update meeting_recording status=failed }
     - "bot.fatal" → update meeting_recording status=failed, error_message
     - other bot.* → update meeting_recording status accordingly
   - Return 200 OK immediately
 
 POST /webhooks/assembly_ai
   - Validate request header X-Webhook-Secret matches ASSEMBLY_AI_WEBHOOK_SECRET
+    → Return 401 Unauthorized on mismatch (prevents pointless AssemblyAI retries)
   - Body: { transcript_id, status }
   - Route:
     - status="completed" → look up transcription by external_id
-                         → look up user's AssemblyAI key from api_credentials
-                         → call domain::transcription::handle_completion() via tokio::spawn
+                           → if not found, return 404 (AssemblyAI will retry; handles race condition where row not yet committed)
+                           → if transcription.analysis_completed == true, log warn! + return 200 (idempotent)
+                           → look up user's AssemblyAI key from api_credentials (return 500 on DB error)
+                           → tokio::spawn { domain::transcription::handle_completion(); on Err: error! + update transcription status=failed }
     - status="error"     → update transcription status=failed, error_message
   - Return 200 OK immediately
 ```
 
-Both endpoints must return `200 OK` within 15 seconds. Use `tokio::spawn` for longer processing. Svix retries failed deliveries up to ~24h with exponential backoff.
+**Response code semantics:**
+- `200 OK` — event received and processing started (or idempotent skip)
+- `401 Unauthorized` — signature/auth validation failed; provider should not retry
+- `404 Not Found` — record not yet visible (race condition); provider should retry
+- `500 Internal Server Error` — DB failure during synchronous lookup; provider should retry
+
+**Retry windows:** Svix retries up to ~24h with exponential backoff. AssemblyAI retries up to 3× with exponential backoff over ~1 hour.
+
+**Error handling inside `tokio::spawn`:** All spawned tasks must handle their own errors — the webhook has already returned `200 OK`. Pattern:
+```rust
+tokio::spawn(async move {
+    if let Err(e) = domain::transcription::handle_completion(&db, &config, &external_id, &api_key).await {
+        error!("Transcription completion failed for external_id={}: {:?}", external_id, e);
+        let _ = transcription::update_status(&db, transcription_id, TranscriptionStatus::Failed,
+            None, None, None, None, false, Some(e.to_string())).await;
+    }
+});
+```
 
 ---
 
@@ -282,8 +316,13 @@ Follow pattern of `web/src/controller/coaching_session/goal_controller.rs`.
 ```
 GET    /coaching_sessions/:id/meeting_recording  → get recording status + artifact URLs
 POST   /coaching_sessions/:id/meeting_recording  → create bot + start recording
+                                                    → return 409 Conflict if a recording with status
+                                                      not in {failed, completed} already exists
+                                                      (prevents duplicate active bots)
 DELETE /coaching_sessions/:id/meeting_recording  → stop bot
 ```
+
+**Recovery flow:** If a recording or transcription fails, the coach uses `DELETE` (stop the bot) then `POST` (start a new bot) to restart the full pipeline from the beginning. A new `meeting_recordings` row is created; the failed `transcriptions` row and segments remain as a historical record.
 
 **`web/src/controller/coaching_session/transcription_controller.rs`**
 
@@ -445,8 +484,14 @@ Update root `Cargo.toml` `default-members` array to include `"meeting-auth"` and
 3. `cargo fmt` — no formatting changes
 4. Run migrations → verify four new tables with correct schema; `transcript_segments` has composite index `(transcription_id, start_ms)` and no `updated_at`
 5. `POST /coaching_sessions/:id/meeting_recording` → `meeting_recordings` row with `bot_id`, `status=pending`; response contains no `audio_url`
-6. `DELETE /coaching_sessions/:id/meeting_recording` → bot stopped, status updated
-7. Send test Recall.ai `bot.done` webhook → `meeting_recordings` updated with `video_url` (internal `audio_url` stored but not returned), `transcriptions` row created
-8. Send test AssemblyAI `completed` webhook → `transcriptions` updated with `word_count`, `confidence` (no `text` column); `transcript_segments` rows inserted ordered by `start_ms`; `speaker_label` values contain resolved user names (not "Speaker A/B"); `speaker_user_id` populated
-9. `GET /coaching_sessions/:id/transcription/segments` → segments ordered by `start_ms`, real user names in `speaker_label`
-10. `GET /coaching_sessions/:id/transcription` → no `text` field, `analysis_completed: true`, `summary` populated, actions visible in `actions` table
+6. `POST /coaching_sessions/:id/meeting_recording` again while first is active → `409 Conflict`
+7. `DELETE /coaching_sessions/:id/meeting_recording` → bot stopped, status updated
+8. Send test Recall.ai `bot.done` webhook → `meeting_recordings` updated with `video_url` (internal `audio_url` stored but not returned), `transcriptions` row created
+9. Send same `bot.done` webhook a second time → `200 OK`, no duplicate `transcriptions` row, `warn!` log emitted
+10. Send Recall.ai webhook with invalid Svix signature → `401 Unauthorized`
+11. Send test AssemblyAI `completed` webhook → `transcriptions` updated with `word_count`, `confidence` (no `text` column); `transcript_segments` rows inserted ordered by `start_ms`; `speaker_label` values contain resolved user names (not "Speaker A/B"); `speaker_user_id` populated
+12. Send same `completed` webhook a second time → `200 OK`, no reprocessing, `warn!` log emitted
+13. Send AssemblyAI webhook with unknown `transcript_id` → `404 Not Found`
+14. Send AssemblyAI webhook with wrong `X-Webhook-Secret` → `401 Unauthorized`
+15. `GET /coaching_sessions/:id/transcription/segments` → segments ordered by `start_ms`, real user names in `speaker_label`
+16. `GET /coaching_sessions/:id/transcription` → no `text` field, `analysis_completed: true`, `summary` populated, actions visible in `actions` table
