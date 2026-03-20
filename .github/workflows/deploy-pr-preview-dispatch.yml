@@ -50,6 +50,8 @@ jobs:
             backend_branch: ${{ github.event.client_payload.backend_branch || 'main' }}
             backend_image: ${{ github.event.client_payload.backend_image || '' }}
             frontend_image: ${{ github.event.client_payload.frontend_image || '' }}
+            backend_sha: ${{ github.event.client_payload.backend_sha || '' }}
+            frontend_sha: ${{ github.event.client_payload.frontend_sha || '' }}
             force_rebuild: false
         secrets: inherit
 
