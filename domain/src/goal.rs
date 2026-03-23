@@ -3,7 +3,6 @@ use crate::events::{DomainEvent, EventPublisher};
 use crate::goals::Model;
 use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
-use entity_api::coaching_sessions_goals;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{goal as GoalApi, goals, query};
 use log::*;
@@ -24,9 +23,8 @@ pub async fn create(
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    let relationship =
-        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+    let notify_user_ids =
+        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await?;
 
     event_publisher
         .publish(DomainEvent::GoalCreated {
@@ -64,24 +62,7 @@ pub async fn update(
     model: Model,
 ) -> Result<Model, Error> {
     let goal = GoalApi::update(db, id, model).await?;
-
-    let relationship =
-        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
-
-    event_publisher
-        .publish(DomainEvent::GoalUpdated {
-            coaching_relationship_id: goal.coaching_relationship_id,
-            goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
-            notify_user_ids,
-        })
-        .await;
-
-    debug!(
-        "Published GoalUpdated event for goal {} in relationship {}",
-        goal.id, goal.coaching_relationship_id
-    );
-
+    publish_goal_updated(db, event_publisher, &goal).await?;
     Ok(goal)
 }
 
@@ -92,24 +73,7 @@ pub async fn update_status(
     status: entity_api::status::Status,
 ) -> Result<Model, Error> {
     let goal = GoalApi::update_status(db, id, status).await?;
-
-    let relationship =
-        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
-
-    event_publisher
-        .publish(DomainEvent::GoalUpdated {
-            coaching_relationship_id: goal.coaching_relationship_id,
-            goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
-            notify_user_ids,
-        })
-        .await;
-
-    debug!(
-        "Published GoalUpdated event for goal {} in relationship {}",
-        goal.id, goal.coaching_relationship_id
-    );
-
+    publish_goal_updated(db, event_publisher, &goal).await?;
     Ok(goal)
 }
 
@@ -122,9 +86,8 @@ pub async fn delete(
     // delete_by_id returns the model before deletion so we can publish the event
     let goal = GoalApi::delete_by_id(db, id).await?;
 
-    let relationship =
-        crate::coaching_relationship::find_by_id(db, goal.coaching_relationship_id).await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+    let notify_user_ids =
+        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await?;
 
     event_publisher
         .publish(DomainEvent::GoalDeleted {
@@ -142,6 +105,44 @@ pub async fn delete(
     Ok(())
 }
 
+// ── Event publishing helpers ─────────────────────────────────────────
+
+/// Looks up the coaching relationship and returns the user IDs that should
+/// receive SSE notifications (coach + coachee).
+async fn find_notify_user_ids_for_relationship(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+) -> Result<Vec<Id>, Error> {
+    let relationship =
+        crate::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
+    Ok(vec![relationship.coach_id, relationship.coachee_id])
+}
+
+/// Publishes a `GoalUpdated` SSE event. Shared by `update` and `update_status`.
+async fn publish_goal_updated(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    goal: &Model,
+) -> Result<(), Error> {
+    let notify_user_ids =
+        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await?;
+
+    event_publisher
+        .publish(DomainEvent::GoalUpdated {
+            coaching_relationship_id: goal.coaching_relationship_id,
+            goal: serde_json::to_value(goal).unwrap_or(serde_json::Value::Null),
+            notify_user_ids,
+        })
+        .await;
+
+    debug!(
+        "Published GoalUpdated event for goal {} in relationship {}",
+        goal.id, goal.coaching_relationship_id
+    );
+
+    Ok(())
+}
+
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where
     P: IntoQueryFilterMap + QuerySort<goals::Column>,
@@ -150,138 +151,11 @@ where
     Ok(goals)
 }
 
-// ── Coaching-session ↔ goal association (join table as implementation detail) ──
-
-/// Links an existing goal to a coaching session and publishes an SSE event.
-pub async fn link_to_coaching_session(
-    db: &DatabaseConnection,
-    event_publisher: &EventPublisher,
-    coaching_session_id: Id,
-    goal_id: Id,
-) -> Result<coaching_sessions_goals::Model, Error> {
-    let link = CoachingSessionGoalApi::create(db, coaching_session_id, goal_id).await?;
-
-    let (_, relationship) =
-        crate::coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id)
-            .await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
-
-    event_publisher
-        .publish(DomainEvent::CoachingSessionGoalCreated {
-            coaching_relationship_id: relationship.id,
-            coaching_session_id,
-            goal_id,
-            notify_user_ids,
-        })
-        .await;
-
-    debug!(
-        "Published CoachingSessionGoalCreated event for goal {} in session {}",
-        goal_id, coaching_session_id
-    );
-
-    Ok(link)
-}
-
-/// Unlinks a goal from a coaching session by the join-table record id
-/// and publishes an SSE event.
-pub async fn unlink_from_coaching_session(
-    db: &DatabaseConnection,
-    event_publisher: &EventPublisher,
-    id: Id,
-) -> Result<(), Error> {
-    // Single query: join table record + relationship (via two JOINs)
-    let (link, relationship) =
-        CoachingSessionGoalApi::find_by_id_with_coaching_relationship(db, id).await?;
-
-    CoachingSessionGoalApi::delete_by_id(db, id).await?;
-
-    publish_session_goal_deleted(event_publisher, &link, &relationship).await;
-
-    Ok(())
-}
-
-/// Unlinks a goal from a coaching session by the (coaching_session_id, goal_id) pair
-/// and publishes an SSE event.
-pub async fn unlink_goal_from_coaching_session(
-    db: &DatabaseConnection,
-    event_publisher: &EventPublisher,
-    coaching_session_id: Id,
-    goal_id: Id,
-) -> Result<(), Error> {
-    let (link, relationship) =
-        CoachingSessionGoalApi::find_by_session_and_goal_with_coaching_relationship(
-            db,
-            coaching_session_id,
-            goal_id,
-        )
-        .await?;
-
-    CoachingSessionGoalApi::delete_by_id(db, link.id).await?;
-
-    publish_session_goal_deleted(event_publisher, &link, &relationship).await;
-
-    Ok(())
-}
-
-/// Publishes a `CoachingSessionGoalDeleted` SSE event. Shared by both
-/// unlink-by-id and unlink-by-session-and-goal paths.
-async fn publish_session_goal_deleted(
-    event_publisher: &EventPublisher,
-    link: &coaching_sessions_goals::Model,
-    relationship: &entity_api::coaching_relationships::Model,
-) {
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
-
-    event_publisher
-        .publish(DomainEvent::CoachingSessionGoalDeleted {
-            coaching_relationship_id: relationship.id,
-            coaching_session_id: link.coaching_session_id,
-            goal_id: link.goal_id,
-            notify_user_ids,
-        })
-        .await;
-
-    debug!(
-        "Published CoachingSessionGoalDeleted event for goal {} in session {}",
-        link.goal_id, link.coaching_session_id
-    );
-}
-
-/// Returns all goal models linked to a coaching session (eager-loaded).
-pub async fn find_goals_by_coaching_session_id(
-    db: &DatabaseConnection,
-    coaching_session_id: Id,
-) -> Result<Vec<Model>, Error> {
-    Ok(CoachingSessionGoalApi::find_goals_by_coaching_session_id(db, coaching_session_id).await?)
-}
-
-/// Returns up to the maximum allowed in-progress goals linked to a coaching session.
-pub async fn find_in_progress_goals_by_coaching_session_id(
-    db: &DatabaseConnection,
-    coaching_session_id: Id,
-) -> Result<Vec<Model>, Error> {
-    Ok(
-        CoachingSessionGoalApi::find_in_progress_goals_by_coaching_session_id(
-            db,
-            coaching_session_id,
-        )
-        .await?,
-    )
-}
-
-/// Returns all join-table records for a given goal (sessions linked to it).
-pub async fn find_coaching_sessions_by_goal_id(
-    db: &DatabaseConnection,
-    goal_id: Id,
-) -> Result<Vec<coaching_sessions_goals::Model>, Error> {
-    Ok(CoachingSessionGoalApi::find_by_goal_id(db, goal_id).await?)
-}
-
 #[cfg(test)]
 #[cfg(feature = "mock")]
 mod integration_tests {
     use super::*;
+    use entity_api::coaching_sessions_goals;
     use entity_api::status::Status;
     use events::EventPublisher;
     use sea_orm::{DatabaseBackend, MockDatabase};

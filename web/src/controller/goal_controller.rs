@@ -9,6 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::coaching_session_goal as CoachingSessionGoalApi;
 use domain::goal as GoalApi;
 use domain::goal_progress as GoalProgressApi;
 use domain::{goals::Model, Id};
@@ -42,7 +43,9 @@ pub async fn coaching_sessions_by_goal(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET sessions linked to goal {id}");
 
-    let links = GoalApi::find_coaching_sessions_by_goal_id(app_state.db_conn_ref(), id).await?;
+    let links =
+        CoachingSessionGoalApi::find_coaching_sessions_by_goal_id(app_state.db_conn_ref(), id)
+            .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), links)))
 }

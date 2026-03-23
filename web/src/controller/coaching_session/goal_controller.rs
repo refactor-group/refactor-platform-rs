@@ -8,7 +8,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::goal as GoalApi;
+use domain::coaching_session_goal as CoachingSessionGoalApi;
 use domain::Id;
 use service::config::ApiVersion;
 
@@ -46,7 +46,7 @@ pub async fn create(
         params.goal_id, coaching_session_id
     );
 
-    let link = GoalApi::link_to_coaching_session(
+    let link = CoachingSessionGoalApi::link_to_coaching_session(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         coaching_session_id,
@@ -84,7 +84,7 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, Error> {
     debug!("DELETE unlink goal {goal_id} from session {coaching_session_id}");
 
-    GoalApi::unlink_goal_from_coaching_session(
+    CoachingSessionGoalApi::unlink_goal_from_coaching_session(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         coaching_session_id,
@@ -120,9 +120,11 @@ pub async fn index(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET goals linked to session {coaching_session_id}");
 
-    let goals =
-        GoalApi::find_goals_by_coaching_session_id(app_state.db_conn_ref(), coaching_session_id)
-            .await?;
+    let goals = CoachingSessionGoalApi::find_goals_by_coaching_session_id(
+        app_state.db_conn_ref(),
+        coaching_session_id,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goals)))
 }
