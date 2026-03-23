@@ -59,6 +59,7 @@ use utoipa_rapidoc::RapiDoc;
             organization::coaching_relationship_controller::create,
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
+            organization::coaching_relationship_controller::goal_progress,
             organization::user_controller::index,
             organization::user_controller::create,
             organization::user_controller::delete,
@@ -72,6 +73,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::goal_controller::delete,
             coaching_session::goal_controller::index,
             goal_controller::coaching_sessions_by_goal,
+            goal_controller::progress,
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
@@ -285,6 +287,10 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships/:relationship_id",
             get(organization::coaching_relationship_controller::read),
         )
+        .route(
+            "/organizations/:organization_id/coaching_relationships/:relationship_id/goal_progress",
+            get(organization::coaching_relationship_controller::goal_progress),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -360,9 +366,10 @@ pub fn goal_routes(app_state: AppState) -> Router {
                 .route("/goals/:id", get(goal_controller::read))
                 .route("/goals/:id/status", put(goal_controller::update_status))
                 .route(
-                    "/goals/:goal_id/sessions",
+                    "/goals/:id/sessions",
                     get(goal_controller::coaching_sessions_by_goal),
                 )
+                .route("/goals/:id/progress", get(goal_controller::progress))
                 .route_layer(from_fn_with_state(app_state.clone(), protect::goals::by_id)),
         )
         .route_layer(from_fn(require_auth))

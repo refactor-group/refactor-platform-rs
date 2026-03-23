@@ -246,7 +246,7 @@ fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> S
 mod tests {
     use super::*;
     use crate::{
-        coaching_relationships, coaching_sessions, oauth_connections, organizations,
+        coaching_relationships, coaching_sessions, goals, oauth_connections, organizations,
         provider::Provider,
     };
     use mockito::Server;
@@ -319,12 +319,14 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, None);
 
-        // Only 3 queries: relationship SELECT, organization SELECT, session INSERT.
+        // Queries: relationship SELECT, organization SELECT, session INSERT,
+        // in-progress goals SELECT (for link_in_progress_goals_to_session).
         // No oauth_connections query because provider is None.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -351,7 +353,8 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, Some(Provider::Google));
 
-        // 4 queries: relationship, organization, oauth_connection (empty = no credentials), session INSERT.
+        // 5 queries: relationship, organization, oauth_connection (empty = no credentials),
+        // session INSERT, in-progress goals SELECT (for link_in_progress_goals_to_session).
         // No Google Meet API call should occur.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
@@ -360,6 +363,7 @@ mod tests {
                 vec![vec![]],
             )
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());

@@ -4,7 +4,8 @@
 //! between coaching sessions and goals.
 
 use entity::coaching_sessions_goals::{Column, Entity, Model};
-use entity::{goals, Id};
+use entity::links::SessionGoalToCoachingRelationship;
+use entity::{coaching_relationships, goals, Id};
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, ConnectionTrait, DatabaseConnection, TryIntoModel,
 };
@@ -39,6 +40,47 @@ pub async fn create(
     Ok(active_model.insert(db).await?.try_into_model()?)
 }
 
+/// Finds a single linked goal to a coaching session join-table record by its primary key.
+///
+/// # Errors
+///
+/// Returns `Error` with `RecordNotFound` if the record does not exist.
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
+}
+
+/// Finds a join-table record by id and eagerly loads the coaching relationship
+/// it belongs to (via coaching_sessions_goals → coaching_sessions → coaching_relationships).
+///
+/// This uses a single query with two JOINs, avoiding separate lookups.
+///
+/// # Errors
+///
+/// Returns `Error` with `RecordNotFound` if the record or its relationship does not exist.
+pub async fn find_by_id_with_coaching_relationship(
+    db: &DatabaseConnection,
+    id: Id,
+) -> Result<(Model, coaching_relationships::Model), Error> {
+    let (link, relationship) = Entity::find_by_id(id)
+        .find_also_linked(SessionGoalToCoachingRelationship)
+        .one(db)
+        .await?
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })?;
+
+    let relationship = relationship.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })?;
+
+    Ok((link, relationship))
+}
+
 /// Unlinks a goal from a coaching session by the join table record id.
 ///
 /// # Errors
@@ -55,6 +97,36 @@ pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> 
     }
 
     Ok(())
+}
+
+/// Finds a join-table record by the (coaching_session_id, goal_id) pair
+/// and eagerly loads the coaching relationship.
+///
+/// # Errors
+///
+/// Returns `Error` with `RecordNotFound` if no link exists for the pair.
+pub async fn find_by_session_and_goal_with_coaching_relationship(
+    db: &DatabaseConnection,
+    coaching_session_id: Id,
+    goal_id: Id,
+) -> Result<(Model, coaching_relationships::Model), Error> {
+    let (link, relationship) = Entity::find()
+        .filter(Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(Column::GoalId.eq(goal_id))
+        .find_also_linked(SessionGoalToCoachingRelationship)
+        .one(db)
+        .await?
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })?;
+
+    let relationship = relationship.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })?;
+
+    Ok((link, relationship))
 }
 
 /// Finds all join-table records for a given coaching session.

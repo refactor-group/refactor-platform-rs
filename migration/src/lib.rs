@@ -20,6 +20,8 @@ mod m20260309_000000_goal_relationship_scoping;
 mod m20260309_000001_backfill_coaching_sessions_goals;
 mod m20260311_064303_add_zoom_to_provider_enum;
 mod m20260312_000000_add_goal_id_to_actions;
+mod m20260316_000000_fix_goals_session_fk_on_delete;
+mod m20260317_000000_add_on_hold_to_status_enum;
 
 pub struct Migrator;
 
@@ -47,6 +49,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260309_000000_goal_relationship_scoping::Migration),
             Box::new(m20260309_000001_backfill_coaching_sessions_goals::Migration),
             Box::new(m20260312_000000_add_goal_id_to_actions::Migration),
+            Box::new(m20260316_000000_fix_goals_session_fk_on_delete::Migration),
+            Box::new(m20260317_000000_add_on_hold_to_status_enum::Migration),
         ]
     }
 }

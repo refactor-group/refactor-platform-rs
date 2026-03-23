@@ -9,7 +9,10 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
-use domain::{coaching_relationship as CoachingRelationshipApi, coaching_relationships, Id};
+use domain::{
+    coaching_relationship as CoachingRelationshipApi, coaching_relationships,
+    goal_progress as GoalProgressApi, Id,
+};
 use service::config::ApiVersion;
 
 use log::*;
@@ -141,4 +144,37 @@ pub async fn index(
         StatusCode::OK.into(),
         coaching_relationships,
     )))
+}
+
+/// GET aggregate goal progress for all goals in a coaching relationship.
+#[utoipa::path(
+    get,
+    path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/goal_progress",
+    params(
+        ApiVersion,
+        ("organization_id" = Id, Path, description = "Organization id"),
+        ("relationship_id" = Id, Path, description = "Coaching relationship id"),
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved goal progress for the coaching relationship"),
+        (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn goal_progress(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("GET goal progress for coaching relationship: {relationship_id}");
+
+    let progress =
+        GoalProgressApi::relationship_goal_progress(app_state.db_conn_ref(), relationship_id)
+            .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), progress)))
 }

@@ -81,6 +81,36 @@ impl EventHandler for SseDomainEventHandler {
 
                 self.send_to_users(sse_event, notify_user_ids);
             }
+
+            DomainEvent::CoachingSessionGoalCreated {
+                coaching_relationship_id,
+                coaching_session_id,
+                goal_id,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::CoachingSessionGoalCreated {
+                    coaching_relationship_id: coaching_relationship_id.to_string(),
+                    coaching_session_id: coaching_session_id.to_string(),
+                    goal_id: goal_id.to_string(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
+            DomainEvent::CoachingSessionGoalDeleted {
+                coaching_relationship_id,
+                coaching_session_id,
+                goal_id,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::CoachingSessionGoalDeleted {
+                    coaching_relationship_id: coaching_relationship_id.to_string(),
+                    coaching_session_id: coaching_session_id.to_string(),
+                    goal_id: goal_id.to_string(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
         }
     }
 }

@@ -272,6 +272,24 @@ pub async fn create(...) -> Result<impl IntoResponse, Error> {
 - Export only what's needed via `pub` or `pub(crate)`
 - Use `mod.rs` or inline modules to organize related code
 
+### Join-Table Module Encapsulation
+
+Join-table domain modules (e.g., `coaching_session_goal`) are implementation details. Declare them `pub(crate)` and re-export their public functions through the parent domain concept (e.g., `domain::goal`). The web layer should never import a join-table module directly.
+
+```rust
+// domain/src/lib.rs
+pub(crate) mod coaching_session_goal; // ✅ hidden from web layer
+pub mod goal;
+
+// domain/src/goal.rs
+pub use crate::coaching_session_goal::{
+    link_to_coaching_session, find_goals_by_coaching_session_id,
+};
+
+// ❌ Bad — web layer imports join-table module directly
+use domain::coaching_session_goal as CoachingSessionGoalApi;
+```
+
 ## Documentation
 
 - Add doc comments (`///`) for public APIs

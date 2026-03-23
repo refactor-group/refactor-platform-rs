@@ -46,7 +46,7 @@ pub enum Relation {
         from = "Column::CreatedInSessionId",
         to = "super::coaching_sessions::Column::Id",
         on_update = "NoAction",
-        on_delete = "NoAction"
+        on_delete = "SetNull"
     )]
     CoachingSessions,
     #[sea_orm(
