@@ -150,6 +150,7 @@ fn compute_progress(data: &entity_api::goal_progress::ProgressData) -> Progress 
 
 /// Duration-based progress: compares elapsed time against action completion.
 ///
+/// - No actions defined → `NeedsAttention` (goal not broken down yet)
 /// - Overdue → `LetsRefocus`
 /// - `progress_pct < elapsed_pct * 0.5` → `LetsRefocus` (significantly behind)
 /// - `progress_pct < elapsed_pct` → `NeedsAttention` (falling behind)
@@ -158,6 +159,11 @@ fn compute_duration_based_progress(
     data: &entity_api::goal_progress::ProgressData,
     target_date: NaiveDate,
 ) -> Progress {
+    // No actions defined yet — can't measure progress against timeline
+    if data.actions_total == 0 {
+        return Progress::NeedsAttention;
+    }
+
     let now = Utc::now().date_naive();
     let created_date = data.goal.created_at.date_naive();
 
@@ -174,12 +180,7 @@ fn compute_duration_based_progress(
     let elapsed = (now - created_date).num_days() as f64;
     let elapsed_pct = elapsed / total_duration;
 
-    let progress_pct = if data.actions_total == 0 {
-        // No actions defined yet — treat as no measurable progress
-        0.0
-    } else {
-        data.actions_completed as f64 / data.actions_total as f64
-    };
+    let progress_pct = data.actions_completed as f64 / data.actions_total as f64;
 
     if progress_pct < elapsed_pct * 0.5 {
         Progress::LetsRefocus
@@ -304,6 +305,14 @@ mod tests {
         let target = Utc::now().date_naive() + Duration::days(30);
         let data = create_test_progress_data(Some(target), 30, 10, 2);
         assert_eq!(compute_progress(&data), Progress::LetsRefocus);
+    }
+
+    #[test]
+    fn no_actions_with_target_date_gets_needs_attention() {
+        // Goal has a target date but no actions defined yet → not broken down
+        let target = Utc::now().date_naive() + Duration::days(30);
+        let data = create_test_progress_data(Some(target), 14, 0, 0);
+        assert_eq!(compute_progress(&data), Progress::NeedsAttention);
     }
 
     #[test]

@@ -193,23 +193,10 @@ pub async fn unlink_from_coaching_session(
     // Single query: join table record + relationship (via two JOINs)
     let (link, relationship) =
         CoachingSessionGoalApi::find_by_id_with_coaching_relationship(db, id).await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
 
     CoachingSessionGoalApi::delete_by_id(db, id).await?;
 
-    event_publisher
-        .publish(DomainEvent::CoachingSessionGoalDeleted {
-            coaching_relationship_id: relationship.id,
-            coaching_session_id: link.coaching_session_id,
-            goal_id: link.goal_id,
-            notify_user_ids,
-        })
-        .await;
-
-    debug!(
-        "Published CoachingSessionGoalDeleted event for goal {} in session {}",
-        link.goal_id, link.coaching_session_id
-    );
+    publish_session_goal_deleted(event_publisher, &link, &relationship).await;
 
     Ok(())
 }
@@ -229,9 +216,22 @@ pub async fn unlink_goal_from_coaching_session(
             goal_id,
         )
         .await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
 
     CoachingSessionGoalApi::delete_by_id(db, link.id).await?;
+
+    publish_session_goal_deleted(event_publisher, &link, &relationship).await;
+
+    Ok(())
+}
+
+/// Publishes a `CoachingSessionGoalDeleted` SSE event. Shared by both
+/// unlink-by-id and unlink-by-session-and-goal paths.
+async fn publish_session_goal_deleted(
+    event_publisher: &EventPublisher,
+    link: &coaching_sessions_goals::Model,
+    relationship: &entity_api::coaching_relationships::Model,
+) {
+    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
 
     event_publisher
         .publish(DomainEvent::CoachingSessionGoalDeleted {
@@ -246,8 +246,6 @@ pub async fn unlink_goal_from_coaching_session(
         "Published CoachingSessionGoalDeleted event for goal {} in session {}",
         link.goal_id, link.coaching_session_id
     );
-
-    Ok(())
 }
 
 /// Returns all goal models linked to a coaching session (eager-loaded).
