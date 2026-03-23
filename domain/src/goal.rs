@@ -10,6 +10,15 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
 pub use entity_api::goal::find_by_id;
 
+// Re-export coaching-session ↔ goal join operations so the web layer
+// interacts with goals as a single domain concept rather than knowing
+// about the join table as a separate module.
+pub use crate::coaching_session_goal::{
+    find_coaching_sessions_by_goal_id, find_goals_by_coaching_session_id,
+    find_in_progress_goals_by_coaching_session_id, link_to_coaching_session,
+    unlink_from_coaching_session, unlink_goal_from_coaching_session,
+};
+
 pub async fn create(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
