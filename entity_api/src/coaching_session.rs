@@ -456,10 +456,8 @@ async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
 ) -> Result<HashMap<Id, Vec<goals::Model>>, Error> {
-    let all_goals = super::coaching_session_goal::find_goals_grouped_by_session_ids(
-        db, session_ids,
-    )
-    .await?;
+    let all_goals =
+        super::coaching_session_goal::find_goals_grouped_by_session_ids(db, session_ids).await?;
 
     let max_goals = super::goal::max_in_progress_goals();
 
