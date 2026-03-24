@@ -24,7 +24,7 @@ on:
 
 # Prevent multiple deployments for the same PR
 concurrency:
-    group: preview-deploy-dispatch-${{ github.event.client_payload.pr_number }}-${{ github.event.client_payload.repo_type }}
+    group: pr-preview-${{ github.event.client_payload.repo_type }}-dispatch-${{ github.event.client_payload.pr_number }}
     cancel-in-progress: true
 
 permissions:

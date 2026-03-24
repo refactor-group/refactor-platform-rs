@@ -46,7 +46,7 @@ on:
 
 # Prevent multiple manual deployments for the same PR
 concurrency:
-    group: preview-deploy-dispatch-${{ inputs.pr_number }}-backend
+    group: pr-preview-backend-dispatch-${{ inputs.pr_number }}
     cancel-in-progress: true
 
 permissions:
