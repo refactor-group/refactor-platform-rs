@@ -3,6 +3,8 @@
 //! Handles linking/unlinking goals to coaching sessions and publishes
 //! SSE events for real-time UI updates.
 
+use std::collections::HashMap;
+
 use crate::error::Error;
 use crate::events::{DomainEvent, EventPublisher};
 use crate::goals::Model;
@@ -112,6 +114,32 @@ pub async fn find_coaching_sessions_by_goal_id(
     goal_id: Id,
 ) -> Result<Vec<coaching_sessions_goals::Model>, Error> {
     Ok(CoachingSessionGoalApi::find_by_goal_id(db, goal_id).await?)
+}
+
+/// Returns all goals for multiple sessions, grouped by session ID.
+///
+/// When `session_ids` is provided directly, queries goals for those sessions.
+/// When `coaching_relationship_id` is provided, first resolves all session IDs
+/// for that relationship, then batch-loads their goals.
+pub async fn find_goals_grouped_by_session_ids(
+    db: &DatabaseConnection,
+    session_ids: &[Id],
+) -> Result<HashMap<Id, Vec<Model>>, Error> {
+    Ok(CoachingSessionGoalApi::find_goals_grouped_by_session_ids(db, session_ids).await?)
+}
+
+/// Returns all session IDs belonging to a coaching relationship.
+pub async fn find_session_ids_by_coaching_relationship_id(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+) -> Result<Vec<Id>, Error> {
+    Ok(
+        CoachingSessionGoalApi::find_session_ids_by_coaching_relationship_id(
+            db,
+            coaching_relationship_id,
+        )
+        .await?,
+    )
 }
 
 // ── Event publishing helpers ─────────────────────────────────────────
