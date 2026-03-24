@@ -3,9 +3,11 @@
 //! Provides CRUD operations for managing the many-to-many relationship
 //! between coaching sessions and goals.
 
+use std::collections::HashMap;
+
 use entity::coaching_sessions_goals::{Column, Entity, Model};
 use entity::links::SessionGoalToCoachingRelationship;
-use entity::{coaching_relationships, goals, Id};
+use entity::{coaching_relationships, coaching_sessions, goals, Id};
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, ConnectionTrait, DatabaseConnection, TryIntoModel,
 };
@@ -229,6 +231,66 @@ pub async fn link_in_progress_goals_to_session(
     Ok(in_progress_goals.len())
 }
 
+/// Finds all goal models for multiple coaching sessions at once, grouped by session ID.
+///
+/// Returns a `HashMap` where each key is a session ID and each value is the list
+/// of goal models linked to that session. Sessions with no linked goals are not
+/// included in the map.
+///
+/// This is the batch equivalent of [`find_goals_by_coaching_session_id`] — one query
+/// replaces N individual calls, avoiding connection-pool exhaustion under concurrent load.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_goals_grouped_by_session_ids(
+    db: &DatabaseConnection,
+    session_ids: &[Id],
+) -> Result<HashMap<Id, Vec<goals::Model>>, Error> {
+    debug!("Batch loading goals for {} sessions", session_ids.len());
+
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let links_with_goals = Entity::find()
+        .filter(Column::CoachingSessionId.is_in(session_ids.iter().copied()))
+        .find_also_related(goals::Entity)
+        .all(db)
+        .await?;
+
+    let mut map: HashMap<Id, Vec<goals::Model>> = HashMap::new();
+    for (link, goal_opt) in links_with_goals {
+        if let Some(goal) = goal_opt {
+            map.entry(link.coaching_session_id).or_default().push(goal);
+        }
+    }
+
+    Ok(map)
+}
+
+/// Finds all session IDs belonging to a coaching relationship.
+///
+/// Used by the batch session-goals endpoint when the caller specifies
+/// `coaching_relationship_id` instead of explicit session IDs.
+///
+/// # Errors
+///
+/// Returns `Error` if the database query fails.
+pub async fn find_session_ids_by_coaching_relationship_id(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+) -> Result<Vec<Id>, Error> {
+    debug!("Finding session IDs for coaching relationship {coaching_relationship_id}");
+
+    let sessions = coaching_sessions::Entity::find()
+        .filter(coaching_sessions::Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .all(db)
+        .await?;
+
+    Ok(sessions.into_iter().map(|s| s.id).collect())
+}
+
 /// Finds all sessions linked to a given goal.
 ///
 /// # Errors
@@ -445,6 +507,146 @@ mod tests {
 
         let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
         assert_eq!(count, 0, "should link 0 goals when none are in-progress");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_goals_grouped_by_session_ids_returns_grouped_goals() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let relationship_id = Id::new_v4();
+        let session_a = Id::new_v4();
+        let session_b = Id::new_v4();
+        let goal1 = create_test_goal(relationship_id, entity::status::Status::InProgress);
+        let goal2 = create_test_goal(relationship_id, entity::status::Status::NotStarted);
+
+        // Session A has goal1, Session B has goal2
+        let link1 = Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_a,
+            goal_id: goal1.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let link2 = Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_b,
+            goal_id: goal2.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![
+                (link1, Some(goal1.clone())),
+                (link2, Some(goal2.clone())),
+            ]])
+            .into_connection();
+
+        let result = find_goals_grouped_by_session_ids(&db, &[session_a, session_b]).await?;
+
+        assert_eq!(result.len(), 2, "should have 2 session entries");
+        assert_eq!(result[&session_a].len(), 1);
+        assert_eq!(result[&session_a][0].id, goal1.id);
+        assert_eq!(result[&session_b].len(), 1);
+        assert_eq!(result[&session_b][0].id, goal2.id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_goals_grouped_by_session_ids_returns_empty_for_empty_input() -> Result<(), Error>
+    {
+        // No mock needed — function returns early for empty slice
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let result = find_goals_grouped_by_session_ids(&db, &[]).await?;
+
+        assert!(result.is_empty(), "should return empty map for empty input");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_goals_grouped_by_session_ids_groups_multiple_goals_per_session(
+    ) -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let goal1 = create_test_goal(relationship_id, entity::status::Status::InProgress);
+        let goal2 = create_test_goal(relationship_id, entity::status::Status::InProgress);
+
+        let link1 = Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: goal1.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let link2 = Model {
+            id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: goal2.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![
+                (link1, Some(goal1.clone())),
+                (link2, Some(goal2.clone())),
+            ]])
+            .into_connection();
+
+        let result = find_goals_grouped_by_session_ids(&db, &[session_id]).await?;
+
+        assert_eq!(result.len(), 1, "should have 1 session entry");
+        assert_eq!(
+            result[&session_id].len(),
+            2,
+            "should have 2 goals for the session"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_session_ids_by_coaching_relationship_id_returns_ids() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let relationship_id = Id::new_v4();
+        let session1_id = Id::new_v4();
+        let session2_id = Id::new_v4();
+
+        let session1 = entity::coaching_sessions::Model {
+            id: session1_id,
+            coaching_relationship_id: relationship_id,
+            collab_document_name: None,
+            date: now.naive_utc(),
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let session2 = entity::coaching_sessions::Model {
+            id: session2_id,
+            coaching_relationship_id: relationship_id,
+            collab_document_name: None,
+            date: now.naive_utc(),
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session1, session2]])
+            .into_connection();
+
+        let result = find_session_ids_by_coaching_relationship_id(&db, relationship_id).await?;
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&session1_id));
+        assert!(result.contains(&session2_id));
 
         Ok(())
     }

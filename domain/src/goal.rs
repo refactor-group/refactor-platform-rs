@@ -15,7 +15,8 @@ pub use entity_api::goal::find_by_id;
 // about the join table as a separate module.
 pub use crate::coaching_session_goal::{
     find_coaching_sessions_by_goal_id, find_goals_by_coaching_session_id,
-    find_in_progress_goals_by_coaching_session_id, link_to_coaching_session,
+    find_goals_grouped_by_session_ids, find_in_progress_goals_by_coaching_session_id,
+    find_session_ids_by_coaching_relationship_id, link_to_coaching_session,
     unlink_from_coaching_session, unlink_goal_from_coaching_session,
 };
 

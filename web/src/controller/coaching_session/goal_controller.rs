@@ -1,14 +1,18 @@
+use std::collections::HashMap;
+
 use crate::controller::ApiResponse;
+use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::coaching_session::goal::LinkParams;
+use crate::params::coaching_session::goal::{BatchIndexParams, LinkParams};
 use crate::{AppState, Error};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::goal as GoalApi;
+use domain::goals;
 use domain::Id;
 use service::config::ApiVersion;
 
@@ -125,4 +129,61 @@ pub async fn index(
             .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goals)))
+}
+
+/// GET goals for multiple coaching sessions at once, grouped by session ID.
+///
+/// Exactly one filter is required:
+/// - `coaching_relationship_id`: goals for all sessions in the relationship
+/// - `coaching_session_ids`: goals for specific sessions (comma-separated)
+#[utoipa::path(
+    get,
+    path = "/coaching_sessions/goals",
+    params(
+        ApiVersion,
+        ("coaching_relationship_id" = Option<Id>, Query, description = "Coaching relationship ID — fetch goals for all sessions in this relationship"),
+        ("coaching_session_ids" = Option<String>, Query, description = "Comma-separated coaching session UUIDs"),
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved goals grouped by session"),
+        (status = 400, description = "Bad Request — exactly one filter required"),
+        (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn batch_index(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Query(params): Query<BatchIndexParams>,
+) -> Result<impl IntoResponse, Error> {
+    if !params.is_valid() {
+        return Err(Error::Web(WebErrorKind::Input));
+    }
+
+    let session_ids = if let Some(relationship_id) = params.coaching_relationship_id {
+        debug!("GET batch session goals for relationship {relationship_id}");
+        GoalApi::find_session_ids_by_coaching_relationship_id(
+            app_state.db_conn_ref(),
+            relationship_id,
+        )
+        .await?
+    } else {
+        debug!(
+            "GET batch session goals for {} specific sessions",
+            params.coaching_session_ids.len()
+        );
+        params.coaching_session_ids
+    };
+
+    let session_goals: HashMap<Id, Vec<goals::Model>> =
+        GoalApi::find_goals_grouped_by_session_ids(app_state.db_conn_ref(), &session_ids).await?;
+
+    Ok(Json(ApiResponse::new(
+        StatusCode::OK.into(),
+        serde_json::json!({ "session_goals": session_goals }),
+    )))
 }

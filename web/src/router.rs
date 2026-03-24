@@ -72,6 +72,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::goal_controller::create,
             coaching_session::goal_controller::delete,
             coaching_session::goal_controller::index,
+            coaching_session::goal_controller::batch_index,
             goal_controller::coaching_sessions_by_goal,
             goal_controller::progress,
             user_controller::update,
@@ -396,6 +397,18 @@ fn coaching_session_goal_routes(app_state: AppState) -> Router {
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::goals::by_coaching_session_id,
+                )),
+        )
+        .merge(
+            // GET batch session goals — protected by relationship or session ownership
+            Router::new()
+                .route(
+                    "/coaching_sessions/goals",
+                    get(coaching_session::goal_controller::batch_index),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::goals::batch_by_session,
                 )),
         )
         .route_layer(from_fn(require_auth))
