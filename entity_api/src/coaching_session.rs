@@ -144,7 +144,7 @@ pub struct EnrichedSession {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<organizations::Model>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub goal: Option<goals::Model>,
+    pub goals: Option<Vec<goals::Model>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
 }
@@ -335,7 +335,7 @@ struct RelatedData {
     coaches: HashMap<Id, users::Model>,
     coachees: HashMap<Id, users::Model>,
     organizations: HashMap<Id, organizations::Model>,
-    goals: HashMap<Id, goals::Model>,
+    goals: HashMap<Id, Vec<goals::Model>>,
     agreements: HashMap<Id, agreements::Model>,
 }
 
@@ -445,14 +445,14 @@ async fn batch_load_organizations(
         .collect())
 }
 
-/// Batch load goals by session IDs via the coaching_sessions_goals join table.
+/// Batch load in-progress goals by session IDs via the coaching_sessions_goals join table.
 ///
-/// Returns at most one goal per session (the first linked goal). For full per-session
-/// goal lists, use `GET /coaching_sessions/{id}/goals` instead.
+/// Returns up to 3 in-progress goals per session for preview display in session lists.
+/// For full per-session goal lists, use `GET /coaching_sessions/{id}/goals` instead.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
-) -> Result<HashMap<Id, goals::Model>, Error> {
+) -> Result<HashMap<Id, Vec<goals::Model>>, Error> {
     if session_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -465,14 +465,17 @@ async fn batch_load_goals(
         .all(db)
         .await?;
 
-    // CHANGEME(PR4): Return up to 3 in-progress goals per coaching session instead of just one.
-    // Change map type to HashMap<Id, Vec<Goal>>, collect with entry().or_default().push(goal),
-    // filter by goal.status == in_progress, and cap each vec at 3 entries.
-    let mut map = HashMap::new();
+    const MAX_GOALS_PER_SESSION: usize = 3;
+
+    let mut map: HashMap<Id, Vec<goals::Model>> = HashMap::new();
     for (link, goal_opt) in links_with_goals {
         if let Some(goal) = goal_opt {
-            // First goal per session wins (HashMap::entry preserves the first insert)
-            map.entry(link.coaching_session_id).or_insert(goal);
+            if goal.in_progress() {
+                let goals = map.entry(link.coaching_session_id).or_default();
+                if goals.len() < MAX_GOALS_PER_SESSION {
+                    goals.push(goal);
+                }
+            }
         }
     }
 
@@ -518,7 +521,7 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         .as_ref()
         .and_then(|rel| related.organizations.get(&rel.organization_id).cloned());
 
-    let goal = related.goals.get(&session.id).cloned();
+    let goals = related.goals.get(&session.id).cloned();
     let agreement = related.agreements.get(&session.id).cloned();
 
     EnrichedSession {
@@ -527,7 +530,7 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         coach,
         coachee,
         organization,
-        goal,
+        goals,
         agreement,
     }
 }
@@ -541,7 +544,7 @@ impl EnrichedSession {
             coach: None,
             coachee: None,
             organization: None,
-            goal: None,
+            goals: None,
             agreement: None,
         }
     }
@@ -694,7 +697,7 @@ mod tests {
         assert_eq!(results[0].session.id, session_id);
         assert!(results[0].relationship.is_none());
         assert!(results[0].organization.is_none());
-        assert!(results[0].goal.is_none());
+        assert!(results[0].goals.is_none());
         assert!(results[0].agreement.is_none());
 
         Ok(())
@@ -795,7 +798,7 @@ mod tests {
         assert!(enriched.coach.is_none());
         assert!(enriched.coachee.is_none());
         assert!(enriched.organization.is_none());
-        assert!(enriched.goal.is_none());
+        assert!(enriched.goals.is_none());
         assert!(enriched.agreement.is_none());
     }
 
