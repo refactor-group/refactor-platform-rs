@@ -465,14 +465,14 @@ async fn batch_load_goals(
         .all(db)
         .await?;
 
-    const MAX_GOALS_PER_SESSION: usize = 3;
+    let max_goals = super::goal::max_in_progress_goals();
 
     let mut map: HashMap<Id, Vec<goals::Model>> = HashMap::new();
     for (link, goal_opt) in links_with_goals {
         if let Some(goal) = goal_opt {
             if goal.in_progress() {
                 let goals = map.entry(link.coaching_session_id).or_default();
-                if goals.len() < MAX_GOALS_PER_SESSION {
+                if goals.len() < max_goals {
                     goals.push(goal);
                 }
             }
