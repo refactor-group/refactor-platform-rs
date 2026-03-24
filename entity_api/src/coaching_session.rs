@@ -2,7 +2,7 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    coaching_sessions_goals, goals, organizations,
+    goals, organizations,
     provider::Provider,
     users, Id,
 };
@@ -447,37 +447,34 @@ async fn batch_load_organizations(
 
 /// Batch load in-progress goals by session IDs via the coaching_sessions_goals join table.
 ///
-/// Returns up to 3 in-progress goals per session for preview display in session lists.
+/// Delegates to [`super::coaching_session_goal::find_goals_grouped_by_session_ids`] for
+/// the DB query and grouping, then filters to in-progress goals capped at
+/// [`super::goal::max_in_progress_goals`] per session.
+///
 /// For full per-session goal lists, use `GET /coaching_sessions/{id}/goals` instead.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
 ) -> Result<HashMap<Id, Vec<goals::Model>>, Error> {
-    if session_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let links_with_goals = coaching_sessions_goals::Entity::find()
-        .filter(
-            coaching_sessions_goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
-        )
-        .find_also_related(goals::Entity)
-        .all(db)
-        .await?;
+    let all_goals = super::coaching_session_goal::find_goals_grouped_by_session_ids(
+        db, session_ids,
+    )
+    .await?;
 
     let max_goals = super::goal::max_in_progress_goals();
 
-    let mut map: HashMap<Id, Vec<goals::Model>> = HashMap::new();
-    for (link, goal_opt) in links_with_goals {
-        if let Some(goal) = goal_opt {
-            if goal.in_progress() {
-                let goals = map.entry(link.coaching_session_id).or_default();
-                if goals.len() < max_goals {
-                    goals.push(goal);
-                }
-            }
-        }
-    }
+    let map: HashMap<Id, Vec<goals::Model>> = all_goals
+        .into_iter()
+        .map(|(session_id, goals)| {
+            let capped: Vec<_> = goals
+                .into_iter()
+                .filter(|g| g.in_progress())
+                .take(max_goals)
+                .collect();
+            (session_id, capped)
+        })
+        .filter(|(_, goals)| !goals.is_empty())
+        .collect();
 
     debug!(
         "batch_load_goals: loaded in-progress goals for {} of {} sessions",

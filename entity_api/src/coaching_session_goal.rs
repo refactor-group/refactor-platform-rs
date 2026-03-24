@@ -244,7 +244,7 @@ pub async fn link_in_progress_goals_to_session(
 ///
 /// Returns `Error` if the database query fails.
 pub async fn find_goals_grouped_by_session_ids(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     session_ids: &[Id],
 ) -> Result<HashMap<Id, Vec<goals::Model>>, Error> {
     debug!("Batch loading goals for {} sessions", session_ids.len());
