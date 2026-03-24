@@ -72,15 +72,15 @@ jobs:
         if: always()
         steps:
             - name: Report deployment status
+              env:
+                  PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+                  SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+                  DEPLOY_RESULT: ${{ needs.deploy-preview.result }}
               run: |
-                  PR_NUMBER="${{ github.event.client_payload.pr_number }}"
-                  SOURCE_REPO="${{ github.event.client_payload.source_repo }}"
-                  RESULT="${{ needs.deploy-preview.result }}"
-
-                  if [[ "$RESULT" == "success" ]]; then
+                  if [[ "$DEPLOY_RESULT" == "success" ]]; then
                       echo "::notice::PR #${PR_NUMBER} preview deployed successfully (source: ${SOURCE_REPO})"
                       echo "::notice::Frontend: http://neo.rove-barbel.ts.net/pr-${PR_NUMBER}/"
                       echo "::notice::Backend API: http://neo.rove-barbel.ts.net/pr-${PR_NUMBER}/api"
                   else
-                      echo "::error::PR #${PR_NUMBER} preview deployment failed with status: ${RESULT} (source: ${SOURCE_REPO})"
+                      echo "::error::PR #${PR_NUMBER} preview deployment failed with status: ${DEPLOY_RESULT} (source: ${SOURCE_REPO})"
                   fi

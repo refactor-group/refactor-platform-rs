@@ -543,11 +543,20 @@ jobs:
               id: resolve
               env:
                   FORCE_REBUILD: ${{ inputs.force_rebuild }}
+                  INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+                  INPUT_REPO_TYPE: ${{ inputs.repo_type }}
+                  INPUT_BACKEND_SHA: ${{ inputs.backend_sha }}
+                  INPUT_FRONTEND_SHA: ${{ inputs.frontend_sha }}
+                  INPUT_BACKEND_BRANCH: ${{ inputs.backend_branch }}
+                  INPUT_FRONTEND_BRANCH: ${{ inputs.frontend_branch }}
+                  INPUT_BRANCH_NAME: ${{ inputs.branch_name }}
+                  INPUT_BACKEND_IMAGE: ${{ inputs.backend_image }}
+                  INPUT_FRONTEND_IMAGE: ${{ inputs.frontend_image }}
               run: |
                   set -euo pipefail
 
                   # Validate PR number input
-                  PR="${{ inputs.pr_number }}"
+                  PR="$INPUT_PR_NUMBER"
                   if [[ -z "$PR" ]]; then
                       echo "::error::PR number is required"
                       exit 1
@@ -558,24 +567,34 @@ jobs:
                   fi
 
                   # Validate repository type
-                  REPO_TYPE="${{ inputs.repo_type }}"
+                  REPO_TYPE="$INPUT_REPO_TYPE"
                   if [[ "$REPO_TYPE" != "backend" && "$REPO_TYPE" != "frontend" ]]; then
                       echo "::error::repo_type must be 'backend' or 'frontend'"
                       exit 1
                   fi
 
                   # Resolve commit SHA overrides (for manual dispatch with specific commits)
-                  BACKEND_SHA_OVERRIDE="${{ inputs.backend_sha }}"
-                  FRONTEND_SHA_OVERRIDE="${{ inputs.frontend_sha }}"
+                  BACKEND_SHA_OVERRIDE="$INPUT_BACKEND_SHA"
+                  FRONTEND_SHA_OVERRIDE="$INPUT_FRONTEND_SHA"
+
+                  # Validate SHA format for overrides (hex only, 7-40 chars)
+                  if [[ -n "$BACKEND_SHA_OVERRIDE" ]] && ! [[ "$BACKEND_SHA_OVERRIDE" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+                      echo "::error::Backend SHA must be a valid hex SHA (7-40 chars)"
+                      exit 1
+                  fi
+                  if [[ -n "$FRONTEND_SHA_OVERRIDE" ]] && ! [[ "$FRONTEND_SHA_OVERRIDE" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+                      echo "::error::Frontend SHA must be a valid hex SHA (7-40 chars)"
+                      exit 1
+                  fi
 
                   # Determine which branches to use for each component
-                  BACKEND_BRANCH="${{ inputs.backend_branch }}"
-                  FRONTEND_BRANCH="${{ inputs.frontend_branch }}"
+                  BACKEND_BRANCH="$INPUT_BACKEND_BRANCH"
+                  FRONTEND_BRANCH="$INPUT_FRONTEND_BRANCH"
                   if [[ "$REPO_TYPE" == "backend" ]]; then
-                      BACKEND_BRANCH="${{ inputs.branch_name }}"
+                      BACKEND_BRANCH="$INPUT_BRANCH_NAME"
                   fi
                   if [[ "$REPO_TYPE" == "frontend" ]]; then
-                      FRONTEND_BRANCH="${{ inputs.branch_name }}"
+                      FRONTEND_BRANCH="$INPUT_BRANCH_NAME"
                   fi
 
                   # Set up image repository references
@@ -583,8 +602,8 @@ jobs:
                   FRONTEND_IMAGE_REPO="${{ env.FRONTEND_IMAGE_REPO }}"
 
                   # Check for image overrides
-                  BACKEND_IMAGE_OVERRIDE="${{ inputs.backend_image }}"
-                  FRONTEND_IMAGE_OVERRIDE="${{ inputs.frontend_image }}"
+                  BACKEND_IMAGE_OVERRIDE="$INPUT_BACKEND_IMAGE"
+                  FRONTEND_IMAGE_OVERRIDE="$INPUT_FRONTEND_IMAGE"
                   FORCE_BUILD=${FORCE_REBUILD:-false}
 
                   # Configure backend image strategy
