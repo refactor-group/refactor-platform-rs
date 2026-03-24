@@ -479,6 +479,12 @@ async fn batch_load_goals(
         }
     }
 
+    debug!(
+        "batch_load_goals: loaded in-progress goals for {} of {} sessions",
+        map.len(),
+        session_ids.len()
+    );
+
     Ok(map)
 }
 
