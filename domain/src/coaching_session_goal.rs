@@ -12,7 +12,7 @@ use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
 use entity_api::coaching_sessions_goals;
 use log::*;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 
 /// Links an existing goal to a coaching session and publishes an SSE event.
 pub async fn link_to_coaching_session(
@@ -122,7 +122,7 @@ pub async fn find_coaching_sessions_by_goal_id(
 /// When `coaching_relationship_id` is provided, first resolves all session IDs
 /// for that relationship, then batch-loads their goals.
 pub async fn find_goals_grouped_by_session_ids(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     session_ids: &[Id],
 ) -> Result<HashMap<Id, Vec<Model>>, Error> {
     Ok(CoachingSessionGoalApi::find_goals_grouped_by_session_ids(db, session_ids).await?)

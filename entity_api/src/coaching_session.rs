@@ -2,7 +2,7 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
     coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
-    coaching_sessions_goals, goals, organizations,
+    goals, organizations,
     provider::Provider,
     users, Id,
 };
@@ -144,7 +144,7 @@ pub struct EnrichedSession {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<organizations::Model>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub goal: Option<goals::Model>,
+    pub goals: Option<Vec<goals::Model>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
 }
@@ -335,7 +335,7 @@ struct RelatedData {
     coaches: HashMap<Id, users::Model>,
     coachees: HashMap<Id, users::Model>,
     organizations: HashMap<Id, organizations::Model>,
-    goals: HashMap<Id, goals::Model>,
+    goals: HashMap<Id, Vec<goals::Model>>,
     agreements: HashMap<Id, agreements::Model>,
 }
 
@@ -445,36 +445,40 @@ async fn batch_load_organizations(
         .collect())
 }
 
-/// Batch load goals by session IDs via the coaching_sessions_goals join table.
+/// Batch load in-progress goals by session IDs via the coaching_sessions_goals join table.
 ///
-/// Returns at most one goal per session (the first linked goal). For full per-session
-/// goal lists, use `GET /coaching_sessions/{id}/goals` instead.
+/// Delegates to [`super::coaching_session_goal::find_goals_grouped_by_session_ids`] for
+/// the DB query and grouping, then filters to in-progress goals capped at
+/// [`super::goal::max_in_progress_goals`] per session.
+///
+/// For full per-session goal lists, use `GET /coaching_sessions/{id}/goals` instead.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
-) -> Result<HashMap<Id, goals::Model>, Error> {
-    if session_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
+) -> Result<HashMap<Id, Vec<goals::Model>>, Error> {
+    let all_goals =
+        super::coaching_session_goal::find_goals_grouped_by_session_ids(db, session_ids).await?;
 
-    let links_with_goals = coaching_sessions_goals::Entity::find()
-        .filter(
-            coaching_sessions_goals::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
-        )
-        .find_also_related(goals::Entity)
-        .all(db)
-        .await?;
+    let max_goals = super::goal::max_in_progress_goals();
 
-    // CHANGEME(PR4): Return up to 3 in-progress goals per coaching session instead of just one.
-    // Change map type to HashMap<Id, Vec<Goal>>, collect with entry().or_default().push(goal),
-    // filter by goal.status == in_progress, and cap each vec at 3 entries.
-    let mut map = HashMap::new();
-    for (link, goal_opt) in links_with_goals {
-        if let Some(goal) = goal_opt {
-            // First goal per session wins (HashMap::entry preserves the first insert)
-            map.entry(link.coaching_session_id).or_insert(goal);
-        }
-    }
+    let map: HashMap<Id, Vec<goals::Model>> = all_goals
+        .into_iter()
+        .map(|(session_id, goals)| {
+            let capped: Vec<_> = goals
+                .into_iter()
+                .filter(|g| g.in_progress())
+                .take(max_goals)
+                .collect();
+            (session_id, capped)
+        })
+        .filter(|(_, goals)| !goals.is_empty())
+        .collect();
+
+    debug!(
+        "batch_load_goals: loaded in-progress goals for {} of {} sessions",
+        map.len(),
+        session_ids.len()
+    );
 
     Ok(map)
 }
@@ -518,7 +522,7 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         .as_ref()
         .and_then(|rel| related.organizations.get(&rel.organization_id).cloned());
 
-    let goal = related.goals.get(&session.id).cloned();
+    let goals = related.goals.get(&session.id).cloned();
     let agreement = related.agreements.get(&session.id).cloned();
 
     EnrichedSession {
@@ -527,7 +531,7 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         coach,
         coachee,
         organization,
-        goal,
+        goals,
         agreement,
     }
 }
@@ -541,7 +545,7 @@ impl EnrichedSession {
             coach: None,
             coachee: None,
             organization: None,
-            goal: None,
+            goals: None,
             agreement: None,
         }
     }
@@ -694,7 +698,7 @@ mod tests {
         assert_eq!(results[0].session.id, session_id);
         assert!(results[0].relationship.is_none());
         assert!(results[0].organization.is_none());
-        assert!(results[0].goal.is_none());
+        assert!(results[0].goals.is_none());
         assert!(results[0].agreement.is_none());
 
         Ok(())
@@ -795,7 +799,7 @@ mod tests {
         assert!(enriched.coach.is_none());
         assert!(enriched.coachee.is_none());
         assert!(enriched.organization.is_none());
-        assert!(enriched.goal.is_none());
+        assert!(enriched.goals.is_none());
         assert!(enriched.agreement.is_none());
     }
 
