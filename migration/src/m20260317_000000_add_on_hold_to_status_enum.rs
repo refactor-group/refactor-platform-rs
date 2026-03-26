@@ -8,7 +8,14 @@ impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
             .get_connection()
-            .execute_unprepared("ALTER TYPE refactor_platform.status ADD VALUE 'on_hold'")
+            .execute_unprepared(
+                "ALTER TYPE refactor_platform.status ADD VALUE IF NOT EXISTS 'on_hold'",
+            )
+            .await?;
+
+        manager
+            .get_connection()
+            .execute_unprepared("ALTER TYPE refactor_platform.status OWNER TO refactor")
             .await?;
 
         Ok(())
