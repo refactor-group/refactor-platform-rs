@@ -15,6 +15,27 @@ pub enum Provider {
     Zoom,
 }
 
+/// Describes meeting-space lifecycle behavior for a video-conferencing provider.
+///
+/// Some providers (e.g. Google Meet) create persistent spaces whose URL never expires,
+/// making it safe — and desirable — to reuse the same link across sessions in a coaching
+/// relationship. Other providers (e.g. Zoom) create time-bound meetings that expire, so
+/// each session needs a fresh link.
+pub trait MeetingBehavior {
+    /// Whether meeting URLs from this provider are persistent and can be reused
+    /// across sessions within the same coaching relationship.
+    fn has_persistent_meeting_urls(&self) -> bool;
+}
+
+impl MeetingBehavior for Provider {
+    fn has_persistent_meeting_urls(&self) -> bool {
+        match self {
+            Self::Google => true,
+            Self::Zoom => false,
+        }
+    }
+}
+
 impl std::fmt::Display for Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -1,6 +1,7 @@
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::tiptap::TiptapDocument;
+use crate::provider::MeetingBehavior;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
@@ -152,8 +153,9 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
     Ok(())
 }
 
-/// If a provider is specified on the session, attempt to create a meeting space if the coach has
-/// OAuth credentials. If no credentials exist, skip meeting creation and proceed normally.
+/// If a provider is specified on the session, attempt to attach a meeting URL. First checks
+/// if an existing meeting URL can be reused (for providers with persistent URLs), then
+/// falls back to creating a new meeting space via OAuth credentials.
 async fn maybe_attach_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
@@ -161,6 +163,17 @@ async fn maybe_attach_meeting_url(
     coach_id: Id,
 ) -> Result<(), Error> {
     if let Some(provider) = &coaching_session_model.provider {
+        if let Some(url) = find_reusable_meeting_url(
+            db,
+            coaching_session_model.coaching_relationship_id,
+            provider,
+        )
+        .await?
+        {
+            coaching_session_model.meeting_url = Some(url);
+            return Ok(());
+        }
+
         let credentials =
             crate::oauth_connection::find_by_user_and_provider(db, coach_id, *provider).await?;
 
@@ -178,6 +191,34 @@ async fn maybe_attach_meeting_url(
         }
     }
     Ok(())
+}
+
+/// For providers with persistent meeting URLs, look up an existing meeting URL from the
+/// same coaching relationship. Returns `None` for providers with time-bound meetings.
+async fn find_reusable_meeting_url(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+    provider: &crate::provider::Provider,
+) -> Result<Option<String>, Error> {
+    if !provider.has_persistent_meeting_urls() {
+        return Ok(None);
+    }
+
+    let url = coaching_session::find_meeting_url_by_relationship_and_provider(
+        db,
+        coaching_relationship_id,
+        *provider,
+    )
+    .await?;
+
+    if url.is_some() {
+        info!(
+            "Reusing existing {} meeting URL for coaching relationship {}",
+            provider, coaching_relationship_id
+        );
+    }
+
+    Ok(url)
 }
 
 /// Create a meeting URL for the given provider using the coach's OAuth connection.
@@ -336,6 +377,71 @@ mod tests {
         Ok(())
     }
 
+    /// When provider is set, credentials exist, and a previous session in the same
+    /// relationship already has a meeting URL for that provider, the existing URL is
+    /// reused instead of creating a new Google Meet space.
+    #[tokio::test]
+    async fn create_with_provider_reuses_existing_meeting_url() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, Some(Provider::Google));
+
+        // An older session in the same relationship that already has a Google Meet URL
+        let existing_session_with_url = coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship.id,
+            collab_document_name: Some("old-doc".to_string()),
+            date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
+            meeting_url: Some("https://meet.google.com/existing-url".to_string()),
+            provider: Some(Provider::Google),
+            created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .into(),
+        };
+
+        // The session as the DB would return it after INSERT (with the reused meeting URL)
+        let saved_session = coaching_sessions::Model {
+            meeting_url: Some("https://meet.google.com/existing-url".to_string()),
+            ..session.clone()
+        };
+
+        // Query sequence:
+        // 1. relationship SELECT
+        // 2. organization SELECT
+        // 3. find_meeting_url_by_relationship_and_provider → returns existing session
+        //    (no oauth lookup or Meet API call needed!)
+        // 4. session INSERT → returns saved_session with the reused meeting_url
+        // 5. in-progress goals SELECT
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results(vec![vec![existing_session_with_url]])
+            .append_query_results(vec![vec![saved_session]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let config = test_config(&server.url());
+        let result = create(&db, &config, session).await?;
+
+        assert_eq!(
+            result.meeting_url,
+            Some("https://meet.google.com/existing-url".to_string())
+        );
+        Ok(())
+    }
+
     /// When provider is set but the coach has no OAuth credentials, meeting creation
     /// is skipped and the session is created successfully without a meeting URL.
     #[tokio::test]
@@ -353,12 +459,17 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, Some(Provider::Google));
 
-        // 5 queries: relationship, organization, oauth_connection (empty = no credentials),
-        // session INSERT, in-progress goals SELECT (for link_in_progress_goals_to_session).
+        // 6 queries: relationship, organization,
+        // find_meeting_url (empty = no reusable URL),
+        // oauth_connection (empty = no credentials),
+        // session INSERT, in-progress goals SELECT.
         // No Google Meet API call should occur.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results::<coaching_sessions::Model, Vec<coaching_sessions::Model>, _>(
+                vec![vec![]],
+            )
             .append_query_results::<oauth_connections::Model, Vec<oauth_connections::Model>, _>(
                 vec![vec![]],
             )
