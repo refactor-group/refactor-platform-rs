@@ -179,8 +179,14 @@ pub async fn batch_index(
         params.coaching_session_ids
     };
 
-    let session_goals: HashMap<Id, Vec<goals::Model>> =
+    let mut session_goals: HashMap<Id, Vec<goals::Model>> =
         GoalApi::find_goals_grouped_by_session_ids(app_state.db_conn_ref(), &session_ids).await?;
+
+    // Ensure every requested session ID has an entry so the frontend can
+    // distinguish "no goals" (empty vec) from "data not loaded yet" (missing key).
+    for id in &session_ids {
+        session_goals.entry(*id).or_default();
+    }
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),

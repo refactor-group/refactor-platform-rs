@@ -316,7 +316,7 @@ pub async fn find_by_user_with_includes(
     // Assemble enriched sessions
     Ok(sessions
         .into_iter()
-        .map(|session| assemble_enriched_session(session, &related_data))
+        .map(|session| assemble_enriched_session(session, &related_data, options.includes))
         .collect())
 }
 
@@ -501,8 +501,16 @@ async fn batch_load_agreements(
         .collect())
 }
 
-/// Assemble an enriched session from base session and related data
-fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedSession {
+/// Assemble an enriched session from base session and related data.
+///
+/// `includes` is needed to distinguish "not requested" (`None`) from
+/// "requested but empty" (`Some(vec![])`) so the frontend can tell
+/// the difference instead of getting stuck in a loading state.
+fn assemble_enriched_session(
+    session: Model,
+    related: &RelatedData,
+    includes: IncludeOptions,
+) -> EnrichedSession {
     let relationship = related
         .relationships
         .get(&session.coaching_relationship_id)
@@ -522,7 +530,12 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         .as_ref()
         .and_then(|rel| related.organizations.get(&rel.organization_id).cloned());
 
-    let goals = related.goals.get(&session.id).cloned();
+    let goals = if includes.goal {
+        Some(related.goals.get(&session.id).cloned().unwrap_or(vec![]))
+    } else {
+        None
+    };
+
     let agreement = related.agreements.get(&session.id).cloned();
 
     EnrichedSession {
@@ -801,6 +814,55 @@ mod tests {
         assert!(enriched.organization.is_none());
         assert!(enriched.goals.is_none());
         assert!(enriched.agreement.is_none());
+    }
+
+    #[test]
+    fn assemble_returns_empty_goals_vec_when_goal_included_but_none_exist() {
+        let now = chrono::Utc::now();
+        let session = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let related = RelatedData::default();
+        let includes = IncludeOptions {
+            goal: true,
+            ..IncludeOptions::none()
+        };
+
+        let enriched = assemble_enriched_session(session, &related, includes);
+
+        // Must be Some(empty vec), not None — otherwise the frontend
+        // can't distinguish "no goals" from "data not loaded yet".
+        assert_eq!(enriched.goals, Some(vec![]));
+    }
+
+    #[test]
+    fn assemble_returns_none_goals_when_goal_not_included() {
+        let now = chrono::Utc::now();
+        let session = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let related = RelatedData::default();
+        let includes = IncludeOptions::none();
+
+        let enriched = assemble_enriched_session(session, &related, includes);
+
+        assert!(enriched.goals.is_none());
     }
 
     #[test]
