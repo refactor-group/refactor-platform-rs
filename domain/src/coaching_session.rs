@@ -1,7 +1,7 @@
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::tiptap::TiptapDocument;
-use crate::provider::MeetingBehavior;
+use crate::provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
@@ -211,12 +211,10 @@ async fn find_reusable_meeting_url(
     )
     .await?;
 
-    if url.is_some() {
-        info!(
-            "Reusing existing {} meeting URL for coaching relationship {}",
-            provider, coaching_relationship_id
-        );
-    }
+    debug!(
+        "Reusable {} meeting URL for coaching relationship {}: {:?}",
+        provider, coaching_relationship_id, url
+    );
 
     Ok(url)
 }
