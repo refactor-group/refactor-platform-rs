@@ -96,7 +96,7 @@ pub async fn find_meeting_url_by_relationship_and_provider(
 ) -> Result<Option<String>, Error> {
     Ok(Entity::find()
         .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
-        .filter(Column::Provider.eq(provider.to_string().to_lowercase()))
+        .filter(Column::Provider.eq(provider))
         .filter(Column::MeetingUrl.is_not_null())
         .order_by_desc(Column::CreatedAt)
         .one(db)
