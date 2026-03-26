@@ -445,13 +445,10 @@ async fn batch_load_organizations(
         .collect())
 }
 
-/// Batch load in-progress goals by session IDs via the coaching_sessions_goals join table.
+/// Batch load goals by session IDs via the coaching_sessions_goals join table.
 ///
 /// Delegates to [`super::coaching_session_goal::find_goals_grouped_by_session_ids`] for
-/// the DB query and grouping, then filters to in-progress goals capped at
-/// [`super::goal::max_in_progress_goals`] per session.
-///
-/// For full per-session goal lists, use `GET /coaching_sessions/{id}/goals` instead.
+/// the DB query and grouping, then caps at [`super::goal::max_in_progress_goals`] per session.
 async fn batch_load_goals(
     db: &impl ConnectionTrait,
     session_ids: &[Id],
@@ -464,18 +461,13 @@ async fn batch_load_goals(
     let map: HashMap<Id, Vec<goals::Model>> = all_goals
         .into_iter()
         .map(|(session_id, goals)| {
-            let capped: Vec<_> = goals
-                .into_iter()
-                .filter(|g| g.in_progress())
-                .take(max_goals)
-                .collect();
+            let capped: Vec<_> = goals.into_iter().take(max_goals).collect();
             (session_id, capped)
         })
-        .filter(|(_, goals)| !goals.is_empty())
         .collect();
 
     debug!(
-        "batch_load_goals: loaded in-progress goals for {} of {} sessions",
+        "batch_load_goals: loaded goals for {} of {} sessions",
         map.len(),
         session_ids.len()
     );
