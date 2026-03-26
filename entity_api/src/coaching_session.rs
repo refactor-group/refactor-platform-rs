@@ -1,7 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use entity::{
     agreements, coaching_relationships,
-    coaching_sessions::{self, ActiveModel, Entity, Model, Relation},
+    coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals, organizations,
     provider::Provider,
     users, Id,
@@ -82,6 +82,26 @@ pub async fn update_meeting(
     active_model.updated_at = Set(chrono::Utc::now().into());
 
     Ok(active_model.save(db).await?.try_into_model()?)
+}
+
+/// Find the most recent meeting URL for a coaching relationship and provider.
+///
+/// Searches all sessions in the given relationship for one that has a `meeting_url`
+/// with the specified `provider`, returning the URL from the most recently created match.
+/// Returns `None` if no session in the relationship has a meeting URL for that provider.
+pub async fn find_meeting_url_by_relationship_and_provider(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    provider: Provider,
+) -> Result<Option<String>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Provider.eq(provider))
+        .filter(Column::MeetingUrl.is_not_null())
+        .order_by_desc(Column::CreatedAt)
+        .one(db)
+        .await?
+        .and_then(|session| session.meeting_url))
 }
 
 pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
@@ -563,6 +583,7 @@ impl EnrichedSession {
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
+    use entity::provider::Provider;
     use entity::Id;
     use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
@@ -905,5 +926,106 @@ mod tests {
     fn validate_allows_none() {
         let includes = IncludeOptions::none();
         assert!(includes.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn find_meeting_url_returns_most_recent_url_skipping_sessions_without_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+
+        // Session 1 (oldest): has a Google Meet URL
+        let _session_1 = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
+            collab_document_name: None,
+            meeting_url: Some("https://meet.google.com/old-meet-url".to_string()),
+            provider: Some(Provider::Google),
+            created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .into(),
+        };
+
+        // Session 2 (middle): also has a Google Meet URL — this is the one we want
+        let session_2 = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            date: chrono::NaiveDate::from_ymd_opt(2025, 2, 1).unwrap().into(),
+            collab_document_name: None,
+            meeting_url: Some("https://meet.google.com/latest-meet-url".to_string()),
+            provider: Some(Provider::Google),
+            created_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z")
+                .unwrap()
+                .into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z")
+                .unwrap()
+                .into(),
+        };
+
+        // Session 3 (newest): no meeting URL — coach didn't request one this time
+        let _session_3 = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            date: chrono::NaiveDate::from_ymd_opt(2025, 3, 1).unwrap().into(),
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
+                .unwrap()
+                .into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
+                .unwrap()
+                .into(),
+        };
+
+        // The MockDatabase returns session_2 because our query filters for
+        // meeting_url IS NOT NULL and orders by created_at DESC, so the DB
+        // would return session_2 as the first (most recent) match.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session_2.clone()]])
+            .into_connection();
+
+        let result =
+            find_meeting_url_by_relationship_and_provider(&db, relationship_id, Provider::Google)
+                .await?;
+
+        // Should get session_2's URL, not session_1's older one
+        assert_eq!(
+            result,
+            Some("https://meet.google.com/latest-meet-url".to_string())
+        );
+
+        // Verify the generated SQL includes the right filters and ordering
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    "google".into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_meeting_url_returns_none_when_no_matching_session_exists() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result =
+            find_meeting_url_by_relationship_and_provider(&db, Id::new_v4(), Provider::Google)
+                .await?;
+
+        assert_eq!(result, None);
+        Ok(())
     }
 }
