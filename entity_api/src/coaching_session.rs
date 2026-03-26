@@ -817,6 +817,55 @@ mod tests {
     }
 
     #[test]
+    fn assemble_returns_empty_goals_vec_when_goal_included_but_none_exist() {
+        let now = chrono::Utc::now();
+        let session = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let related = RelatedData::default();
+        let includes = IncludeOptions {
+            goal: true,
+            ..IncludeOptions::none()
+        };
+
+        let enriched = assemble_enriched_session(session, &related, includes);
+
+        // Must be Some(empty vec), not None — otherwise the frontend
+        // can't distinguish "no goals" from "data not loaded yet".
+        assert_eq!(enriched.goals, Some(vec![]));
+    }
+
+    #[test]
+    fn assemble_returns_none_goals_when_goal_not_included() {
+        let now = chrono::Utc::now();
+        let session = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let related = RelatedData::default();
+        let includes = IncludeOptions::none();
+
+        let enriched = assemble_enriched_session(session, &related, includes);
+
+        assert!(enriched.goals.is_none());
+    }
+
+    #[test]
     fn validate_allows_organization_with_relationship() {
         let includes = IncludeOptions {
             relationship: true,
