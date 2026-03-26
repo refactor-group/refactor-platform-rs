@@ -316,7 +316,7 @@ pub async fn find_by_user_with_includes(
     // Assemble enriched sessions
     Ok(sessions
         .into_iter()
-        .map(|session| assemble_enriched_session(session, &related_data))
+        .map(|session| assemble_enriched_session(session, &related_data, options.includes))
         .collect())
 }
 
@@ -501,8 +501,16 @@ async fn batch_load_agreements(
         .collect())
 }
 
-/// Assemble an enriched session from base session and related data
-fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedSession {
+/// Assemble an enriched session from base session and related data.
+///
+/// `includes` is needed to distinguish "not requested" (`None`) from
+/// "requested but empty" (`Some(vec![])`) so the frontend can tell
+/// the difference instead of getting stuck in a loading state.
+fn assemble_enriched_session(
+    session: Model,
+    related: &RelatedData,
+    includes: IncludeOptions,
+) -> EnrichedSession {
     let relationship = related
         .relationships
         .get(&session.coaching_relationship_id)
@@ -522,7 +530,12 @@ fn assemble_enriched_session(session: Model, related: &RelatedData) -> EnrichedS
         .as_ref()
         .and_then(|rel| related.organizations.get(&rel.organization_id).cloned());
 
-    let goals = related.goals.get(&session.id).cloned();
+    let goals = if includes.goal {
+        Some(related.goals.get(&session.id).cloned().unwrap_or(vec![]))
+    } else {
+        None
+    };
+
     let agreement = related.agreements.get(&session.id).cloned();
 
     EnrichedSession {
