@@ -332,17 +332,54 @@ jobs:
                 echo "WARNING: renew-certs.sh not found for initial chmod"
             fi
 
+            # Download nginx log rotation script
+            echo "INFO: Preparing to download rotate-logs.sh..."
+
+            # Remove existing file first to avoid permission issues
+            rm -f nginx/scripts/rotate-logs.sh 2>/dev/null || true
+
+            # Download with exponential backoff retry logic
+            for attempt in {1..3}; do
+                if curl -fsSL --retry 2 "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/rotate-logs.sh" -o nginx/scripts/rotate-logs.sh; then
+                    echo "INFO: Successfully downloaded rotate-logs.sh on attempt $attempt"
+                    break
+                elif [ $attempt -eq 3 ]; then
+                    echo "ERROR: Failed to download rotate-logs.sh after 3 attempts"
+                    exit 1
+                else
+                    echo "INFO: Download attempt $attempt failed, retrying in $((attempt * 2)) seconds..."
+                    sleep $((attempt * 2))
+                fi
+            done
+
+            # Verify the rotate logs script file was downloaded and is not empty
+            if [ ! -s nginx/scripts/rotate-logs.sh ]; then
+                echo "ERROR: Downloaded rotate-logs.sh script is empty or could not be created"
+                exit 1
+            fi
+
+            if [ -f nginx/scripts/rotate-logs.sh ]; then
+                chmod 770 nginx/scripts/rotate-logs.sh
+            else
+                echo "WARNING: rotate-logs.sh not found for initial chmod"
+            fi
+
             echo "INFO: Setting final directory permissions..."
             # Set final directory permissions to allow nginx to serve ACME challenges
             if [ -d nginx ]; then
                 find nginx -type d -exec chmod 755 {} \;
                 # Set file permissions for downloaded files
                 find nginx -type f -exec chmod 644 {} \; 2>/dev/null || true
-                # Make the renewal script executable
+                # Make the scripts executable
                 if [ -f nginx/scripts/renew-certs.sh ]; then
                     chmod 755 nginx/scripts/renew-certs.sh
                 else
                     echo "WARNING: renew-certs.sh not found for final chmod"
+                fi
+                if [ -f nginx/scripts/rotate-logs.sh ]; then
+                    chmod 755 nginx/scripts/rotate-logs.sh
+                else
+                    echo "WARNING: rotate-logs.sh not found for final chmod"
                 fi
             else
                 echo "WARNING: nginx directory not found for final permissions"
