@@ -58,6 +58,8 @@ refactor-platform-rs/
 ├── entity/            # SeaORM entity definitions
 ├── entity_api/        # Entity API layer (CRUD operations)
 ├── events/            # SSE domain event definitions
+├── meeting-ai/        # Meeting AI abstraction (recording bots, transcription, analysis)
+├── meeting-auth/      # OAuth 2.0 and API key authentication for meeting providers
 ├── migration/         # SeaORM database migrations
 ├── nginx/             # Production nginx configuration
 ├── nginx-preview/     # PR preview nginx configuration
@@ -102,6 +104,12 @@ Nginx runs as a Docker container (`docker-compose.nginx-preview.yaml`) using Doc
 
 ### entrypoint.sh Schema Flow
 The entrypoint waits for PostgreSQL readiness, then idempotently creates the `refactor_platform` schema and sets `search_path`. This supports the PR preview migrator container which needs the schema to exist before running migrations.
+
+### Manual Dispatch with Commit Selection
+`dispatch-pr-preview.yml` allows manual PR preview deployments with specific commit combinations. Users select backend and frontend commits from dropdown menus (auto-populated by `refresh-preview-commits.yml`) and enter a PR number. The workflow validates the PR exists, resolves commit SHAs, and calls the reusable workflow with `backend_sha`/`frontend_sha` override inputs. String override inputs are also available for exact SHAs not in the dropdown.
+
+### Commit Choice Refresh
+`refresh-preview-commits.yml` auto-updates the dispatch workflow's dropdown choices on every PR push event and merge to main. It fetches the 5 most recent commits from both repos' main branches and updates both the backend and frontend dispatch workflow YAMLs using `yq`. Requires `GHCR_PAT` with `workflow` scope.
 
 ### Secrets Resolution Order
 The reusable workflow resolves secrets in this order:
