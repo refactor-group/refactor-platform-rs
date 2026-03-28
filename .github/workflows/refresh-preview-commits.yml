@@ -69,9 +69,9 @@ jobs:
                   # Backend: 5 most recent commits (local checkout)
                   if [[ "$BACKEND_BRANCH" != "main" ]]; then
                       git fetch origin "$BACKEND_BRANCH"
-                      git log "origin/$BACKEND_BRANCH" --oneline -5 --format='%h - %.55s' > /tmp/backend_commits.txt
+                      git log "origin/$BACKEND_BRANCH" --oneline -5 --format='%h - %s' > /tmp/backend_commits.txt
                   else
-                      git log --oneline -5 --format='%h - %.55s' > /tmp/backend_commits.txt
+                      git log --oneline -5 --format='%h - %s' > /tmp/backend_commits.txt
                   fi
 
                   # Frontend: 5 most recent commits (via API)
