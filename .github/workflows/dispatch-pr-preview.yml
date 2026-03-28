@@ -24,17 +24,17 @@ on:
         required: true
         type: choice
         options:
-          - f9383af - %.55s
+          - 304fe26 - %.55s
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
-          - '68fe7b1 - feat: manual PR preview dispatch with commit selection '
-          - fd82344 - Allow coaches to add/remove goals on past sessions (#34
-          - ed1db7b - Add missing On Hold option to StatusSelect dropdown (#3
-          - e16a6c7 - Session goals panel with inline management (#343)
-          - '3bab32a - Merge pull request #346 from refactor-group/fix/batch-s'
+          - '556a3fe - fix: remove pull_request trigger from refresh-preview-c'
+          - '68bf2c8 - chore: refresh preview commit choices [skip ci]'
+          - 'dce8e4f - chore: refresh preview commit choices [skip ci]'
+          - 'dd29d9b - chore: refresh preview commit choices [skip ci]'
+          - 'bf50f1e - chore: refresh preview commit choices [skip ci]'
       backend_commit_override:
         description: "Override: paste exact backend SHA (ignores dropdown)"
         required: false
