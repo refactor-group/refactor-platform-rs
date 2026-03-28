@@ -24,17 +24,17 @@ on:
         required: true
         type: choice
         options:
-          - 304fe26 - %.55s
+          - '8265905 - fix: use valid git format specifier in refresh commit log'
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
+          - '2c3211f - chore: refresh preview commit choices [skip ci]'
+          - '93f8f5f - chore: refresh preview commit choices [skip ci]'
           - '556a3fe - fix: remove pull_request trigger from refresh-preview-c'
           - '68bf2c8 - chore: refresh preview commit choices [skip ci]'
           - 'dce8e4f - chore: refresh preview commit choices [skip ci]'
-          - 'dd29d9b - chore: refresh preview commit choices [skip ci]'
-          - 'bf50f1e - chore: refresh preview commit choices [skip ci]'
       backend_commit_override:
         description: "Override: paste exact backend SHA (ignores dropdown)"
         required: false
