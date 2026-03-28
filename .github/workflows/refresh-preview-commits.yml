@@ -20,10 +20,10 @@ on:
     workflow_dispatch:
         inputs:
             backend_branch:
-                description: "Branch to fetch backend commits from (default: main)"
+                description: "Branch to fetch backend commits from (default: current branch)"
                 required: false
                 type: string
-                default: "main"
+                default: ""
             frontend_branch:
                 description: "Branch to fetch frontend commits from (default: main)"
                 required: false
@@ -60,7 +60,7 @@ jobs:
             - name: Fetch recent commits from both repos
               env:
                   GH_TOKEN: ${{ secrets.GHCR_PAT }}
-                  BACKEND_BRANCH: ${{ inputs.backend_branch || 'main' }}
+                  BACKEND_BRANCH: ${{ inputs.backend_branch || github.ref_name }}
                   FRONTEND_BRANCH: ${{ inputs.frontend_branch || 'main' }}
               run: |
                   set -euo pipefail
