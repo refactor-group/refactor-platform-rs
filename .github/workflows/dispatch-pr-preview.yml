@@ -24,7 +24,7 @@ on:
         required: true
         type: choice
         options:
-          - 'fa09313 - fix: prune stale Docker networks before PR preview deployment'
+          - '0159753 - chore: remove temporary network cleanup workflow'
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
