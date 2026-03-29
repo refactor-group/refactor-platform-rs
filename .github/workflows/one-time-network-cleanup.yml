@@ -1,0 +1,30 @@
+# TEMPORARY: One-time Docker network cleanup on RPi5
+# Remove this workflow after running it once successfully
+name: One-Time Network Cleanup
+
+on:
+    workflow_dispatch:
+
+jobs:
+    cleanup:
+        name: Prune Docker Networks on RPi5
+        runs-on: [self-hosted, Linux, ARM64, neo]
+        steps:
+            - name: Show current Docker networks
+              run: |
+                  echo "=== Current Docker networks ==="
+                  docker network ls
+                  echo ""
+                  echo "=== Network count ==="
+                  docker network ls -q | wc -l
+
+            - name: Prune unused Docker networks
+              run: |
+                  echo "=== Pruning unused networks ==="
+                  docker network prune -f
+                  echo ""
+                  echo "=== Docker networks after prune ==="
+                  docker network ls
+                  echo ""
+                  echo "=== Network count after prune ==="
+                  docker network ls -q | wc -l
