@@ -1,0 +1,102 @@
+# TEMPORARY: One-time Docker cleanup on RPi5
+# Remove this workflow after running it once successfully
+name: One-Time Docker Cleanup
+
+on:
+    workflow_dispatch:
+
+jobs:
+    cleanup:
+        name: Docker Cleanup on RPi5
+        runs-on: [self-hosted, Linux, ARM64, neo]
+        steps:
+            - name: Show running Docker containers
+              run: |
+                  echo "=== Running containers ==="
+                  docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>&1
+                  echo ""
+                  echo "=== All containers (including stopped) ==="
+                  docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}' 2>&1
+                  echo ""
+                  echo "=== Docker Compose projects ==="
+                  docker compose ls -a 2>&1 || true
+
+            - name: Show Docker disk usage
+              run: |
+                  echo "=== Docker disk usage ==="
+                  docker system df 2>&1
+                  echo ""
+                  echo "=== Refactor images ==="
+                  docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' | grep -E "refactor|REPOSITORY" 2>&1 || echo "No refactor images found"
+                  echo ""
+                  echo "=== Total image count ==="
+                  docker images -q | wc -l
+
+            - name: Stop and remove orphaned PR containers
+              run: |
+                  echo "=== Stopping containers from closed PRs ==="
+                  # List all compose projects and their status
+                  for project in $(docker compose ls -a --format json 2>/dev/null | jq -r '.[].Name' 2>/dev/null || true); do
+                      if [[ "$project" == pr-* ]]; then
+                          RUNNING=$(docker compose -p "$project" ps -q 2>/dev/null | wc -l)
+                          echo "Project: $project — $RUNNING containers"
+                      fi
+                  done
+
+                  echo ""
+                  echo "=== Removing all stopped containers ==="
+                  docker container prune -f 2>&1
+
+            - name: Remove refactor images older than 7 days
+              run: |
+                  echo "=== Removing refactor images older than 7 days ==="
+                  # Find and remove refactor images created more than 7 days ago
+                  OLD_IMAGES=$(docker images --format '{{.ID}} {{.Repository}} {{.CreatedAt}}' | \
+                      grep -i refactor | \
+                      while read id repo created_date rest; do
+                          # Parse the date and check if older than 7 days
+                          created_ts=$(date -d "${created_date}" +%s 2>/dev/null || echo "0")
+                          cutoff_ts=$(date -d "7 days ago" +%s 2>/dev/null || echo "0")
+                          if [[ "$created_ts" -lt "$cutoff_ts" && "$created_ts" -gt "0" ]]; then
+                              echo "$id"
+                          fi
+                      done | sort -u)
+
+                  if [[ -n "$OLD_IMAGES" ]]; then
+                      echo "Removing old images:"
+                      echo "$OLD_IMAGES" | while read id; do
+                          docker rmi -f "$id" 2>&1 || true
+                      done
+                  else
+                      echo "No refactor images older than 7 days found (or date parsing unavailable)"
+                      echo ""
+                      echo "Falling back: removing all dangling images and pruning with 7d filter..."
+                  fi
+
+                  # Also prune dangling images
+                  echo ""
+                  echo "=== Pruning dangling images ==="
+                  docker image prune -f 2>&1
+
+                  echo ""
+                  echo "=== Pruning images older than 7 days (168h) ==="
+                  docker image prune -a -f --filter "until=168h" 2>&1
+
+            - name: Prune stale networks
+              run: |
+                  echo "=== Pruning unused networks ==="
+                  docker network prune -f 2>&1
+
+            - name: Final disk usage
+              run: |
+                  echo "=== Docker disk usage after cleanup ==="
+                  docker system df 2>&1
+                  echo ""
+                  echo "=== Remaining refactor images ==="
+                  docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' | grep -E "refactor|REPOSITORY" 2>&1 || echo "No refactor images"
+                  echo ""
+                  echo "=== Remaining networks ==="
+                  docker network ls 2>&1
+                  echo ""
+                  echo "=== Running containers ==="
+                  docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}' 2>&1
