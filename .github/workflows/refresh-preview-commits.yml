@@ -61,7 +61,7 @@ jobs:
             - name: Fetch recent commits from both repos
               env:
                   GH_TOKEN: ${{ secrets.GHCR_PAT }}
-                  BACKEND_BRANCH: ${{ inputs.backend_branch || github.ref_name }}
+                  BACKEND_BRANCH: ${{ inputs.backend_branch || (github.event_name == 'pull_request' && 'main') || github.ref_name }}
                   FRONTEND_BRANCH: ${{ inputs.frontend_branch || 'main' }}
               run: |
                   set -euo pipefail
