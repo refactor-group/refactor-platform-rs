@@ -24,17 +24,17 @@ on:
         required: true
         type: choice
         options:
-          - 'c48e302 - ci: remove automatic PR preview triggers, make previews manual-only'
+          - '21d48d7 - chore: remove stale references to deleted dispatch workflow in comments'
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
+          - 'e6e710b - chore: refresh preview commit choices [skip ci]'
+          - '604ca11 - ci: remove automatic PR preview trigger, make previews '
           - 'dc7b19b - chore: refresh preview commit choices [skip ci]'
           - 'a0c0092 - docs: update PR preview section with manual dispatch an'
           - 'e54de60 - chore: refresh preview commit choices [skip ci]'
-          - '6848dbe - docs: update CLAUDE.md with dispatch auto-detect and br'
-          - 'a8d9d44 - chore: refresh preview commit choices [skip ci]'
       backend_commit_override:
         description: "Override: paste exact backend SHA (ignores dropdown)"
         required: false
