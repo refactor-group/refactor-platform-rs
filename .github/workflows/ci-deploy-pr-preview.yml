@@ -1023,16 +1023,15 @@ jobs:
                       "docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true"
                   echo "::notice::✅ Previous deployment cleaned"
 
-            # Prune stale Docker networks left behind by failed deployments
-            # docker network prune only removes networks not connected to any container
-            - name: Prune Stale Docker Networks
+            # Prune stale Docker resources left behind by failed deployments
+            # Only removes resources not connected to any running container
+            - name: Prune Stale Docker Resources
               run: |
-                  echo "🧹 Pruning stale Docker networks..."
-                  PRUNED=$(ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
+                  echo "🧹 Pruning stale Docker resources..."
+                  ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
-                      "docker network prune -f 2>&1")
-                  echo "$PRUNED"
-                  echo "::notice::✅ Network prune complete"
+                      "docker network prune -f && docker image prune -f && docker volume prune -f"
+                  echo "::notice::✅ Resource prune complete"
 
             # Deploy full application stack to RPi5
             - name: Deploy to RPi5 via Tailscale SSH

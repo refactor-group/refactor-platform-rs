@@ -255,6 +255,14 @@ jobs:
           fi
           echo "📦 Shared images retained: postgres:17 (used by all PRs)"
 
+          # Prune dangling resources to prevent accumulation
+          echo ""
+          echo "🧹 Pruning dangling Docker resources..."
+          docker network prune -f 2>/dev/null || true
+          docker volume prune -f 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true
+          echo "✅ Dangling resources pruned"
+
           echo ""
           echo "📊 Remaining PR environments on RPi5:"
           REMAINING=$(docker ps --filter 'name=pr-' --format '{{.Names}}' 2>/dev/null | wc -l || true)
