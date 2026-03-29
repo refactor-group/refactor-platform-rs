@@ -24,7 +24,7 @@ on:
         required: true
         type: choice
         options:
-          - '108f9fb - fix: add resource pruning to cleanup and deploy workflows'
+          - 'bd7c5f8 - chore: remove temporary docker cleanup workflow'
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
