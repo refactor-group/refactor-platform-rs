@@ -37,3 +37,4 @@ log "Docker disk usage after pruning:"
 docker system df
 
 log "Docker image pruning complete"
+
