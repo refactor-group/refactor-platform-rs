@@ -17,11 +17,14 @@ Each preview environment includes:
 ### How to Deploy a Preview
 
 1. **Open a PR** in either `refactor-platform-rs` or `refactor-platform-fe`
-2. **Go to Actions** → "Deploy PR Preview (Manual Select)" → Run workflow
-3. **Select commits** from the dropdowns (or use SHA override fields)
-4. **Wait for deployment** (~5-10 minutes for first build)
-5. **Check PR comment** for your unique URLs
-6. **Connect to Tailscale** VPN (required for access)
+2. **Go to Actions** → **"Deploy PR Preview (Manual Select)"** → Run workflow
+3. **Choose commits** from the dropdowns (includes latest `main` + HEAD of every open PR from both repos)
+4. For any commit not in the dropdown, paste the exact SHA in the override fields
+5. **Wait for deployment** (~5-10 minutes for first build)
+6. **Check PR comment** for your unique URLs
+7. **Connect to Tailscale** VPN (required for access)
+
+> **Note:** Dropdowns auto-refresh on every merge to `main` and on every PR update.
 
 **Example PR Comment:**
 
