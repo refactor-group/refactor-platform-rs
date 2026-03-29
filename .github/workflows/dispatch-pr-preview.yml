@@ -24,7 +24,7 @@ on:
         required: true
         type: choice
         options:
-          - '0159753 - chore: remove temporary network cleanup workflow'
+          - '108f9fb - fix: add resource pruning to cleanup and deploy workflows'
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
