@@ -24,17 +24,17 @@ on:
         required: true
         type: choice
         options:
-          - 'ac8ac87 - docs: update CLAUDE.md with dispatch auto-detect and resource cleanup info'
+          - '1eb923f - docs: update PR preview section with manual dispatch and resource cleanup info'
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
+          - 'e54de60 - chore: refresh preview commit choices [skip ci]'
           - '6848dbe - docs: update CLAUDE.md with dispatch auto-detect and br'
           - 'a8d9d44 - chore: refresh preview commit choices [skip ci]'
           - '83612fc - test: validate arm64 cache build permissions (#354)'
           - '8f6513c - chore: refresh preview commit choices [skip ci]'
-          - '535d63b - chore: refresh preview commit choices [skip ci]'
       backend_commit_override:
         description: "Override: paste exact backend SHA (ignores dropdown)"
         required: false
