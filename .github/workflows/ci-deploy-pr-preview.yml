@@ -81,7 +81,7 @@ on:
         # All secrets are required: false because they may resolve from:
         # 1. The CALLER repo's pr-preview environment (workflow_call resolves from caller)
         # 2. Org-level secrets (Postgres, SSH, GHCR)
-        # For cross-repo deploys, prefer deploy-pr-preview-dispatch.yml for correct resolution.
+        # For cross-repo deploys, the frontend dispatch workflow calls this via workflow_call.
         secrets:
             # SSH connection details for RPi5 deployment target
             RPI5_SSH_KEY:
@@ -495,7 +495,6 @@ jobs:
         # resolves from the CALLER's repository, not this one. Ensure all required
         # secrets exist in the caller repo's pr-preview environment or at org level.
         # TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
-        # Preferred cross-repo path: deploy-pr-preview-dispatch.yml (repository_dispatch).
         environment: pr-preview
         # Wait for quality checks to pass before building
         needs:
@@ -902,7 +901,6 @@ jobs:
         # resolves from the CALLER's repository, not this one. Ensure all required
         # secrets exist in the caller repo's pr-preview environment or at org level.
         # TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
-        # Preferred cross-repo path: deploy-pr-preview-dispatch.yml (repository_dispatch).
         environment: pr-preview
 
         steps:
