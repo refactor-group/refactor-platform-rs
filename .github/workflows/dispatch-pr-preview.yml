@@ -24,9 +24,10 @@ on:
         required: true
         type: choice
         options:
+          - '22c617c - chore: refresh preview commit choices [skip ci]'
           - '3ff8cb7 - fix: skip cleanup when no preview environment was deployed (#270)'
           - '4edc80b - chore: refresh preview commit choices [skip ci]'
-          - '1c60c49 - chore: refresh preview commit choices [skip ci]'
+          - 5e691b8 - PR#271 (fix/dispatch-remove-pr-number-)
           - 3cce00b - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
@@ -34,11 +35,12 @@ on:
         required: true
         type: choice
         options:
-          - '23ecc16 - fix: skip cleanup when no preview environment was deplo'
-          - '7f2ad98 - chore: refresh preview commit choices [skip ci]'
-          - '00058be - chore: refresh preview commit choices [skip ci]'
-          - b711b3c - PR#355 (feature/coaching-session-panel)
-          - fede337 - PR#349 (feature/coaching-session-panel)
+          - '9fb352e - chore: refresh preview commit choices [skip ci]'
+          - '13b410c - chore: refresh preview commit choices [skip ci]'
+          - '339c80d - chore: refresh preview commit choices [skip ci]'
+          - 3c76f7a - PR#359 (fix/dispatch-remove-pr-number-)
+          - 9dd85cf - PR#355 (feature/coaching-session-panel)
+          - fcaa151 - PR#349 (feature/coaching-session-panel)
           - 4852f68 - PR#336 (feat/dashboard-goals-overview)
           - 479f4db - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
