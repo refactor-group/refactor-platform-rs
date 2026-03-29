@@ -3,6 +3,7 @@
 # =============================================================================
 # Purpose: Trigger cleanup when backend PRs are closed/merged
 # Calls: cleanup-pr-preview.yml (reusable workflow)
+# Safety: Checks if a preview was deployed before calling cleanup
 # =============================================================================
 
 name: Cleanup PR Preview (Backend)
@@ -19,11 +20,38 @@ permissions:
 
 jobs:
   # ===========================================================================
-  # JOB: Call reusable cleanup workflow
+  # JOB: Check if a preview environment was deployed for this PR
+  # ===========================================================================
+  check-preview:
+    name: Check for deployed preview
+    runs-on: ubuntu-latest
+    outputs:
+      has_preview: ${{ steps.check.outputs.has_preview }}
+    steps:
+      - name: Check for deploy comment on PR
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          COMMENTS=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.body | contains("PR Preview Environment"))] | length')
+          if [[ "$COMMENTS" -gt 0 ]]; then
+            echo "has_preview=true" >> $GITHUB_OUTPUT
+            echo "::notice::Preview environment found for PR #$PR_NUMBER — proceeding with cleanup"
+          else
+            echo "has_preview=false" >> $GITHUB_OUTPUT
+            echo "::notice::No preview environment was deployed for PR #$PR_NUMBER — skipping cleanup"
+          fi
+
+  # ===========================================================================
+  # JOB: Call reusable cleanup workflow (only if preview exists)
   # ===========================================================================
   cleanup-backend-pr:
     name: Cleanup Backend PR Preview
-    # Call the reusable workflow located in this repository
+    needs: check-preview
+    if: needs.check-preview.outputs.has_preview == 'true'
     uses: ./.github/workflows/cleanup-pr-preview.yml
     with:
       # This is a backend PR cleanup
@@ -33,8 +61,3 @@ jobs:
       # Branch name for image identification
       branch_name: ${{ github.head_ref }}
     secrets: inherit
-    # =========================================================================
-    # NO SECRETS NEEDED!
-    # =========================================================================
-    # The reusable workflow uses the pr-preview environment from this repo
-    # which contains all necessary secrets for cleanup.
