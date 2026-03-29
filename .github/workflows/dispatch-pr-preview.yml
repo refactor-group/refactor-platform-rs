@@ -24,17 +24,17 @@ on:
         required: true
         type: choice
         options:
-          - '8265905 - fix: use valid git format specifier in refresh commit log'
+          - 'fa09313 - fix: prune stale Docker networks before PR preview deployment'
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
+          - '938bf0f - chore: refresh preview commit choices [skip ci]'
+          - '2fd1e31 - test: noop change to validate preview dispatch workflow'
+          - '5af609e - chore: refresh preview commit choices [skip ci]'
+          - '2eb21dc - fix: use valid git format specifier in refresh commit l'
           - '2c3211f - chore: refresh preview commit choices [skip ci]'
-          - '93f8f5f - chore: refresh preview commit choices [skip ci]'
-          - '556a3fe - fix: remove pull_request trigger from refresh-preview-c'
-          - '68bf2c8 - chore: refresh preview commit choices [skip ci]'
-          - 'dce8e4f - chore: refresh preview commit choices [skip ci]'
       backend_commit_override:
         description: "Override: paste exact backend SHA (ignores dropdown)"
         required: false
