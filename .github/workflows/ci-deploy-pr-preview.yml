@@ -8,8 +8,7 @@
 #
 # Secrets Strategy:
 # - Environment secrets resolve from the CALLER's repository, not this one.
-# - Cross-repo calls (from frontend) should use deploy-pr-preview-dispatch.yml
-#   which runs in the backend repo's context for correct secret resolution.
+# - Cross-repo calls (from frontend dispatch) use workflow_call directly.
 # - Common secrets (SSH, GHCR, Postgres) are at org level for redundancy.
 # - TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
 # =============================================================================

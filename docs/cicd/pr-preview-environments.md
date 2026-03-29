@@ -2,11 +2,11 @@
 
 ## 🚀 Quick Start
 
-**Want to test your changes in a live environment?** Just open a PR! A preview environment will be automatically deployed.
+**Want to test your changes in a live environment?** Deploy a preview via manual workflow dispatch.
 
 ### What You Get
 
-Every PR automatically gets:
+Each preview environment includes:
 
 - ✅ **Isolated full-stack environment** (Postgres + Backend + Frontend)
 - ✅ **Clean path-based URLs** via NGINX routing
@@ -14,13 +14,14 @@ Every PR automatically gets:
 - ✅ **Access via Tailscale VPN**
 - ✅ **Automatic cleanup** when PR closes
 
-### How to Access Your Preview
+### How to Deploy a Preview
 
 1. **Open a PR** in either `refactor-platform-rs` or `refactor-platform-fe`
-2. **Wait for deployment** (~5-10 minutes for first build)
-3. **Check PR comment** for your unique URLs
-4. **Connect to Tailscale** VPN (required for access)
-5. **Visit your preview** at the URLs provided
+2. **Go to Actions** → "Deploy PR Preview (Manual Select)" → Run workflow
+3. **Select commits** from the dropdowns (or use SHA override fields)
+4. **Wait for deployment** (~5-10 minutes for first build)
+5. **Check PR comment** for your unique URLs
+6. **Connect to Tailscale** VPN (required for access)
 
 **Example PR Comment:**
 
@@ -60,17 +61,17 @@ Each PR gets a unique URL path based on the PR number:
 
 **Backend PR:**
 
-1. PR opened → Workflow triggers
-2. Backend: Builds from **your PR branch** 📦
-3. Frontend: Uses **main-arm64** image (or builds if missing)
-4. Deploys: Full stack with your backend changes
+1. User triggers "Deploy PR Preview (Manual Select)" from backend repo Actions tab
+2. Backend: Builds from **selected commit** 📦
+3. Frontend: Builds from **selected commit** (or uses main-arm64 if main commit selected)
+4. Deploys: Full stack with your chosen commit combination
 
 **Frontend PR:**
 
-1. PR opened → Workflow triggers
-2. Frontend: Builds from **your PR branch** 📦
-3. Backend: Uses **main-arm64** image (or builds if missing)
-4. Deploys: Full stack with your frontend changes
+1. User triggers "Deploy PR Preview (Manual Select)" from frontend repo Actions tab
+2. Frontend: Builds from **selected commit** 📦
+3. Backend: Builds from **selected commit** (or uses main-arm64 if main commit selected)
+4. Deploys: Full stack with your chosen commit combination
 
 ### Architecture
 
@@ -139,11 +140,15 @@ This means:
 **Backend Repository:**
 
 - `.github/workflows/ci-deploy-pr-preview.yml` - Reusable workflow (does the heavy lifting)
-- `.github/workflows/pr-preview-backend.yml` - Overlay for backend PRs
+- `.github/workflows/dispatch-pr-preview.yml` - Manual dispatch for backend PRs
+- `.github/workflows/cleanup-pr-preview-backend.yml` - Cleanup on PR close
+- `.github/workflows/cleanup-pr-preview.yml` - Reusable cleanup workflow
+- `.github/workflows/refresh-preview-commits.yml` - Updates commit dropdown choices
 
 **Frontend Repository:**
 
-- `.github/workflows/pr-preview-frontend.yml` - Overlay for frontend PRs (calls backend reusable workflow)
+- `.github/workflows/dispatch-pr-preview-frontend.yml` - Manual dispatch for frontend PRs (calls backend reusable workflow)
+- `.github/workflows/cleanup-pr-preview-frontend.yml` - Cleanup on PR close
 
 ### NGINX Configuration
 
@@ -256,9 +261,8 @@ ssh -L 5432:localhost:5432 user@neo.rove-barbel.ts.net
 
 ### Environment Not Updating
 
-- **Push new commits:** Workflow triggers on new commits
+- **Re-run dispatch:** Go to Actions → "Deploy PR Preview (Manual Select)" → Run workflow with updated commits
 - **Re-run workflow:** Go to Actions → Re-run failed jobs
-- **Check branch:** Ensure you're pushing to the PR branch
 - **Verify build:** Check that new image was built and pushed
 
 ### NGINX Routing Issues
@@ -318,36 +322,14 @@ docker ps --filter 'name=pr-201'
 
 ## 🎯 Advanced Usage
 
-### Force Rebuild
+### Test Different Commit Combinations
 
-Trigger a complete rebuild (ignoring caches):
+The manual dispatch workflow lets you pick any combination of backend and frontend commits:
 
-1. Go to Actions → CI Deploy PR Preview
-2. Click "Run workflow"
-3. Select your branch
-4. Set `force_rebuild: true`
-
-### Use Specific Image
-
-Override backend or frontend image:
-
-1. Edit overlay workflow (`.github/workflows/pr-preview-*.yml`)
-2. Set `backend_image` or `frontend_image` input
-3. Example: `backend_image: 'ghcr.io/refactor-group/refactor-platform-rs:main-arm64'`
-
-### Test Different Branch Combinations
-
-**Frontend PR using different backend branch:**
-
-1. Edit `.github/workflows/pr-preview-frontend.yml`
-2. Change `backend_branch: 'main'` to desired branch
-3. Commit and push
-
-**Backend PR using different frontend branch:**
-
-1. Edit `.github/workflows/pr-preview-backend.yml`
-2. Change `frontend_branch: 'main'` to desired branch
-3. Commit and push
+1. Go to Actions → "Deploy PR Preview (Manual Select)" → Run workflow
+2. Select backend commit from dropdown (or paste exact SHA in override field)
+3. Select frontend commit from dropdown (or paste exact SHA in override field)
+4. The workflow validates both commits exist before deploying
 
 ### Inspect NGINX Configuration
 
@@ -446,9 +428,9 @@ Want to improve the PR preview system?
 
 **Key files to modify:**
 
-- `ci-deploy-pr-preview.yml` - Main deployment logic
+- `ci-deploy-pr-preview.yml` - Main deployment logic (reusable workflow)
 - `docker-compose.pr-preview.yaml` - Service definitions and network configuration
-- `pr-preview-backend.yml` / `pr-preview-frontend.yml` - Trigger configurations
+- `dispatch-pr-preview.yml` / `dispatch-pr-preview-frontend.yml` - Manual dispatch triggers
 - `nginx/conf.d/pr-previews.conf` - NGINX routing configuration (static, handles all PRs)
 
 **After changes:**

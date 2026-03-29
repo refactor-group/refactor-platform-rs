@@ -96,12 +96,12 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 
 ## PR Preview Environments
 
-### 4. PR Preview Deployment (Backend)
+### 4. PR Preview Deployment (Manual Dispatch)
 **Files:**
-- `.github/workflows/pr-preview-backend.yml` (trigger)
+- `.github/workflows/dispatch-pr-preview.yml` (backend manual dispatch)
 - `.github/workflows/ci-deploy-pr-preview.yml` (reusable workflow)
 
-**Triggers:** Pull request opened/synchronize/reopened (backend changes)
+**Triggers:** Manual `workflow_dispatch` only — previews are not created automatically on PR events.
 **Documentation:** [pr-preview-environments.md](pr-preview-environments.md)
 
 ### 5. PR Preview Cleanup (Backend)
@@ -112,19 +112,19 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 **Triggers:** Pull request closed/merged
 
 **Deployment Flow:**
-1. Backend PR opened/updated triggers deployment workflow
-2. Reusable workflow handles both backend and frontend deployments
-3. Builds native ARM64 images on Neo runner
+1. User manually triggers "Deploy PR Preview (Manual Select)" workflow
+2. Selects backend and frontend commits from dropdowns (or enters SHA overrides)
+3. Reusable workflow builds native ARM64 images on Neo runner
 4. Deploys to Raspberry Pi 5 via Tailscale VPN
 5. Posts preview URLs to PR comment
-6. Cleanup on PR close/merge
+6. Cleanup runs automatically on PR close/merge
 
 **Key Features:**
 - ✅ Isolated full-stack environments per PR
+- ✅ Manual dispatch — deploy only when you need a preview
 - ✅ Unique port allocation (base_port + PR#)
 - ✅ Native ARM64 builds (no emulation)
 - ✅ Automatic cleanup with volume retention policies
-- ✅ Supports both backend and frontend PR triggers
 - ✅ Cross-repository workflow coordination
 
 **Port Allocation:**
@@ -133,7 +133,7 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 - Postgres: 5432 + PR#
 
 **Frontend Integration:**
-The frontend repository uses identical workflows (`pr-preview-frontend.yml` and `cleanup-pr-preview-frontend.yml`) that call the same reusable workflows with `repo_type: 'frontend'`, ensuring parity between frontend and backend PR previews.
+The frontend repository has its own manual dispatch workflow (`dispatch-pr-preview-frontend.yml`) that calls the same reusable workflow with `repo_type: 'frontend'`. Cleanup is handled by `cleanup-pr-preview-frontend.yml`.
 
 ---
 
