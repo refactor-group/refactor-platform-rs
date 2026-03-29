@@ -106,10 +106,13 @@ Nginx runs as a Docker container (`docker-compose.nginx-preview.yaml`) using Doc
 The entrypoint waits for PostgreSQL readiness, then idempotently creates the `refactor_platform` schema and sets `search_path`. This supports the PR preview migrator container which needs the schema to exist before running migrations.
 
 ### Manual Dispatch with Commit Selection
-`dispatch-pr-preview.yml` allows manual PR preview deployments with specific commit combinations. Users select backend and frontend commits from dropdown menus (auto-populated by `refresh-preview-commits.yml`) and enter a PR number. The workflow validates the PR exists, resolves commit SHAs, and calls the reusable workflow with `backend_sha`/`frontend_sha` override inputs. String override inputs are also available for exact SHAs not in the dropdown.
+`dispatch-pr-preview.yml` allows manual PR preview deployments with specific commit combinations. Users select backend and frontend commits from dropdown menus (auto-populated by `refresh-preview-commits.yml`). The `pr_number` input is optional — when left empty, the workflow auto-detects the PR from the current branch via `gh pr list --head`. The workflow validates the PR exists, resolves commit SHAs, and calls the reusable workflow with `backend_sha`/`frontend_sha` override inputs. String override inputs are also available for exact SHAs not in the dropdown.
 
 ### Commit Choice Refresh
-`refresh-preview-commits.yml` auto-updates the dispatch workflow's dropdown choices on merge to main or via manual `workflow_dispatch`. Manual runs accept optional `backend_branch` and `frontend_branch` inputs to populate dropdowns with commits from branches other than main. Fetches the 5 most recent commits from both repos and updates this repo's `dispatch-pr-preview.yml` using `yq`. Requires `GHCR_PAT` with `workflow` scope.
+`refresh-preview-commits.yml` auto-updates the dispatch workflow's dropdown choices on merge to main or via manual `workflow_dispatch`. Manual runs accept optional `backend_branch` and `frontend_branch` inputs to populate dropdowns with commits from branches other than main. The `backend_branch` defaults to the current branch (`github.ref_name`), `frontend_branch` defaults to `main`. Fetches the 5 most recent commits from both repos and updates this repo's `dispatch-pr-preview.yml` using `yq`. Requires `GHCR_PAT` with `workflow` scope.
+
+### Resource Cleanup
+Both the deploy workflow (`ci-deploy-pr-preview.yml`) and the cleanup workflow (`cleanup-pr-preview.yml`) prune dangling Docker networks, volumes, and images after each operation. This prevents resource accumulation from partial deployment failures or missed cleanups. The cleanup workflow's ARM64 cache image push uses `GHCR_PAT` (not `GITHUB_TOKEN`) to handle cross-repo package write permissions.
 
 ### Secrets Resolution Order
 The reusable workflow resolves secrets in this order:
