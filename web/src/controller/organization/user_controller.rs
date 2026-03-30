@@ -6,7 +6,7 @@ use crate::{controller::ApiResponse, AppState, Error};
 use axum::extract::Path;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use domain::Id;
-use domain::{emails as EmailsAPI, user as UserApi, users};
+use domain::{emails as EmailsAPI, magic_link_token as MagicLinkTokenApi, user as UserApi, users};
 use service::config::ApiVersion;
 
 use log::*;
@@ -72,7 +72,19 @@ pub(crate) async fn create(
             .await?;
     info!("User created: {user:?}");
 
-    EmailsAPI::notify_welcome_email(&app_state.config, &user).await;
+    match MagicLinkTokenApi::create_magic_link(app_state.db_conn_ref(), user.id, &app_state.config)
+        .await
+    {
+        Ok(raw_token) => {
+            EmailsAPI::notify_welcome_email(&app_state.config, &user, &raw_token).await;
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create magic link token for user {}: {e:?}",
+                user.id
+            );
+        }
+    }
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }

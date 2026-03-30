@@ -25,7 +25,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         first_name: Set(user_model.first_name),
         last_name: Set(user_model.last_name),
         display_name: Set(user_model.display_name),
-        password: Set(generate_hash(user_model.password)),
+        password: Set(user_model.password.map(generate_hash)),
         github_username: Set(user_model.github_username),
         github_profile_url: Set(user_model.github_profile_url),
         timezone: Set(user_model.timezone),
@@ -187,8 +187,16 @@ pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error>
     Ok(())
 }
 
-pub async fn verify_password(password_to_verify: &str, password_hash: &str) -> Result<(), Error> {
-    match password_auth::verify_password(password_to_verify, password_hash) {
+pub async fn verify_password(
+    password_to_verify: &str,
+    password_hash: Option<&str>,
+) -> Result<(), Error> {
+    let hash = password_hash.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordUnauthenticated,
+    })?;
+
+    match password_auth::verify_password(password_to_verify, hash) {
         Ok(_) => Ok(()),
         Err(_) => Err(Error {
             source: None,
@@ -202,7 +210,12 @@ pub fn generate_hash(password: String) -> String {
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
-    match password_auth::verify_password(creds.password, &user.password) {
+    let hash = user.password.as_deref().ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordUnauthenticated,
+    })?;
+
+    match password_auth::verify_password(creds.password, hash) {
         Ok(_) => Ok(Some(user)),
         Err(_) => Err(Error {
             source: None,
@@ -350,7 +363,7 @@ mod test {
             first_name: "Test".to_owned(),
             last_name: "User".to_owned(),
             display_name: None,
-            password: "password123".to_owned(),
+            password: Some("password123".to_owned()),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
@@ -399,7 +412,7 @@ mod test {
             first_name: "Test".to_owned(),
             last_name: "User".to_owned(),
             display_name: None,
-            password: "password123".to_owned(),
+            password: Some("password123".to_owned()),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),

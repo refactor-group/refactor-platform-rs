@@ -27,6 +27,12 @@ const DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH: &str = "/coaching-sessions/{sess
 /// Default URL path for action-assigned email links.
 const DEFAULT_ACTION_ASSIGNED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}?tab=actions";
 
+/// Default URL path for magic link setup page.
+const DEFAULT_MAGIC_LINK_EMAIL_URL_PATH: &str = "/setup/{token}";
+
+/// Default expiry duration for magic link tokens (72 hours in seconds).
+const DEFAULT_MAGIC_LINK_EXPIRY_SECONDS: u64 = 259200;
+
 /// All config field names registered with Clap, used for value source tracking.
 /// This is the single source of truth for field key names across the Config type.
 const CONFIG_FIELD_KEYS: &[&str] = &[
@@ -51,6 +57,8 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "frontend_base_url",
     "session_scheduled_email_url_path",
     "action_assigned_email_url_path",
+    "magic_link_email_url_path",
+    "magic_link_expiry_seconds",
     "interface",
     "port",
     "log_level_filter",
@@ -264,6 +272,13 @@ pub struct Config {
         default_value = "/coaching-sessions/{session_id}?tab=actions"
     )]
     action_assigned_email_url_path: String,
+    /// URL path template for magic link setup page.
+    /// Use `{token}` as a placeholder for the magic link token.
+    #[arg(long, env, default_value = DEFAULT_MAGIC_LINK_EMAIL_URL_PATH)]
+    magic_link_email_url_path: String,
+    /// Expiry duration in seconds for magic link tokens (default: 72 hours).
+    #[arg(long, env, default_value_t = DEFAULT_MAGIC_LINK_EXPIRY_SECONDS)]
+    magic_link_expiry_seconds: u64,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -513,6 +528,8 @@ impl Config {
             "action_assigned_email_url_path",
             &self.action_assigned_email_url_path,
         );
+        self.debug_field("magic_link_email_url_path", &self.magic_link_email_url_path);
+        self.debug_field("magic_link_expiry_seconds", &self.magic_link_expiry_seconds);
     }
 
     pub fn api_version(&self) -> &str {
@@ -601,6 +618,21 @@ impl Config {
         } else {
             &self.action_assigned_email_url_path
         }
+    }
+
+    /// Returns the URL path template for magic link setup page.
+    /// Falls back to the default if the configured value is empty.
+    pub fn magic_link_email_url_path(&self) -> &str {
+        if self.magic_link_email_url_path.is_empty() {
+            DEFAULT_MAGIC_LINK_EMAIL_URL_PATH
+        } else {
+            &self.magic_link_email_url_path
+        }
+    }
+
+    /// Returns the expiry duration in seconds for magic link tokens.
+    pub fn magic_link_expiry_seconds(&self) -> u64 {
+        self.magic_link_expiry_seconds
     }
 
     pub fn runtime_env(&self) -> RustEnv {
