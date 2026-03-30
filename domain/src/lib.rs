@@ -26,6 +26,7 @@ pub mod error;
 pub mod goal;
 pub mod goal_progress;
 pub mod jwt;
+pub mod magic_link_token;
 pub mod note;
 pub mod oauth_connection;
 pub mod oauth_token_storage;

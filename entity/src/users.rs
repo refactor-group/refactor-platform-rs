@@ -21,7 +21,7 @@ pub struct Model {
     pub last_name: String,
     pub display_name: Option<String>,
     #[serde(skip_serializing)]
-    pub password: String,
+    pub password: Option<String>,
     pub github_username: Option<String>,
     pub github_profile_url: Option<String>,
     #[sea_orm(default = "UTC")]
@@ -75,6 +75,6 @@ impl AuthUser for Model {
     }
 
     fn session_auth_hash(&self) -> &[u8] {
-        self.password.as_bytes()
+        self.password.as_deref().unwrap_or("").as_bytes()
     }
 }

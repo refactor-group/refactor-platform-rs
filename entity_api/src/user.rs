@@ -8,7 +8,8 @@ use entity::{roles, user_roles, Id};
 use log::*;
 use password_auth;
 use sea_orm::{
-    entity::prelude::*, Condition, ConnectionTrait, DatabaseConnection, Set, TransactionTrait,
+    entity::prelude::*, Condition, ConnectionTrait, DatabaseConnection, IntoActiveModel, Set,
+    TransactionTrait,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -25,7 +26,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         first_name: Set(user_model.first_name),
         last_name: Set(user_model.last_name),
         display_name: Set(user_model.display_name),
-        password: Set(generate_hash(user_model.password)),
+        password: Set(user_model.password.map(generate_hash)),
         github_username: Set(user_model.github_username),
         github_profile_url: Set(user_model.github_profile_url),
         timezone: Set(user_model.timezone),
@@ -182,13 +183,52 @@ pub async fn find_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<Vec<Mo
         .collect())
 }
 
+/// Set a user's password and optionally update profile fields.
+/// Used during magic link account setup.
+pub async fn set_password_and_profile(
+    db: &impl ConnectionTrait,
+    user: Model,
+    password_hash: String,
+    display_name: Option<String>,
+    github_username: Option<String>,
+    github_profile_url: Option<String>,
+    timezone: Option<String>,
+) -> Result<Model, Error> {
+    let mut active_model = user.into_active_model();
+
+    active_model.password = Set(Some(password_hash));
+
+    if let Some(display_name) = display_name {
+        active_model.display_name = Set(Some(display_name));
+    }
+    if let Some(github_username) = github_username {
+        active_model.github_username = Set(Some(github_username));
+    }
+    if let Some(github_profile_url) = github_profile_url {
+        active_model.github_profile_url = Set(Some(github_profile_url));
+    }
+    if let Some(timezone) = timezone {
+        active_model.timezone = Set(timezone);
+    }
+
+    Ok(active_model.update(db).await?)
+}
+
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(user_id).exec(db).await?;
     Ok(())
 }
 
-pub async fn verify_password(password_to_verify: &str, password_hash: &str) -> Result<(), Error> {
-    match password_auth::verify_password(password_to_verify, password_hash) {
+pub async fn verify_password(
+    password_to_verify: &str,
+    password_hash: Option<&str>,
+) -> Result<(), Error> {
+    let hash = password_hash.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordUnauthenticated,
+    })?;
+
+    match password_auth::verify_password(password_to_verify, hash) {
         Ok(_) => Ok(()),
         Err(_) => Err(Error {
             source: None,
@@ -202,7 +242,12 @@ pub fn generate_hash(password: String) -> String {
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
-    match password_auth::verify_password(creds.password, &user.password) {
+    let hash = user.password.as_deref().ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordUnauthenticated,
+    })?;
+
+    match password_auth::verify_password(creds.password, hash) {
         Ok(_) => Ok(Some(user)),
         Err(_) => Err(Error {
             source: None,
@@ -350,7 +395,7 @@ mod test {
             first_name: "Test".to_owned(),
             last_name: "User".to_owned(),
             display_name: None,
-            password: "password123".to_owned(),
+            password: Some("password123".to_owned()),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
@@ -399,7 +444,7 @@ mod test {
             first_name: "Test".to_owned(),
             last_name: "User".to_owned(),
             display_name: None,
-            password: "password123".to_owned(),
+            password: Some("password123".to_owned()),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
