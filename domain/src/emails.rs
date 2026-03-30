@@ -98,14 +98,27 @@ impl EmailNotification for WelcomeEmail {
     }
 }
 
-/// Send a best-effort welcome email to a newly created user.
+/// Create a magic link token and send a best-effort welcome email to a newly created user.
 ///
-/// The `magic_link_token` is the raw (unhashed) token that will be embedded
-/// in the setup URL. Errors are logged internally — email delivery must
-/// never block or fail the calling operation.
-pub async fn notify_welcome_email(config: &Config, user: &users::Model, magic_link_token: &str) {
-    if let Err(e) = send_welcome_email(config, user, magic_link_token).await {
-        warn!("Failed to send welcome email to {}: {e:?}", user.email);
+/// Both token creation and email delivery are best-effort — errors are logged
+/// internally and never propagate to the caller.
+pub async fn notify_welcome_email(
+    db: &sea_orm::DatabaseConnection,
+    config: &Config,
+    user: &users::Model,
+) {
+    match crate::magic_link_token::create_magic_link(db, user.id, config).await {
+        Ok(raw_token) => {
+            if let Err(e) = send_welcome_email(config, user, &raw_token).await {
+                warn!("Failed to send welcome email to {}: {e:?}", user.email);
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create magic link token for user {}: {e:?}",
+                user.id
+            );
+        }
     }
 }
 
@@ -126,7 +139,7 @@ async fn send_welcome_email(
     let magic_link_url = email_config
         .session_url_builder
         .as_ref()
-        .map(|b| b.build_magic_link_url(magic_link_token))
+        .map(|b| b.build_url("{token}", magic_link_token))
         .unwrap_or_default();
 
     debug!("Preparing personalization data for {}", user.email);
@@ -177,15 +190,8 @@ struct SessionUrlBuilder {
 }
 
 impl SessionUrlBuilder {
-    fn build(&self, session_id: &Id) -> String {
-        let path = self
-            .path_template
-            .replace("{session_id}", &session_id.to_string());
-        format!("{}{}", self.base_url, path)
-    }
-
-    fn build_magic_link_url(&self, token: &str) -> String {
-        let path = self.path_template.replace("{token}", token);
+    fn build_url(&self, placeholder: &str, value: &str) -> String {
+        let path = self.path_template.replace(placeholder, value);
         format!("{}{}", self.base_url, path)
     }
 }
@@ -231,7 +237,7 @@ impl ResolvedEmailConfig {
     fn build_session_url(&self, session_id: &Id) -> Result<String, Error> {
         self.session_url_builder
             .as_ref()
-            .map(|b| b.build(session_id))
+            .map(|b| b.build_url("{session_id}", &session_id.to_string()))
             .ok_or_else(|| {
                 error!("Cannot build session URL: notification type has no URL template");
                 Error {

@@ -8,7 +8,8 @@ use entity::{roles, user_roles, Id};
 use log::*;
 use password_auth;
 use sea_orm::{
-    entity::prelude::*, Condition, ConnectionTrait, DatabaseConnection, Set, TransactionTrait,
+    entity::prelude::*, Condition, ConnectionTrait, DatabaseConnection, IntoActiveModel, Set,
+    TransactionTrait,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -180,6 +181,37 @@ pub async fn find_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<Vec<Mo
             user
         })
         .collect())
+}
+
+/// Set a user's password and optionally update profile fields.
+/// Used during magic link account setup.
+pub async fn set_password_and_profile(
+    db: &impl ConnectionTrait,
+    user: Model,
+    password_hash: String,
+    display_name: Option<String>,
+    github_username: Option<String>,
+    github_profile_url: Option<String>,
+    timezone: Option<String>,
+) -> Result<Model, Error> {
+    let mut active_model = user.into_active_model();
+
+    active_model.password = Set(Some(password_hash));
+
+    if let Some(display_name) = display_name {
+        active_model.display_name = Set(Some(display_name));
+    }
+    if let Some(github_username) = github_username {
+        active_model.github_username = Set(Some(github_username));
+    }
+    if let Some(github_profile_url) = github_profile_url {
+        active_model.github_profile_url = Set(Some(github_profile_url));
+    }
+    if let Some(timezone) = timezone {
+        active_model.timezone = Set(timezone);
+    }
+
+    Ok(active_model.update(db).await?)
 }
 
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {

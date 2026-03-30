@@ -30,10 +30,8 @@ pub(crate) struct CompleteSetupParams {
     pub token: String,
     pub password: String,
     pub confirm_password: String,
-    pub display_name: Option<String>,
-    pub github_username: Option<String>,
-    pub github_profile_url: Option<String>,
-    pub timezone: Option<String>,
+    #[serde(flatten)]
+    pub profile: SetupProfile,
 }
 
 /// Consume a magic link token and complete user account setup.
@@ -44,19 +42,12 @@ pub(crate) async fn complete_setup(
     State(app_state): State<AppState>,
     Json(params): Json<CompleteSetupParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let profile = SetupProfile {
-        display_name: params.display_name,
-        github_username: params.github_username,
-        github_profile_url: params.github_profile_url,
-        timezone: params.timezone,
-    };
-
     let updated_user = MagicLinkTokenApi::complete_setup(
         app_state.db_conn_ref(),
         &params.token,
         params.password,
         params.confirm_password,
-        profile,
+        params.profile,
     )
     .await?;
 

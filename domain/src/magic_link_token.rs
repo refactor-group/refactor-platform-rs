@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{Duration, Utc};
 use log::*;
 use rand::RngCore;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, IntoActiveModel, Set};
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -29,25 +29,30 @@ pub async fn create_magic_link(
     user_id: Id,
     config: &Config,
 ) -> Result<String, Error> {
-    // Generate 32 bytes of cryptographic randomness
     let mut raw_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw_bytes);
-
-    // URL-safe base64 encode for the email link
     let raw_token = URL_SAFE_NO_PAD.encode(raw_bytes);
-
-    // SHA-256 hash for storage
     let token_hash = hash_token(&raw_token);
 
-    // Calculate expiry
     let expiry_seconds = config.magic_link_expiry_seconds() as i64;
     let expires_at = Utc::now() + Duration::seconds(expiry_seconds);
 
-    // Delete any existing tokens for this user (one active invite at a time)
-    entity_api::magic_link_token::delete_all_for_user(db, user_id).await?;
+    let txn = db.begin().await.map_err(|e| Error {
+        source: Some(Box::new(e)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
+    })?;
 
-    // Insert the new token
-    entity_api::magic_link_token::create(db, user_id, token_hash, expires_at.into()).await?;
+    entity_api::magic_link_token::delete_all_for_user(&txn, user_id).await?;
+    entity_api::magic_link_token::create(&txn, user_id, token_hash, expires_at.into()).await?;
+
+    txn.commit().await.map_err(|e| Error {
+        source: Some(Box::new(e)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
+    })?;
 
     info!("Magic link token created for user {user_id}");
     Ok(raw_token)
@@ -75,7 +80,6 @@ pub async fn validate_token(
             }
         })?;
 
-    // Check expiry
     if Utc::now() > token_record.expires_at {
         warn!("Magic link token expired for user {}", token_record.user_id);
         return Err(Error {
@@ -93,7 +97,7 @@ pub async fn validate_token(
 /// Consume a magic link token, set the user's password, and optionally update profile fields.
 ///
 /// Validates the token, deletes all tokens for the user, hashes the password,
-/// and persists all changes. Returns the updated user.
+/// and persists all changes atomically. Returns the updated user.
 pub async fn complete_setup(
     db: &DatabaseConnection,
     raw_token: &str,
@@ -111,33 +115,35 @@ pub async fn complete_setup(
         });
     }
 
-    // Validate and consume the token
     let user = validate_token(db, raw_token).await?;
-    entity_api::magic_link_token::delete_all_for_user(db, user.id).await?;
-
-    // Hash and set the password, apply optional profile fields
     let password_hash = generate_hash(password);
-    let mut active_model = user.into_active_model();
 
-    active_model.password = Set(Some(password_hash));
+    let txn = db.begin().await.map_err(|e| Error {
+        source: Some(Box::new(e)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
+    })?;
 
-    if let Some(display_name) = profile.display_name {
-        active_model.display_name = Set(Some(display_name));
-    }
-    if let Some(github_username) = profile.github_username {
-        active_model.github_username = Set(Some(github_username));
-    }
-    if let Some(github_profile_url) = profile.github_profile_url {
-        active_model.github_profile_url = Set(Some(github_profile_url));
-    }
-    if let Some(timezone) = profile.timezone {
-        active_model.timezone = Set(timezone);
-    }
+    entity_api::magic_link_token::delete_all_for_user(&txn, user.id).await?;
 
-    let updated_user = active_model
-        .update(db)
-        .await
-        .map_err(entity_api::error::Error::from)?;
+    let updated_user = entity_api::user::set_password_and_profile(
+        &txn,
+        user,
+        password_hash,
+        profile.display_name,
+        profile.github_username,
+        profile.github_profile_url,
+        profile.timezone,
+    )
+    .await?;
+
+    txn.commit().await.map_err(|e| Error {
+        source: Some(Box::new(e)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
+    })?;
 
     info!("User {} completed magic link setup", updated_user.id);
     Ok(updated_user)

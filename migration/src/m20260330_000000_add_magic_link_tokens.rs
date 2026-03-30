@@ -47,14 +47,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        manager
-            .get_connection()
-            .execute_unprepared(
-                "CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_token_hash
-                 ON refactor_platform.magic_link_tokens(token_hash)",
-            )
-            .await?;
-
         Ok(())
     }
 
