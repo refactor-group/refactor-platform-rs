@@ -87,3 +87,29 @@ impl IntoUpdateMap for UpdatePasswordParams {
         update_map
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct CompleteSetupParams {
+    pub token: String,
+    pub password: String,
+    pub confirm_password: String,
+}
+
+impl IntoUpdateMap for CompleteSetupParams {
+    fn into_update_map(self) -> UpdateMap {
+        let mut update_map = UpdateMap::new();
+        update_map.insert(
+            "token".to_string(),
+            Some(Value::String(Some(Box::new(self.token)))),
+        );
+        update_map.insert(
+            "password".to_string(),
+            Some(Value::String(Some(Box::new(self.password)))),
+        );
+        update_map.insert(
+            "confirm_password".to_string(),
+            Some(Value::String(Some(Box::new(self.confirm_password)))),
+        );
+        update_map
+    }
+}

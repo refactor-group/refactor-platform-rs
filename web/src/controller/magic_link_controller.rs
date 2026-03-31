@@ -1,11 +1,11 @@
-use crate::{controller::ApiResponse, AppState, Error};
+use crate::{controller::ApiResponse, params::user::CompleteSetupParams, AppState, Error};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use domain::magic_link_token::{self as MagicLinkTokenApi, SetupProfile};
+use domain::magic_link_token::{self as MagicLinkTokenApi};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -40,15 +40,6 @@ pub(crate) async fn validate(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct CompleteSetupParams {
-    pub token: String,
-    pub password: String,
-    pub confirm_password: String,
-    #[serde(flatten)]
-    pub profile: SetupProfile,
-}
-
 /// POST /magic-link/complete-setup
 ///
 /// Consume a magic link token and complete user account setup.
@@ -73,14 +64,7 @@ pub(crate) async fn complete_setup(
     State(app_state): State<AppState>,
     Json(params): Json<CompleteSetupParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let updated_user = MagicLinkTokenApi::complete_setup(
-        app_state.db_conn_ref(),
-        &params.token,
-        params.password,
-        params.confirm_password,
-        params.profile,
-    )
-    .await?;
+    let updated_user = MagicLinkTokenApi::complete_setup(app_state.db_conn_ref(), params).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated_user)))
 }

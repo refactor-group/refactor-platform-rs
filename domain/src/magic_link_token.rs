@@ -1,24 +1,15 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{Duration, Utc};
+use entity_api::mutate;
 use log::*;
 use rand::RngCore;
-use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
-use serde::Deserialize;
+use sea_orm::{ConnectionTrait, DatabaseConnection, IntoActiveModel, TransactionTrait, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::{users, Id};
 use entity_api::user::generate_hash;
 use service::config::Config;
-
-/// Profile fields that can be set during magic link account setup.
-#[derive(Debug, Deserialize)]
-pub struct SetupProfile {
-    pub display_name: Option<String>,
-    pub github_username: Option<String>,
-    pub github_profile_url: Option<String>,
-    pub timezone: Option<String>,
-}
 
 /// Generate a magic link token for a user.
 ///
@@ -98,11 +89,16 @@ pub async fn validate_token(
 ///
 pub async fn complete_setup(
     db: &DatabaseConnection,
-    raw_token: &str,
-    password: String,
-    confirm_password: String,
-    profile: SetupProfile,
+    params: impl mutate::IntoUpdateMap,
 ) -> Result<users::Model, Error> {
+    let mut params = params.into_update_map();
+
+    let password = params.remove("password")?;
+
+    let confirm_password = params.remove("confirm_password")?;
+
+    let raw_token = params.remove("token")?;
+
     if password != confirm_password {
         warn!("Password confirmation does not match during magic link setup");
         return Err(Error {
@@ -113,7 +109,10 @@ pub async fn complete_setup(
         });
     }
 
-    let password_hash = generate_hash(password);
+    params.insert(
+        "password".to_string(),
+        Some(Value::String(Some(Box::new(generate_hash(password))))),
+    );
 
     let txn = db.begin().await.map_err(|e| Error {
         source: Some(Box::new(e)),
@@ -122,19 +121,12 @@ pub async fn complete_setup(
         )),
     })?;
 
-    let user = validate_token(&txn, raw_token).await?;
+    let user = validate_token(&txn, &raw_token).await?;
     entity_api::magic_link_token::delete_all_for_user(&txn, user.id).await?;
 
-    let updated_user = entity_api::user::set_password_and_profile(
-        &txn,
-        user,
-        password_hash,
-        profile.display_name,
-        profile.github_username,
-        profile.github_profile_url,
-        profile.timezone,
-    )
-    .await?;
+    let active_model = user.into_active_model();
+    let updated_user =
+        mutate::update::<users::ActiveModel, users::Column>(&txn, active_model, params).await?;
 
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),
