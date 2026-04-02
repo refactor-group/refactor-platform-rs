@@ -200,9 +200,9 @@ pub async fn goal_progress(
 )]
 pub async fn actions(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
     State(app_state): State<AppState>,
-    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+    Path((_org_id, relationship_id)): Path<(Id, Id)>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET actions for coaching relationship: {relationship_id}");
@@ -253,8 +253,8 @@ pub async fn actions(
 pub async fn batch_coachee_actions(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
+    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
     State(app_state): State<AppState>,
-    Path(organization_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
