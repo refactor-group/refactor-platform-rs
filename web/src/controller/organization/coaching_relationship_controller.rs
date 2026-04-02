@@ -297,3 +297,205 @@ pub async fn batch_coachee_actions(
         serde_json::json!({ "coachee_actions": coachee_actions }),
     )))
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::extract::Request;
+    use axum::middleware::from_fn;
+    use axum::routing::get;
+    use axum::Router;
+    use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
+    use axum_login::AuthManagerLayerBuilder;
+    use chrono::Utc;
+    use domain::user::Backend;
+    use domain::{user_roles, users, Id};
+    use password_auth::generate_hash;
+    use sea_orm::{DatabaseBackend, MockDatabase};
+    use time::Duration;
+    use tower::ServiceExt;
+    use tower_sessions::Expiry;
+
+    use crate::middleware::auth::require_auth;
+    use crate::protect;
+    use crate::AppState;
+
+    fn create_test_user() -> users::Model {
+        let now = Utc::now();
+        users::Model {
+            id: Id::new_v4(),
+            email: "test@example.com".to_string(),
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+            display_name: Some("Test User".to_string()),
+            password: generate_hash("password123".to_string()),
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            role: users::Role::User,
+            roles: vec![],
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    /// Helper to build a test app with auth layers and our actual routes.
+    fn build_test_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+        let app_state = AppState::new(
+            service::AppState::new(service::config::Config::default(), &db),
+            Arc::new(sse::Manager::default()),
+            domain::events::EventPublisher::default(),
+        );
+
+        let session_store = MemoryStore::default();
+        let session_layer = SessionManagerLayer::new(session_store)
+            .with_secure(false)
+            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+            .with_always_save(true);
+
+        let backend = Backend::new(&db);
+        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+        Router::new()
+            .route(
+                "/login",
+                axum::routing::post(crate::controller::user_session_controller::login),
+            )
+            .merge(
+                Router::new()
+                    .route(
+                        "/organizations/:organization_id/coaching_relationships/coachee-actions",
+                        get(super::batch_coachee_actions),
+                    )
+                    .merge(
+                        Router::new()
+                            .route(
+                                "/organizations/:organization_id/coaching_relationships/:relationship_id/actions",
+                                get(super::actions),
+                            )
+                            .route_layer(axum::middleware::from_fn_with_state(
+                                app_state.clone(),
+                                protect::organizations::coaching_relationships::actions,
+                            )),
+                    )
+                    .route_layer(from_fn(require_auth)),
+            )
+            .layer(auth_layer)
+            .with_state(app_state)
+    }
+
+    /// Helper to log in and return the session cookie.
+    async fn login(app: &Router) -> String {
+        let login_request = Request::builder()
+            .uri("/login")
+            .method("POST")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("email=test@example.com&password=password123"))
+            .unwrap();
+
+        let login_response = app.clone().oneshot(login_request).await.unwrap();
+
+        login_response
+            .headers()
+            .get("set-cookie")
+            .and_then(|c| c.to_str().ok())
+            .expect("Login should return session cookie")
+            .to_string()
+    }
+
+    /// A user who is NOT a member of the organization should get 401
+    /// from the batch coachee-actions endpoint — not an empty 200.
+    /// This proves OrganizationMemberAccess is wired up on the batch endpoint,
+    /// preventing org ID probing via empty responses.
+    #[tokio::test]
+    async fn batch_coachee_actions_rejects_non_org_member() {
+        let organization_id = Id::new_v4();
+        let other_user_id = Id::new_v4();
+        let now = Utc::now();
+        let test_user = create_test_user();
+
+        // Role with organization_id = None → user is NOT a member of any org
+        let test_role = user_roles::Model {
+            id: Id::new_v4(),
+            role: users::Role::User,
+            organization_id: None,
+            user_id: test_user.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // A different user who IS in the org (returned by find_by_organization)
+        let org_member = users::Model {
+            id: other_user_id,
+            email: "other@example.com".to_string(),
+            first_name: "Other".to_string(),
+            last_name: "User".to_string(),
+            display_name: None,
+            password: generate_hash("password456".to_string()),
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            role: users::Role::User,
+            roles: vec![],
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let org_member_role = user_roles::Model {
+            id: Id::new_v4(),
+            role: users::Role::User,
+            organization_id: Some(organization_id),
+            user_id: other_user_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Mock DB query sequence (FIFO):
+        // 1) Login authenticate: find_by_email (user + role join)
+        // 2) Login get_user: find_by_id + roles
+        // 3) Protected request require_auth: get_user (session lookup)
+        // 4) AuthenticatedUser extractor (inside OrganizationMemberAccess)
+        // 5) OrganizationMemberAccess: find_by_organization → different user
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                // find_by_organization: returns a DIFFERENT user → test_user not found → 401
+                .append_query_results([vec![(org_member.clone(), org_member_role.clone())]])
+                .into_connection(),
+        );
+
+        let app = build_test_app(db);
+        let cookie = login(&app).await;
+
+        let request = Request::builder()
+            .uri(format!(
+                "/organizations/{}/coaching_relationships/coachee-actions",
+                organization_id
+            ))
+            .header("cookie", &cookie)
+            .header("x-version", "1.0.0-beta1")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Non-org-member should be rejected with 401, not get an empty 200"
+        );
+    }
+
+    // The single-relationship actions endpoint's protect middleware is tested
+    // directly in protect/organizations/coaching_relationships.rs with two tests:
+    // - actions_middleware_rejects_non_participant (401 for non-participant)
+    // - actions_middleware_allows_coach (200 for coach)
+    //
+    // OrganizationMemberAccess on the handler is the same extractor tested by
+    // batch_coachee_actions_rejects_non_org_member above.
+}
