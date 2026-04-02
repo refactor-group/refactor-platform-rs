@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use crate::actions::Model;
 use crate::error::Error;
+use crate::Id;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{actions, actions_user, query};
 use sea_orm::DatabaseConnection;
@@ -7,7 +10,7 @@ use sea_orm::DatabaseConnection;
 pub use entity_api::action::{
     create, create_with_assignees, delete_by_id, find_by_id, find_by_id_with_assignees,
     find_by_user, update, update_status, update_with_assignees, ActionWithAssignees,
-    AssigneeFilter, FindByUserParams, Scope,
+    AssigneeFilter, FindByRelationshipParams, FindByUserParams, Scope,
 };
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -54,4 +57,22 @@ pub async fn find_assignee_ids(
     action_id: crate::Id,
 ) -> Result<Vec<crate::Id>, Error> {
     Ok(actions_user::find_user_ids_by_action_id(db, action_id).await?)
+}
+
+/// Finds all actions within a single coaching relationship.
+pub async fn find_by_coaching_relationship(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+    params: FindByRelationshipParams,
+) -> Result<Vec<ActionWithAssignees>, Error> {
+    Ok(entity_api::action::find_by_coaching_relationship(db, relationship_id, params).await?)
+}
+
+/// Finds actions across multiple coaching relationships, grouped by coachee user ID.
+pub async fn find_by_coach_relationships(
+    db: &DatabaseConnection,
+    relationships: &[crate::coaching_relationships::Model],
+    params: FindByRelationshipParams,
+) -> Result<HashMap<Id, Vec<ActionWithAssignees>>, Error> {
+    Ok(entity_api::action::find_by_coach_relationships(db, relationships, params).await?)
 }

@@ -3,15 +3,16 @@ use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::coaching_relationship::action::{AssigneeFilter, IndexParams};
 use crate::{AppState, Error};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::{
-    coaching_relationship as CoachingRelationshipApi, coaching_relationships,
-    goal_progress as GoalProgressApi, Id,
+    action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
+    goal_progress as GoalProgressApi, Id, QuerySort,
 };
 use service::config::ApiVersion;
 
@@ -177,4 +178,122 @@ pub async fn goal_progress(
             .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), progress)))
+}
+
+/// GET actions for a specific coaching relationship.
+#[utoipa::path(
+    get,
+    path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
+    params(
+        ApiVersion,
+        ("organization_id" = Id, Path, description = "Organization id"),
+        ("relationship_id" = Id, Path, description = "Coaching relationship id"),
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved actions for the coaching relationship"),
+        (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn actions(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+    Query(params): Query<IndexParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("GET actions for coaching relationship: {relationship_id}");
+
+    let params = params.apply_defaults();
+
+    let sort_column = params.get_sort_column();
+    let sort_order = params.get_sort_order();
+
+    let query_params = ActionApi::FindByRelationshipParams {
+        status: params.status,
+        assignee_filter: match params.assignee_filter {
+            AssigneeFilter::All => ActionApi::AssigneeFilter::All,
+            AssigneeFilter::Assigned => ActionApi::AssigneeFilter::Assigned,
+            AssigneeFilter::Unassigned => ActionApi::AssigneeFilter::Unassigned,
+        },
+        sort_column,
+        sort_order,
+    };
+
+    let actions = ActionApi::find_by_coaching_relationship(
+        app_state.db_conn_ref(),
+        relationship_id,
+        query_params,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
+}
+
+/// GET actions for all coachees of the authenticated coach, grouped by coachee user ID.
+#[utoipa::path(
+    get,
+    path = "/organizations/{organization_id}/coaching_relationships/coachee-actions",
+    params(
+        ApiVersion,
+        ("organization_id" = Id, Path, description = "Organization id"),
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved batch coachee actions"),
+        (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn batch_coachee_actions(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path(organization_id): Path<Id>,
+    Query(params): Query<IndexParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!(
+        "GET batch coachee actions for coach {} in organization {}",
+        user.id, organization_id
+    );
+
+    let params = params.apply_defaults();
+
+    let sort_column = params.get_sort_column();
+    let sort_order = params.get_sort_order();
+
+    let query_params = ActionApi::FindByRelationshipParams {
+        status: params.status,
+        assignee_filter: match params.assignee_filter {
+            AssigneeFilter::All => ActionApi::AssigneeFilter::All,
+            AssigneeFilter::Assigned => ActionApi::AssigneeFilter::Assigned,
+            AssigneeFilter::Unassigned => ActionApi::AssigneeFilter::Unassigned,
+        },
+        sort_column,
+        sort_order,
+    };
+
+    let relationships = CoachingRelationshipApi::find_by_coach_and_organization(
+        app_state.db_conn_ref(),
+        user.id,
+        organization_id,
+    )
+    .await?;
+
+    let coachee_actions = ActionApi::find_by_coach_relationships(
+        app_state.db_conn_ref(),
+        &relationships,
+        query_params,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(
+        StatusCode::OK.into(),
+        serde_json::json!({ "coachee_actions": coachee_actions }),
+    )))
 }

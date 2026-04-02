@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
@@ -398,6 +400,111 @@ pub async fn find_by_user(
     );
 
     Ok(results)
+}
+
+/// Query parameters for finding actions by coaching relationship.
+///
+/// A simpler parameter set than `FindByUserParams` — no scope or user context needed
+/// since the query is scoped to a specific coaching relationship.
+#[derive(Clone, Debug, Default)]
+pub struct FindByRelationshipParams {
+    pub status: Option<Status>,
+    pub assignee_filter: AssigneeFilter,
+    pub sort_column: Option<entity::actions::Column>,
+    pub sort_order: Option<Order>,
+}
+
+/// Finds all actions within a coaching relationship, joined through coaching_sessions.
+///
+/// Returns actions with their assignee IDs. Supports optional status filtering,
+/// assignee filtering (post-query), and sorting.
+pub async fn find_by_coaching_relationship(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+    params: FindByRelationshipParams,
+) -> Result<Vec<ActionWithAssignees>, Error> {
+    use entity::{actions, coaching_sessions};
+    use sea_orm::{JoinType, QueryOrder};
+
+    debug!("Finding actions for coaching_relationship_id={relationship_id}");
+
+    let mut select = actions::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            actions::Relation::CoachingSessions.def(),
+        )
+        .filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
+
+    if let Some(status) = &params.status {
+        select = select.filter(actions::Column::Status.eq(status.clone()));
+    }
+
+    if let (Some(column), Some(order)) = (params.sort_column, params.sort_order) {
+        select = select.order_by(column, order);
+    }
+
+    let actions: Vec<entity::actions::Model> = select.all(db).await?;
+
+    if actions.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Batch fetch all assignees in one query
+    let action_ids = actions.iter().map(|a| a.id).collect();
+    let mut assignees_map = actions_user::find_assignees_for_actions(db, action_ids).await?;
+
+    // Build results with assignee filtering
+    let mut results = Vec::with_capacity(actions.len());
+    for action in actions {
+        let assignee_ids = assignees_map.remove(&action.id).unwrap_or_default();
+
+        let include = match params.assignee_filter {
+            AssigneeFilter::All => true,
+            AssigneeFilter::Assigned => !assignee_ids.is_empty(),
+            AssigneeFilter::Unassigned => assignee_ids.is_empty(),
+        };
+
+        if include {
+            results.push(ActionWithAssignees {
+                action,
+                assignee_ids,
+            });
+        }
+    }
+
+    debug!(
+        "Found {} actions for coaching_relationship {relationship_id}",
+        results.len()
+    );
+
+    Ok(results)
+}
+
+/// Finds actions across multiple coaching relationships, grouped by coachee user ID.
+///
+/// Iterates over the provided relationships, calling `find_by_coaching_relationship`
+/// for each one. Returns a HashMap where every coachee gets a key — even if they
+/// have no matching actions (empty vec).
+///
+/// The `params` are cloned for each relationship query to apply the same filters
+/// across all relationships.
+pub async fn find_by_coach_relationships(
+    db: &DatabaseConnection,
+    relationships: &[entity::coaching_relationships::Model],
+    params: FindByRelationshipParams,
+) -> Result<HashMap<Id, Vec<ActionWithAssignees>>, Error> {
+    let mut result: HashMap<Id, Vec<ActionWithAssignees>> = HashMap::new();
+
+    if relationships.is_empty() {
+        return Ok(result);
+    }
+
+    for relationship in relationships {
+        let actions = find_by_coaching_relationship(db, relationship.id, params.clone()).await?;
+        result.insert(relationship.coachee_id, actions);
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -963,5 +1070,317 @@ mod tests {
     fn has_assignees_returns_false_when_empty() {
         let action = action_with_assignees(vec![]);
         assert!(!action.has_assignees());
+    }
+
+    // ─── Batch Coachee Actions Tests ──────────────────────────────────
+
+    /// Helper to construct a coaching_relationships::Model for tests.
+    fn create_test_relationship(
+        relationship_id: Id,
+        coach_id: Id,
+        coachee_id: Id,
+        organization_id: Id,
+    ) -> entity::coaching_relationships::Model {
+        let now = chrono::Utc::now().fixed_offset();
+        entity::coaching_relationships::Model {
+            id: relationship_id,
+            organization_id,
+            coach_id,
+            coachee_id,
+            slug: format!("test-slug-{}", relationship_id),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Helper to construct a coaching_sessions::Model for tests.
+    #[allow(dead_code)]
+    fn create_test_session(
+        session_id: Id,
+        relationship_id: Id,
+    ) -> entity::coaching_sessions::Model {
+        let now = chrono::Utc::now().fixed_offset();
+        entity::coaching_sessions::Model {
+            id: session_id,
+            coaching_relationship_id: relationship_id,
+            date: now.naive_utc(),
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Helper to construct an actions::Model for tests.
+    fn create_test_action(action_id: Id, session_id: Id) -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: action_id,
+            user_id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: None,
+            body: Some(format!("Action {action_id}")),
+            due_by: Some(now.into()),
+            status_changed_at: now.into(),
+            status: Default::default(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    /// Tests that find_by_coaching_relationship returns actions with assignees
+    /// for a single coaching relationship.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_returns_actions_with_assignees() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let action_id = Id::new_v4();
+        let assignee_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let action = create_test_action(action_id, session_id);
+
+        // Mock: 1) actions query (joined through coaching_sessions), 2) assignee batch fetch
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![action.clone()]])
+            .append_query_results(vec![vec![entity::actions_users::Model {
+                id: Id::new_v4(),
+                action_id,
+                user_id: assignee_id,
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action.id, action_id);
+        assert_eq!(results[0].assignee_ids, vec![assignee_id]);
+
+        Ok(())
+    }
+
+    /// Tests that find_by_coaching_relationship applies status filter in SQL.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_with_status_filter() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+
+        // Empty mock — we only care about the generated SQL
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: Some(Status::InProgress),
+            assignee_filter: AssigneeFilter::All,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let _ = find_by_coaching_relationship(&db, relationship_id, params).await;
+
+        let log = db.into_transaction_log();
+        let sql = format!("{:?}", log[0]);
+
+        assert!(
+            sql.contains(r#"\"actions\".\"status\""#),
+            "SQL WHERE clause must filter by status, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// Tests that find_by_coaching_relationship applies assignee post-query filtering.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_with_assignee_filter() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let action_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let action = create_test_action(action_id, session_id);
+
+        // Mock: action has an assignee — should be filtered out by Unassigned filter
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![action.clone()]])
+            .append_query_results(vec![vec![entity::actions_users::Model {
+                id: Id::new_v4(),
+                action_id,
+                user_id: Id::new_v4(),
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::Unassigned,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
+
+        assert!(
+            results.is_empty(),
+            "Unassigned filter should exclude actions with assignees"
+        );
+
+        Ok(())
+    }
+
+    /// Tests that find_by_coaching_relationship returns empty vec when no actions exist.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_returns_empty_for_no_actions() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
+
+        assert!(results.is_empty());
+
+        Ok(())
+    }
+
+    /// Tests that find_by_coach_relationships groups actions by coachee user ID.
+    #[tokio::test]
+    async fn find_by_coach_relationships_groups_by_coachee() -> Result<(), Error> {
+        let coach_id = Id::new_v4();
+        let org_id = Id::new_v4();
+
+        let coachee_1 = Id::new_v4();
+        let coachee_2 = Id::new_v4();
+        let coachee_3 = Id::new_v4();
+
+        let rel_1 = Id::new_v4();
+        let rel_2 = Id::new_v4();
+        let rel_3 = Id::new_v4();
+
+        let session_1 = Id::new_v4();
+        let session_2 = Id::new_v4();
+        let _session_3 = Id::new_v4();
+
+        let action_1 = Id::new_v4();
+        let action_2a = Id::new_v4();
+        let action_2b = Id::new_v4();
+
+        let relationships = vec![
+            create_test_relationship(rel_1, coach_id, coachee_1, org_id),
+            create_test_relationship(rel_2, coach_id, coachee_2, org_id),
+            create_test_relationship(rel_3, coach_id, coachee_3, org_id),
+        ];
+
+        // Mock for relationship 1: 1 action, no assignees
+        // Mock for relationship 2: 2 actions, no assignees
+        // Mock for relationship 3: 0 actions
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // Relationship 1 actions query
+            .append_query_results(vec![vec![create_test_action(action_1, session_1)]])
+            // Relationship 1 assignees query
+            .append_query_results(vec![Vec::<entity::actions_users::Model>::new()])
+            // Relationship 2 actions query
+            .append_query_results(vec![vec![
+                create_test_action(action_2a, session_2),
+                create_test_action(action_2b, session_2),
+            ]])
+            // Relationship 2 assignees query
+            .append_query_results(vec![Vec::<entity::actions_users::Model>::new()])
+            // Relationship 3 actions query (empty)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let result = find_by_coach_relationships(&db, &relationships, params).await?;
+
+        // All 3 coachees should have keys
+        assert_eq!(result.len(), 3, "All coachees should have entries");
+        assert_eq!(result.get(&coachee_1).unwrap().len(), 1);
+        assert_eq!(result.get(&coachee_2).unwrap().len(), 2);
+        assert_eq!(result.get(&coachee_3).unwrap().len(), 0);
+
+        Ok(())
+    }
+
+    /// Tests that find_by_coach_relationships includes coachees with no actions
+    /// as empty arrays in the result.
+    #[tokio::test]
+    async fn find_by_coach_relationships_includes_coachees_with_no_actions() -> Result<(), Error> {
+        let coach_id = Id::new_v4();
+        let org_id = Id::new_v4();
+        let coachee_1 = Id::new_v4();
+        let coachee_2 = Id::new_v4();
+        let rel_1 = Id::new_v4();
+        let rel_2 = Id::new_v4();
+
+        let relationships = vec![
+            create_test_relationship(rel_1, coach_id, coachee_1, org_id),
+            create_test_relationship(rel_2, coach_id, coachee_2, org_id),
+        ];
+
+        // Both relationships have no actions
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let result = find_by_coach_relationships(&db, &relationships, params).await?;
+
+        assert_eq!(result.len(), 2, "Both coachees should have entries");
+        assert!(result.get(&coachee_1).unwrap().is_empty());
+        assert!(result.get(&coachee_2).unwrap().is_empty());
+
+        Ok(())
+    }
+
+    /// Tests that find_by_coach_relationships returns empty HashMap when no
+    /// relationships are provided.
+    #[tokio::test]
+    async fn find_by_coach_relationships_returns_empty_for_no_relationships() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let result = find_by_coach_relationships(&db, &[], params).await?;
+
+        assert!(result.is_empty());
+
+        Ok(())
     }
 }

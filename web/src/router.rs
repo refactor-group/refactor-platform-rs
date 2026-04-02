@@ -60,6 +60,8 @@ use utoipa_rapidoc::RapiDoc;
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
             organization::coaching_relationship_controller::goal_progress,
+            organization::coaching_relationship_controller::actions,
+            organization::coaching_relationship_controller::batch_coachee_actions,
             organization::user_controller::index,
             organization::user_controller::create,
             organization::user_controller::delete,
@@ -291,6 +293,25 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id/goal_progress",
             get(organization::coaching_relationship_controller::goal_progress),
+        )
+        // GET /organizations/:organization_id/coaching_relationships/coachee-actions
+        // Batch endpoint — returns actions for all coachees of the authenticated coach
+        .route(
+            "/organizations/:organization_id/coaching_relationships/coachee-actions",
+            get(organization::coaching_relationship_controller::batch_coachee_actions),
+        )
+        .merge(
+            // GET /organizations/:organization_id/coaching_relationships/:relationship_id/actions
+            // Single relationship — protected by relationship participant check
+            Router::new()
+                .route(
+                    "/organizations/:organization_id/coaching_relationships/:relationship_id/actions",
+                    get(organization::coaching_relationship_controller::actions),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::organizations::coaching_relationships::actions,
+                )),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
