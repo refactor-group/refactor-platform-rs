@@ -24,7 +24,7 @@ Actions for ALL coaching relationships where the authenticated user is the coach
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `status` | `Option<Status>` | none | Filter by action status (snake_case) |
+| `status` | `Option<Status>` | none | Filter by action status (PascalCase, e.g. `InProgress`, `NotStarted`) |
 | `assignee_filter` | `Option<String>` | `"all"` | `"all"`, `"assigned"`, `"unassigned"` |
 | `sort_by` | `Option<String>` | `"due_by"` | `"due_by"`, `"created_at"`, `"updated_at"` |
 | `sort_order` | `Option<String>` | `"asc"` | `"asc"` or `"desc"` |

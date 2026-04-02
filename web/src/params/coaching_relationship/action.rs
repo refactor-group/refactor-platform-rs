@@ -4,7 +4,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
-use domain::{actions, status::Status, QuerySort};
+use domain::{action, actions, status::Status, QuerySort};
 
 /// Filter for actions by assignee status.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
@@ -83,6 +83,32 @@ impl QuerySort<actions::Column> for IndexParams {
 
 impl WithSortDefaults for IndexParams {
     type SortField = SortField;
+}
+
+impl From<AssigneeFilter> for action::AssigneeFilter {
+    fn from(filter: AssigneeFilter) -> Self {
+        match filter {
+            AssigneeFilter::All => Self::All,
+            AssigneeFilter::Assigned => Self::Assigned,
+            AssigneeFilter::Unassigned => Self::Unassigned,
+        }
+    }
+}
+
+impl IndexParams {
+    /// Converts web-layer query params into domain-layer query params,
+    /// applying sort defaults in the process.
+    pub(crate) fn into_query_params(self) -> action::FindByRelationshipParams {
+        let params = self.apply_defaults();
+        let sort_column = params.get_sort_column();
+        let sort_order = params.get_sort_order();
+        action::FindByRelationshipParams {
+            status: params.status,
+            assignee_filter: params.assignee_filter.into(),
+            sort_column,
+            sort_order,
+        }
+    }
 }
 
 #[cfg(test)]

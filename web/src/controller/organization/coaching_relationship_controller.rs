@@ -3,7 +3,7 @@ use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::coaching_relationship::action::{AssigneeFilter, IndexParams};
+use crate::params::coaching_relationship::action::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -12,7 +12,7 @@ use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::{
     action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
-    goal_progress as GoalProgressApi, Id, QuerySort,
+    goal_progress as GoalProgressApi, Id,
 };
 use service::config::ApiVersion;
 
@@ -207,21 +207,7 @@ pub async fn actions(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET actions for coaching relationship: {relationship_id}");
 
-    let params = params.apply_defaults();
-
-    let sort_column = params.get_sort_column();
-    let sort_order = params.get_sort_order();
-
-    let query_params = ActionApi::FindByRelationshipParams {
-        status: params.status,
-        assignee_filter: match params.assignee_filter {
-            AssigneeFilter::All => ActionApi::AssigneeFilter::All,
-            AssigneeFilter::Assigned => ActionApi::AssigneeFilter::Assigned,
-            AssigneeFilter::Unassigned => ActionApi::AssigneeFilter::Unassigned,
-        },
-        sort_column,
-        sort_order,
-    };
+    let query_params = params.into_query_params();
 
     let actions = ActionApi::find_by_coaching_relationship(
         app_state.db_conn_ref(),
@@ -262,21 +248,7 @@ pub async fn batch_coachee_actions(
         user.id, organization_id
     );
 
-    let params = params.apply_defaults();
-
-    let sort_column = params.get_sort_column();
-    let sort_order = params.get_sort_order();
-
-    let query_params = ActionApi::FindByRelationshipParams {
-        status: params.status,
-        assignee_filter: match params.assignee_filter {
-            AssigneeFilter::All => ActionApi::AssigneeFilter::All,
-            AssigneeFilter::Assigned => ActionApi::AssigneeFilter::Assigned,
-            AssigneeFilter::Unassigned => ActionApi::AssigneeFilter::Unassigned,
-        },
-        sort_column,
-        sort_order,
-    };
+    let query_params = params.into_query_params();
 
     let relationships = CoachingRelationshipApi::find_by_coach_and_organization(
         app_state.db_conn_ref(),

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, Order, QuerySelect, TryIntoModel,
+    DatabaseConnection, JoinType, Order, QueryOrder, QuerySelect, TryIntoModel,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -13,7 +13,7 @@ use log::*;
 use super::actions_user;
 use super::error::{EntityApiErrorKind, Error};
 use entity::actions::{ActiveModel, Entity, Model};
-use entity::{status::Status, Id};
+use entity::{actions, coaching_relationships, coaching_sessions, status::Status, Id};
 
 /// An action with its associated assignee user IDs.
 ///
@@ -299,9 +299,6 @@ pub async fn find_by_user(
     user_id: Id,
     params: FindByUserParams,
 ) -> Result<Vec<ActionWithAssignees>, Error> {
-    use entity::{actions, coaching_relationships, coaching_sessions};
-    use sea_orm::{JoinType, QueryOrder};
-
     debug!(
         "Finding actions for user_id={user_id} with scope={:?}, session={:?}, relationship={:?}, status={:?}, assignee={:?}",
         params.scope, params.coaching_session_id, params.coaching_relationship_id, params.status, params.assignee_filter
@@ -423,9 +420,6 @@ pub async fn find_by_coaching_relationship(
     relationship_id: Id,
     params: FindByRelationshipParams,
 ) -> Result<Vec<ActionWithAssignees>, Error> {
-    use entity::{actions, coaching_sessions};
-    use sea_orm::{JoinType, QueryOrder};
-
     debug!("Finding actions for coaching_relationship_id={relationship_id}");
 
     let mut select = actions::Entity::find()
@@ -1088,25 +1082,6 @@ mod tests {
             coach_id,
             coachee_id,
             slug: format!("test-slug-{}", relationship_id),
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    /// Helper to construct a coaching_sessions::Model for tests.
-    #[allow(dead_code)]
-    fn create_test_session(
-        session_id: Id,
-        relationship_id: Id,
-    ) -> entity::coaching_sessions::Model {
-        let now = chrono::Utc::now().fixed_offset();
-        entity::coaching_sessions::Model {
-            id: session_id,
-            coaching_relationship_id: relationship_id,
-            date: now.naive_utc(),
-            collab_document_name: None,
-            meeting_url: None,
-            provider: None,
             created_at: now,
             updated_at: now,
         }
