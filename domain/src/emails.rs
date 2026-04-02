@@ -412,8 +412,7 @@ pub async fn notify_session_scheduled(
     }
 }
 
-/// Returns an HTML ordered list of in-progress goal titles linked to a coaching session,
-/// limited to the maximum number of in-progress goals allowed per relationship.
+/// Returns a comma-separated list of in-progress goal titles linked to a coaching session.
 ///
 /// This is best-effort: any DB error returns an empty string so email delivery is never blocked.
 async fn get_in_progress_goal_titles_for_coaching_session(
@@ -430,16 +429,12 @@ async fn get_in_progress_goal_titles_for_coaching_session(
         Err(_) => return String::new(),
     };
 
-    let items: Vec<_> = goals
-        .iter()
-        .filter_map(|g| g.title.as_deref())
-        .map(|title| format!("<li>{title}</li>"))
-        .collect();
+    let titles: Vec<_> = goals.iter().filter_map(|g| g.title.as_deref()).collect();
 
-    if items.is_empty() {
+    if titles.is_empty() {
         String::new()
     } else {
-        format!("<ol>{}</ol>", items.join(""))
+        titles.join(", ")
     }
 }
 
