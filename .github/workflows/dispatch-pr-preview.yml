@@ -20,10 +20,9 @@ on:
         required: true
         type: choice
         options:
-          - 'ae1c415 - chore: refresh preview commit choices [skip ci]'
-          - '0787aa7 - chore: refresh preview commit choices [skip ci]'
-          - '2b5430b - chore: refresh preview commit choices [skip ci]'
-          - 8cd2c4f - PR#276 (fix-email-goal-html-escaping)
+          - 'a8a695b - Merge pull request #276 from refactor-group/fix-email-goal-html-escaping'
+          - 5449d69 - Merge branch 'main' into fix-email-goal-html-escaping
+          - 'ed3aece - chore: refresh preview commit choices [skip ci]'
           - 7c5b20d - PR#274 (batch-coachee-actions)
           - feea802 - PR#273 (raymond/implements-magic-login)
           - 3cce00b - PR#254 (ai-transcription-milestone-2)
