@@ -60,6 +60,8 @@ use utoipa_rapidoc::RapiDoc;
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
             organization::coaching_relationship_controller::goal_progress,
+            organization::coaching_relationship::actions_controller::read,
+            organization::coaching_relationship::actions_controller::index,
             organization::user_controller::index,
             organization::user_controller::create,
             organization::user_controller::delete,
@@ -291,6 +293,19 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id/goal_progress",
             get(organization::coaching_relationship_controller::goal_progress),
+        )
+        // GET /organizations/:organization_id/coaching_relationships/actions
+        // Batch endpoint — returns actions across all coaching relationships
+        // where the authenticated user is the coach, with optional assignee filter
+        .route(
+            "/organizations/:organization_id/coaching_relationships/actions",
+            get(organization::coaching_relationship::actions_controller::index),
+        )
+        // GET /organizations/:organization_id/coaching_relationships/:relationship_id/actions
+        // Single relationship — CoachingRelationshipAccess extractor handles participant auth
+        .route(
+            "/organizations/:organization_id/coaching_relationships/:relationship_id/actions",
+            get(organization::coaching_relationship::actions_controller::read),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

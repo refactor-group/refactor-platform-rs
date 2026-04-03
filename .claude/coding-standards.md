@@ -151,19 +151,33 @@ Errors must flow through the layer chain `entity_api` -> `domain` -> `web` witho
    - Map it to an `EntityErrorKind` variant in the `From<EntityApiError>` impl in `domain/src/error.rs`
    - Handle the `EntityErrorKind` variant in `web/src/error.rs` to return the appropriate HTTP status code
 
-3. **Domain re-exports of entity_api functions** that return `entity_api::Error` must be wrapped in a thin domain function so callers receive `domain::Error`. The `?` operator handles the conversion automatically via the existing `From` impl:
+3. **Domain re-exports vs. custom wrappers.** When a domain function **only** delegates to entity_api with no added business logic — use a `pub use` re-export instead of a thin wrapper. The blanket `From` impl on `web::Error` (`impl<E> From<E> for Error where E: Into<DomainError>`) ensures entity_api errors convert correctly through the full chain.
+
+Reserve custom domain functions for when they add value: business rules, event publishing, multi-step orchestration, or authorization logic.
 
 ```rust
-// ✅ Good - domain wrapper converts errors at the boundary
-pub async fn find_by_id_with_relationship(
+// ✅ Good - pure passthrough, use a re-export
+pub use entity_api::action::{create, find_by_id, delete_by_id};
+
+// ✅ Good - adds business logic (event publishing + transaction), needs a custom function
+pub async fn create(
     db: &DatabaseConnection,
-    id: Id,
-) -> Result<(Model, relationships::Model), Error> {
-    Ok(entity_api_module::find_by_id_with_relationship(db, id).await?)
+    event_publisher: &EventPublisher,
+    goal_model: Model,
+    user_id: Id,
+) -> Result<Model, Error> {
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let goal = GoalApi::create(&txn, goal_model, user_id).await?;
+    link_to_created_in_session(&txn, &goal).await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+    event_publisher.publish(GoalCreated(goal.id));
+    Ok(goal)
 }
 
-// ❌ Bad - raw re-export leaks entity_api::Error into higher layers
-pub use entity_api::some_module::find_by_id_with_relationship;
+// ❌ Bad - thin wrapper that only converts errors, should be a re-export
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    Ok(entity_api::some_module::find_by_id(db, id).await?)
+}
 ```
 
 4. **Use `domain_error_into_response()` in protect middleware** (defined in `web/src/error.rs`) to convert domain errors into HTTP responses. This routes through `web::Error`'s `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
