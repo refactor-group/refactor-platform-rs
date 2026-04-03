@@ -4,7 +4,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
-use domain::{action, actions, status::Status, QuerySort};
+use domain::{action, actions, status::Status, Id, QuerySort};
 
 /// Filter for actions by assignee status.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
@@ -22,6 +22,45 @@ pub(crate) enum AssigneeFilter {
     Unassigned,
 }
 
+/// Identifies the assignee by their role within a coaching relationship,
+/// or by a specific user ID.
+///
+/// Deserialized from the `assignee` query parameter:
+/// - `"coach"` / `"coachee"` (case-insensitive) → role-based filter
+/// - A valid UUID string → specific user filter
+#[derive(Clone, Debug)]
+pub(crate) enum AssigneeScope {
+    Coach,
+    Coachee,
+    User(Id),
+}
+
+impl<'de> Deserialize<'de> for AssigneeScope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "coach" => Ok(Self::Coach),
+            "coachee" => Ok(Self::Coachee),
+            other => Id::parse_str(other)
+                .map(Self::User)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl From<AssigneeScope> for action::AssigneeScope {
+    fn from(scope: AssigneeScope) -> Self {
+        match scope {
+            AssigneeScope::Coach => Self::Coach,
+            AssigneeScope::Coachee => Self::Coachee,
+            AssigneeScope::User(id) => Self::User(id),
+        }
+    }
+}
+
 /// Sortable fields for coaching relationship actions endpoints.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[schema(example = "due_by")]
@@ -34,9 +73,9 @@ pub(crate) enum SortField {
     UpdatedAt,
 }
 
-/// Query parameters shared by both coaching relationship action endpoints:
+/// Query parameters shared by coaching relationship action endpoints:
 /// - `GET /organizations/{org_id}/coaching_relationships/{rel_id}/actions`
-/// - `GET /organizations/{org_id}/coaching_relationships/coachee-actions`
+/// - `GET /organizations/{org_id}/coaching_relationships/actions`
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
     /// Optional: filter by assignee status (all, assigned, unassigned)
@@ -44,6 +83,8 @@ pub(crate) struct IndexParams {
     pub(crate) assignee_filter: AssigneeFilter,
     /// Optional: filter by action status
     pub(crate) status: Option<Status>,
+    /// Optional: filter by who actions are assigned to (coach, coachee, or user UUID)
+    pub(crate) assignee: Option<AssigneeScope>,
     /// Optional: field to sort by
     pub(crate) sort_by: Option<SortField>,
     /// Optional: sort direction
@@ -61,6 +102,11 @@ impl IndexParams {
             SortField::DueBy,
         );
         self
+    }
+
+    /// Extracts the assignee scope before the params are consumed by `into_query_params`.
+    pub(crate) fn assignee_scope(&self) -> Option<action::AssigneeScope> {
+        self.assignee.clone().map(Into::into)
     }
 }
 
@@ -105,6 +151,7 @@ impl IndexParams {
         action::FindByRelationshipParams {
             status: params.status,
             assignee_filter: params.assignee_filter.into(),
+            assignee_user_id: None,
             sort_column,
             sort_order,
         }
@@ -170,5 +217,34 @@ mod tests {
         let json = r#"{"assignee_filter": "unassigned"}"#;
         let params: IndexParams = serde_json::from_str(json).unwrap();
         assert!(matches!(params.assignee_filter, AssigneeFilter::Unassigned));
+    }
+
+    #[test]
+    fn assignee_scope_deserializes_coach() {
+        let json = r#"{"assignee": "coach"}"#;
+        let params: IndexParams = serde_json::from_str(json).unwrap();
+        assert!(matches!(params.assignee, Some(AssigneeScope::Coach)));
+    }
+
+    #[test]
+    fn assignee_scope_deserializes_coachee_case_insensitive() {
+        let json = r#"{"assignee": "Coachee"}"#;
+        let params: IndexParams = serde_json::from_str(json).unwrap();
+        assert!(matches!(params.assignee, Some(AssigneeScope::Coachee)));
+    }
+
+    #[test]
+    fn assignee_scope_deserializes_uuid() {
+        let id = Id::new_v4();
+        let json = format!(r#"{{"assignee": "{}"}}"#, id);
+        let params: IndexParams = serde_json::from_str(&json).unwrap();
+        assert!(matches!(params.assignee, Some(AssigneeScope::User(uid)) if uid == id));
+    }
+
+    #[test]
+    fn assignee_scope_defaults_to_none() {
+        let json = r#"{}"#;
+        let params: IndexParams = serde_json::from_str(json).unwrap();
+        assert!(params.assignee.is_none());
     }
 }

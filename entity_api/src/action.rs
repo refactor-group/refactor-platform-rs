@@ -399,6 +399,21 @@ pub async fn find_by_user(
     Ok(results)
 }
 
+/// Identifies the assignee by their role within a coaching relationship,
+/// or by a specific user ID.
+///
+/// Used with [`find_by_coach_relationships`] to filter actions based on
+/// who they are assigned to relative to each coaching relationship.
+#[derive(Clone, Debug)]
+pub enum AssigneeScope {
+    /// Actions assigned to the coach in each relationship
+    Coach,
+    /// Actions assigned to the coachee in each relationship
+    Coachee,
+    /// Actions assigned to a specific user
+    User(Id),
+}
+
 /// Query parameters for finding actions by coaching relationship.
 ///
 /// A simpler parameter set than `FindByUserParams` — no scope or user context needed
@@ -407,6 +422,8 @@ pub async fn find_by_user(
 pub struct FindByRelationshipParams {
     pub status: Option<Status>,
     pub assignee_filter: AssigneeFilter,
+    /// When set, only include actions assigned to this specific user.
+    pub assignee_user_id: Option<Id>,
     pub sort_column: Option<entity::actions::Column>,
     pub sort_order: Option<Order>,
 }
@@ -447,31 +464,36 @@ pub async fn find_by_coaching_relationship(
     let action_ids = actions.iter().map(|a| a.id).collect();
     let mut assignees_map = actions_user::find_assignees_for_actions(db, action_ids).await?;
 
-    // Build results with assignee filtering
-    let mut results = Vec::with_capacity(actions.len());
-    for action in actions {
-        let assignee_ids = assignees_map.remove(&action.id).unwrap_or_default();
+    // Filter and build results using assignee status and optional user scope
+    let filtered_actions: Vec<ActionWithAssignees> = actions
+        .into_iter()
+        .filter_map(|action| {
+            let assignee_ids = assignees_map.remove(&action.id).unwrap_or_default();
 
-        let include = match params.assignee_filter {
-            AssigneeFilter::All => true,
-            AssigneeFilter::Assigned => !assignee_ids.is_empty(),
-            AssigneeFilter::Unassigned => assignee_ids.is_empty(),
-        };
+            let passes_filter = match params.assignee_filter {
+                AssigneeFilter::All => true,
+                AssigneeFilter::Assigned => !assignee_ids.is_empty(),
+                AssigneeFilter::Unassigned => assignee_ids.is_empty(),
+            };
 
-        if include {
-            results.push(ActionWithAssignees {
+            let passes_scope = params
+                .assignee_user_id
+                .as_ref()
+                .is_none_or(|id| assignee_ids.contains(id));
+
+            (passes_filter && passes_scope).then_some(ActionWithAssignees {
                 action,
                 assignee_ids,
-            });
-        }
-    }
+            })
+        })
+        .collect();
 
     debug!(
         "Found {} actions for coaching_relationship {relationship_id}",
-        results.len()
+        filtered_actions.len()
     );
 
-    Ok(results)
+    Ok(filtered_actions)
 }
 
 /// Finds actions across multiple coaching relationships, grouped by coachee user ID.
@@ -480,12 +502,17 @@ pub async fn find_by_coaching_relationship(
 /// for each one. Returns a HashMap where every coachee gets a key — even if they
 /// have no matching actions (empty vec).
 ///
+/// When `assignee_scope` is provided, it is resolved to a concrete user ID per
+/// relationship (Coach → coach_id, Coachee → coachee_id, User(id) → id) and
+/// set on the params so only actions assigned to that user are included.
+///
 /// The `params` are cloned for each relationship query to apply the same filters
 /// across all relationships.
 pub async fn find_by_coach_relationships(
     db: &DatabaseConnection,
     relationships: &[entity::coaching_relationships::Model],
     params: FindByRelationshipParams,
+    assignee_scope: Option<AssigneeScope>,
 ) -> Result<HashMap<Id, Vec<ActionWithAssignees>>, Error> {
     let mut result: HashMap<Id, Vec<ActionWithAssignees>> = HashMap::new();
 
@@ -494,7 +521,15 @@ pub async fn find_by_coach_relationships(
     }
 
     for relationship in relationships {
-        let actions = find_by_coaching_relationship(db, relationship.id, params.clone()).await?;
+        let mut relationship_params = params.clone();
+        relationship_params.assignee_user_id = assignee_scope.as_ref().map(|scope| match scope {
+            AssigneeScope::Coach => relationship.coach_id,
+            AssigneeScope::Coachee => relationship.coachee_id,
+            AssigneeScope::User(id) => *id,
+        });
+
+        let actions =
+            find_by_coaching_relationship(db, relationship.id, relationship_params).await?;
         result.insert(relationship.coachee_id, actions);
     }
 
@@ -1131,6 +1166,7 @@ mod tests {
         let params = FindByRelationshipParams {
             status: None,
             assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
             sort_column: None,
             sort_order: None,
         };
@@ -1157,6 +1193,7 @@ mod tests {
         let params = FindByRelationshipParams {
             status: Some(Status::InProgress),
             assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
             sort_column: None,
             sort_order: None,
         };
@@ -1199,6 +1236,7 @@ mod tests {
         let params = FindByRelationshipParams {
             status: None,
             assignee_filter: AssigneeFilter::Unassigned,
+            assignee_user_id: None,
             sort_column: None,
             sort_order: None,
         };
@@ -1225,6 +1263,7 @@ mod tests {
         let params = FindByRelationshipParams {
             status: None,
             assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
             sort_column: None,
             sort_order: None,
         };
@@ -1286,11 +1325,12 @@ mod tests {
         let params = FindByRelationshipParams {
             status: None,
             assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
             sort_column: None,
             sort_order: None,
         };
 
-        let result = find_by_coach_relationships(&db, &relationships, params).await?;
+        let result = find_by_coach_relationships(&db, &relationships, params, None).await?;
 
         // All 3 coachees should have keys
         assert_eq!(result.len(), 3, "All coachees should have entries");
@@ -1326,11 +1366,12 @@ mod tests {
         let params = FindByRelationshipParams {
             status: None,
             assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
             sort_column: None,
             sort_order: None,
         };
 
-        let result = find_by_coach_relationships(&db, &relationships, params).await?;
+        let result = find_by_coach_relationships(&db, &relationships, params, None).await?;
 
         assert_eq!(result.len(), 2, "Both coachees should have entries");
         assert!(result.get(&coachee_1).unwrap().is_empty());
@@ -1348,11 +1389,12 @@ mod tests {
         let params = FindByRelationshipParams {
             status: None,
             assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
             sort_column: None,
             sort_order: None,
         };
 
-        let result = find_by_coach_relationships(&db, &[], params).await?;
+        let result = find_by_coach_relationships(&db, &[], params, None).await?;
 
         assert!(result.is_empty());
 

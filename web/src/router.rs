@@ -60,8 +60,8 @@ use utoipa_rapidoc::RapiDoc;
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
             organization::coaching_relationship_controller::goal_progress,
-            organization::coaching_relationship_controller::actions,
-            organization::coaching_relationship_controller::batch_coachee_actions,
+            organization::coaching_relationship::actions_controller::read,
+            organization::coaching_relationship::actions_controller::index,
             organization::user_controller::index,
             organization::user_controller::create,
             organization::user_controller::delete,
@@ -294,24 +294,18 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
             "/organizations/:organization_id/coaching_relationships/:relationship_id/goal_progress",
             get(organization::coaching_relationship_controller::goal_progress),
         )
-        // GET /organizations/:organization_id/coaching_relationships/coachee-actions
-        // Batch endpoint — returns actions for all coachees of the authenticated coach
+        // GET /organizations/:organization_id/coaching_relationships/actions
+        // Batch endpoint — returns actions across all coaching relationships
+        // where the authenticated user is the coach, with optional assignee filter
         .route(
-            "/organizations/:organization_id/coaching_relationships/coachee-actions",
-            get(organization::coaching_relationship_controller::batch_coachee_actions),
+            "/organizations/:organization_id/coaching_relationships/actions",
+            get(organization::coaching_relationship::actions_controller::index),
         )
-        .merge(
-            // GET /organizations/:organization_id/coaching_relationships/:relationship_id/actions
-            // Single relationship — protected by relationship participant check
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/coaching_relationships/:relationship_id/actions",
-                    get(organization::coaching_relationship_controller::actions),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::coaching_relationships::actions,
-                )),
+        // GET /organizations/:organization_id/coaching_relationships/:relationship_id/actions
+        // Single relationship — CoachingRelationshipAccess extractor handles participant auth
+        .route(
+            "/organizations/:organization_id/coaching_relationships/:relationship_id/actions",
+            get(organization::coaching_relationship::actions_controller::read),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
