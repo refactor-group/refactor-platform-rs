@@ -50,9 +50,6 @@ pub(crate) async fn validate(
 #[utoipa::path(
     post,
     path = "/magic-link/complete-setup",
-    params(
-        ("token" = String, Query, description = "Magic login token from the welcome email"),
-    ),
     request_body = CompleteSetupParams,
     responses(
         (status = 200, description = "User profile successfully updated", body = User),
