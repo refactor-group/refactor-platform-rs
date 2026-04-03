@@ -439,20 +439,22 @@ pub async fn find_by_coaching_relationship(
 ) -> Result<Vec<ActionWithAssignees>, Error> {
     debug!("Finding actions for coaching_relationship_id={relationship_id}");
 
-    let mut select = actions::Entity::find()
+    let select = actions::Entity::find()
         .join(
             JoinType::InnerJoin,
             actions::Relation::CoachingSessions.def(),
         )
         .filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
 
-    if let Some(status) = &params.status {
-        select = select.filter(actions::Column::Status.eq(status.clone()));
-    }
+    let select = match &params.status {
+        Some(status) => select.filter(actions::Column::Status.eq(status.clone())),
+        None => select,
+    };
 
-    if let (Some(column), Some(order)) = (params.sort_column, params.sort_order) {
-        select = select.order_by(column, order);
-    }
+    let select = match params.sort_column.zip(params.sort_order) {
+        Some((col, ord)) => select.order_by(col, ord),
+        None => select,
+    };
 
     let actions: Vec<entity::actions::Model> = select.all(db).await?;
 
