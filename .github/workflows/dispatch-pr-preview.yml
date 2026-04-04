@@ -20,9 +20,10 @@ on:
         required: true
         type: choice
         options:
+          - '206b7e1 - chore: refresh preview commit choices [skip ci]'
           - '57c93c8 - Merge pull request #274 from refactor-group/batch-coachee-actions'
           - 'eaaa478 - refactor: use match shadowing for query builder in find_by_coaching_relationship'
-          - '744657e - refactor: address Caleb''s PR #274 review — redesign batch actions endpoint'
+          - 1a51a36 - PR#277 (fix-single-relationship-assign)
           - 173936d - PR#273 (raymond/implements-magic-login)
           - 3cce00b - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
@@ -31,12 +32,10 @@ on:
         required: true
         type: choice
         options:
-          - 'a1c5fe9 - chore: refresh preview commit choices [skip ci]'
-          - '7d3c88e - chore: refresh preview commit choices [skip ci]'
-          - 'eb81fc3 - chore: refresh preview commit choices [skip ci]'
-          - 7d7314c - PR#368 (feat/stale-build-detection-and)
+          - 'dc949db - chore: refresh preview commit choices [skip ci]'
+          - 'c4b2daa - Merge pull request #368 from refactor-group/feat/stale-'
+          - 0c589b4 - Merge branch 'main' into feat/stale-build-detection-and
           - 7922903 - PR#367 (raymond/implements-magic-login)
-          - aab8e29 - PR#364 (fix/coachee-actions-connection)
           - 4852f68 - PR#336 (feat/dashboard-goals-overview)
           - 479f4db - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
