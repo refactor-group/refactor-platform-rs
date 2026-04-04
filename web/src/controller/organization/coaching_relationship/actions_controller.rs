@@ -45,7 +45,15 @@ pub async fn read(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET actions for coaching relationship: {}", relationship.id);
 
-    let query_params = params.into_query_params();
+    let assignee_scope = params.assignee_scope();
+    let mut query_params = params.into_query_params();
+
+    // Resolve role-based assignee scope to a concrete user ID
+    query_params.assignee_user_id = assignee_scope.map(|scope| match scope {
+        ActionApi::AssigneeScope::Coach => relationship.coach_id,
+        ActionApi::AssigneeScope::Coachee => relationship.coachee_id,
+        ActionApi::AssigneeScope::User(id) => id,
+    });
 
     let actions = ActionApi::find_by_coaching_relationship(
         app_state.db_conn_ref(),
