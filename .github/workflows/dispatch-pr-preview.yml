@@ -20,11 +20,10 @@ on:
         required: true
         type: choice
         options:
-          - 'a8a695b - Merge pull request #276 from refactor-group/fix-email-goal-html-escaping'
-          - 5449d69 - Merge branch 'main' into fix-email-goal-html-escaping
-          - 'ed3aece - chore: refresh preview commit choices [skip ci]'
-          - 7c5b20d - PR#274 (batch-coachee-actions)
-          - feea802 - PR#273 (raymond/implements-magic-login)
+          - '2d10238 - Merge pull request #277 from refactor-group/fix-single-relationship-assignee-filter'
+          - 14c0f44 - Merge branch 'main' into fix-single-relationship-assignee-filter
+          - '6a4c2b7 - chore: refresh preview commit choices [skip ci]'
+          - 173936d - PR#273 (raymond/implements-magic-login)
           - 3cce00b - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
@@ -32,10 +31,11 @@ on:
         required: true
         type: choice
         options:
-          - 'eb81fc3 - chore: refresh preview commit choices [skip ci]'
-          - 'a190614 - fix: remove unused err binding in coaching-session-pane'
-          - 'd19848d - fix: resolve all React Compiler and ESLint warnings'
-          - 2ed32f8 - PR#364 (fix/coachee-actions-connection)
+          - '1da48d4 - chore: refresh preview commit choices [skip ci]'
+          - 'dc949db - chore: refresh preview commit choices [skip ci]'
+          - 'c4b2daa - Merge pull request #368 from refactor-group/feat/stale-'
+          - 9310211 - PR#370 (fix/coachee-actions-assignee-f)
+          - 7922903 - PR#367 (raymond/implements-magic-login)
           - 4852f68 - PR#336 (feat/dashboard-goals-overview)
           - 479f4db - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)

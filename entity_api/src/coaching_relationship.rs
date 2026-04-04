@@ -122,6 +122,24 @@ pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Mo
     Ok(coaching_relationships)
 }
 
+/// Finds coaching relationships where the given user is the coach, within a specific organization.
+pub async fn find_by_coach_and_organization(
+    db: &DatabaseConnection,
+    coach_id: Id,
+    organization_id: Id,
+) -> Result<Vec<Model>, Error> {
+    let relationships = coaching_relationships::Entity::find()
+        .filter(
+            Condition::all()
+                .add(coaching_relationships::Column::CoachId.eq(coach_id))
+                .add(coaching_relationships::Column::OrganizationId.eq(organization_id)),
+        )
+        .all(db)
+        .await?;
+
+    Ok(relationships)
+}
+
 /// Checks if a user is a coach of another user.
 ///
 /// Returns `true` if there exists a coaching relationship where
