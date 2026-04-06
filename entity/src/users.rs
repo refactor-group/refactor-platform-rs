@@ -75,6 +75,9 @@ impl AuthUser for Model {
     }
 
     fn session_auth_hash(&self) -> &[u8] {
-        self.password.as_deref().unwrap_or("").as_bytes()
+        self.password
+            .as_deref()
+            .map(|p| p.as_bytes())
+            .unwrap_or_else(|| self.id.as_bytes())
     }
 }
