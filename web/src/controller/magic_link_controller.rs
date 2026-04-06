@@ -53,7 +53,7 @@ pub(crate) async fn validate(
     request_body = CompleteSetupParams,
     responses(
         (status = 200, description = "User profile successfully updated", body = User),
-        (status = 400, description = "Password confirmation does not match"),
+        (status = 422, description = "Password confirmation does not match"),
         (status = 503, description = "Service temporarily unavailable")
     )
 )]

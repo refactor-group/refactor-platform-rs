@@ -103,9 +103,9 @@ pub async fn complete_setup(
         warn!("Password confirmation does not match during magic link setup");
         return Err(Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            error_kind: DomainErrorKind::Validation(
                 "Password confirmation does not match".to_string(),
-            )),
+            ),
         });
     }
 
