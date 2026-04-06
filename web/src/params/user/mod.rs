@@ -88,7 +88,7 @@ impl IntoUpdateMap for UpdatePasswordParams {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct CompleteSetupParams {
     pub token: String,
     pub password: String,
