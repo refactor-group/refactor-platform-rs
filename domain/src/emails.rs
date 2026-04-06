@@ -139,7 +139,7 @@ async fn send_welcome_email(
     let magic_link_url = email_config
         .session_url_builder
         .as_ref()
-        .map(|b| b.build("{token}", magic_link_token))
+        .map(|b| b.build(TOKEN_PLACEHOLDER, magic_link_token))
         .unwrap_or_default();
 
     debug!("Preparing personalization data for {}", user.email);
@@ -182,6 +182,9 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
         }
     }
 }
+
+const TOKEN_PLACEHOLDER: &str = "{token}";
+const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
 
 /// Groups the base URL and path template for building session links in emails.
 struct SessionUrlBuilder {
@@ -237,7 +240,7 @@ impl ResolvedEmailConfig {
     fn build_session_url(&self, session_id: &Id) -> Result<String, Error> {
         self.session_url_builder
             .as_ref()
-            .map(|b| b.build("{session_id}", &session_id.to_string()))
+            .map(|b| b.build(SESSION_ID_PLACEHOLDER, &session_id.to_string()))
             .ok_or_else(|| {
                 error!("Cannot build session URL: notification type has no URL template");
                 Error {
