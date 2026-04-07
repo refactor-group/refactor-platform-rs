@@ -81,3 +81,48 @@ impl AuthUser for Model {
             .unwrap_or_else(|| self.id.as_bytes())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn test_user(id: Uuid, password: Option<&str>) -> Model {
+        Model {
+            id,
+            email: "test@example.com".into(),
+            first_name: "Test".into(),
+            last_name: "User".into(),
+            display_name: None,
+            password: password.map(String::from),
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".into(),
+            role: Role::default(),
+            roles: vec![],
+            created_at: Utc::now().into(),
+            updated_at: Utc::now().into(),
+        }
+    }
+
+    #[test]
+    fn session_auth_hash_uses_password_when_present() {
+        let user = test_user(Uuid::new_v4(), Some("hash123"));
+        assert_eq!(user.session_auth_hash(), b"hash123");
+    }
+
+    #[test]
+    fn session_auth_hash_falls_back_to_uuid_when_no_password() {
+        let id = Uuid::new_v4();
+        let user = test_user(id, None);
+        assert_eq!(user.session_auth_hash(), id.as_bytes());
+    }
+
+    #[test]
+    fn session_auth_hash_differs_for_distinct_passwordless_users() {
+        let user_a = test_user(Uuid::new_v4(), None);
+        let user_b = test_user(Uuid::new_v4(), None);
+        assert_ne!(user_a.session_auth_hash(), user_b.session_auth_hash());
+    }
+}
