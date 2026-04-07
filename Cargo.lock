@@ -1006,6 +1006,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "email_address",
+ "entity",
  "entity_api",
  "events",
  "hex",

@@ -49,9 +49,7 @@ impl MigrationTrait for Migration {
 
         manager
             .get_connection()
-            .execute_unprepared(
-                "ALTER TABLE refactor_platform.transcriptions OWNER TO refactor",
-            )
+            .execute_unprepared("ALTER TABLE refactor_platform.transcriptions OWNER TO refactor")
             .await?;
 
         manager
@@ -81,9 +79,7 @@ impl MigrationTrait for Migration {
 
         manager
             .get_connection()
-            .execute_unprepared(
-                "DROP TYPE IF EXISTS refactor_platform.transcription_status",
-            )
+            .execute_unprepared("DROP TYPE IF EXISTS refactor_platform.transcription_status")
             .await?;
 
         Ok(())

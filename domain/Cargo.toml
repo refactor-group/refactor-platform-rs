@@ -10,6 +10,7 @@ base64 = "0.22"
 chrono = { version = "0.4.38", features = ["serde"] }
 chrono-tz = "0.10"
 email_address = "0.2"
+entity = { path = "../entity" }
 entity_api = { path = "../entity_api" }
 events = { path = "../events" }
 hex = "0.4"

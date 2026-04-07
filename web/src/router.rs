@@ -14,6 +14,7 @@ use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
     goal_controller, jwt_controller, magic_link_controller, note_controller, oauth_controller,
     organization, organization_controller, user, user_controller, user_session_controller,
+    webhook_controller,
 };
 use crate::sse;
 
@@ -140,6 +141,12 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_user_routes(app_state.clone()))
         .merge(goal_routes(app_state.clone()))
         .merge(coaching_session_goal_routes(app_state.clone()))
+        .merge(coaching_session_meeting_recording_routes(app_state.clone()))
+        .merge(coaching_session_transcription_routes(app_state.clone()))
+        .merge(coaching_session_transcription_segment_routes(
+            app_state.clone(),
+        ))
+        .merge(webhook_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
         .merge(oauth_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
@@ -619,6 +626,44 @@ fn oauth_routes(app_state: AppState) -> Router {
                 get(oauth_callback_controller::callback),
             ),
         )
+        .with_state(app_state)
+}
+
+fn coaching_session_meeting_recording_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/meeting_recording",
+            get(coaching_session::meeting_recording_controller::read)
+                .post(coaching_session::meeting_recording_controller::create)
+                .delete(coaching_session::meeting_recording_controller::delete),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_transcription_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcriptions",
+            get(coaching_session::transcription_controller::read),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_transcription_segment_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id/transcription_segments",
+            get(coaching_session::transcription_segment_controller::index),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn webhook_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route("/webhooks/recall_ai", post(webhook_controller::recall_ai))
         .with_state(app_state)
 }
 

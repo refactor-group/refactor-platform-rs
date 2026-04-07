@@ -25,6 +25,7 @@ pub enum Error {
 pub enum WebErrorKind {
     Input,
     Auth,
+    Conflict,
     Other,
 }
 
@@ -182,6 +183,10 @@ impl Error {
             WebErrorKind::Auth => {
                 warn!("WebErrorKind::Auth: Responding with 401 Unauthorized. Error: {self:?}");
                 (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+            }
+            WebErrorKind::Conflict => {
+                warn!("WebErrorKind::Conflict: Responding with 409 Conflict. Error: {self:?}");
+                (StatusCode::CONFLICT, "CONFLICT").into_response()
             }
             WebErrorKind::Other => {
                 warn!(

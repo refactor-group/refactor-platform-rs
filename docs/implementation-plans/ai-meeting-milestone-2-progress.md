@@ -14,25 +14,34 @@ Steps 8, 7, 1 from the plan.
 - [x] Entity: `entity/src/transcription.rs`
 - [x] Entity: `entity/src/transcript_segment.rs`
 
-## Phase 2 — Data Access
+## Phase 2 — Data Access ✅
 Step 2 from the plan.
 
 - [x] `entity_api/src/meeting_recording.rs`
 - [x] `entity_api/src/transcription.rs`
 - [x] `entity_api/src/transcript_segment.rs`
 
-## Phase 3 — Provider + Business Logic
+## Phase 3 — Provider + Business Logic ✅
 Steps 3, 4 from the plan.
 
-- [ ] `domain/src/gateway/recall_ai/mod.rs`
-- [ ] `domain/src/meeting_recording.rs`
-- [ ] `domain/src/transcription.rs`
+- [x] `domain/src/gateway/recall_ai/mod.rs`
+- [x] `domain/src/meeting_recording.rs`
+- [x] `domain/src/transcription.rs`
+- [x] `domain/src/transcript_segment.rs` (re-exports for web layer)
 
-## Phase 4 — Web Layer
+## Phase 4 — Web Layer ✅
 Steps 5, 6 from the plan.
 
-- [ ] `SvixValidator` in `meeting-auth/src/webhook/`
-- [ ] `web/src/controller/webhook_controller.rs`
-- [ ] `web/src/controller/coaching_session/meeting_recording_controller.rs`
-- [ ] `web/src/controller/coaching_session/transcription_controller.rs`
-- [ ] Route wiring in `web/src/router.rs`
+- [x] `SvixValidator` in `meeting-auth/src/webhook/svix.rs`
+- [x] `web/src/controller/webhook_controller.rs`
+- [x] `web/src/controller/coaching_session/meeting_recording_controller.rs`
+- [x] `web/src/controller/coaching_session/transcription_controller.rs`
+- [x] `web/src/controller/coaching_session/transcription_segment_controller.rs`
+- [x] Route wiring in `web/src/router.rs`
+
+## Notes / Deviations from Plan
+
+- Segments controller moved to its own file at `/coaching_sessions/:id/transcriptions/:transcription_id/transcription_segments` (plan had it nested under `/transcription/segments`)
+- `/transcription` endpoint pluralized to `/transcriptions` to match project convention
+- `WebErrorKind::Conflict` added to `web/src/error.rs` for the 409 duplicate-bot guard
+- `entity` added as direct dependency to `domain/Cargo.toml` so domain modules can re-export entity model types to the web layer

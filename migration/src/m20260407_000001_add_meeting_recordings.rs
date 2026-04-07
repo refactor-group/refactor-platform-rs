@@ -68,16 +68,12 @@ impl MigrationTrait for Migration {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
             .get_connection()
-            .execute_unprepared(
-                "DROP TABLE IF EXISTS refactor_platform.meeting_recordings",
-            )
+            .execute_unprepared("DROP TABLE IF EXISTS refactor_platform.meeting_recordings")
             .await?;
 
         manager
             .get_connection()
-            .execute_unprepared(
-                "DROP TYPE IF EXISTS refactor_platform.meeting_recording_status",
-            )
+            .execute_unprepared("DROP TYPE IF EXISTS refactor_platform.meeting_recording_status")
             .await?;
 
         Ok(())

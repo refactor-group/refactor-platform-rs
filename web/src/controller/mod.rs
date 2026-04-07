@@ -15,6 +15,7 @@ pub(crate) mod organization_controller;
 pub(crate) mod user;
 pub(crate) mod user_controller;
 pub(crate) mod user_session_controller;
+pub(crate) mod webhook_controller;
 
 #[derive(Debug, Serialize)]
 struct ApiResponse<T: Serialize> {
