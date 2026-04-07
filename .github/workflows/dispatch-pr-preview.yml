@@ -20,10 +20,11 @@ on:
         required: true
         type: choice
         options:
+          - 'ba1d360 - chore: refresh preview commit choices [skip ci]'
           - '2d10238 - Merge pull request #277 from refactor-group/fix-single-relationship-assignee-filter'
           - 14c0f44 - Merge branch 'main' into fix-single-relationship-assignee-filter
-          - '6a4c2b7 - chore: refresh preview commit choices [skip ci]'
-          - 173936d - PR#273 (raymond/implements-magic-login)
+          - 5872387 - PR#278 (raymond/fix-google-provider-co)
+          - f3bdc69 - PR#273 (raymond/implements-magic-login)
           - 3cce00b - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
@@ -31,11 +32,10 @@ on:
         required: true
         type: choice
         options:
-          - '1da48d4 - chore: refresh preview commit choices [skip ci]'
-          - 'dc949db - chore: refresh preview commit choices [skip ci]'
-          - 'c4b2daa - Merge pull request #368 from refactor-group/feat/stale-'
-          - 9310211 - PR#370 (fix/coachee-actions-assignee-f)
-          - 7922903 - PR#367 (raymond/implements-magic-login)
+          - '3b05a2e - chore: refresh preview commit choices [skip ci]'
+          - '668bdb2 - Merge pull request #370 from refactor-group/fix/coachee'
+          - 'a10732d - fix: update e2e test mocks to use batch relationship-ac'
+          - d586b4f - PR#367 (raymond/implements-magic-login)
           - 4852f68 - PR#336 (feat/dashboard-goals-overview)
           - 479f4db - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
