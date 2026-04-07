@@ -30,6 +30,7 @@ pub enum WebErrorKind {
     /// for any user other than themselves). 403 Forbidden with a specific
     /// discriminator so the FE can branch deterministically.
     ForbiddenAssigneeScope,
+    Conflict,
     Other,
 }
 
@@ -242,6 +243,10 @@ impl Error {
                     "message": "Caller is not permitted to scope actions to that assignee.",
                 });
                 (StatusCode::FORBIDDEN, Json(body)).into_response()
+            }
+            WebErrorKind::Conflict => {
+                warn!("WebErrorKind::Conflict: Responding with 409 Conflict. Error: {self:?}");
+                (StatusCode::CONFLICT, "CONFLICT").into_response()
             }
             WebErrorKind::Other => {
                 warn!(

@@ -50,9 +50,7 @@ impl MigrationTrait for Migration {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
             .get_connection()
-            .execute_unprepared(
-                "DROP TABLE IF EXISTS refactor_platform.transcript_segments",
-            )
+            .execute_unprepared("DROP TABLE IF EXISTS refactor_platform.transcript_segments")
             .await?;
 
         Ok(())
