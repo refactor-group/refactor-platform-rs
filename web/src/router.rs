@@ -334,6 +334,18 @@ fn organization_user_routes(app_state: AppState) -> Router {
                 )),
         )
         .merge(
+            // POST /organizations/:organization_id/users/:user_id/resend-invite
+            Router::new()
+                .route(
+                    "/organizations/:organization_id/users/:user_id/resend-invite",
+                    post(organization::user_controller::resend_invite),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::organizations::users::resend_invite,
+                )),
+        )
+        .merge(
             // DELETE /organizations/:organization_id/users/:user_id
             Router::new()
                 .route(

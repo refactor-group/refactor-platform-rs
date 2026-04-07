@@ -77,6 +77,51 @@ pub(crate) async fn create(
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
 
+/// Resend an invite email to a user who has not yet completed account setup.
+///
+/// Generates a new magic link token (invalidating any previous one) and
+/// sends the welcome email again.
+#[utoipa::path(
+    post,
+    path = "/organizations/{organization_id}/users/{user_id}/resend-invite",
+    params(
+        ApiVersion,
+        ("organization_id" = Id, Path, description = "The ID of the organization"),
+        ("user_id" = Id, Path, description = "The ID of the user to resend the invite to"),
+    ),
+    responses(
+        (status = 200, description = "Invite resent successfully", body = domain::users::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 422, description = "User has already completed setup"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub(crate) async fn resend_invite(
+    CompareApiVersion(_v): CompareApiVersion,
+    State(app_state): State<AppState>,
+    AuthenticatedUser(_authenticated_user): AuthenticatedUser,
+    OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
+    Path((_org_id, user_id)): Path<(Id, Id)>,
+) -> Result<impl IntoResponse, Error> {
+    let user = UserApi::find_by_id(app_state.db_conn_ref(), user_id).await?;
+
+    if user.password.is_some() {
+        return Err(domain::error::Error {
+            source: None,
+            error_kind: domain::error::DomainErrorKind::Validation(
+                "User has already completed setup".into(),
+            ),
+        }
+        .into());
+    }
+
+    EmailsAPI::notify_welcome_email(app_state.db_conn_ref(), &app_state.config, &user).await;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
+}
+
 /// DELETE a User for an organization
 #[utoipa::path(
     delete,
