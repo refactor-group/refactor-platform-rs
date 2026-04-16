@@ -371,6 +371,7 @@ mod test {
             updated_at: now.into(),
             role: entity::users::Role::User,
             roles: vec![],
+            invite_status: None,
         };
 
         let user_role_model = entity::user_roles::Model {
@@ -420,6 +421,7 @@ mod test {
             updated_at: now.into(),
             role: entity::users::Role::User,
             roles: vec![],
+            invite_status: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -586,6 +588,7 @@ mod test {
             updated_at: now.into(),
             role: entity::users::Role::User,
             roles: vec![],
+            invite_status: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)

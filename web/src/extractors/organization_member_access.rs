@@ -126,6 +126,7 @@ mod tests {
             timezone: "UTC".to_string(),
             role: users::Role::User,
             roles: vec![],
+            invite_status: None,
             created_at: now.into(),
             updated_at: now.into(),
         }
