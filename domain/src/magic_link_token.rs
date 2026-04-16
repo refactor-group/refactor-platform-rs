@@ -330,5 +330,40 @@ mod tests {
                 other => panic!("Expected DomainErrorKind::Validation, got {other:?}"),
             }
         }
+
+        /// A magic link token is single-use: the first `complete_setup` call
+        /// succeeds and consumes the token; a second call with the same raw
+        /// token fails because `validate_token` can no longer find it.
+        #[tokio::test]
+        async fn complete_setup_token_is_single_use() {
+            let expires_at: DateTimeWithTimeZone = (Utc::now() + Duration::hours(1)).into();
+            let token_model = test_token_model(expires_at);
+            let user = test_user_model(token_model.user_id);
+            let updated_user = users::Model {
+                password: Some("hashed_password".into()),
+                ..user.clone()
+            };
+
+            let db = mock_db_for_successful_setup(&token_model, &user, &updated_user)
+                // --- second call: token has been deleted ---
+                // find_by_token_hash returns None
+                .append_query_results(vec![Vec::<magic_link_tokens::Model>::new()])
+                .into_connection();
+
+            // First call succeeds
+            let params = setup_params("my_password", "my_password", "raw_token");
+            let result = complete_setup(&db, params).await;
+            assert!(result.is_ok());
+
+            // Second call with the same token fails
+            let params = setup_params("my_password", "my_password", "raw_token");
+            let result = complete_setup(&db, params).await;
+
+            let err = result.unwrap_err();
+            assert_eq!(
+                err.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            );
+        }
     }
 }
