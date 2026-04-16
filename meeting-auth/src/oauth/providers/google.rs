@@ -378,7 +378,6 @@ mod tests {
         let provider = create_test_provider();
         let auth_request = provider.authorization_url("state", None);
 
-        // Check that the URL includes the required scopes (URL encoded)
         assert!(auth_request.url.contains("openid"));
         assert!(auth_request.url.contains("email"));
         assert!(auth_request.url.contains("profile"));
