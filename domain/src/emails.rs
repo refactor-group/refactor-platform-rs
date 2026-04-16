@@ -98,6 +98,18 @@ impl EmailNotification for WelcomeEmail {
     }
 }
 
+/// Create a magic link token and send a welcome email to a user.
+///
+/// Returns an error if token creation or email delivery fails.
+pub async fn create_and_send_welcome_email(
+    db: &sea_orm::DatabaseConnection,
+    config: &Config,
+    user: &users::Model,
+) -> Result<(), Error> {
+    let raw_token = crate::magic_link_token::create_magic_link(db, user.id, config).await?;
+    send_welcome_email(config, user, &raw_token).await
+}
+
 /// Create a magic link token and send a best-effort welcome email to a newly created user.
 ///
 /// Both token creation and email delivery are best-effort — errors are logged

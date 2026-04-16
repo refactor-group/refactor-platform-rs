@@ -117,7 +117,8 @@ pub(crate) async fn resend_invite(
         .into());
     }
 
-    EmailsAPI::notify_welcome_email(app_state.db_conn_ref(), &app_state.config, &user).await;
+    EmailsAPI::create_and_send_welcome_email(app_state.db_conn_ref(), &app_state.config, &user)
+        .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
