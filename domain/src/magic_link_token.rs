@@ -7,8 +7,9 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, IntoActiveModel, TransactionT
 use sha2::{Digest, Sha256};
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
-use crate::{users, Id};
+use crate::{magic_link_tokens, users, Id};
 use entity_api::user::generate_hash;
+use entity_api::user_invite_status::InviteStatus;
 use service::config::Config;
 
 /// Generate a magic link token for a user.
@@ -137,6 +138,18 @@ pub async fn complete_setup(
 
     info!("User {} completed magic link setup", updated_user.id);
     Ok(updated_user)
+}
+
+/// Derive a user's invite status from their password and token state.
+pub fn compute_invite_status(
+    password: &Option<String>,
+    token: Option<&magic_link_tokens::Model>,
+) -> InviteStatus {
+    match (password, token) {
+        (Some(_), _) => InviteStatus::Active,
+        (None, Some(t)) if t.expires_at > Utc::now() => InviteStatus::Pending,
+        _ => InviteStatus::Expired,
+    }
 }
 
 /// Compute the SHA-256 hex digest of a raw token string.
