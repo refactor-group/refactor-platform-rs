@@ -174,8 +174,8 @@ mod tests {
         use super::*;
         use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
         use chrono::{Duration, Utc};
-        use entity_api::{magic_link_tokens, user_roles};
         use entity_api::mutate::{IntoUpdateMap, UpdateMap};
+        use entity_api::{magic_link_tokens, user_roles};
         use sea_orm::prelude::DateTimeWithTimeZone;
         use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
         use uuid::Uuid;
@@ -304,8 +304,8 @@ mod tests {
                 ..user.clone()
             };
 
-            let db = mock_db_for_successful_setup(&token_model, &user, &updated_user)
-                .into_connection();
+            let db =
+                mock_db_for_successful_setup(&token_model, &user, &updated_user).into_connection();
 
             let params = setup_params("my_password", "my_password", "raw_token");
             let result = complete_setup(&db, params).await;

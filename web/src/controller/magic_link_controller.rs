@@ -134,10 +134,7 @@ mod tests {
         let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         Router::new()
-            .route(
-                "/magic-link/complete-setup",
-                post(super::complete_setup),
-            )
+            .route("/magic-link/complete-setup", post(super::complete_setup))
             .layer(auth_layer)
             .with_state(app_state)
     }
@@ -259,9 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn complete_setup_returns_422_for_mismatched_passwords() {
-        let db = Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres).into_connection(),
-        );
+        let db = Arc::new(MockDatabase::new(DatabaseBackend::Postgres).into_connection());
 
         let app = build_app(db);
 
@@ -288,7 +283,10 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(json["status_code"], StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+        assert_eq!(
+            json["status_code"],
+            StatusCode::UNPROCESSABLE_ENTITY.as_u16()
+        );
         assert_eq!(json["error"], "validation_error");
         assert_eq!(json["message"], "Password confirmation does not match");
     }
