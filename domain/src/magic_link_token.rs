@@ -315,5 +315,20 @@ mod tests {
             assert!(returned_user.password.is_some());
         }
 
+        #[tokio::test]
+        async fn complete_setup_rejects_mismatched_passwords() {
+            let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+            let params = setup_params("password123", "different456", "dummy_token");
+
+            let result = complete_setup(&db, params).await;
+
+            let err = result.unwrap_err();
+            match err.error_kind {
+                DomainErrorKind::Validation(msg) => {
+                    assert_eq!(msg, "Password confirmation does not match");
+                }
+                other => panic!("Expected DomainErrorKind::Validation, got {other:?}"),
+            }
+        }
     }
 }
