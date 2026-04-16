@@ -570,6 +570,47 @@ mod test {
     }
 
     #[tokio::test]
+    async fn authenticate_rejects_login_when_password_is_none() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user = entity::users::Model {
+            id: Id::new_v4(),
+            email: "test@test.com".to_owned(),
+            first_name: "Test".to_owned(),
+            last_name: "User".to_owned(),
+            display_name: None,
+            password: None,
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            role: entity::users::Role::User,
+            roles: vec![],
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // find_by_email uses find_with_related
+            .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
+                vec![vec![(user, None)]],
+            )
+            .into_connection();
+
+        let backend = Backend::new(&Arc::new(db));
+        let creds = Credentials {
+            email: "test@test.com".to_string(),
+            password: "any_password".to_string(),
+            next: None,
+        };
+
+        let result = backend.authenticate(creds).await;
+
+        let err = result.unwrap_err();
+        assert_eq!(err.error_kind, EntityApiErrorKind::RecordUnauthenticated);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn has_admin_access_with_admin_role_for_multiple_organizations() -> Result<(), Error> {
         let user_id = Id::new_v4();
         let organization_id_a = Id::new_v4();
