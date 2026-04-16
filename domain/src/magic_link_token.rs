@@ -174,10 +174,39 @@ mod tests {
         use super::*;
         use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
         use chrono::{Duration, Utc};
-        use entity_api::magic_link_tokens;
+        use entity_api::{magic_link_tokens, user_roles};
+        use entity_api::mutate::{IntoUpdateMap, UpdateMap};
         use sea_orm::prelude::DateTimeWithTimeZone;
-        use sea_orm::{DatabaseBackend, MockDatabase};
+        use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
         use uuid::Uuid;
+
+        /// Test-only wrapper allowing us to pass an `UpdateMap` directly to
+        /// `complete_setup` (which takes `impl IntoUpdateMap`). In production,
+        /// the web layer's `CompleteSetupParams` struct implements this trait.
+        struct TestParams(UpdateMap);
+
+        impl IntoUpdateMap for TestParams {
+            fn into_update_map(self) -> UpdateMap {
+                self.0
+            }
+        }
+
+        fn setup_params(password: &str, confirm: &str, token: &str) -> TestParams {
+            let mut map = UpdateMap::new();
+            map.insert(
+                "password".into(),
+                Some(Value::String(Some(Box::new(password.into())))),
+            );
+            map.insert(
+                "confirm_password".into(),
+                Some(Value::String(Some(Box::new(confirm.into())))),
+            );
+            map.insert(
+                "token".into(),
+                Some(Value::String(Some(Box::new(token.into())))),
+            );
+            TestParams(map)
+        }
 
         fn test_token_model(expires_at: DateTimeWithTimeZone) -> magic_link_tokens::Model {
             magic_link_tokens::Model {
@@ -241,5 +270,50 @@ mod tests {
                 DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
             );
         }
+
+        /// Helper to build a MockDatabase with the full query sequence needed
+        /// for one successful `complete_setup` call.
+        fn mock_db_for_successful_setup(
+            token_model: &magic_link_tokens::Model,
+            user: &users::Model,
+            updated_user: &users::Model,
+        ) -> MockDatabase {
+            MockDatabase::new(DatabaseBackend::Postgres)
+                // validate_token → find_by_token_hash
+                .append_query_results(vec![vec![token_model.clone()]])
+                // validate_token → find_by_id (uses find_with_related)
+                .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>(vec![
+                    vec![(user.clone(), None)],
+                ])
+                // delete_all_for_user
+                .append_exec_results(vec![MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                }])
+                // mutate::update → returns updated user
+                .append_query_results(vec![vec![updated_user.clone()]])
+        }
+
+        #[tokio::test]
+        async fn complete_setup_succeeds_with_matching_passwords() {
+            let expires_at: DateTimeWithTimeZone = (Utc::now() + Duration::hours(1)).into();
+            let token_model = test_token_model(expires_at);
+            let user = test_user_model(token_model.user_id);
+            let updated_user = users::Model {
+                password: Some("hashed_password".into()),
+                ..user.clone()
+            };
+
+            let db = mock_db_for_successful_setup(&token_model, &user, &updated_user)
+                .into_connection();
+
+            let params = setup_params("my_password", "my_password", "raw_token");
+            let result = complete_setup(&db, params).await;
+
+            let returned_user = result.unwrap();
+            assert_eq!(returned_user.id, updated_user.id);
+            assert!(returned_user.password.is_some());
+        }
+
     }
 }
