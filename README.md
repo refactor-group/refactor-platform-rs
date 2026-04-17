@@ -15,7 +15,7 @@ The platform itself is useful for professional independent coaches, informal men
 ## Running the Database Setup Script
 
 1. Ensure you have PostgreSQL installed and running on your machine. If you're using macOS, you can use
-[Postgres.app](https://postgresapp.com/) or install it with Homebrew:
+[Postgres.app](https://postgresapp.com/) *(RECOMMENDED)* or install it with Homebrew:
 
     ```shell
     brew install postgresql
