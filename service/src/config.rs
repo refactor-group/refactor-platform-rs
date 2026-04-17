@@ -385,9 +385,8 @@ impl Config {
     /// load `.env` itself so that test code can use [`Config::default`] or
     /// [`Config::from_args`] without side effects.
     pub fn new() -> Self {
-        let cmd = Config::command();
-        Self::sanitize_empty_env(&cmd);
-        let matches = cmd.get_matches();
+        Self::sanitize_empty_env(&Config::command());
+        let matches = Config::command().get_matches();
         let mut config =
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
@@ -407,9 +406,8 @@ impl Config {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let cmd = Config::command();
-        Self::sanitize_empty_env(&cmd);
-        let matches = cmd
+        Self::sanitize_empty_env(&Config::command());
+        let matches = Config::command()
             .try_get_matches_from(args)
             .expect("Failed to parse args");
         let mut config =
@@ -429,6 +427,12 @@ impl Config {
     /// empty env as unset here lets clap fall back to `default_value_t`
     /// uniformly for every field, without hardcoding which ones need it.
     /// Self-maintaining: new `#[arg(env)]` fields get this behavior for free.
+    ///
+    /// The caller must pass a *throwaway* `Command` and build a fresh one for
+    /// actual parsing — clap 4 snapshots env values when each `Arg` is
+    /// constructed during `augment_args`, not when `get_matches()` is called,
+    /// so the `Command` used for parsing must be built *after* this sanitize
+    /// runs for the cleanup to take effect.
     fn sanitize_empty_env(cmd: &clap::Command) {
         for arg in cmd.get_arguments() {
             let Some(env_name) = arg.get_env() else {
