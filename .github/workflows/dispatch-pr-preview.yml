@@ -20,10 +20,9 @@ on:
         required: true
         type: choice
         options:
-          - '8d70b78 - chore: refresh preview commit choices [skip ci]'
-          - d9a3b24 - Update PostgreSQL installation instructions in README
-          - 'abf733a - chore: refresh preview commit choices [skip ci]'
-          - a4cf2fd - PR#282 (fix-db-pool-env-passthrough)
+          - '9f4d10a - Merge pull request #282 from refactor-group/fix-db-pool-env-passthrough'
+          - eaa39d0 - Merge branch 'main' into fix-db-pool-env-passthrough
+          - 'd080be9 - chore: refresh preview commit choices [skip ci]'
           - 18ed7d8 - PR#281 (raymond/add-invite-status-to-u)
           - 88e274a - PR#279 (dependabot/cargo/cargo-39cecc6)
           - 04d2d8c - PR#278 (raymond/fix-google-provider-co)
