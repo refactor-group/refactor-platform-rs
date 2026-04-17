@@ -20,14 +20,14 @@ on:
         required: true
         type: choice
         options:
+          - d9a3b24 - Update PostgreSQL installation instructions in README
+          - 'abf733a - chore: refresh preview commit choices [skip ci]'
           - 'd81c076 - chore: refresh preview commit choices [skip ci]'
-          - 'ba1d360 - chore: refresh preview commit choices [skip ci]'
-          - '2d10238 - Merge pull request #277 from refactor-group/fix-single-relationship-assignee-filter'
-          - 25cbeb3 - PR#281 (raymond/add-invite-status-to-u)
+          - 1904da0 - PR#281 (raymond/add-invite-status-to-u)
           - 88e274a - PR#279 (dependabot/cargo/cargo-39cecc6)
-          - edd8823 - PR#278 (raymond/fix-google-provider-co)
-          - 920ec69 - PR#273 (raymond/implements-magic-login)
-          - 918e6f8 - PR#254 (ai-transcription-milestone-2)
+          - 04d2d8c - PR#278 (raymond/fix-google-provider-co)
+          - 4878ae5 - PR#273 (raymond/implements-magic-login)
+          - a51652a - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
         description: "Frontend commit to deploy"
