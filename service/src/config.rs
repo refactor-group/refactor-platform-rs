@@ -27,27 +27,6 @@ const DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH: &str = "/coaching-sessions/{sess
 /// Default URL path for action-assigned email links.
 const DEFAULT_ACTION_ASSIGNED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}?tab=actions";
 
-/// Parse an env var as `Self`, falling back to `default` when the var is unset,
-/// empty, whitespace-only, or unparseable.
-///
-/// Why: Docker Compose expands `KEY: ${KEY}` to an empty string when the host
-/// env var is unset, and clap's `#[arg(env)]` treats an empty value as a parse
-/// error for primitives (crashing the app on startup). Used by the DB pool
-/// tuning fields via `default_value_t` so missing/empty env vars degrade to
-/// the compiled-in default instead of failing to boot.
-trait FromEnvOrDefault: Sized {
-    fn from_env_or(key: &str, default: Self) -> Self;
-}
-
-impl<T: FromStr> FromEnvOrDefault for T {
-    fn from_env_or(key: &str, default: Self) -> Self {
-        std::env::var(key)
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(default)
-    }
-}
-
 /// All config field names registered with Clap, used for value source tracking.
 /// This is the single source of truth for field key names across the Config type.
 const CONFIG_FIELD_KEYS: &[&str] = &[
@@ -213,27 +192,27 @@ pub struct Config {
     database_url: Option<String>,
 
     /// Maximum number of database connections in the pool
-    #[arg(long, default_value_t = u32::from_env_or("DB_MAX_CONNECTIONS", 100))]
+    #[arg(long, env, default_value_t = 100)]
     pub db_max_connections: u32,
 
     /// Minimum number of idle database connections to maintain
-    #[arg(long, default_value_t = u32::from_env_or("DB_MIN_CONNECTIONS", 5))]
+    #[arg(long, env, default_value_t = 5)]
     pub db_min_connections: u32,
 
     /// Timeout in seconds for establishing a new database connection
-    #[arg(long, default_value_t = u64::from_env_or("DB_CONNECT_TIMEOUT_SECS", 8))]
+    #[arg(long, env, default_value_t = 8)]
     pub db_connect_timeout_secs: u64,
 
     /// Timeout in seconds for acquiring a connection from the pool
-    #[arg(long, default_value_t = u64::from_env_or("DB_ACQUIRE_TIMEOUT_SECS", 8))]
+    #[arg(long, env, default_value_t = 8)]
     pub db_acquire_timeout_secs: u64,
 
     /// Seconds before an idle connection is closed
-    #[arg(long, default_value_t = u64::from_env_or("DB_IDLE_TIMEOUT_SECS", 600))]
+    #[arg(long, env, default_value_t = 600)]
     pub db_idle_timeout_secs: u64,
 
     /// Maximum lifetime in seconds for any connection in the pool
-    #[arg(long, default_value_t = u64::from_env_or("DB_MAX_LIFETIME_SECS", 1800))]
+    #[arg(long, env, default_value_t = 1800)]
     pub db_max_lifetime_secs: u64,
 
     /// The URL for the Tiptap Cloud API provider
@@ -406,7 +385,9 @@ impl Config {
     /// load `.env` itself so that test code can use [`Config::default`] or
     /// [`Config::from_args`] without side effects.
     pub fn new() -> Self {
-        let matches = Config::command().get_matches();
+        let cmd = Config::command();
+        Self::sanitize_empty_env(&cmd);
+        let matches = cmd.get_matches();
         let mut config =
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
@@ -426,7 +407,9 @@ impl Config {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let matches = Config::command()
+        let cmd = Config::command();
+        Self::sanitize_empty_env(&cmd);
+        let matches = cmd
             .try_get_matches_from(args)
             .expect("Failed to parse args");
         let mut config =
@@ -435,6 +418,29 @@ impl Config {
         config.capture_value_sources(&matches);
 
         config
+    }
+
+    /// Unset any process env var that clap is configured to read (via
+    /// `#[arg(env)]`) whose value is empty or whitespace-only.
+    ///
+    /// Why: Docker Compose expands `KEY: ${KEY}` to an empty string when the
+    /// host var is unset, which clap treats as a set-but-unparseable value —
+    /// crashing primitive-typed fields like `u32`/`u64` on startup. Treating
+    /// empty env as unset here lets clap fall back to `default_value_t`
+    /// uniformly for every field, without hardcoding which ones need it.
+    /// Self-maintaining: new `#[arg(env)]` fields get this behavior for free.
+    fn sanitize_empty_env(cmd: &clap::Command) {
+        for arg in cmd.get_arguments() {
+            let Some(env_name) = arg.get_env() else {
+                continue;
+            };
+            let Ok(val) = std::env::var(env_name) else {
+                continue;
+            };
+            if val.trim().is_empty() {
+                std::env::remove_var(env_name);
+            }
+        }
     }
 
     /// Records the value source (Default, EnvVariable, CommandLine) for every
