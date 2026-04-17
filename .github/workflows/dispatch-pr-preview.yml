@@ -20,9 +20,10 @@ on:
         required: true
         type: choice
         options:
+          - 'f2a10a9 - chore: refresh preview commit choices [skip ci]'
           - '9f4d10a - Merge pull request #282 from refactor-group/fix-db-pool-env-passthrough'
           - eaa39d0 - Merge branch 'main' into fix-db-pool-env-passthrough
-          - 'd080be9 - chore: refresh preview commit choices [skip ci]'
+          - 0cbbdc5 - PR#283 (hotfix-db-pool-empty-env)
           - 18ed7d8 - PR#281 (raymond/add-invite-status-to-u)
           - 88e274a - PR#279 (dependabot/cargo/cargo-39cecc6)
           - 04d2d8c - PR#278 (raymond/fix-google-provider-co)
