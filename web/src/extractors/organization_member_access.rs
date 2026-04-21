@@ -64,17 +64,23 @@ where
             return Ok(OrganizationMemberAccess(organization_id));
         }
 
-        let user_organization_role_exists =
-            match UserApi::find_by_organization(state.db_conn_ref(), organization_id).await {
-                Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
-                Err(_) => {
-                    error!("Organization not found with ID {organization_id:?}");
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        "Invalid organization ID".to_string(),
-                    ));
-                }
-            };
+        let user_organization_role_exists = match UserApi::find_by_organization(
+            state.db_conn_ref(),
+            organization_id,
+        )
+        .await
+        {
+            Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
+            Err(err) => {
+                error!(
+                        "find_by_organization({organization_id:?}) failed while verifying membership: {err:?}"
+                    );
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to verify organization membership".to_string(),
+                ));
+            }
+        };
 
         if !user_organization_role_exists {
             return Err((
