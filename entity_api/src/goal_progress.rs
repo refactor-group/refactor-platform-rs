@@ -614,4 +614,143 @@ mod tests {
 
         Ok(())
     }
+
+    // ── Push-down SQL tests ────────────────────────────────────────────
+    //
+    // These tests prove that filter/sort/limit/assignee parameters are
+    // applied as SQL predicates rather than post-query filters. They use
+    // MockDatabase::into_transaction_log() to inspect the generated SQL,
+    // following the same pattern as
+    // `action::tests::find_by_user_with_sessions_scope_and_relationship_filter`.
+
+    #[tokio::test]
+    async fn status_filter_pushed_to_goals_sql() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        // Empty goals → short-circuits after Query 1; only one transaction to inspect.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let _ = gather_batch_progress_data(
+            &db,
+            relationship_id,
+            BatchProgressParams {
+                status: Some(Status::InProgress),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let log = db.into_transaction_log();
+        let sql = format!("{:?}", log[0]);
+        assert!(
+            sql.contains(r#"\"goals\".\"status\" ="#),
+            "Query 1 should filter by goals.status, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn coaching_session_id_emits_in_subquery() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let _ = gather_batch_progress_data(
+            &db,
+            relationship_id,
+            BatchProgressParams {
+                coaching_session_id: Some(session_id),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let log = db.into_transaction_log();
+        let sql = format!("{:?}", log[0]);
+        // Expect: goals.id IN (SELECT goal_id FROM coaching_sessions_goals WHERE coaching_session_id = $N)
+        assert!(
+            sql.contains(r#"\"goals\".\"id\" IN (SELECT"#),
+            "Query 1 should use a subquery to filter goals by coaching_session_id, got: {sql}"
+        );
+        assert!(
+            sql.contains(r#"\"coaching_sessions_goals\""#)
+                && sql.contains(r#"\"coaching_session_id\" ="#),
+            "subquery should select from coaching_sessions_goals filtered by coaching_session_id, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn limit_emits_limit_clause() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let _ = gather_batch_progress_data(
+            &db,
+            relationship_id,
+            BatchProgressParams {
+                limit: Some(3),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let log = db.into_transaction_log();
+        let sql = format!("{:?}", log[0]);
+        assert!(
+            sql.contains("LIMIT"),
+            "Query 1 should emit a LIMIT clause when params.limit is set, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn assignee_user_id_emits_actions_users_join_in_stats() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let assignee_user_id = Id::new_v4();
+        // Duration-based goal (target_date is Some) → Query 4 is skipped, simpler mock.
+        let target = chrono::Utc::now().date_naive() + chrono::Duration::days(30);
+        let goal = create_test_goal_for_relationship(relationship_id, Some(target));
+
+        // Mock sequence: goals → action stats (empty) → session stats (empty)
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let _ = gather_batch_progress_data(
+            &db,
+            relationship_id,
+            BatchProgressParams {
+                assignee_user_id: Some(assignee_user_id),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let log = db.into_transaction_log();
+        // Query 2 is the action-stats aggregate — where the actions_users join lives.
+        // Tables are schema-qualified (`"refactor_platform"."actions_users"`), so we
+        // match on the keyword + table name rather than an exact phrase.
+        let query2_sql = format!("{:?}", log[1]);
+        assert!(
+            query2_sql.contains("INNER JOIN") && query2_sql.contains(r#"\"actions_users\""#),
+            "Query 2 should INNER JOIN actions_users when assignee_user_id is set, got: {query2_sql}"
+        );
+        assert!(
+            query2_sql.contains(r#"\"actions_users\".\"user_id\" ="#),
+            "Query 2 should filter actions_users.user_id, got: {query2_sql}"
+        );
+
+        Ok(())
+    }
 }
