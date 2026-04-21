@@ -13,8 +13,8 @@ use entity_api::{
 };
 pub use entity_api::{
     user::{
-        create, find_by_email, find_by_id, find_by_ids, generate_hash, verify_password,
-        AuthSession, Backend, Credentials, Role,
+        create, find_by_email, find_by_id, find_by_ids, find_by_organization, generate_hash,
+        verify_password, AuthSession, Backend, Credentials, Role,
     },
     user_roles,
 };
@@ -30,7 +30,7 @@ where
     Ok(users)
 }
 
-pub async fn find_by_organization(
+pub async fn find_by_organization_with_invite_status(
     db: &DatabaseConnection,
     organization_id: Id,
 ) -> Result<Vec<users::Model>, Error> {
