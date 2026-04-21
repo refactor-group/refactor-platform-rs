@@ -36,6 +36,10 @@ pub async fn find_by_organization_with_invite_status(
 ) -> Result<Vec<users::Model>, Error> {
     let mut users = user::find_by_organization(db, organization_id).await?;
 
+    if users.is_empty() {
+        return Ok(users);
+    }
+
     let user_ids: Vec<Id> = users.iter().map(|u| u.id).collect();
     let tokens = entity_api::magic_link_token::find_by_user_ids(db, &user_ids).await?;
 
