@@ -1,4 +1,5 @@
 use crate::controller::ApiResponse;
+use crate::error::WebErrorKind;
 use crate::extractors::coaching_relationship_access::CoachingRelationshipAccess;
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
@@ -190,11 +191,22 @@ pub async fn goal_progress(
     let mut query_params = params.into_query_params();
 
     // Resolve role-based assignee scope against the relationship model.
-    query_params.assignee_user_id = assignee_scope.map(|scope| match scope {
-        ActionApi::AssigneeScope::Coach => relationship.coach_id,
-        ActionApi::AssigneeScope::Coachee => relationship.coachee_id,
-        ActionApi::AssigneeScope::User(id) => id,
-    });
+    // A UUID-valued scope must match the coach or coachee of this relationship —
+    // otherwise reject with 400 rather than silently returning zero-filled stats
+    // (which would expose a probe oracle for arbitrary user ids).
+    query_params.assignee_user_id = match assignee_scope {
+        Some(ActionApi::AssigneeScope::Coach) => Some(relationship.coach_id),
+        Some(ActionApi::AssigneeScope::Coachee) => Some(relationship.coachee_id),
+        Some(ActionApi::AssigneeScope::User(id))
+            if id == relationship.coach_id || id == relationship.coachee_id =>
+        {
+            Some(id)
+        }
+        Some(ActionApi::AssigneeScope::User(_)) => {
+            return Err(Error::Web(WebErrorKind::Input));
+        }
+        None => None,
+    };
 
     let progress = GoalProgressApi::relationship_goal_progress(
         app_state.db_conn_ref(),

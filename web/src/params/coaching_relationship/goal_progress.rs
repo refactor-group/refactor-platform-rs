@@ -52,7 +52,10 @@ impl IndexParams {
     /// Applies default sorting when either `sort_by` or `sort_order` is set.
     /// Default sort field is `updated_at` (most recently updated first when
     /// combined with the frontend-supplied `desc` order).
-    pub(crate) fn apply_defaults(mut self) -> Self {
+    ///
+    /// Private to this module: `into_query_params` is the single public
+    /// entry point, so callers cannot accidentally apply defaults twice.
+    fn apply_defaults(mut self) -> Self {
         <Self as WithSortDefaults>::apply_sort_defaults(
             &mut self.sort_by,
             &mut self.sort_order,
