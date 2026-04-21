@@ -63,6 +63,14 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       POSTGRES_SCHEMA: ${POSTGRES_SCHEMA}
 
+      # Database pool configuration (values set in ci-deploy-pr-preview.yml heredoc)
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS}
+      DB_MIN_CONNECTIONS: ${DB_MIN_CONNECTIONS}
+      DB_CONNECT_TIMEOUT_SECS: ${DB_CONNECT_TIMEOUT_SECS}
+      DB_ACQUIRE_TIMEOUT_SECS: ${DB_ACQUIRE_TIMEOUT_SECS}
+      DB_IDLE_TIMEOUT_SECS: ${DB_IDLE_TIMEOUT_SECS}
+      DB_MAX_LIFETIME_SECS: ${DB_MAX_LIFETIME_SECS}
+
       # Backend server configuration - use container port for internal binding
       BACKEND_PORT: ${PR_BACKEND_CONTAINER_PORT}      # Port app binds to inside container
       BACKEND_INTERFACE: ${BACKEND_INTERFACE}         # Network interface to bind to

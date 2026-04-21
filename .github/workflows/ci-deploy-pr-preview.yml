@@ -1081,6 +1081,12 @@ jobs:
                   BACKEND_ALLOWED_ORIGINS=*
                   BACKEND_LOG_FILTER_LEVEL=INFO
                   BACKEND_SESSION_EXPIRY_SECONDS=86400
+                  DB_MAX_CONNECTIONS=19
+                  DB_MIN_CONNECTIONS=5
+                  DB_CONNECT_TIMEOUT_SECS=8
+                  DB_ACQUIRE_TIMEOUT_SECS=8
+                  DB_IDLE_TIMEOUT_SECS=600
+                  DB_MAX_LIFETIME_SECS=1800
                   TIPTAP_AUTH_KEY='${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY || 'UNUSED' }}'
                   TIPTAP_JWT_SIGNING_KEY='${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY || 'UNUSED' }}'
                   TIPTAP_APP_ID='${{ secrets.PR_PREVIEW_TIPTAP_APP_ID || 'UNUSED' }}'

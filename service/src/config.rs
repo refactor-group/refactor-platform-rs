@@ -400,6 +400,7 @@ impl Config {
     /// load `.env` itself so that test code can use [`Config::default`] or
     /// [`Config::from_args`] without side effects.
     pub fn new() -> Self {
+        Self::sanitize_empty_env(&Config::command());
         let matches = Config::command().get_matches();
         let mut config =
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
@@ -420,6 +421,7 @@ impl Config {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
+        Self::sanitize_empty_env(&Config::command());
         let matches = Config::command()
             .try_get_matches_from(args)
             .expect("Failed to parse args");
@@ -429,6 +431,35 @@ impl Config {
         config.capture_value_sources(&matches);
 
         config
+    }
+
+    /// Unset any process env var that clap is configured to read (via
+    /// `#[arg(env)]`) whose value is empty or whitespace-only.
+    ///
+    /// Why: Docker Compose expands `KEY: ${KEY}` to an empty string when the
+    /// host var is unset, which clap treats as a set-but-unparseable value —
+    /// crashing primitive-typed fields like `u32`/`u64` on startup. Treating
+    /// empty env as unset here lets clap fall back to `default_value_t`
+    /// uniformly for every field, without hardcoding which ones need it.
+    /// Self-maintaining: new `#[arg(env)]` fields get this behavior for free.
+    ///
+    /// The caller must pass a *throwaway* `Command` and build a fresh one for
+    /// actual parsing — clap 4 snapshots env values when each `Arg` is
+    /// constructed during `augment_args`, not when `get_matches()` is called,
+    /// so the `Command` used for parsing must be built *after* this sanitize
+    /// runs for the cleanup to take effect.
+    fn sanitize_empty_env(cmd: &clap::Command) {
+        for arg in cmd.get_arguments() {
+            let Some(env_name) = arg.get_env() else {
+                continue;
+            };
+            let Ok(val) = std::env::var(env_name) else {
+                continue;
+            };
+            if val.trim().is_empty() {
+                std::env::remove_var(env_name);
+            }
+        }
     }
 
     /// Records the value source (Default, EnvVariable, CommandLine) for every
