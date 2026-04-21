@@ -20,10 +20,11 @@ on:
         required: true
         type: choice
         options:
+          - '9eb9c32 - chore: refresh preview commit choices [skip ci]'
           - 76cac0d - Tolerate empty DB pool env vars on container startup (#283)
           - 'c90a0e6 - chore: refresh preview commit choices [skip ci]'
-          - 'f2a10a9 - chore: refresh preview commit choices [skip ci]'
-          - 18ed7d8 - PR#281 (raymond/add-invite-status-to-u)
+          - 6daf0f4 - PR#286 (raymond/bug/fix-misleading-ext)
+          - 1dc563f - PR#281 (raymond/add-invite-status-to-u)
           - 88e274a - PR#279 (dependabot/cargo/cargo-39cecc6)
           - 04d2d8c - PR#278 (raymond/fix-google-provider-co)
           - 6abd9c9 - PR#273 (raymond/implements-magic-login)
@@ -34,12 +35,14 @@ on:
         required: true
         type: choice
         options:
-          - '3b05a2e - chore: refresh preview commit choices [skip ci]'
-          - '668bdb2 - Merge pull request #370 from refactor-group/fix/coachee'
-          - 'a10732d - fix: update e2e test mocks to use batch relationship-ac'
-          - d586b4f - PR#367 (raymond/implements-magic-login)
+          - 'b278087 - chore: refresh preview commit choices [skip ci]'
+          - '8ff4356 - chore: refresh preview commit choices [skip ci]'
+          - '97fe8d8 - Merge pull request #374 from refactor-group/fix/coachee'
+          - 629b5a8 - PR#377 (feat/dashboard-upcoming-sessio)
+          - 0ede2a2 - PR#373 (feature/transcript-pane)
+          - 3ae4a09 - PR#367 (raymond/implements-magic-login)
           - 4852f68 - PR#336 (feat/dashboard-goals-overview)
-          - 479f4db - PR#318 (docs/goals-implementation-plan)
+          - 8ad4e21 - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
           - d9e1e08 - PR#243 (feature/146-ai-meeting-integra)
       backend_commit_override:
