@@ -6,13 +6,31 @@
 use std::collections::HashMap;
 
 use sea_orm::{
-    entity::prelude::*, ConnectionTrait, FromQueryResult, JoinType, QueryOrder, QuerySelect,
+    entity::prelude::*, ConnectionTrait, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect,
 };
 
 use log::*;
 
 use super::error::{EntityApiErrorKind, Error};
 use entity::{actions, coaching_sessions, coaching_sessions_goals, goals, status::Status, Id};
+
+/// Optional filter/sort/limit parameters for `gather_batch_progress_data`.
+///
+/// All fields are optional — the default is equivalent to today's behavior
+/// (every goal in the relationship, unsorted, unbounded).
+#[derive(Debug, Clone, Default)]
+pub struct BatchProgressParams {
+    /// Only include goals with this status.
+    pub status: Option<Status>,
+    /// Sort goals by this column. Paired with `sort_order`; both must be
+    /// `Some` for ordering to be applied.
+    pub sort_column: Option<goals::Column>,
+    /// Sort direction. Paired with `sort_column`.
+    pub sort_order: Option<Order>,
+    /// Cap on the number of goals returned. Applied as SQL `LIMIT` on the
+    /// initial goals query, so stats queries only run for the limited set.
+    pub limit: Option<u64>,
+}
 
 /// Raw data gathered from multiple entities for progress computation.
 pub struct ProgressData {
@@ -104,12 +122,28 @@ struct CompletedDateRow {
 pub async fn gather_batch_progress_data(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
+    params: BatchProgressParams,
 ) -> Result<Vec<ProgressData>, Error> {
-    // Query 1: All goals for the coaching relationship
-    let goals = goals::Entity::find()
-        .filter(goals::Column::CoachingRelationshipId.eq(coaching_relationship_id))
-        .all(db)
-        .await?;
+    // Query 1: Goals for the coaching relationship, with optional filter/sort/limit.
+    let query = goals::Entity::find()
+        .filter(goals::Column::CoachingRelationshipId.eq(coaching_relationship_id));
+
+    let query = match &params.status {
+        Some(status) => query.filter(goals::Column::Status.eq(status.clone())),
+        None => query,
+    };
+
+    let query = match params.sort_column.zip(params.sort_order) {
+        Some((col, ord)) => query.order_by(col, ord),
+        None => query,
+    };
+
+    let query = match params.limit {
+        Some(n) => query.limit(n),
+        None => query,
+    };
+
+    let goals = query.all(db).await?;
 
     if goals.is_empty() {
         return Ok(Vec::new());
@@ -461,7 +495,9 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let result = gather_batch_progress_data(&db, relationship_id).await?;
+        let result =
+            gather_batch_progress_data(&db, relationship_id, BatchProgressParams::default())
+                .await?;
 
         assert!(result.is_empty());
         Ok(())
@@ -484,7 +520,9 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let result = gather_batch_progress_data(&db, relationship_id).await?;
+        let result =
+            gather_batch_progress_data(&db, relationship_id, BatchProgressParams::default())
+                .await?;
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].goal.id, goal1.id);
@@ -517,7 +555,9 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let result = gather_batch_progress_data(&db, relationship_id).await?;
+        let result =
+            gather_batch_progress_data(&db, relationship_id, BatchProgressParams::default())
+                .await?;
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].goal.id, goal.id);

@@ -3,8 +3,9 @@ use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::coaching_relationship::goal_progress::IndexParams as GoalProgressIndexParams;
 use crate::{AppState, Error};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
@@ -154,9 +155,14 @@ pub async fn index(
         ApiVersion,
         ("organization_id" = Id, Path, description = "Organization id"),
         ("relationship_id" = Id, Path, description = "Coaching relationship id"),
+        ("status" = Option<domain::status::Status>, Query, description = "Filter by goal status (e.g., 'InProgress')"),
+        ("sort_by" = Option<crate::params::coaching_relationship::goal_progress::SortField>, Query, description = "Sort by field. Valid values: 'updated_at', 'status_changed_at', 'created_at'.", example = "updated_at"),
+        ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc', 'desc'.", example = "desc"),
+        ("limit" = Option<u32>, Query, description = "Cap on the number of goals returned. Values above 100 are silently clamped. Omit for unbounded results.", example = 3),
     ),
     responses(
         (status = 200, description = "Successfully retrieved goal progress for the coaching relationship"),
+        (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -169,12 +175,17 @@ pub async fn goal_progress(
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+    Query(params): Query<GoalProgressIndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET goal progress for coaching relationship: {relationship_id}");
+    debug!("Filter Params: {params:?}");
 
-    let progress =
-        GoalProgressApi::relationship_goal_progress(app_state.db_conn_ref(), relationship_id)
-            .await?;
+    let progress = GoalProgressApi::relationship_goal_progress(
+        app_state.db_conn_ref(),
+        relationship_id,
+        params.into_query_params(),
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), progress)))
 }
