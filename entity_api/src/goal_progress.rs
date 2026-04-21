@@ -7,17 +7,20 @@ use std::collections::HashMap;
 
 use sea_orm::{
     entity::prelude::*, ConnectionTrait, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect,
+    QueryTrait,
 };
 
 use log::*;
 
 use super::error::{EntityApiErrorKind, Error};
-use entity::{actions, coaching_sessions, coaching_sessions_goals, goals, status::Status, Id};
+use entity::{
+    actions, actions_users, coaching_sessions, coaching_sessions_goals, goals, status::Status, Id,
+};
 
 /// Optional filter/sort/limit parameters for `gather_batch_progress_data`.
 ///
 /// All fields are optional — the default is equivalent to today's behavior
-/// (every goal in the relationship, unsorted, unbounded).
+/// (every goal in the relationship, unsorted, unbounded, no assignee scope).
 #[derive(Debug, Clone, Default)]
 pub struct BatchProgressParams {
     /// Only include goals with this status.
@@ -30,6 +33,13 @@ pub struct BatchProgressParams {
     /// Cap on the number of goals returned. Applied as SQL `LIMIT` on the
     /// initial goals query, so stats queries only run for the limited set.
     pub limit: Option<u64>,
+    /// When set, restrict `actions_completed` / `actions_total` /
+    /// `next_action_due` / `completed_action_dates` to actions assigned to
+    /// this user. Session-scoped metrics (count, last date) are unaffected.
+    pub assignee_user_id: Option<Id>,
+    /// When set, restrict the goals returned to those linked to this
+    /// coaching session via the `coaching_sessions_goals` join table.
+    pub coaching_session_id: Option<Id>,
 }
 
 /// Raw data gathered from multiple entities for progress computation.
@@ -133,6 +143,20 @@ pub async fn gather_batch_progress_data(
         None => query,
     };
 
+    // Restrict to goals linked to a specific coaching session via the
+    // `coaching_sessions_goals` join table.
+    let query = match params.coaching_session_id {
+        Some(session_id) => {
+            let session_goals_subquery = coaching_sessions_goals::Entity::find()
+                .select_only()
+                .column(coaching_sessions_goals::Column::GoalId)
+                .filter(coaching_sessions_goals::Column::CoachingSessionId.eq(session_id))
+                .into_query();
+            query.filter(goals::Column::Id.in_subquery(session_goals_subquery))
+        }
+        None => query,
+    };
+
     let query = match params.sort_column.zip(params.sort_order) {
         Some((col, ord)) => query.order_by(col, ord),
         None => query,
@@ -152,8 +176,10 @@ pub async fn gather_batch_progress_data(
     let goal_ids: Vec<Id> = goals.iter().map(|g| g.id).collect();
 
     // Query 2: Action stats aggregated per goal — single query with CASE WHEN
-    // for conditional count (completed) and conditional MIN (next due for non-completed)
-    let action_stats_rows: Vec<ActionStatsRow> = actions::Entity::find()
+    // for conditional count (completed) and conditional MIN (next due for non-completed).
+    // When `assignee_user_id` is set, INNER JOIN actions_users so counts only include
+    // actions assigned to that user.
+    let action_stats_query = actions::Entity::find()
         .select_only()
         .column(actions::Column::GoalId)
         .column_as(actions::Column::Id.count(), "actions_total")
@@ -165,7 +191,16 @@ pub async fn gather_batch_progress_data(
             Expr::cust("MIN(CASE WHEN status != 'completed' THEN due_by END)"),
             "next_action_due",
         )
-        .filter(actions::Column::GoalId.is_in(goal_ids.clone()))
+        .filter(actions::Column::GoalId.is_in(goal_ids.clone()));
+
+    let action_stats_query = match params.assignee_user_id {
+        Some(user_id) => action_stats_query
+            .join(JoinType::InnerJoin, actions::Relation::ActionsUsers.def())
+            .filter(actions_users::Column::UserId.eq(user_id)),
+        None => action_stats_query,
+    };
+
+    let action_stats_rows: Vec<ActionStatsRow> = action_stats_query
         .group_by(actions::Column::GoalId)
         .into_model::<ActionStatsRow>()
         .all(db)
@@ -211,12 +246,21 @@ pub async fn gather_batch_progress_data(
         if momentum_goal_ids.is_empty() {
             HashMap::new()
         } else {
-            let date_rows: Vec<CompletedDateRow> = actions::Entity::find()
+            let date_query = actions::Entity::find()
                 .select_only()
                 .column(actions::Column::GoalId)
                 .column(actions::Column::StatusChangedAt)
                 .filter(actions::Column::GoalId.is_in(momentum_goal_ids))
-                .filter(actions::Column::Status.eq("completed"))
+                .filter(actions::Column::Status.eq("completed"));
+
+            let date_query = match params.assignee_user_id {
+                Some(user_id) => date_query
+                    .join(JoinType::InnerJoin, actions::Relation::ActionsUsers.def())
+                    .filter(actions_users::Column::UserId.eq(user_id)),
+                None => date_query,
+            };
+
+            let date_rows: Vec<CompletedDateRow> = date_query
                 .order_by_asc(actions::Column::GoalId)
                 .order_by_asc(actions::Column::StatusChangedAt)
                 .into_model::<CompletedDateRow>()

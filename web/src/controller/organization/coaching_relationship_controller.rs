@@ -1,4 +1,5 @@
 use crate::controller::ApiResponse;
+use crate::extractors::coaching_relationship_access::CoachingRelationshipAccess;
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
@@ -11,7 +12,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::{
-    coaching_relationship as CoachingRelationshipApi, coaching_relationships,
+    action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
     goal_progress as GoalProgressApi, Id,
 };
 use service::config::ApiVersion;
@@ -159,11 +160,14 @@ pub async fn index(
         ("sort_by" = Option<crate::params::coaching_relationship::goal_progress::SortField>, Query, description = "Sort by field. Valid values: 'updated_at', 'status_changed_at', 'created_at'.", example = "updated_at"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc', 'desc'.", example = "desc"),
         ("limit" = Option<u32>, Query, description = "Cap on the number of goals returned. Values above 100 are silently clamped. Omit for unbounded results.", example = 3),
+        ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. Omit for relationship-wide counts."),
+        ("coaching_session_id" = Option<Id>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
     ),
     responses(
         (status = 200, description = "Successfully retrieved goal progress for the coaching relationship"),
         (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Coaching relationship not found"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -172,18 +176,30 @@ pub async fn index(
 )]
 pub async fn goal_progress(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingRelationshipAccess(relationship): CoachingRelationshipAccess,
     State(app_state): State<AppState>,
-    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
     Query(params): Query<GoalProgressIndexParams>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET goal progress for coaching relationship: {relationship_id}");
+    debug!(
+        "GET goal progress for coaching relationship: {}",
+        relationship.id
+    );
     debug!("Filter Params: {params:?}");
+
+    let assignee_scope = params.assignee_scope();
+    let mut query_params = params.into_query_params();
+
+    // Resolve role-based assignee scope against the relationship model.
+    query_params.assignee_user_id = assignee_scope.map(|scope| match scope {
+        ActionApi::AssigneeScope::Coach => relationship.coach_id,
+        ActionApi::AssigneeScope::Coachee => relationship.coachee_id,
+        ActionApi::AssigneeScope::User(id) => id,
+    });
 
     let progress = GoalProgressApi::relationship_goal_progress(
         app_state.db_conn_ref(),
-        relationship_id,
-        params.into_query_params(),
+        relationship.id,
+        query_params,
     )
     .await?;
 

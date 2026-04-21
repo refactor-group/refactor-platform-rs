@@ -2,9 +2,10 @@ use sea_orm::Order;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::params::coaching_relationship::action::AssigneeScope;
 use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
-use domain::{goal_progress, goals, status::Status, QuerySort};
+use domain::{action, goal_progress, goals, status::Status, Id, QuerySort};
 
 /// Upper bound on the number of goals this endpoint will return in a single
 /// response when the caller supplies an explicit `limit`. Requests with a
@@ -38,6 +39,13 @@ pub(crate) struct IndexParams {
     /// Optional: cap the number of goals returned. Values above MAX_LIMIT
     /// are silently clamped. Omit for unbounded results.
     pub(crate) limit: Option<u32>,
+    /// Optional: scope action counts / next-due / completed-dates to a
+    /// specific assignee (`coach`, `coachee`, or a UUID). Role values are
+    /// resolved to a concrete user id by the controller.
+    pub(crate) assignee: Option<AssigneeScope>,
+    /// Optional: restrict to goals linked to a specific coaching session
+    /// via the `coaching_sessions_goals` join table.
+    pub(crate) coaching_session_id: Option<Id>,
 }
 
 impl IndexParams {
@@ -53,6 +61,13 @@ impl IndexParams {
         self
     }
 
+    /// Extracts the assignee scope before the params are consumed by
+    /// `into_query_params`. The controller then resolves role-based scopes
+    /// (`Coach` / `Coachee`) against the coaching relationship model.
+    pub(crate) fn assignee_scope(&self) -> Option<action::AssigneeScope> {
+        self.assignee.clone().map(Into::into)
+    }
+
     pub(crate) fn into_query_params(self) -> goal_progress::BatchProgressParams {
         let params = self.apply_defaults();
         let sort_column = params.get_sort_column();
@@ -62,6 +77,10 @@ impl IndexParams {
             sort_column,
             sort_order,
             limit: params.limit.map(|n| n.min(MAX_LIMIT) as u64),
+            // Role-based scopes need the relationship model to resolve; the
+            // controller fills this in after calling `into_query_params`.
+            assignee_user_id: None,
+            coaching_session_id: params.coaching_session_id,
         }
     }
 }
@@ -158,5 +177,56 @@ mod tests {
         let params: IndexParams = serde_json::from_str(json).unwrap();
         let domain = params.into_query_params();
         assert!(domain.limit.is_none());
+    }
+
+    #[test]
+    fn assignee_scope_deserializes_coach() {
+        let json = r#"{"assignee": "coach"}"#;
+        let params: IndexParams = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            params.assignee_scope(),
+            Some(action::AssigneeScope::Coach)
+        ));
+    }
+
+    #[test]
+    fn assignee_scope_deserializes_coachee_case_insensitive() {
+        let json = r#"{"assignee": "Coachee"}"#;
+        let params: IndexParams = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            params.assignee_scope(),
+            Some(action::AssigneeScope::Coachee)
+        ));
+    }
+
+    #[test]
+    fn assignee_scope_deserializes_uuid() {
+        let id = Id::new_v4();
+        let json = format!(r#"{{"assignee": "{id}"}}"#);
+        let params: IndexParams = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            params.assignee_scope(),
+            Some(action::AssigneeScope::User(uid)) if uid == id
+        ));
+    }
+
+    #[test]
+    fn into_query_params_leaves_assignee_user_id_unresolved() {
+        // Role-based scopes need the relationship model — controller fills this in.
+        let json = r#"{"assignee": "coach"}"#;
+        let params: IndexParams = serde_json::from_str(json).unwrap();
+        let domain = params.into_query_params();
+        assert!(domain.assignee_user_id.is_none());
+    }
+
+    #[test]
+    fn coaching_session_id_deserializes() {
+        let id = Id::new_v4();
+        let json = format!(r#"{{"coaching_session_id": "{id}"}}"#);
+        let params: IndexParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(params.coaching_session_id, Some(id));
+
+        let domain = params.into_query_params();
+        assert_eq!(domain.coaching_session_id, Some(id));
     }
 }
