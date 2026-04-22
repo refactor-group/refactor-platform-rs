@@ -93,20 +93,53 @@ impl EmailNotification for WelcomeEmail {
     fn notification_name() -> &'static str {
         "welcome"
     }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.magic_link_email_url_path().to_owned())
+    }
 }
 
-/// Send a best-effort welcome email to a newly created user.
+/// Create a magic link token and send a welcome email to a user.
 ///
-/// Errors are logged internally — email delivery must never block or fail
-/// the calling operation.
-pub async fn notify_welcome_email(config: &Config, user: &users::Model) {
-    if let Err(e) = send_welcome_email(config, user).await {
-        warn!("Failed to send welcome email to {}: {e:?}", user.email);
+/// Returns an error if token creation or email delivery fails.
+pub async fn create_and_send_welcome_email(
+    db: &sea_orm::DatabaseConnection,
+    config: &Config,
+    user: &users::Model,
+) -> Result<(), Error> {
+    let raw_token = crate::magic_link_token::create_magic_link(db, user.id, config).await?;
+    send_welcome_email(config, user, &raw_token).await
+}
+
+/// Create a magic link token and send a best-effort welcome email to a newly created user.
+///
+/// Both token creation and email delivery are best-effort — errors are logged
+/// internally and never propagate to the caller.
+pub async fn notify_welcome_email(
+    db: &sea_orm::DatabaseConnection,
+    config: &Config,
+    user: &users::Model,
+) {
+    match crate::magic_link_token::create_magic_link(db, user.id, config).await {
+        Ok(raw_token) => {
+            if let Err(e) = send_welcome_email(config, user, &raw_token).await {
+                warn!("Failed to send welcome email to {}: {e:?}", user.email);
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create magic link token for user {}: {e:?}",
+                user.id
+            );
+        }
     }
 }
 
 /// Build and send the welcome email to a single user.
-async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), Error> {
+async fn send_welcome_email(
+    config: &Config,
+    user: &users::Model,
+    magic_link_token: &str,
+) -> Result<(), Error> {
     info!(
         "Initiating welcome email for user: {} ({})",
         user.email, user.id
@@ -114,6 +147,12 @@ async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), 
 
     let email_config = ResolvedEmailConfig::new::<WelcomeEmail>(config).await?;
     info!("Using template ID: {}", email_config.template_id);
+
+    let magic_link_url = email_config
+        .session_url_builder
+        .as_ref()
+        .map(|b| b.build(TOKEN_PLACEHOLDER, magic_link_token))
+        .unwrap_or_default();
 
     debug!("Preparing personalization data for {}", user.email);
 
@@ -127,6 +166,7 @@ async fn send_welcome_email(config: &Config, user: &users::Model) -> Result<(), 
         .template_id(&email_config.template_id)
         .add_personalization("first_name", &user.first_name)
         .add_personalization("last_name", &user.last_name)
+        .add_personalization("magic_link_url", &magic_link_url)
         .build()
         .await?;
     debug!("Email request created for {}", user.email);
@@ -155,6 +195,9 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
     }
 }
 
+const TOKEN_PLACEHOLDER: &str = "{token}";
+const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
+
 /// Groups the base URL and path template for building session links in emails.
 struct SessionUrlBuilder {
     base_url: String,
@@ -162,10 +205,8 @@ struct SessionUrlBuilder {
 }
 
 impl SessionUrlBuilder {
-    fn build(&self, session_id: &Id) -> String {
-        let path = self
-            .path_template
-            .replace("{session_id}", &session_id.to_string());
+    fn build(&self, placeholder: &str, value: &str) -> String {
+        let path = self.path_template.replace(placeholder, value);
         format!("{}{}", self.base_url, path)
     }
 }
@@ -211,7 +252,7 @@ impl ResolvedEmailConfig {
     fn build_session_url(&self, session_id: &Id) -> Result<String, Error> {
         self.session_url_builder
             .as_ref()
-            .map(|b| b.build(session_id))
+            .map(|b| b.build(SESSION_ID_PLACEHOLDER, &session_id.to_string()))
             .ok_or_else(|| {
                 error!("Cannot build session URL: notification type has no URL template");
                 Error {
@@ -502,7 +543,7 @@ mod tests {
             last_name: "Doe".to_string(),
             email: "john.doe@example.com".to_string(),
             display_name: Some("John Doe".to_string()),
-            password: "hashed_password".to_string(),
+            password: Some("hashed_password".to_string()),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
@@ -525,7 +566,7 @@ mod tests {
             last_name: last_name.to_string(),
             email: email.to_string(),
             display_name: Some(format!("{first_name} {last_name}")),
-            password: "hashed_password".to_string(),
+            password: Some("hashed_password".to_string()),
             github_username: None,
             github_profile_url: None,
             timezone: timezone.to_string(),
@@ -568,6 +609,7 @@ mod tests {
             "test",
             "--mailersend-api-key=test_api_key_123",
             "--welcome-email-template-id=template_123",
+            "--frontend-base-url=https://app.example.com",
             &format!("--mailersend-base-url={server_url}/v1"),
         ])
     }
@@ -609,7 +651,8 @@ mod tests {
                     "email": "john.doe@example.com",
                     "data": {
                         "first_name": "John",
-                        "last_name": "Doe"
+                        "last_name": "Doe",
+                        "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
                 }]
             })))
@@ -619,7 +662,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_ok());
     }
 
@@ -633,7 +676,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -658,7 +701,7 @@ mod tests {
 
         let user = create_test_user();
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -684,7 +727,7 @@ mod tests {
             .await;
 
         // HTTP 400 from MailerSend should propagate as an error
-        let result = send_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_err());
     }
 
@@ -706,7 +749,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_ok());
     }
 
@@ -719,7 +762,7 @@ mod tests {
             last_name: "Smith".to_string(),
             email: "jane.smith@test.org".to_string(),
             display_name: Some("Jane Smith".to_string()),
-            password: "hashed_password".to_string(),
+            password: Some("hashed_password".to_string()),
             github_username: Some("janesmith".to_string()),
             github_profile_url: Some("https://github.com/janesmith".to_string()),
             timezone: "America/New_York".to_string(),
@@ -747,7 +790,8 @@ mod tests {
                     "email": "jane.smith@test.org",
                     "data": {
                         "first_name": "Jane",
-                        "last_name": "Smith"
+                        "last_name": "Smith",
+                        "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
                 }]
             })))
@@ -756,7 +800,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_ok());
     }
 
@@ -769,7 +813,7 @@ mod tests {
             last_name: "Test-Last".to_string(),
             email: "test.user@example.com".to_string(),
             display_name: None,
-            password: "hashed_password".to_string(),
+            password: Some("hashed_password".to_string()),
             github_username: None,
             github_profile_url: None,
             timezone: "Europe/London".to_string(),
@@ -797,7 +841,8 @@ mod tests {
                     "email": "test.user@example.com",
                     "data": {
                         "first_name": "Test-First",
-                        "last_name": "Test-Last"
+                        "last_name": "Test-Last",
+                        "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
                 }]
             })))
@@ -806,7 +851,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user).await;
+        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_ok());
     }
 

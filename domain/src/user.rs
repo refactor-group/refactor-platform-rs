@@ -54,7 +54,7 @@ pub async fn update_password(
 
     // Remove and verify the user's current password as a security check before allowing any updates
     let password_to_verify = params.remove("current_password")?;
-    verify_password(&password_to_verify, &existing_user.password).await?;
+    verify_password(&password_to_verify, existing_user.password.as_deref()).await?;
 
     // remove confirm_password
     let confirm_password = params.remove("confirm_password")?;
@@ -66,9 +66,9 @@ pub async fn update_password(
         warn!("Password confirmation does not match");
         return Err(Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            error_kind: DomainErrorKind::Validation(
                 "Password confirmation does not match".to_string(),
-            )),
+            ),
         });
     }
 

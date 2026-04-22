@@ -20,26 +20,27 @@ on:
         required: true
         type: choice
         options:
-          - 'd81c076 - chore: refresh preview commit choices [skip ci]'
-          - 'ba1d360 - chore: refresh preview commit choices [skip ci]'
-          - '2d10238 - Merge pull request #277 from refactor-group/fix-single-relationship-assignee-filter'
-          - 25cbeb3 - PR#281 (raymond/add-invite-status-to-u)
+          - 3f90fae - Implements magic login links (#273)
+          - '6bf634e - chore: refresh preview commit choices [skip ci]'
+          - 'c9ecf14 - chore: refresh preview commit choices [skip ci]'
+          - 7cdfdda - PR#287 (goal-progress-query-params)
+          - 1d50832 - PR#286 (raymond/bug/fix-misleading-ext)
+          - 12fa366 - PR#281 (raymond/add-invite-status-to-u)
           - 88e274a - PR#279 (dependabot/cargo/cargo-39cecc6)
-          - edd8823 - PR#278 (raymond/fix-google-provider-co)
-          - 920ec69 - PR#273 (raymond/implements-magic-login)
-          - 918e6f8 - PR#254 (ai-transcription-milestone-2)
+          - 04d2d8c - PR#278 (raymond/fix-google-provider-co)
+          - a51652a - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
-          - '3b05a2e - chore: refresh preview commit choices [skip ci]'
-          - '668bdb2 - Merge pull request #370 from refactor-group/fix/coachee'
-          - 'a10732d - fix: update e2e test mocks to use batch relationship-ac'
-          - d586b4f - PR#367 (raymond/implements-magic-login)
-          - 4852f68 - PR#336 (feat/dashboard-goals-overview)
-          - 479f4db - PR#318 (docs/goals-implementation-plan)
+          - '5d3ca4a - chore: refresh preview commit choices [skip ci]'
+          - 'bda41ec - Merge pull request #367 from refactor-group/raymond/imp'
+          - 9cbb879 - Merge branch 'raymond/implements-magic-logins' of githu
+          - 0ede2a2 - PR#373 (feature/transcript-pane)
+          - 4b0c05e - PR#336 (feat/dashboard-goals-overview)
+          - 3b36667 - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
           - d9e1e08 - PR#243 (feature/146-ai-meeting-integra)
       backend_commit_override:

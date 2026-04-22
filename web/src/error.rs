@@ -55,6 +55,17 @@ impl Error {
             DomainErrorKind::External(ref external_error_kind) => {
                 self.handle_external_error(external_error_kind)
             }
+            DomainErrorKind::Validation(ref message) => {
+                warn!(
+                    "DomainErrorKind::Validation: Responding with 422 Unprocessable Entity. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 422,
+                    "error": "validation_error",
+                    "message": message,
+                });
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
+            }
         }
     }
 

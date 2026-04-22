@@ -25,7 +25,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         first_name: Set(user_model.first_name),
         last_name: Set(user_model.last_name),
         display_name: Set(user_model.display_name),
-        password: Set(generate_hash(user_model.password)),
+        password: Set(user_model.password.map(generate_hash)),
         github_username: Set(user_model.github_username),
         github_profile_url: Set(user_model.github_profile_url),
         timezone: Set(user_model.timezone),
@@ -187,8 +187,16 @@ pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error>
     Ok(())
 }
 
-pub async fn verify_password(password_to_verify: &str, password_hash: &str) -> Result<(), Error> {
-    match password_auth::verify_password(password_to_verify, password_hash) {
+pub async fn verify_password(
+    password_to_verify: &str,
+    password_hash: Option<&str>,
+) -> Result<(), Error> {
+    let hash = password_hash.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordUnauthenticated,
+    })?;
+
+    match password_auth::verify_password(password_to_verify, hash) {
         Ok(_) => Ok(()),
         Err(_) => Err(Error {
             source: None,
@@ -202,7 +210,12 @@ pub fn generate_hash(password: String) -> String {
 }
 
 async fn authenticate_user(creds: Credentials, user: Model) -> Result<Option<Model>, Error> {
-    match password_auth::verify_password(creds.password, &user.password) {
+    let hash = user.password.as_deref().ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordUnauthenticated,
+    })?;
+
+    match password_auth::verify_password(creds.password, hash) {
         Ok(_) => Ok(Some(user)),
         Err(_) => Err(Error {
             source: None,
@@ -350,7 +363,7 @@ mod test {
             first_name: "Test".to_owned(),
             last_name: "User".to_owned(),
             display_name: None,
-            password: "password123".to_owned(),
+            password: Some("password123".to_owned()),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
@@ -399,7 +412,7 @@ mod test {
             first_name: "Test".to_owned(),
             last_name: "User".to_owned(),
             display_name: None,
-            password: "password123".to_owned(),
+            password: Some("password123".to_owned()),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
@@ -552,6 +565,47 @@ mod test {
         let result = has_admin_access(&db, nonexistent_user_id, organization_id).await?;
 
         assert!(!result, "Nonexistent user should not have admin access");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn authenticate_rejects_login_when_password_is_none() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user = entity::users::Model {
+            id: Id::new_v4(),
+            email: "test@test.com".to_owned(),
+            first_name: "Test".to_owned(),
+            last_name: "User".to_owned(),
+            display_name: None,
+            password: None,
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            role: entity::users::Role::User,
+            roles: vec![],
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // find_by_email uses find_with_related
+            .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
+                vec![vec![(user, None)]],
+            )
+            .into_connection();
+
+        let backend = Backend::new(&Arc::new(db));
+        let creds = Credentials {
+            email: "test@test.com".to_string(),
+            password: "any_password".to_string(),
+            next: None,
+        };
+
+        let result = backend.authenticate(creds).await;
+
+        let err = result.unwrap_err();
+        assert_eq!(err.error_kind, EntityApiErrorKind::RecordUnauthenticated);
 
         Ok(())
     }

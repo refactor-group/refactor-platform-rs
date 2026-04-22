@@ -32,7 +32,7 @@ Table refactor_platform.users {
   first_name varchar
   last_name varchar
   display_name varchar [note: 'If a user wants to go by something other than first & last names']
-  password varchar [not null]
+  password varchar
   timezone varchar(50) [not null, default: 'UTC', note: 'User timezone for displaying dates/times in their local timezone']
   github_username varchar // Specifically GH for now, can generalize later
   github_profile_url varchar
@@ -166,6 +166,18 @@ Table refactor_platform.actions_users {
   }
 }
 
+Table refactor_platform.magic_link_tokens {
+  id uuid [primary key, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'The user this magic link token belongs to']
+  token_hash varchar(64) [unique, not null, note: 'SHA-256 hash of the token; raw token only appears in the email URL']
+  expires_at timestamptz [not null]
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    user_id [name: "idx_magic_link_tokens_user_id"]
+  }
+}
+
 enum refactor_platform.status {
   not_started
   in_progress
@@ -217,6 +229,9 @@ Ref: refactor_platform.actions.goal_id > refactor_platform.goals.id
 // actions_users relationships
 Ref: refactor_platform.actions_users.action_id > refactor_platform.actions.id
 Ref: refactor_platform.actions_users.user_id > refactor_platform.users.id
+
+// magic_link_tokens relationships
+Ref: refactor_platform.magic_link_tokens.user_id > refactor_platform.users.id [delete: cascade]
 
 //user_roles relationships
 Ref: refactor_platform.user_roles.organization_id > refactor_platform.organizations.id

@@ -74,6 +74,18 @@ jobs:
           # Database connection string
           DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ vars.POSTGRES_HOST }}:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}?${{ vars.POSTGRES_OPTIONS }}
 
+          # -------- Database Pool Config
+          # Pool sizing must stay below the managed Postgres max connections
+          # ceiling (22 on the 1 GB DO tier) to leave headroom for migrator,
+          # doadmin, and platform agents. Clap defaults in service/src/config.rs
+          # apply if any of these are left unset in the GitHub environment.
+          DB_MAX_CONNECTIONS=${{ vars.DB_MAX_CONNECTIONS }}
+          DB_MIN_CONNECTIONS=${{ vars.DB_MIN_CONNECTIONS }}
+          DB_CONNECT_TIMEOUT_SECS=${{ vars.DB_CONNECT_TIMEOUT_SECS }}
+          DB_ACQUIRE_TIMEOUT_SECS=${{ vars.DB_ACQUIRE_TIMEOUT_SECS }}
+          DB_IDLE_TIMEOUT_SECS=${{ vars.DB_IDLE_TIMEOUT_SECS }}
+          DB_MAX_LIFETIME_SECS=${{ vars.DB_MAX_LIFETIME_SECS }}
+
           # -------- Backend Config
           # Docker image for backend
           BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
