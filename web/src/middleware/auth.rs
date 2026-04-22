@@ -147,6 +147,7 @@ mod tests {
             updated_at: now.into(),
             role: users::Role::User,
             roles: vec![], // Will be populated by find_with_related
+            invite_status: None,
         };
 
         let test_role = user_roles::Model {

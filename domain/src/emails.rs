@@ -549,6 +549,7 @@ mod tests {
             timezone: "UTC".to_string(),
             role: users::Role::User,
             roles: vec![],
+            invite_status: None,
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         }
@@ -572,6 +573,7 @@ mod tests {
             timezone: timezone.to_string(),
             role: users::Role::User,
             roles: vec![],
+            invite_status: None,
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         }
@@ -768,6 +770,7 @@ mod tests {
             timezone: "America/New_York".to_string(),
             role: users::Role::Admin,
             roles: vec![],
+            invite_status: None,
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         };
@@ -819,6 +822,7 @@ mod tests {
             timezone: "Europe/London".to_string(),
             role: users::Role::Admin,
             roles: vec![],
+            invite_status: None,
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
         };

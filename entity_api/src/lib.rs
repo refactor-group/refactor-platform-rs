@@ -5,7 +5,8 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
     coaching_sessions, coaching_sessions_goals, goals, jwts, magic_link_tokens, notes,
-    oauth_connections, organizations, provider, status, user_roles, users, users::Role, Id,
+    oauth_connections, organizations, provider, status, user_invite_status, user_roles, users,
+    users::Role, Id,
 };
 
 pub mod action;

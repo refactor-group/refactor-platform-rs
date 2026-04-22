@@ -36,6 +36,17 @@ pub async fn find_by_token_hash(
         .await?)
 }
 
+/// Fetch the magic link token for each of the given user IDs (at most one per user).
+pub async fn find_by_user_ids(
+    db: &impl ConnectionTrait,
+    user_ids: &[Id],
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::UserId.is_in(user_ids.to_vec()))
+        .all(db)
+        .await?)
+}
+
 /// Delete all magic link tokens for a given user.
 pub async fn delete_all_for_user(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_many()
