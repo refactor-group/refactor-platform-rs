@@ -20,11 +20,10 @@ on:
         required: true
         type: choice
         options:
+          - d9afbf6 - Relay correct status code for DB errors in OrganizationMemberAccess extractor (#286)
+          - '19f249d - chore: refresh preview commit choices [skip ci]'
           - 37aaa54 - Add `invite_status` to user model (#281)
-          - 'f5b43a9 - chore: refresh preview commit choices [skip ci]'
-          - 3f90fae - Implements magic login links (#273)
           - 7cdfdda - PR#287 (goal-progress-query-params)
-          - c7592a3 - PR#286 (raymond/bug/fix-misleading-ext)
           - 14bfc7c - PR#279 (dependabot/cargo/cargo-39cecc6)
           - 4632ee2 - PR#278 (raymond/fix-google-provider-co)
           - a51652a - PR#254 (ai-transcription-milestone-2)
