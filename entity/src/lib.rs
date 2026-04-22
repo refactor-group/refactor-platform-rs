@@ -21,6 +21,7 @@ pub mod organizations;
 pub mod provider;
 pub mod roles;
 pub mod status;
+pub mod user_invite_status;
 pub mod user_roles;
 pub mod users;
 
