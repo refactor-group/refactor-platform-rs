@@ -20,14 +20,13 @@ on:
         required: true
         type: choice
         options:
+          - 37aaa54 - Add `invite_status` to user model (#281)
+          - 'f5b43a9 - chore: refresh preview commit choices [skip ci]'
           - 3f90fae - Implements magic login links (#273)
-          - '6bf634e - chore: refresh preview commit choices [skip ci]'
-          - 'c9ecf14 - chore: refresh preview commit choices [skip ci]'
           - 7cdfdda - PR#287 (goal-progress-query-params)
-          - 1d50832 - PR#286 (raymond/bug/fix-misleading-ext)
-          - 12fa366 - PR#281 (raymond/add-invite-status-to-u)
-          - 88e274a - PR#279 (dependabot/cargo/cargo-39cecc6)
-          - 04d2d8c - PR#278 (raymond/fix-google-provider-co)
+          - c7592a3 - PR#286 (raymond/bug/fix-misleading-ext)
+          - 14bfc7c - PR#279 (dependabot/cargo/cargo-39cecc6)
+          - 4632ee2 - PR#278 (raymond/fix-google-provider-co)
           - a51652a - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
