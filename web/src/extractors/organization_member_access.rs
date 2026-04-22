@@ -5,7 +5,8 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path},
     http::{request::Parts, StatusCode},
 };
-use domain::{user as UserApi, Id};
+use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
+use domain::{organization as OrganizationApi, user as UserApi, Id};
 
 use crate::{
     extractors::{authenticated_user::AuthenticatedUser, RejectionType},
@@ -55,6 +56,27 @@ where
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, &state).await?;
 
+        if let Err(err) = OrganizationApi::find_by_id(state.db_conn_ref(), organization_id).await {
+            let domain_err: DomainError = err.into();
+            return match domain_err.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound)) => {
+                    Err((
+                        StatusCode::NOT_FOUND,
+                        format!("Organization {organization_id} not found"),
+                    ))
+                }
+                _ => {
+                    error!(
+                        "find_by_id({organization_id:?}) failed while verifying organization existence: {domain_err:?}"
+                    );
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to verify organization existence".to_string(),
+                    ))
+                }
+            };
+        }
+
         // SuperAdmins have access to all organizations
         if authenticated_user
             .roles
@@ -64,17 +86,23 @@ where
             return Ok(OrganizationMemberAccess(organization_id));
         }
 
-        let user_organization_role_exists =
-            match UserApi::find_by_organization(state.db_conn_ref(), organization_id).await {
-                Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
-                Err(_) => {
-                    error!("Organization not found with ID {organization_id:?}");
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        "Invalid organization ID".to_string(),
-                    ));
-                }
-            };
+        let user_organization_role_exists = match UserApi::find_by_organization(
+            state.db_conn_ref(),
+            organization_id,
+        )
+        .await
+        {
+            Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
+            Err(err) => {
+                error!(
+                        "find_by_organization({organization_id:?}) failed while verifying membership: {err:?}"
+                    );
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to verify organization membership".to_string(),
+                ));
+            }
+        };
 
         if !user_organization_role_exists {
             return Err((
@@ -156,7 +184,7 @@ mod tests {
         let now = Utc::now();
 
         let test_user = create_test_user();
-        let _ = create_test_organization(organization_id);
+        let test_organization = create_test_organization(organization_id);
 
         let test_role = user_roles::Model {
             id: Id::new_v4(),
@@ -171,6 +199,7 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![test_organization.clone()]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .into_connection(),
         );
@@ -240,7 +269,7 @@ mod tests {
         let now = Utc::now();
 
         let test_user = create_test_user();
-        let _ = create_test_organization(organization_id);
+        let test_organization = create_test_organization(organization_id);
 
         let test_role = user_roles::Model {
             id: Id::new_v4(),
@@ -255,6 +284,7 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![test_organization.clone()]])
                 .into_connection(),
         );
 
@@ -324,7 +354,7 @@ mod tests {
         let now = Utc::now();
 
         let test_user = create_test_user();
-        let _ = create_test_organization(organization_id);
+        let test_organization = create_test_organization(organization_id);
 
         let test_role = user_roles::Model {
             id: Id::new_v4(),
@@ -339,6 +369,7 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![test_organization.clone()]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .into_connection(),
         );
@@ -400,5 +431,85 @@ mod tests {
 
         let response = app.clone().oneshot(protected_request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_extractor_returns_404_when_organization_does_not_exist() {
+        let organization_id = Id::new_v4();
+        let now = Utc::now();
+
+        let test_user = create_test_user();
+
+        let test_role = user_roles::Model {
+            id: Id::new_v4(),
+            role: users::Role::User,
+            organization_id: Some(organization_id),
+            user_id: test_user.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([Vec::<organizations::Model>::new()])
+                .into_connection(),
+        );
+
+        let app_state = AppState::new(
+            service::AppState::new(Config::default(), &db),
+            Arc::new(sse::Manager::default()),
+            domain::events::EventPublisher::default(),
+        );
+
+        let session_store = MemoryStore::default();
+        let session_layer = SessionManagerLayer::new(session_store)
+            .with_secure(false)
+            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+            .with_always_save(true);
+
+        let backend = Backend::new(&db);
+        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+        let app = Router::new()
+            .route(
+                "/login",
+                axum::routing::post(crate::controller::user_session_controller::login),
+            )
+            .merge(
+                Router::new()
+                    .route(
+                        "/organizations/:organization_id/coaching_relationships",
+                        get(protected_route),
+                    )
+                    .route_layer(from_fn(require_auth)),
+            )
+            .layer(auth_layer)
+            .with_state(app_state);
+
+        let login_request = Request::builder()
+            .uri("/login")
+            .method("POST")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("email=test@example.com&password=password123"))
+            .unwrap();
+
+        let login_response = app.clone().oneshot(login_request).await.unwrap();
+
+        let cookie = login_response
+            .headers()
+            .get("set-cookie")
+            .and_then(|c| c.to_str().ok())
+            .expect("Login should return session cookie");
+
+        let protected_request = Request::builder()
+            .uri(format!("/organizations/{}/coaching_relationships", organization_id).as_str())
+            .header("cookie", cookie)
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.clone().oneshot(protected_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
