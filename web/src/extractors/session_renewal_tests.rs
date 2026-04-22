@@ -26,7 +26,7 @@ mod session_renewal_integration_tests {
             first_name: "Test".to_string(),
             last_name: "User".to_string(),
             display_name: Some("Test User".to_string()),
-            password: generate_hash("password123".to_string()),
+            password: Some(generate_hash("password123".to_string())),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),

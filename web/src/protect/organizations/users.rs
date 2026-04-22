@@ -27,6 +27,19 @@ pub(crate) async fn create(
     // Leaving this out at the moment. It may be that we decide on separate endpoints for different "flavors" of user creation.
 }
 
+/// Checks that the authenticated user is an admin of the organization before resending an invite.
+pub(crate) async fn resend_invite(
+    State(app_state): State<AppState>,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    Path((organization_id, _user_id)): Path<(Id, Id)>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    let checks: Vec<Predicate> = vec![Predicate::new(UserIsAdmin, vec![organization_id])];
+
+    crate::protect::authorize(&app_state, authenticated_user, request, next, checks).await
+}
+
 /// Checks that the authenticated user is associated with the organization specified by `organization_id`
 /// Intended to be given to axum::middleware::from_fn_with_state in the router
 pub(crate) async fn delete(

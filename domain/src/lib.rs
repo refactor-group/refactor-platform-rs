@@ -12,8 +12,8 @@ pub use entity_api::{
 // Re-exports from `entity` crate via `entity_api`
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions,
-    coaching_sessions_goals, goals, jwts, notes, oauth_connections, organizations, provider,
-    query::QuerySort, status, user_roles, users, Id,
+    coaching_sessions_goals, goals, jwts, magic_link_tokens, notes, oauth_connections,
+    organizations, provider, query::QuerySort, status, user_roles, users, Id,
 };
 
 pub mod action;
@@ -26,6 +26,7 @@ pub mod error;
 pub mod goal;
 pub mod goal_progress;
 pub mod jwt;
+pub mod magic_link_token;
 pub mod note;
 pub mod oauth_connection;
 pub mod oauth_token_storage;
