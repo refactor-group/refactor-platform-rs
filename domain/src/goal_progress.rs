@@ -16,6 +16,8 @@ use crate::error::Error;
 use crate::status::Status;
 use crate::Id;
 
+pub use entity_api::goal_progress::BatchProgressParams;
+
 /// Overall progress signal for a goal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Progress {
@@ -90,9 +92,11 @@ pub struct RelationshipGoalProgress {
 pub async fn relationship_goal_progress(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
+    params: BatchProgressParams,
 ) -> Result<RelationshipGoalProgress, Error> {
     let batch_data =
-        entity_api::goal_progress::gather_batch_progress_data(db, coaching_relationship_id).await?;
+        entity_api::goal_progress::gather_batch_progress_data(db, coaching_relationship_id, params)
+            .await?;
 
     let goal_progress = batch_data
         .into_iter()
@@ -415,9 +419,10 @@ mod batch_tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let result = relationship_goal_progress(&db, relationship_id)
-            .await
-            .unwrap();
+        let result =
+            relationship_goal_progress(&db, relationship_id, BatchProgressParams::default())
+                .await
+                .unwrap();
 
         assert!(result.goal_progress.is_empty());
     }
@@ -435,9 +440,10 @@ mod batch_tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let result = relationship_goal_progress(&db, relationship_id)
-            .await
-            .unwrap();
+        let result =
+            relationship_goal_progress(&db, relationship_id, BatchProgressParams::default())
+                .await
+                .unwrap();
 
         assert_eq!(result.goal_progress.len(), 1);
 
@@ -473,9 +479,10 @@ mod batch_tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let result = relationship_goal_progress(&db, relationship_id)
-            .await
-            .unwrap();
+        let result =
+            relationship_goal_progress(&db, relationship_id, BatchProgressParams::default())
+                .await
+                .unwrap();
 
         assert_eq!(result.goal_progress.len(), 2);
         // Brand new goal gets grace period → SolidMomentum

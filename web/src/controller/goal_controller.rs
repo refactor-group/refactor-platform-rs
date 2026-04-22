@@ -240,12 +240,13 @@ pub async fn delete(
     params(
         ApiVersion,
         ("coaching_relationship_id" = Id, Query, description = "Filter by coaching_relationship_id"),
-        ("status" = Option<String>, Query, description = "Filter by status (e.g., 'in_progress', 'completed')"),
+        ("status" = Option<domain::status::Status>, Query, description = "Filter by status (e.g., 'InProgress', 'Completed')"),
         ("sort_by" = Option<crate::params::goal::SortField>, Query, description = "Sort by field. Valid values: 'title', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "title"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Goals", body = [entity::goals::Model]),
+        (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
