@@ -14,12 +14,14 @@ pub mod coaching_sessions_goals;
 pub mod goals;
 pub mod jwts;
 pub mod links;
+pub mod magic_link_tokens;
 pub mod notes;
 pub mod oauth_connections;
 pub mod organizations;
 pub mod provider;
 pub mod roles;
 pub mod status;
+pub mod user_invite_status;
 pub mod user_roles;
 pub mod users;
 

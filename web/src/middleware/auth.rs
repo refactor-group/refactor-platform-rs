@@ -139,7 +139,7 @@ mod tests {
             first_name: "test".to_string(),
             last_name: "login".to_string(),
             display_name: Some("test login".to_string()),
-            password: generate_hash("password2"),
+            password: Some(generate_hash("password2")),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
@@ -147,6 +147,7 @@ mod tests {
             updated_at: now.into(),
             role: users::Role::User,
             roles: vec![], // Will be populated by find_with_related
+            invite_status: None,
         };
 
         let test_role = user_roles::Model {
