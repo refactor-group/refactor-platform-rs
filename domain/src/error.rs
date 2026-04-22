@@ -27,6 +27,7 @@ pub struct Error {
 pub enum DomainErrorKind {
     Internal(InternalErrorKind),
     External(ExternalErrorKind),
+    Validation(String),
 }
 /// Enum representing the various kinds of internal errors that can occur in the `domain` layer.
 #[derive(Debug, PartialEq)]

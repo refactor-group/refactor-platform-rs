@@ -4,8 +4,8 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
-    coaching_sessions, coaching_sessions_goals, goals, jwts, notes, oauth_connections,
-    organizations, provider, status, user_roles, users, users::Role, Id,
+    coaching_sessions, coaching_sessions_goals, goals, jwts, magic_link_tokens, notes,
+    oauth_connections, organizations, provider, status, user_roles, users, users::Role, Id,
 };
 
 pub mod action;
@@ -17,6 +17,7 @@ pub mod coaching_session_goal;
 pub mod error;
 pub mod goal;
 pub mod goal_progress;
+pub mod magic_link_token;
 pub mod mutate;
 pub mod note;
 pub mod oauth_connection;
@@ -40,7 +41,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
         first_name: Set("Admin".to_owned()),
         last_name: Set("User".to_owned()),
         display_name: Set(Some("Admin User".to_owned())),
-        password: Set(generate_hash("dLxNxnjn&b!2sqkwFbb4s8jX")),
+        password: Set(Some(generate_hash("dLxNxnjn&b!2sqkwFbb4s8jX"))),
         github_username: Set(None),
         github_profile_url: Set(None),
         created_at: Set(now.into()),
@@ -56,7 +57,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
         first_name: Set("Jim".to_owned()),
         last_name: Set("Hodapp".to_owned()),
         display_name: Set(Some("Jim H".to_owned())),
-        password: Set(generate_hash("password")),
+        password: Set(Some(generate_hash("password"))),
         github_username: Set(Some("jhodapp".to_owned())),
         github_profile_url: Set(Some("https://github.com/jhodapp".to_owned())),
         created_at: Set(now.into()),
@@ -72,7 +73,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
         first_name: Set("Caleb".to_owned()),
         last_name: Set("Bourg".to_owned()),
         display_name: Set(Some("cbourg2".to_owned())),
-        password: Set(generate_hash("password")),
+        password: Set(Some(generate_hash("password"))),
         github_username: Set(Some("calebbourg".to_owned())),
         github_profile_url: Set(Some("https://github.com/calebbourg".to_owned())),
         created_at: Set(now.into()),
@@ -88,7 +89,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
         first_name: Set("Other".to_owned()),
         last_name: Set("User".to_owned()),
         display_name: Set(Some("Other U.".to_owned())),
-        password: Set(generate_hash("password")),
+        password: Set(Some(generate_hash("password"))),
         github_username: Set(None),
         github_profile_url: Set(None),
         created_at: Set(now.into()),
