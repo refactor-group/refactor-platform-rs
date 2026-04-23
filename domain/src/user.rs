@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use crate::{
     error::Error,
     error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
-    users, Id,
+    magic_link_token, magic_link_tokens, users, Id,
 };
 use chrono::Utc;
 use entity_api::{
@@ -25,6 +27,32 @@ where
     P: IntoQueryFilterMap + QuerySort<users::Column>,
 {
     let users = query::find_by::<users::Entity, users::Column, P>(db, params).await?;
+    Ok(users)
+}
+
+pub async fn find_by_organization_with_invite_status(
+    db: &DatabaseConnection,
+    organization_id: Id,
+) -> Result<Vec<users::Model>, Error> {
+    let mut users = user::find_by_organization(db, organization_id).await?;
+
+    if users.is_empty() {
+        return Ok(users);
+    }
+
+    let user_ids: Vec<Id> = users.iter().map(|u| u.id).collect();
+    let tokens = entity_api::magic_link_token::find_by_user_ids(db, &user_ids).await?;
+
+    let token_map: HashMap<Id, &magic_link_tokens::Model> =
+        tokens.iter().map(|t| (t.user_id, t)).collect();
+
+    for user in &mut users {
+        user.invite_status = Some(magic_link_token::compute_invite_status(
+            &user.password,
+            token_map.get(&user.id).copied(),
+        ));
+    }
+
     Ok(users)
 }
 

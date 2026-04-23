@@ -35,7 +35,9 @@ pub async fn index(
     State(app_state): State<AppState>,
     OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
 ) -> Result<impl IntoResponse, Error> {
-    let users = UserApi::find_by_organization(app_state.db_conn_ref(), organization_id).await?;
+    let users =
+        UserApi::find_by_organization_with_invite_status(app_state.db_conn_ref(), organization_id)
+            .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), users)))
 }
