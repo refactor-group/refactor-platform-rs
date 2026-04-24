@@ -20,12 +20,11 @@ on:
         required: true
         type: choice
         options:
-          - '8ceafdd - chore: refresh preview commit choices [skip ci]'
-          - 24847cd - Add filter/sort/limit/assignee/session params to goal_progress (#287)
-          - 'c178e56 - chore: refresh preview commit choices [skip ci]'
-          - c934a79 - PR#289 (fix/deploy-tailscale-ssh-warmu)
+          - 'b7877a3 - Merge pull request #289 from refactor-group/fix/deploy-tailscale-ssh-warmup'
+          - f743d5f - Merge branch 'main' into fix/deploy-tailscale-ssh-warmup
+          - '9055570 - chore: refresh preview commit choices [skip ci]'
           - 14bfc7c - PR#279 (dependabot/cargo/cargo-39cecc6)
-          - 4632ee2 - PR#278 (raymond/fix-google-provider-co)
+          - 4fa19dd - PR#278 (raymond/fix-google-provider-co)
           - a51652a - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
