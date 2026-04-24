@@ -106,10 +106,15 @@ Nginx runs as a Docker container (`docker-compose.nginx-preview.yaml`) using Doc
 The entrypoint waits for PostgreSQL readiness, then idempotently creates the `refactor_platform` schema and sets `search_path`. This supports the PR preview migrator container which needs the schema to exist before running migrations.
 
 ### Manual Dispatch (Primary Deployment Method)
-PR preview environments are deployed **manually via workflow dispatch only** — there are no automatic deploy triggers on PR events. `dispatch-pr-preview.yml` allows users to deploy with specific commit combinations. Dropdown menus include the latest `main` commits plus the HEAD of every open PR from both repos. The PR number is automatically extracted from the selected backend commit dropdown entry (PR entries use format `SHA - PR#NNN (branch)`). You must select a PR branch entry — main commits will error. The workflow validates the PR exists, resolves commit SHAs, and calls the reusable workflow with `backend_sha`/`frontend_sha` override inputs. String override inputs are also available for exact SHAs not in the dropdown. Cleanup still runs automatically when the PR is closed or merged.
+PR preview environments are deployed **manually via workflow dispatch only** — there are no automatic deploy triggers on PR events. `dispatch-pr-preview.yml` takes three text inputs:
+- `backend_pr_number` — required (e.g. `289` or `PR#289`).
+- `backend_sha_override` — optional, override the PR branch HEAD with a specific SHA.
+- `frontend_ref` — optional, default `main`; accepts `main`, a branch name, a 7+ char SHA, or `PR#<num>`.
 
-### Commit Choice Refresh
-`refresh-preview-commits.yml` auto-updates the dispatch workflow's dropdown choices. Triggers: push to main, PR activity (opened/reopened/closed), or manual `workflow_dispatch`. Note: `synchronize` is intentionally excluded to prevent an infinite loop (refresh pushes to main → PR falls behind → "Update Branch" fires synchronize → refresh again). Fetches 3 most recent main commits + HEAD of every open PR from both repos and updates this repo's `dispatch-pr-preview.yml` using `yq`. Manual runs accept optional `backend_branch` and `frontend_branch` inputs. Requires `GHCR_PAT` with `workflow` scope.
+At dispatch time, the `validate` job resolves each input to a full SHA via the GitHub API (`gh pr view`, `gh api repos/.../commits/<ref>`), validates that the backend PR is OPEN, and passes `backend_sha` / `frontend_sha` / `pr_number` / `branch_name` to the reusable `ci-deploy-pr-preview.yml`. Nothing is written to `main` — the workflow is stateless with respect to the default branch. Cleanup still runs automatically when the PR is closed or merged.
+
+### List Preview Refs (helper)
+`list-preview-refs.yml` is a read-only helper (`permissions: contents: read`, no writes anywhere). Run it via `workflow_dispatch` to get a Markdown table in the run summary showing the 5 latest `main` commits and the HEAD of every open PR in both repos — useful when you don't remember a PR number or a branch SHA. This replaces the old `refresh-preview-commits.yml` workflow (which was deleted because the `type: choice` dropdown it maintained required committing to `main` on every PR event).
 
 ### Resource Cleanup
 Both the deploy workflow (`ci-deploy-pr-preview.yml`) and the cleanup workflow (`cleanup-pr-preview.yml`) prune dangling Docker networks, volumes, and images after each operation. This prevents resource accumulation from partial deployment failures or missed cleanups. The cleanup workflow's ARM64 cache image push uses `GHCR_PAT` (not `GITHUB_TOKEN`) to handle cross-repo package write permissions.
