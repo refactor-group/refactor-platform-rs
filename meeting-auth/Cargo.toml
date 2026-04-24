@@ -43,7 +43,7 @@ hex = "0.4"
 base64 = "0.22"
 
 # Random generation for PKCE
-rand = "0.8"
+rand = "0.9"
 
 # URL parsing and encoding
 url = "2.5"
