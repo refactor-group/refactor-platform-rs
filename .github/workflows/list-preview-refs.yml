@@ -1,0 +1,69 @@
+# =============================================================================
+# List Preview Refs (read-only helper)
+# =============================================================================
+# Purpose: Render current main commits + open PR heads from both repos into
+#          the run summary, so users know what to type in the dispatch-pr-preview
+#          workflow's input fields.
+#
+# This workflow NEVER commits, pushes, or mutates any branch. It only reads
+# from the GitHub API and writes to $GITHUB_STEP_SUMMARY. It exists here as a
+# single source of truth and can be triggered from any repo via the web UI.
+# =============================================================================
+
+name: List Preview Refs
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    name: Render current refs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Render refs for both repos to run summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016  # Backslash-paren in single quotes is jq syntax, not shell.
+
+          render_repo() {
+              local repo="$1" label="$2" input_name="$3"
+              {
+                  echo "## $label ($repo)"
+                  echo ""
+                  echo "### Latest \`main\` commits"
+                  echo ""
+                  echo "| SHA | Subject |"
+                  echo "|-----|---------|"
+                  gh api "repos/$OWNER/$repo/commits?sha=main&per_page=5" \
+                      --jq '.[] | "| `\(.sha[0:7])` | \(.commit.message | split("\n")[0] | .[0:80]) |"'
+                  echo ""
+                  echo "### Open PRs"
+                  echo ""
+                  echo "Use \`$input_name=PR#<num>\` for any of these:"
+                  echo ""
+                  echo "| PR | Branch | HEAD SHA | Draft |"
+                  echo "|----|--------|----------|-------|"
+                  gh pr list --repo "$OWNER/$repo" --state open \
+                      --json number,headRefName,headRefOid,isDraft \
+                      --jq '.[] | "| PR#\(.number) | `\(.headRefName)` | `\(.headRefOid[0:7])` | \(.isDraft) |"'
+                  echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          render_repo refactor-platform-rs "Backend" "backend_pr_number"
+          render_repo refactor-platform-fe "Frontend" "frontend_ref"
+
+          {
+              echo "---"
+              echo ""
+              echo "#### How to use"
+              echo ""
+              echo "1. From the backend repo: run **Deploy PR Preview (Manual Select)**, pass \`backend_pr_number\` (required) and optionally \`frontend_ref\` (default \`main\`)."
+              echo "2. From the frontend repo: run **Deploy PR Preview (Manual Select)**, pass \`frontend_pr_number\` (required) and optionally \`backend_ref\` (default \`main\`)."
+              echo "3. \`*_ref\` accepts: \`main\`, a branch name, a 7+ char SHA, or \`PR#<num>\`."
+          } >> "$GITHUB_STEP_SUMMARY"
