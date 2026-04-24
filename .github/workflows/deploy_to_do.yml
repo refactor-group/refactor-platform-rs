@@ -31,6 +31,26 @@ jobs:
           version: latest # Use the latest version of Tailscale
           use-cache: "true" # Cache Tailscale binary for faster startup
 
+      # Step 1.5: Wait for the Tailscale WireGuard path to the deploy host to be
+      # established before running any SSH operations. Without this gate, the
+      # deploy step can race Tailscale's MagicDNS / route propagation and
+      # `ssh-keyscan` will fail silently under `bash -e`, exiting the step
+      # before any echo runs. `tailscale ping` confirms the actual peer path,
+      # not just DNS resolution.
+      - name: Wait for Tailscale path to deploy host
+        run: |
+          echo "Waiting for Tailscale to establish path to ${{ secrets.DO_TAILSCALE_NAME }}..."
+          for i in {1..20}; do
+            if tailscale ping --c 1 --timeout 2s ${{ secrets.DO_TAILSCALE_NAME }} >/dev/null 2>&1; then
+              echo "Tailscale path ready (attempt $i)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: Tailscale never reached ${{ secrets.DO_TAILSCALE_NAME }} after 40s"
+          tailscale status || true
+          exit 1
+
       # Step 2: (Debug only) Verifies SSH ED25519 SSH key
       - name: Debug ED25519 Key # SSH key debugging step
         if: ${{ inputs.enable_ssh_debugging == true }} # Only run when debugging is enabled
@@ -189,8 +209,23 @@ jobs:
           # Set secure permissions on key
           echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts
           # Add static host key
-          ssh-keyscan -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts
-          # Add dynamic host key
+          # Refresh dynamic host key with retry. Even after the Tailscale gate
+          # passes, ssh-keyscan can hit transient blips (relay reroute, brief
+          # packet loss, sshd taking an extra beat). Failure here is non-fatal
+          # because DO_HOST_KEY (above) is the authoritative static fallback.
+          echo "Refreshing host key for ${{ secrets.DO_TAILSCALE_NAME }}..."
+          for i in {1..5}; do
+            if ssh-keyscan -T 5 -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts 2>/dev/null; then
+              echo "ssh-keyscan succeeded (attempt $i)"
+              break
+            fi
+            if [ $i -eq 5 ]; then
+              echo "WARNING: ssh-keyscan failed 5x, falling back to static DO_HOST_KEY only"
+              break
+            fi
+            echo "ssh-keyscan attempt $i failed, retrying in 3s..."
+            sleep 3
+          done
 
           # Test SSH connection first
           echo "Testing SSH connection to ${{ secrets.DO_TAILSCALE_NAME }}..."
