@@ -20,10 +20,9 @@ on:
         required: true
         type: choice
         options:
-          - 'e41ecdd - chore: refresh preview commit choices [skip ci]'
-          - '9e12740 - Merge pull request #293 from refactor-group/security/dependabot-cves-2026-04'
-          - 53ac29a - Merge branch 'main' into security/dependabot-cves-2026-04
-          - 134e4d2 - PR#294 (fix/test-env-pollution)
+          - '22f2054 - Merge pull request #294 from refactor-group/fix/test-env-pollution'
+          - 'd68a916 - review: document Config::default side effect and hoist test import'
+          - 780e553 - Merge branch 'main' into fix/test-env-pollution
           - 8dda4ef - PR#291 (ci/runtime-ref-resolver)
           - 4fa19dd - PR#278 (raymond/fix-google-provider-co)
           - a51652a - PR#254 (ai-transcription-milestone-2)
