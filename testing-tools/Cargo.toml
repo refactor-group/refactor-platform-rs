@@ -12,7 +12,8 @@ path = "src/bin/sse-test-client.rs"
 reqwest = { version = "0.12", features = ["json", "cookies"] }
 
 # SSE parsing
-eventsource-client = "0.12"
+eventsource-client = { version = "0.17", features = ["hyper-rustls-webpki-roots"] }
+launchdarkly-sdk-transport = "0.1"
 futures-util = "0.3"
 
 # CLI
