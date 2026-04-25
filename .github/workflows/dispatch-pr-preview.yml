@@ -20,11 +20,11 @@ on:
         required: true
         type: choice
         options:
+          - 'e41ecdd - chore: refresh preview commit choices [skip ci]'
           - '9e12740 - Merge pull request #293 from refactor-group/security/dependabot-cves-2026-04'
           - 53ac29a - Merge branch 'main' into security/dependabot-cves-2026-04
-          - '2d213f3 - chore: refresh preview commit choices [skip ci]'
+          - 134e4d2 - PR#294 (fix/test-env-pollution)
           - 8dda4ef - PR#291 (ci/runtime-ref-resolver)
-          - 0133110 - PR#279 (dependabot/cargo/cargo-39cecc6)
           - 4fa19dd - PR#278 (raymond/fix-google-provider-co)
           - a51652a - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
