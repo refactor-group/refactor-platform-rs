@@ -387,6 +387,10 @@ impl Default for Config {
     /// Returns a `Config` with clap's compiled-in defaults. Does not read
     /// real CLI args or `.env` files. Shell env vars are still read via
     /// clap's `#[arg(env)]` attributes.
+    ///
+    /// Side effect: may call `std::env::remove_var` on any `#[arg(env)]`
+    /// var whose current value is empty or whitespace-only (see
+    /// `sanitize_empty_env`).
     fn default() -> Self {
         Self::from_args(["refactor-platform-rs"])
     }
@@ -780,6 +784,7 @@ impl fmt::Display for ApiVersion {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::fs;
 
     #[test]
     fn unset_field_shows_default_value_and_suffix() {
@@ -895,8 +900,6 @@ mod tests {
     #[test]
     #[serial]
     fn default_constructor_does_not_load_env_file() {
-        use std::fs;
-
         let _key_guard = EnvGuard::unset("MAILERSEND_API_KEY");
 
         let temp_dir = std::env::temp_dir().join(format!(
