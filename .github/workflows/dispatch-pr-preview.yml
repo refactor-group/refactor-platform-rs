@@ -20,10 +20,9 @@ on:
         required: true
         type: choice
         options:
-          - '12939d4 - chore: refresh preview commit choices [skip ci]'
-          - 'c5ff94e - Merge pull request #292 from refactor-group/security/rustls-webpki-ghsa-82j2-j2ch-gfr8'
-          - e30c6c7 - Merge branch 'main' into security/rustls-webpki-ghsa-82j2-j2ch-gfr8
-          - f408c9c - PR#293 (security/dependabot-cves-2026-)
+          - '9e12740 - Merge pull request #293 from refactor-group/security/dependabot-cves-2026-04'
+          - 53ac29a - Merge branch 'main' into security/dependabot-cves-2026-04
+          - '2d213f3 - chore: refresh preview commit choices [skip ci]'
           - 8dda4ef - PR#291 (ci/runtime-ref-resolver)
           - 0133110 - PR#279 (dependabot/cargo/cargo-39cecc6)
           - 4fa19dd - PR#278 (raymond/fix-google-provider-co)
