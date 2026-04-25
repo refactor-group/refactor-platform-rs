@@ -336,6 +336,7 @@ mod tests {
             SecretString::from("test_client_secret".to_string()),
             "https://example.com/callback".to_string(),
         )
+        .expect("test provider construction must succeed")
     }
 
     #[test]
