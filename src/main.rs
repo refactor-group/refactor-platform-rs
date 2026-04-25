@@ -31,7 +31,8 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    let config = get_config();
+    service::load_env_file();
+    let config = Config::new();
     Logger::init_logger(&config);
 
     info!("Starting up...");
@@ -65,23 +66,23 @@ async fn main() {
     web::init_server(web_state).await.unwrap();
 }
 
-fn get_config() -> Config {
-    service::load_env_file();
-    Config::new()
-}
-
 // This is the parent test "runner" that initiates all other crate
 // unit/integration tests.
 #[cfg(test)]
 mod all_tests {
     use log::LevelFilter;
+    use service::config::Config;
     use service::logging::Logger;
     use simplelog::{error, info};
     use std::process::Command;
 
     #[tokio::test]
     async fn main() {
-        let mut config = crate::get_config();
+        // Use Config::default() (no .env load, no real CLI args) so that the
+        // child cargo processes spawned below inherit a clean env. Loading
+        // .env here would pollute the parent process and break tests like
+        // domain::emails::tests::test_send_*_missing_template_id.
+        let mut config = Config::default();
         config.log_level_filter = LevelFilter::Trace;
         Logger::init_logger(&config);
 

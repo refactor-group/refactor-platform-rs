@@ -387,6 +387,10 @@ impl Default for Config {
     /// Returns a `Config` with clap's compiled-in defaults. Does not read
     /// real CLI args or `.env` files. Shell env vars are still read via
     /// clap's `#[arg(env)]` attributes.
+    ///
+    /// Side effect: may call `std::env::remove_var` on any `#[arg(env)]`
+    /// var whose current value is empty or whitespace-only (see
+    /// `sanitize_empty_env`).
     fn default() -> Self {
         Self::from_args(["refactor-platform-rs"])
     }
@@ -779,6 +783,8 @@ impl fmt::Display for ApiVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::fs;
 
     #[test]
     fn unset_field_shows_default_value_and_suffix() {
@@ -796,7 +802,12 @@ mod tests {
         assert_eq!(config.source_suffix("port"), "");
     }
 
+    // Marked `#[serial]` because iterating `matches.ids()` while another
+    // thread is mutating env vars or building its own augmented Command
+    // races on clap's internal state — the command name ("Config") leaks
+    // into the id iterator. Serializing avoids the race.
     #[test]
+    #[serial]
     fn all_config_fields_are_tracked() {
         let matches = Config::command()
             .try_get_matches_from(["test_binary"])
@@ -811,6 +822,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn untracked_field_is_detected() {
         let matches = Config::command()
             .arg(clap::Arg::new("extra_test_field").long("extra-test-field"))
@@ -819,5 +831,105 @@ mod tests {
 
         let untracked = Config::find_untracked_fields(&matches);
         assert_eq!(untracked, vec!["extra_test_field"]);
+    }
+
+    /// RAII guard that restores a process env var to its prior state on drop.
+    /// Use with `#[serial]` so concurrent tests do not race on the env table.
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn env_var_populates_field_when_no_flag() {
+        let _guard = EnvGuard::set("MAILERSEND_API_KEY", "from_env");
+        let config = Config::from_args(["test_binary"]);
+        assert_eq!(config.mailersend_api_key(), Some("from_env".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn cli_flag_overrides_env_var() {
+        let _guard = EnvGuard::set("MAILERSEND_API_KEY", "from_env");
+        let config = Config::from_args(["test_binary", "--mailersend-api-key", "from_cli"]);
+        assert_eq!(config.mailersend_api_key(), Some("from_cli".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn value_source_records_env_for_env_sourced_field() {
+        let _guard = EnvGuard::set("MAILERSEND_API_KEY", "from_env");
+        let config = Config::from_args(["test_binary"]);
+        assert_eq!(
+            config.value_sources.get("mailersend_api_key"),
+            Some(&ValueSource::EnvVariable),
+        );
+    }
+
+    /// Regression guard for the parent test runner in `src/main.rs`. The
+    /// runner calls `Config::default()` and then spawns child cargo
+    /// processes that inherit its env. If `Config::default()` ever started
+    /// loading `.env` (e.g. via a misplaced `dotenvy::dotenv()`), child
+    /// processes would inherit those values and tests like
+    /// `domain::emails::tests::test_send_*_missing_template_id` would
+    /// silently start failing again.
+    #[test]
+    #[serial]
+    fn default_constructor_does_not_load_env_file() {
+        let _key_guard = EnvGuard::unset("MAILERSEND_API_KEY");
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "refactor-config-default-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+        fs::write(
+            temp_dir.join(".env"),
+            "MAILERSEND_API_KEY=should_not_be_loaded\n",
+        )
+        .unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&temp_dir).unwrap();
+
+        let config = Config::default();
+
+        // Restore cwd and clean up before any assertion that might panic.
+        std::env::set_current_dir(&original_cwd).unwrap();
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert!(
+            config.mailersend_api_key().is_none(),
+            "Config::default() must not load .env (got {:?})",
+            config.mailersend_api_key()
+        );
+        assert!(
+            std::env::var("MAILERSEND_API_KEY").is_err(),
+            "Config::default() must not write .env values into the process env",
+        );
     }
 }
