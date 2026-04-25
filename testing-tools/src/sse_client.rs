@@ -1,6 +1,7 @@
 use anyhow::Result;
 use eventsource_client::{self as es, Client};
 use futures_util::stream::StreamExt;
+use launchdarkly_sdk_transport::HyperTransport;
 use log::*;
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -28,9 +29,11 @@ impl Connection {
         let url = format!("{}/sse", base_url);
         let (tx, rx) = mpsc::unbounded_channel();
 
+        let transport = HyperTransport::builder().build_https()?;
+
         let client = es::ClientBuilder::for_url(&url)?
             .header("Cookie", &format!("id={}", session_cookie))?
-            .build();
+            .build_with_transport(transport);
 
         let label = user_label.clone();
         let handle = tokio::spawn(async move {
@@ -54,6 +57,9 @@ impl Connection {
                     }
                     Some(Ok(es::SSE::Comment(_))) => {
                         // Ignore comments (keep-alive)
+                    }
+                    Some(Ok(es::SSE::Connected(_))) => {
+                        debug!("SSE connected for {}", label);
                     }
                     Some(Err(e)) => {
                         warn!("SSE error for {}: {}", label, e);
