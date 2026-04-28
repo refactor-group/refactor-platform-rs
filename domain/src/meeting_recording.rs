@@ -98,13 +98,13 @@ pub async fn stop(
     Ok(recording_api::update_status(
         db,
         recording.id,
-        MeetingRecordingStatus::Failed,
+        MeetingRecordingStatus::Processing,
         None,
         None,
         None,
         None,
         Some(chrono::Utc::now().into()),
-        Some("Stopped by user".to_string()),
+        None,
     )
     .await?)
 }
