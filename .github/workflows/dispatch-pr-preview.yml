@@ -20,9 +20,10 @@ on:
         required: true
         type: choice
         options:
+          - '4d40175 - chore: refresh preview commit choices [skip ci]'
           - '2947956 - chore: refresh preview commit choices [skip ci]'
           - '22f2054 - Merge pull request #294 from refactor-group/fix/test-env-pollution'
-          - 'd68a916 - review: document Config::default side effect and hoist test import'
+          - 47fa34e - PR#296 (mcp-server-ADR)
           - 2b49c2d - PR#295 (MCP-proof-of-concept-via-warp)
           - 8dda4ef - PR#291 (ci/runtime-ref-resolver)
           - e4dc873 - PR#254 (ai-transcription-milestone-2)
