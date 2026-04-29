@@ -178,6 +178,26 @@ Table refactor_platform.magic_link_tokens {
   }
 }
 
+Table refactor_platform.personal_access_tokens {
+  id uuid [primary key, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'The user who owns this token']
+  token_hash varchar(64) [unique, not null, note: 'SHA-256 hash of the raw token; raw value shown once at creation']
+  status refactor_platform.pat_status [not null, default: 'active', note: 'Only active tokens are accepted for authentication']
+  last_used_at timestamptz [note: 'For observability — updated on each authenticated request']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (user_id) [unique, name: "idx_personal_access_tokens_one_active_per_user", note: "Partial unique index: WHERE status = 'active'"]
+    token_hash [name: "idx_personal_access_tokens_token_hash"]
+  }
+}
+
+enum refactor_platform.pat_status {
+  active
+  inactive
+}
+
 enum refactor_platform.status {
   not_started
   in_progress
@@ -232,6 +252,9 @@ Ref: refactor_platform.actions_users.user_id > refactor_platform.users.id
 
 // magic_link_tokens relationships
 Ref: refactor_platform.magic_link_tokens.user_id > refactor_platform.users.id [delete: cascade]
+
+// personal_access_tokens relationships
+Ref: refactor_platform.personal_access_tokens.user_id > refactor_platform.users.id [delete: cascade]
 
 //user_roles relationships
 Ref: refactor_platform.user_roles.organization_id > refactor_platform.organizations.id
