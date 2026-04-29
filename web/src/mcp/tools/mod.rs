@@ -249,7 +249,7 @@ impl McpToolHandler {
             }
         }
 
-        sessions.sort_by(|a, b| b.date.cmp(&a.date));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.date));
 
         Ok(CallToolResult::success(vec![Content::text(to_json(
             &sessions,
@@ -313,7 +313,7 @@ impl McpToolHandler {
             .await
             .map_err(|e| McpError::internal_error(format!("Query failed: {e}"), None))?;
 
-        sessions.sort_by(|a, b| b.date.cmp(&a.date));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.date));
 
         let session = if let Some(sid_str) = &params.session_id {
             let sid = Id::parse_str(sid_str)
