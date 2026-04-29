@@ -234,6 +234,7 @@ curl -X POST http://localhost:4000/mcp \
 | `list_actions` | List actions with session, status, and keyword filters |
 | `get_session` | Get a session with all related data (notes, actions, agreements, goals) |
 
+For client setup instructions, see the [MCP Server Setup Guide](docs/mcp_server/README.md).
 For architecture details, see [docs/architecture/mcp_server.md](docs/architecture/mcp_server.md).
 
 ---
