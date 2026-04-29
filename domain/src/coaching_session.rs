@@ -14,7 +14,8 @@ use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    find_by_id, find_by_user_with_includes, EnrichedSession, IncludeOptions, SessionQueryOptions,
+    find_by_id, find_by_user, find_by_user_with_includes, EnrichedSession, IncludeOptions,
+    SessionQueryOptions,
 };
 
 /// Wraps the entity_api function to convert `entity_api::Error` into `domain::Error`,
