@@ -20,9 +20,10 @@ on:
         required: true
         type: choice
         options:
+          - '9513a78 - chore: refresh preview commit choices [skip ci]'
           - 'acf2c10 - chore: refresh preview commit choices [skip ci]'
           - '9225027 - chore: refresh preview commit choices [skip ci]'
-          - '92cbb45 - chore: refresh preview commit choices [skip ci]'
+          - f132c0f - PR#298 (mcp-proof-of-concept-via-warp)
           - 27ce05a - PR#297 (mcp-server-adr)
           - 8dda4ef - PR#291 (ci/runtime-ref-resolver)
           - e4dc873 - PR#254 (ai-transcription-milestone-2)
