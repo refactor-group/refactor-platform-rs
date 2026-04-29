@@ -5,7 +5,7 @@ How the [`rmcp`](https://docs.rs/rmcp/latest/rmcp/) SDK ([`modelcontextprotocol/
 ## Dependency
 
 ```toml
-rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp = { version = "1.5", features = ["server", "macros", "transport-streamable-http-server"] }
 ```
 
 `rmcp` re-exports [`schemars`](https://docs.rs/schemars/latest/schemars/) and [`serde`](https://docs.rs/serde/latest/serde/) — no separate `schemars` dependency needed in `web/Cargo.toml`.
