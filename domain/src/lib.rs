@@ -13,7 +13,8 @@ pub use entity_api::{
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions,
     coaching_sessions_goals, goals, jwts, magic_link_tokens, notes, oauth_connections,
-    organizations, provider, query::QuerySort, status, user_roles, users, Id,
+    organizations, pat_status, personal_access_tokens, provider, query::QuerySort, status,
+    user_roles, users, Id,
 };
 
 pub mod action;
@@ -31,6 +32,7 @@ pub mod note;
 pub mod oauth_connection;
 pub mod oauth_token_storage;
 pub mod organization;
+pub mod personal_access_token;
 pub mod user;
 
 pub mod gateway;
