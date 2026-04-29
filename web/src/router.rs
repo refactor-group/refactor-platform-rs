@@ -1,12 +1,17 @@
 use crate::{
     controller::{health_check_controller, oauth_callback_controller},
+    mcp::{auth::require_pat_auth, tools::McpToolHandler},
     middleware::auth::require_auth,
     params, protect, AppState,
 };
 use axum::{
-    middleware::{from_fn, from_fn_with_state},
+    middleware::{self, from_fn, from_fn_with_state},
     routing::{delete, get, post, put},
     Router,
+};
+use rmcp::transport::{
+    streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
+    StreamableHttpServerConfig,
 };
 use tower_http::services::ServeDir;
 
@@ -130,6 +135,7 @@ impl Modify for SecurityAddon {
 
 pub fn define_routes(app_state: AppState) -> Router {
     Router::new()
+        .merge(mcp_routes(app_state.clone()))
         .merge(sse_routes(app_state.clone()))
         .merge(action_routes(app_state.clone()))
         .merge(agreement_routes(app_state.clone()))
@@ -627,6 +633,24 @@ fn user_token_routes(app_state: AppState) -> Router {
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
+}
+
+fn mcp_routes(app_state: AppState) -> Router {
+    let app_state_for_factory = app_state.clone();
+
+    let config = StreamableHttpServerConfig::default()
+        .with_stateful_mode(false)
+        .with_json_response(true);
+
+    let mcp_service = StreamableHttpService::new(
+        move || Ok(McpToolHandler::new(app_state_for_factory.clone())),
+        LocalSessionManager::default().into(),
+        config,
+    );
+
+    Router::new()
+        .nest_service("/mcp", mcp_service)
+        .layer(middleware::from_fn_with_state(app_state, require_pat_auth))
 }
 
 fn sse_routes(app_state: AppState) -> Router {
