@@ -148,6 +148,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_coaching_sessions_routes(app_state.clone()))
         .merge(user_goals_routes(app_state.clone()))
         .merge(user_coaching_relationships_routes(app_state.clone()))
+        .merge(user_token_routes(app_state.clone()))
         .merge(magic_link_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
@@ -587,6 +588,42 @@ fn user_coaching_relationships_routes(app_state: AppState) -> Router {
                     get(user::coaching_relationships_controller::index),
                 )
                 .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn user_token_routes(app_state: AppState) -> Router {
+    Router::new()
+        .merge(
+            // POST /users/:user_id/tokens
+            Router::new()
+                .route("/users/:user_id/tokens", post(user::pat_controller::create))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::tokens::manage,
+                )),
+        )
+        .merge(
+            // GET /users/:user_id/tokens
+            Router::new()
+                .route("/users/:user_id/tokens", get(user::pat_controller::index))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::tokens::manage,
+                )),
+        )
+        .merge(
+            // PUT /users/:user_id/tokens/:token_id/deactivate
+            Router::new()
+                .route(
+                    "/users/:user_id/tokens/:token_id/deactivate",
+                    put(user::pat_controller::deactivate),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::tokens::manage_with_token_id,
+                )),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
