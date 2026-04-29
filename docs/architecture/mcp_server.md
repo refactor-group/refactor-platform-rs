@@ -1,4 +1,7 @@
 # MCP Server
+
+**Status: Implemented** (MVP)
+
 Add an MCP server to the rust backend so that AI clients can interact with the coaching platform through structured tools.
 
 ## Context
