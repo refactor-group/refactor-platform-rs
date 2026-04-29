@@ -20,23 +20,24 @@ on:
         required: true
         type: choice
         options:
+          - '2947956 - chore: refresh preview commit choices [skip ci]'
           - '22f2054 - Merge pull request #294 from refactor-group/fix/test-env-pollution'
           - 'd68a916 - review: document Config::default side effect and hoist test import'
-          - 780e553 - Merge branch 'main' into fix/test-env-pollution
+          - 2b49c2d - PR#295 (MCP-proof-of-concept-via-warp)
           - 8dda4ef - PR#291 (ci/runtime-ref-resolver)
-          - 4fa19dd - PR#278 (raymond/fix-google-provider-co)
-          - a51652a - PR#254 (ai-transcription-milestone-2)
+          - e4dc873 - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
-          - '494c8fd - chore: refresh preview commit choices [skip ci]'
-          - '3e70eac - Merge pull request #336 from refactor-group/feat/dashbo'
-          - 978cb85 - Merge branch 'main' into feat/dashboard-goals-overview
+          - '94435d6 - chore: refresh preview commit choices [skip ci]'
+          - 'c43ae9b - chore: refresh preview commit choices [skip ci]'
+          - '8c2faed - Merge pull request #381 from refactor-group/fix/goals-o'
+          - 752f775 - PR#382 (feat/dashboard-sessions-list)
           - 79083cf - PR#379 (ci/runtime-ref-resolver)
-          - 0ede2a2 - PR#373 (feature/transcript-pane)
+          - a785783 - PR#373 (feature/transcript-pane)
           - abe1231 - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
           - d9e1e08 - PR#243 (feature/146-ai-meeting-integra)
