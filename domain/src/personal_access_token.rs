@@ -97,6 +97,15 @@ pub async fn find_active_by_user(
     Ok(model)
 }
 
+/// Update the `last_used_at` timestamp for a personal access token.
+pub async fn touch_last_used(
+    db: &impl ConnectionTrait,
+    pat_id: Id,
+) -> Result<personal_access_tokens::Model, Error> {
+    let model = entity_api::personal_access_token::touch_last_used(db, pat_id).await?;
+    Ok(model)
+}
+
 /// Deactivate a personal access token.
 pub async fn deactivate_token(
     db: &impl ConnectionTrait,
