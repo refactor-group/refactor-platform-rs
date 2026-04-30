@@ -200,6 +200,45 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 
 ---
 
+## MCP Server
+
+The platform includes an MCP (Model Context Protocol) server that lets AI clients (Warp, Claude, etc.) interact with coaching data through structured tools.
+
+### Endpoint
+
+`POST /mcp` — Streamable HTTP transport. All requests require a Personal Access Token (PAT) as a Bearer token.
+
+### Authentication
+
+Create a PAT via the REST API (authenticated with your session cookie):
+
+```bash
+# Create a token (shown once, never stored)
+curl -X POST http://localhost:4000/users/<your-user-id>/tokens \
+  -H "Cookie: <session-cookie>"
+
+# Use the token for MCP requests
+curl -X POST http://localhost:4000/mcp \
+  -H "Authorization: Bearer <your-pat>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}'
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_coachees` | List all coachees for the authenticated coach |
+| `get_coachee` | Get a coachee profile with optional goals, actions, notes |
+| `list_sessions` | List coaching sessions with optional date range filter |
+| `list_actions` | List actions with session, status, and keyword filters |
+| `get_session` | Get a session with all related data (notes, actions, agreements, goals) |
+
+For client setup instructions, see the [MCP Server Setup Guide](docs/mcp_server/README.md).
+For architecture details, see [docs/architecture/mcp_server.md](docs/architecture/mcp_server.md).
+
+---
+
 ## CI/CD & Deployment
 
 This project uses GitHub Actions for continuous integration, release builds, and deployment.
