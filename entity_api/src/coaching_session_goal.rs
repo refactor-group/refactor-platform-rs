@@ -61,6 +61,24 @@ pub async fn create(
         });
     }
 
+    // Reject duplicate links explicitly so the FE sees a structured 409 instead
+    // of the unique-constraint violation falling through to a 503.
+    // (Race window: two concurrent requests can both pass this check; the DB's
+    // unique constraint on (coaching_session_id, goal_id) still protects integrity,
+    // and the loser falls through to the existing 503 path. Acceptable for now.)
+    let already_linked = Entity::find()
+        .filter(Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(Column::GoalId.eq(goal_id))
+        .one(db)
+        .await?
+        .is_some();
+    if already_linked {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::GoalAlreadyLinkedToSession,
+        });
+    }
+
     let needs_promotion = !goal.in_progress();
 
     if needs_promotion {
@@ -407,6 +425,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             // SELECT goal by id (lookup in create)
             .append_query_results(vec![vec![goal.clone()]])
+            // SELECT existing link (duplicate check) — empty
+            .append_query_results(vec![Vec::<Model>::new()])
             // INSERT join row
             .append_query_results(vec![vec![link.clone()]])
             .into_connection();
@@ -437,6 +457,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             // SELECT goal by id (lookup in create)
             .append_query_results(vec![vec![goal.clone()]])
+            // SELECT existing link (duplicate check) — empty
+            .append_query_results(vec![Vec::<Model>::new()])
             // SELECT in-progress goals on relationship (cap check) — empty, under cap
             .append_query_results(vec![Vec::<goals::Model>::new()])
             // INSERT join row
@@ -468,6 +490,7 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<Model>::new()])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .append_query_results(vec![vec![link.clone()]])
             .append_query_results(vec![vec![promoted.clone()]])
@@ -519,6 +542,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_with_already_linked_goal_returns_goal_already_linked_to_session() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let goal = create_test_goal(relationship_id, Status::InProgress);
+        let existing_link = build_link(session_id, goal.id);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // SELECT goal by id
+            .append_query_results(vec![vec![goal.clone()]])
+            // SELECT existing link (duplicate check) — returns the existing row
+            .append_query_results(vec![vec![existing_link.clone()]])
+            // No further queries: error returns before INSERT
+            .into_connection();
+
+        let result = create(&db, session_id, goal.id).await;
+        let err = result.expect_err("linking an already-linked goal should fail");
+        assert!(
+            matches!(
+                err.error_kind,
+                EntityApiErrorKind::GoalAlreadyLinkedToSession
+            ),
+            "expected GoalAlreadyLinkedToSession, got {:?}",
+            err.error_kind
+        );
+    }
+
+    #[tokio::test]
     async fn create_promotion_at_cap_returns_validation_error() {
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
@@ -532,6 +582,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             // SELECT goal by id (lookup in create)
             .append_query_results(vec![vec![target.clone()]])
+            // SELECT existing link (duplicate check) — empty
+            .append_query_results(vec![Vec::<Model>::new()])
             // SELECT in-progress goals on relationship (cap check) — at cap
             .append_query_results(vec![cap_goals])
             .into_connection();

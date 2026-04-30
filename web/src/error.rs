@@ -139,6 +139,17 @@ impl Error {
                 });
                 (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
             }
+            EntityErrorKind::GoalAlreadyLinkedToSession => {
+                warn!(
+                    "EntityErrorKind::GoalAlreadyLinkedToSession: Responding with 409 Conflict. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "goal_already_linked_to_session",
+                    "message": "This goal is already linked to the coaching session.",
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
                     "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"

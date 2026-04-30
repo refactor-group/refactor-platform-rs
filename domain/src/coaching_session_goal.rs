@@ -299,13 +299,15 @@ mod integration_tests {
 
         // Mock sequence (inside the txn opened by link_to_coaching_session):
         //   1. SELECT goal by id (entity_api::coaching_session_goal::create)
-        //   2. SELECT in-progress goals on relationship (cap check, returns empty)
-        //   3. INSERT into coaching_sessions_goals (the new link row)
-        //   4. UPDATE goals (auto-promotion to InProgress)
+        //   2. SELECT existing link (duplicate-check, returns empty)
+        //   3. SELECT in-progress goals on relationship (cap check, returns empty)
+        //   4. INSERT into coaching_sessions_goals (the new link row)
+        //   5. UPDATE goals (auto-promotion to InProgress)
         // After commit:
-        //   5. find_by_id_with_coaching_relationship for event-routing user IDs
+        //   6. find_by_id_with_coaching_relationship for event-routing user IDs
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
             .append_query_results(vec![Vec::<Model>::new()])
             .append_query_results(vec![vec![link.clone()]])
             .append_query_results(vec![vec![promoted.clone()]])
@@ -384,10 +386,12 @@ mod integration_tests {
 
         // Mock sequence (no cap-check, no promotion update):
         //   1. SELECT goal by id
-        //   2. INSERT into coaching_sessions_goals
-        //   3. find_by_id_with_coaching_relationship
+        //   2. SELECT existing link (duplicate-check, returns empty)
+        //   3. INSERT into coaching_sessions_goals
+        //   4. find_by_id_with_coaching_relationship
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
             .append_query_results(vec![vec![link.clone()]])
             .append_query_results(vec![vec![(
                 build_session(new_session_id, relationship_id),
