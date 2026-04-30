@@ -30,6 +30,7 @@ impl MigrationTrait for Migration {
                 meeting_recording_id UUID NOT NULL
                     REFERENCES refactor_platform.meeting_recordings(id) ON DELETE CASCADE,
                 external_id          VARCHAR(255) NOT NULL,
+                recall_recording_id  VARCHAR(255),
                 status               refactor_platform.transcription_status NOT NULL DEFAULT 'queued',
                 language_code        VARCHAR(20),
                 speaker_count        SMALLINT,

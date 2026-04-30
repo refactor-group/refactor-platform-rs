@@ -42,6 +42,8 @@ pub struct Model {
     pub meeting_recording_id: Id,
     /// Recall.ai's transcript ID, returned from the "Create Async Transcript" API.
     pub external_id: String,
+    /// Recall.ai's recording UUID — required for transcript API calls (`/recording/{id}/...`).
+    pub recall_recording_id: Option<String>,
     pub status: TranscriptionStatus,
     pub language_code: Option<String>,
     pub speaker_count: Option<i16>,

@@ -32,8 +32,13 @@ pub struct BotResponse {
 
 #[derive(Debug, Serialize)]
 struct CreateTranscriptRequest {
-    assemblyai: AssemblyAiConfig,
+    provider: TranscriptProvider,
     diarization: DiarizationConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct TranscriptProvider {
+    assembly_ai_async: AssemblyAiConfig,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,48 +53,54 @@ struct DiarizationConfig {
     use_separate_streams_when_available: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct TranscriptLinks {
+    download_url: Option<String>,
+}
+
 /// Response from the Recall.ai async transcript endpoints.
 #[derive(Debug, Deserialize)]
 pub struct TranscriptMetadata {
     pub id: String,
-    pub status: Option<String>,
-    pub download_url: Option<String>,
+    data: Option<TranscriptLinks>,
+}
+
+impl TranscriptMetadata {
+    pub fn download_url(&self) -> Option<&str> {
+        self.data.as_ref()?.download_url.as_deref()
+    }
+}
+
+/// One entry in the transcript download array — all words spoken by one participant.
+#[derive(Debug, Deserialize)]
+pub struct ParticipantEntry {
+    pub participant: Participant,
     pub language_code: Option<String>,
-    pub speaker_count: Option<i64>,
-    pub confidence: Option<f64>,
-    pub duration: Option<f64>,
-    pub word_count: Option<i64>,
+    pub words: Vec<TranscriptWord>,
 }
 
-/// Transcript JSON downloaded from the pre-signed `download_url`.
 #[derive(Debug, Deserialize)]
-pub struct TranscriptData {
-    pub utterances: Option<Vec<Utterance>>,
-    pub confidence: Option<f64>,
-    pub audio_duration: Option<f64>,
-    pub language_code: Option<String>,
-    pub words: Option<Vec<Word>>,
+pub struct Participant {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub is_host: Option<bool>,
+    pub platform: Option<String>,
+    pub email: Option<String>,
 }
 
-/// A speaker-diarized utterance in the transcript.
 #[derive(Debug, Deserialize)]
-pub struct Utterance {
-    pub speaker: String,
+pub struct TranscriptWord {
     pub text: String,
-    pub start: f64,
-    pub end: f64,
-    pub confidence: Option<f64>,
-    pub sentiment: Option<String>,
-    pub words: Option<Vec<Word>>,
+    pub start_timestamp: Timestamp,
+    pub end_timestamp: Timestamp,
 }
 
-/// A single word in a transcript utterance.
+/// Timestamp returned by Recall.ai. For async transcription `absolute` is always null;
+/// use `relative` (seconds from recording start).
 #[derive(Debug, Deserialize)]
-pub struct Word {
-    pub text: String,
-    pub start: f64,
-    pub end: f64,
-    pub confidence: Option<f64>,
+pub struct Timestamp {
+    pub absolute: Option<String>,
+    pub relative: Option<f64>,
 }
 
 impl Provider {
@@ -213,25 +224,37 @@ impl Provider {
         }
     }
 
-    /// Triggers async transcription for the recording with the given bot ID.
+    /// Triggers async transcription for the given Recall.ai recording.
     ///
-    /// Uses AssemblyAI via Recall.ai with speaker diarization and sentiment analysis.
-    /// Returns the Recall.ai transcript ID; completion is signaled via `transcript.done` webhook.
-    pub async fn create_async_transcript(&self, bot_id: &str) -> Result<String, Error> {
-        let url = format!("{}/recordings/{}/async-transcripts", self.base_url, bot_id);
+    /// `recall_recording_id` is Recall's recording UUID from the `recording.done` webhook
+    /// (`data.recording.id`) — distinct from the bot ID. Uses AssemblyAI with speaker
+    /// diarization and sentiment analysis. Completion is signaled via `transcript.done` webhook.
+    pub async fn create_async_transcript(
+        &self,
+        recall_recording_id: &str,
+    ) -> Result<String, Error> {
+        let url = format!(
+            "{}/recording/{}/create_transcript/",
+            self.base_url, recall_recording_id
+        );
 
         let request = CreateTranscriptRequest {
-            assemblyai: AssemblyAiConfig {
-                language_detection: true,
-                sentiment_analysis: true,
-                speaker_labels: true,
+            provider: TranscriptProvider {
+                assembly_ai_async: AssemblyAiConfig {
+                    language_detection: true,
+                    sentiment_analysis: true,
+                    speaker_labels: true,
+                },
             },
             diarization: DiarizationConfig {
                 use_separate_streams_when_available: true,
             },
         };
 
-        debug!("Creating async transcript for bot {}", bot_id);
+        debug!(
+            "Creating async transcript for recording {}",
+            recall_recording_id
+        );
 
         let response = self
             .client
@@ -274,19 +297,21 @@ impl Provider {
     }
 
     /// Retrieves transcript metadata (including `download_url`) after `transcript.done`.
+    ///
+    /// `recall_recording_id` is Recall's recording UUID (`data.recording.id` from webhooks).
     pub async fn get_async_transcript(
         &self,
-        bot_id: &str,
+        recall_recording_id: &str,
         transcript_id: &str,
     ) -> Result<TranscriptMetadata, Error> {
         let url = format!(
-            "{}/recordings/{}/async-transcripts/{}",
-            self.base_url, bot_id, transcript_id
+            "{}/recording/{}/transcript/{}/",
+            self.base_url, recall_recording_id, transcript_id
         );
 
         debug!(
-            "Retrieving async transcript {} for bot {}",
-            transcript_id, bot_id
+            "Retrieving async transcript {} for recording {}",
+            transcript_id, recall_recording_id
         );
 
         let response = self.client.get(&url).send().await.map_err(|e| {
@@ -323,7 +348,13 @@ impl Provider {
     }
 
     /// Downloads the transcript JSON from a pre-signed URL (no auth header required).
-    pub async fn download_transcript(&self, download_url: &str) -> Result<TranscriptData, Error> {
+    ///
+    /// Returns a participant-entry array as Recall.ai delivers it. Callers are responsible
+    /// for coalescing words into speaker turns.
+    pub async fn download_transcript(
+        &self,
+        download_url: &str,
+    ) -> Result<Vec<ParticipantEntry>, Error> {
         debug!("Downloading transcript from pre-signed URL");
 
         let response = reqwest::get(download_url).await.map_err(|e| {
@@ -335,7 +366,7 @@ impl Provider {
         })?;
 
         if response.status().is_success() {
-            let data: TranscriptData = response.json().await.map_err(|e| {
+            let data: Vec<ParticipantEntry> = response.json().await.map_err(|e| {
                 warn!("Failed to parse transcript data: {:?}", e);
                 Error {
                     source: Some(Box::new(e)),
