@@ -176,6 +176,14 @@ async fn handle_recording_done(app_state: AppState, data: Value) -> axum::respon
         }
     };
 
+    let recall_recording_id = match data.pointer("/recording/id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            warn!("recording.done: missing /recording/id");
+            return StatusCode::OK.into_response();
+        }
+    };
+
     let coaching_session_id_str = data
         .pointer("/bot/metadata/coaching_session_id")
         .and_then(|v| v.as_str())
@@ -250,7 +258,9 @@ async fn handle_recording_done(app_state: AppState, data: Value) -> axum::respon
     let config = app_state.config.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = domain::transcription::start(&db, &config, &recording).await {
+        if let Err(e) =
+            domain::transcription::start(&db, &config, &recording, &recall_recording_id).await
+        {
             error!(
                 "recording.done: transcription start failed for session={}: {:?}",
                 coaching_session_id, e

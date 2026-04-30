@@ -386,7 +386,7 @@ pub struct Config {
     recall_ai_api_key: Option<String>,
 
     /// Recall.ai region (us or eu)
-    #[arg(long, env, default_value = "use-east-1")]
+    #[arg(long, env, default_value = "us-east-1")]
     recall_ai_region: String,
 
     /// Recall.ai webhook signing secret (Svix `whsec_...` format)
