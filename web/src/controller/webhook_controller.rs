@@ -87,7 +87,21 @@ pub async fn recall_ai(
     };
 
     match event.event.as_str() {
-        "bot.status_change" => handle_bot_status_change(app_state, event.data).await,
+        "bot.joining_call" => {
+            handle_bot_status(app_state, event.data, MeetingRecordingStatus::Joining).await
+        }
+        "bot.in_waiting_room" => {
+            handle_bot_status(app_state, event.data, MeetingRecordingStatus::WaitingRoom).await
+        }
+        "bot.in_call_not_recording" => {
+            handle_bot_status(app_state, event.data, MeetingRecordingStatus::InMeeting).await
+        }
+        "bot.in_call_recording" => {
+            handle_bot_status(app_state, event.data, MeetingRecordingStatus::Recording).await
+        }
+        "bot.done" => {
+            handle_bot_status(app_state, event.data, MeetingRecordingStatus::Processing).await
+        }
         "recording.done" => handle_recording_done(app_state, event.data).await,
         "transcript.done" => handle_transcript_done(app_state, event.data).await,
         "transcript.failed" => handle_transcript_failed(app_state, event.data).await,
@@ -101,31 +115,15 @@ pub async fn recall_ai(
 
 // ── Event handlers ────────────────────────────────────────────────────────────
 
-async fn handle_bot_status_change(app_state: AppState, data: Value) -> axum::response::Response {
-    let bot_id = match data.get("bot_id").and_then(|v| v.as_str()) {
+async fn handle_bot_status(
+    app_state: AppState,
+    data: Value,
+    status: MeetingRecordingStatus,
+) -> axum::response::Response {
+    let bot_id = match data.pointer("/bot/id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
-            warn!("bot.status_change: missing bot_id");
-            return StatusCode::OK.into_response();
-        }
-    };
-
-    let status_code = data
-        .pointer("/status/code")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let status = match status_code {
-        "joining_call" => MeetingRecordingStatus::Joining,
-        "waiting_room" => MeetingRecordingStatus::WaitingRoom,
-        "in_call_not_recording" => MeetingRecordingStatus::InMeeting,
-        "recording" => MeetingRecordingStatus::Recording,
-        "done" => MeetingRecordingStatus::Processing,
-        _ => {
-            debug!(
-                "bot.status_change: unhandled status code '{}' for bot_id={}",
-                status_code, bot_id
-            );
+            warn!("bot status event: missing /bot/id");
             return StatusCode::OK.into_response();
         }
     };
@@ -134,11 +132,14 @@ async fn handle_bot_status_change(app_state: AppState, data: Value) -> axum::res
         match MeetingRecordingApi::find_by_bot_id(app_state.db_conn_ref(), &bot_id).await {
             Ok(Some(r)) => r,
             Ok(None) => {
-                warn!("bot.status_change: no recording for bot_id={}", bot_id);
+                warn!("bot status event: no recording for bot_id={}", bot_id);
                 return StatusCode::OK.into_response();
             }
             Err(e) => {
-                error!("bot.status_change: DB error for bot_id={}: {:?}", bot_id, e);
+                error!(
+                    "bot status event: DB error for bot_id={}: {:?}",
+                    bot_id, e
+                );
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         };
@@ -157,7 +158,7 @@ async fn handle_bot_status_change(app_state: AppState, data: Value) -> axum::res
     .await
     {
         error!(
-            "bot.status_change: failed to update recording {}: {:?}",
+            "bot status event: failed to update recording {}: {:?}",
             recording.id, e
         );
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -167,10 +168,10 @@ async fn handle_bot_status_change(app_state: AppState, data: Value) -> axum::res
 }
 
 async fn handle_recording_done(app_state: AppState, data: Value) -> axum::response::Response {
-    let bot_id = match data.get("bot_id").and_then(|v| v.as_str()) {
+    let bot_id = match data.pointer("/bot/id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
-            warn!("recording.done: missing bot_id");
+            warn!("recording.done: missing /bot/id");
             return StatusCode::OK.into_response();
         }
     };
@@ -225,26 +226,13 @@ async fn handle_recording_done(app_state: AppState, data: Value) -> axum::respon
         }
     }
 
-    let video_url = data
-        .pointer("/video_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let audio_url = data
-        .pointer("/audio_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let duration_seconds = data
-        .pointer("/duration")
-        .and_then(|v| v.as_f64())
-        .map(|d| d as i32);
-
     if let Err(e) = MeetingRecordingApi::update_status(
         app_state.db_conn_ref(),
         recording.id,
         MeetingRecordingStatus::Completed,
-        video_url,
-        audio_url,
-        duration_seconds,
+        None,
+        None,
+        None,
         None,
         Some(chrono::Utc::now().into()),
         None,
@@ -258,25 +246,18 @@ async fn handle_recording_done(app_state: AppState, data: Value) -> axum::respon
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    // Re-fetch updated recording so transcription::start sees the latest state
-    let updated_recording =
-        match MeetingRecordingApi::find_by_bot_id(app_state.db_conn_ref(), &bot_id).await {
-            Ok(Some(r)) => r,
-            Ok(None) | Err(_) => recording.clone(),
-        };
-
     let db = app_state.database_connection.clone();
     let config = app_state.config.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = domain::transcription::start(&db, &config, &updated_recording).await {
+        if let Err(e) = domain::transcription::start(&db, &config, &recording).await {
             error!(
                 "recording.done: transcription start failed for session={}: {:?}",
                 coaching_session_id, e
             );
             let _ = MeetingRecordingApi::update_status(
                 &db,
-                updated_recording.id,
+                recording.id,
                 MeetingRecordingStatus::Failed,
                 None,
                 None,
@@ -293,10 +274,10 @@ async fn handle_recording_done(app_state: AppState, data: Value) -> axum::respon
 }
 
 async fn handle_transcript_done(app_state: AppState, data: Value) -> axum::response::Response {
-    let transcript_id = match data.get("transcript_id").and_then(|v| v.as_str()) {
+    let transcript_id = match data.pointer("/transcript/id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
-            warn!("transcript.done: missing transcript_id");
+            warn!("transcript.done: missing /transcript/id");
             return StatusCode::OK.into_response();
         }
     };
@@ -338,7 +319,8 @@ async fn handle_transcript_done(app_state: AppState, data: Value) -> axum::respo
     let config = app_state.config.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = domain::transcription::handle_completion(&db, &config, &transcript_id).await
+        if let Err(e) =
+            domain::transcription::handle_completion(&db, &config, &transcript_id).await
         {
             error!(
                 "transcript.done: completion failed for external_id={}: {:?}",
@@ -360,16 +342,16 @@ async fn handle_transcript_done(app_state: AppState, data: Value) -> axum::respo
 }
 
 async fn handle_transcript_failed(app_state: AppState, data: Value) -> axum::response::Response {
-    let transcript_id = match data.get("transcript_id").and_then(|v| v.as_str()) {
+    let transcript_id = match data.pointer("/transcript/id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
-            warn!("transcript.failed: missing transcript_id");
+            warn!("transcript.failed: missing /transcript/id");
             return StatusCode::OK.into_response();
         }
     };
 
     let error_message = data
-        .get("error")
+        .pointer("/data/sub_code")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -416,16 +398,16 @@ async fn handle_transcript_failed(app_state: AppState, data: Value) -> axum::res
 }
 
 async fn handle_bot_fatal(app_state: AppState, data: Value) -> axum::response::Response {
-    let bot_id = match data.get("bot_id").and_then(|v| v.as_str()) {
+    let bot_id = match data.pointer("/bot/id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
-            warn!("bot.fatal: missing bot_id");
+            warn!("bot.fatal: missing /bot/id");
             return StatusCode::OK.into_response();
         }
     };
 
     let error_message = data
-        .get("error")
+        .pointer("/data/sub_code")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
