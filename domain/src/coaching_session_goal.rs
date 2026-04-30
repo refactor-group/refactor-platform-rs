@@ -195,6 +195,7 @@ async fn publish_session_goal_deleted(
 #[cfg(feature = "mock")]
 mod integration_tests {
     use super::*;
+    use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
     use async_trait::async_trait;
     use entity_api::coaching_relationships;
     use entity_api::coaching_sessions;
@@ -413,6 +414,133 @@ mod integration_tests {
             matches!(events[0], DomainEvent::CoachingSessionGoalCreated { .. }),
             "expected CoachingSessionGoalCreated, got {:?}",
             events[0]
+        );
+    }
+
+    /// Failure path: linking an already-linked goal returns 409
+    /// `GoalAlreadyLinkedToSession` and **publishes no events** — important
+    /// invariant for FE cache integrity (no ghost SSE events for failed ops).
+    #[tokio::test]
+    async fn link_already_linked_goal_returns_409_and_publishes_no_events() {
+        let relationship_id = Id::new_v4();
+        let new_session_id = Id::new_v4();
+        let goal = build_goal(Status::InProgress, relationship_id);
+        let existing_link = build_link(new_session_id, goal.id);
+
+        // Mock sequence (inside txn):
+        //   1. SELECT goal by id
+        //   2. SELECT existing link — returns the existing row, triggering 409
+        // No further queries — error returns before INSERT.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![vec![existing_link]])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        let result = link_to_coaching_session(&db, &publisher, new_session_id, goal.id).await;
+
+        let err = result.expect_err("duplicate link should fail");
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Entity(
+                    EntityErrorKind::GoalAlreadyLinkedToSession
+                ))
+            ),
+            "expected GoalAlreadyLinkedToSession, got {:?}",
+            err.error_kind
+        );
+
+        let events = recorded.lock().unwrap();
+        assert!(
+            events.is_empty(),
+            "no events should fire on failed link, got {events:?}"
+        );
+    }
+
+    /// Failure path: linking a `Completed` goal returns 422
+    /// `CannotLinkCompletedGoal` and **publishes no events**.
+    #[tokio::test]
+    async fn link_completed_goal_returns_422_and_publishes_no_events() {
+        let relationship_id = Id::new_v4();
+        let new_session_id = Id::new_v4();
+        let goal = build_goal(Status::Completed, relationship_id);
+
+        // Mock sequence:
+        //   1. SELECT goal by id (returns Completed goal)
+        // No further queries — error returns immediately.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        let result = link_to_coaching_session(&db, &publisher, new_session_id, goal.id).await;
+
+        let err = result.expect_err("linking completed goal should fail");
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Entity(
+                    EntityErrorKind::CannotLinkCompletedGoal
+                ))
+            ),
+            "expected CannotLinkCompletedGoal, got {:?}",
+            err.error_kind
+        );
+
+        let events = recorded.lock().unwrap();
+        assert!(
+            events.is_empty(),
+            "no events should fire on failed link, got {events:?}"
+        );
+    }
+
+    /// Failure path: linking a non-`InProgress` goal when the relationship is
+    /// already at the `MAX_IN_PROGRESS_GOALS` cap returns 409 (Conflict via
+    /// `ValidationError`) and **publishes no events**. Also confirms the
+    /// transaction rolls back cleanly — no INSERT happens before the cap
+    /// check fails.
+    #[tokio::test]
+    async fn link_at_cap_returns_409_and_publishes_no_events() {
+        let relationship_id = Id::new_v4();
+        let new_session_id = Id::new_v4();
+        let goal = build_goal(Status::NotStarted, relationship_id);
+        let cap_goals = vec![
+            build_goal(Status::InProgress, relationship_id),
+            build_goal(Status::InProgress, relationship_id),
+            build_goal(Status::InProgress, relationship_id),
+        ];
+
+        // Mock sequence (inside txn):
+        //   1. SELECT goal by id (returns NotStarted)
+        //   2. SELECT existing link (duplicate-check, empty)
+        //   3. SELECT in-progress goals on relationship (cap check, returns 3 → at cap)
+        // No further queries — error returns before INSERT.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
+            .append_query_results(vec![cap_goals])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        let result = link_to_coaching_session(&db, &publisher, new_session_id, goal.id).await;
+
+        let err = result.expect_err("linking at cap should fail");
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Entity(
+                    EntityErrorKind::Conflict { .. }
+                ))
+            ),
+            "expected Conflict, got {:?}",
+            err.error_kind
+        );
+
+        let events = recorded.lock().unwrap();
+        assert!(
+            events.is_empty(),
+            "no events should fire on failed link, got {events:?}"
         );
     }
 }
