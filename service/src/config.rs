@@ -70,6 +70,10 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "google_userinfo_url",
     "google_meet_api_url",
     "zoom_api_url",
+    "recall_ai_api_key",
+    "recall_ai_region",
+    "recall_ai_webhook_secret",
+    "webhook_base_url",
 ];
 
 #[derive(Deserialize, IntoParams)]
@@ -376,6 +380,22 @@ pub struct Config {
     /// Zoom meeting API base URL
     #[arg(long, env, default_value = "https://api.zoom.us/v2")]
     zoom_api_url: String,
+
+    /// Recall.ai API key (system-level; used for bot creation and async transcription)
+    #[arg(long, env)]
+    recall_ai_api_key: Option<String>,
+
+    /// Recall.ai region (us or eu)
+    #[arg(long, env, default_value = "us-east-1")]
+    recall_ai_region: String,
+
+    /// Recall.ai webhook signing secret (Svix `whsec_...` format)
+    #[arg(long, env)]
+    recall_ai_webhook_secret: Option<String>,
+
+    /// Public base URL used to construct webhook callback URLs (e.g. https://app.refactorcoach.com)
+    #[arg(long, env)]
+    webhook_base_url: Option<String>,
 
     /// Tracks whether each config field was explicitly set or uses its default.
     /// Populated during construction; not a CLI argument.
@@ -731,6 +751,24 @@ impl Config {
 
     pub fn zoom_api_url(&self) -> &str {
         &self.zoom_api_url
+    }
+
+    // Recall.ai / Meeting AI accessors
+
+    pub fn recall_ai_api_key(&self) -> Option<String> {
+        self.recall_ai_api_key.clone()
+    }
+
+    pub fn recall_ai_region(&self) -> &str {
+        &self.recall_ai_region
+    }
+
+    pub fn recall_ai_webhook_secret(&self) -> Option<String> {
+        self.recall_ai_webhook_secret.clone()
+    }
+
+    pub fn webhook_base_url(&self) -> Option<String> {
+        self.webhook_base_url.clone()
     }
 }
 

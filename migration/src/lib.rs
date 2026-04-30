@@ -23,6 +23,9 @@ mod m20260312_000000_add_goal_id_to_actions;
 mod m20260316_000000_fix_goals_session_fk_on_delete;
 mod m20260317_000000_add_on_hold_to_status_enum;
 mod m20260330_000000_add_magic_link_tokens;
+mod m20260407_000001_add_meeting_recordings;
+mod m20260407_000002_add_transcriptions;
+mod m20260407_000003_add_transcript_segments;
 
 pub struct Migrator;
 
@@ -53,6 +56,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260316_000000_fix_goals_session_fk_on_delete::Migration),
             Box::new(m20260317_000000_add_on_hold_to_status_enum::Migration),
             Box::new(m20260330_000000_add_magic_link_tokens::Migration),
+            Box::new(m20260407_000001_add_meeting_recordings::Migration),
+            Box::new(m20260407_000002_add_transcriptions::Migration),
+            Box::new(m20260407_000003_add_transcript_segments::Migration),
         ]
     }
 }

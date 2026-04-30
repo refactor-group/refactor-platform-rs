@@ -9,7 +9,7 @@ default-run = "refactor_platform_rs"
 members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse", "testing-tools", "meeting-auth", "meeting-ai"]
 # Exclude testing-tools from default builds - it's a development/testing tool only
 # and should not be built or deployed in production environments
-default-members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse"]
+default-members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse", "meeting-auth", "meeting-ai"]
 
 [dependencies]
 events = { path = "events" }

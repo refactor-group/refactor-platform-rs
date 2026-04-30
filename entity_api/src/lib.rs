@@ -19,11 +19,14 @@ pub mod error;
 pub mod goal;
 pub mod goal_progress;
 pub mod magic_link_token;
+pub mod meeting_recording;
 pub mod mutate;
 pub mod note;
 pub mod oauth_connection;
 pub mod organization;
 pub mod query;
+pub mod transcript_segment;
+pub mod transcription;
 pub mod user;
 pub mod user_role;
 
