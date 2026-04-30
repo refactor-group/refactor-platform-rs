@@ -7,39 +7,131 @@ use std::collections::HashMap;
 
 use entity::coaching_sessions_goals::{Column, Entity, Model};
 use entity::links::SessionGoalToCoachingRelationship;
+use entity::status::Status;
 use entity::{coaching_relationships, coaching_sessions, goals, Id};
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Set, ConnectionTrait, DatabaseConnection, TryIntoModel,
+    entity::prelude::*,
+    ActiveValue::{Set, Unchanged},
+    ConnectionTrait, DatabaseConnection, TryIntoModel,
 };
 
 use log::*;
 
 use super::error::{EntityApiErrorKind, Error};
 
-/// Links a goal to a coaching session.
+/// Links a goal to a coaching session, enforcing the invariant that a session-linked
+/// goal must be `InProgress`.
+///
+/// Behavior:
+/// - `NotStarted` / `OnHold` goal → auto-promoted to `InProgress` (status_changed_at bumped)
+///   atomically with the link insert. Returns the promoted goal alongside the link so
+///   callers can publish a `GoalUpdated` event.
+/// - `InProgress` goal → just inserts the link, no status change.
+/// - `Completed` / `WontDo` goal → returns `CannotLinkCompletedGoal`, no writes.
+/// - Auto-promotion that would push the relationship past `MAX_IN_PROGRESS_GOALS`
+///   returns the standard cap-collision `ValidationError`, no writes.
+///
+/// Callers should pass a transaction handle so the link insert and any status
+/// promotion succeed-or-fail atomically.
 ///
 /// # Errors
 ///
-/// Returns `Error` if the database insert fails (e.g., duplicate link
-/// or foreign key constraint violation).
+/// Returns `Error` if the goal is not found, is in a completed status, would
+/// exceed the in-progress goal cap on auto-promotion, or any database
+/// query/insert fails (e.g., duplicate link or foreign key violation).
 pub async fn create(
     db: &impl ConnectionTrait,
     coaching_session_id: Id,
     goal_id: Id,
-) -> Result<Model, Error> {
+) -> Result<(Model, Option<goals::Model>), Error> {
     debug!("Linking goal {goal_id} to session {coaching_session_id}");
 
-    let now = chrono::Utc::now();
+    let goal = goals::Entity::find_by_id(goal_id)
+        .one(db)
+        .await?
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })?;
 
-    let active_model = entity::coaching_sessions_goals::ActiveModel {
+    if goal.is_completed() {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::CannotLinkCompletedGoal,
+        });
+    }
+
+    // Reject duplicate links explicitly so the FE sees a structured 409 instead
+    // of the unique-constraint violation falling through to a 503.
+    // (Race window: two concurrent requests can both pass this check; the DB's
+    // unique constraint on (coaching_session_id, goal_id) still protects integrity,
+    // and the loser falls through to the existing 503 path. Acceptable for now.)
+    let already_linked = Entity::find()
+        .filter(Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(Column::GoalId.eq(goal_id))
+        .one(db)
+        .await?
+        .is_some();
+    if already_linked {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::GoalAlreadyLinkedToSession,
+        });
+    }
+
+    let needs_promotion = !goal.in_progress();
+
+    if needs_promotion {
+        super::goal::check_in_progress_goal_limit(db, goal.coaching_relationship_id).await?;
+    }
+
+    let now = chrono::Utc::now();
+    let link = insert_link_row(db, coaching_session_id, goal_id, now).await?;
+
+    let promoted_goal = if needs_promotion {
+        let promoted = goals::ActiveModel {
+            id: Unchanged(goal.id),
+            coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
+            created_in_session_id: Unchanged(goal.created_in_session_id),
+            user_id: Unchanged(goal.user_id),
+            title: Unchanged(goal.title.clone()),
+            body: Unchanged(goal.body.clone()),
+            status: Set(Status::InProgress),
+            status_changed_at: Set(Some(now.into())),
+            completed_at: Unchanged(goal.completed_at),
+            target_date: Unchanged(goal.target_date),
+            created_at: Unchanged(goal.created_at),
+            updated_at: Set(now.into()),
+        };
+        Some(promoted.update(db).await?.try_into_model()?)
+    } else {
+        None
+    };
+
+    Ok((link, promoted_goal))
+}
+
+/// Inserts a row into `coaching_sessions_goals` without enforcing the
+/// session-link-implies-`InProgress` invariant. Reserved for callers that have
+/// already established the goal is `InProgress` (e.g. the auto-link path
+/// from session-create, which queries goals filtered by `Status::InProgress`).
+/// Public callers must use [`create`] instead.
+async fn insert_link_row(
+    db: &impl ConnectionTrait,
+    coaching_session_id: Id,
+    goal_id: Id,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Model, Error> {
+    Ok(entity::coaching_sessions_goals::ActiveModel {
         coaching_session_id: Set(coaching_session_id),
         goal_id: Set(goal_id),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
-    };
-
-    Ok(active_model.insert(db).await?.try_into_model()?)
+    }
+    .insert(db)
+    .await?
+    .try_into_model()?)
 }
 
 /// Finds a single linked goal to a coaching session join-table record by its primary key.
@@ -224,8 +316,9 @@ pub async fn link_in_progress_goals_to_session(
         return Ok(0);
     }
 
+    let now = chrono::Utc::now();
     for g in &in_progress_goals {
-        create(db, session_id, g.id).await?;
+        insert_link_row(db, session_id, g.id, now).await?;
     }
 
     Ok(in_progress_goals.len())
@@ -311,30 +404,197 @@ mod tests {
     use super::*;
     use sea_orm::{DatabaseBackend, MockDatabase};
 
-    #[tokio::test]
-    async fn create_returns_a_new_link_record() -> Result<(), Error> {
+    fn build_link(coaching_session_id: Id, goal_id: Id) -> Model {
         let now = chrono::Utc::now();
-        let session_id = Id::new_v4();
-        let goal_id = Id::new_v4();
-
-        let expected_model = Model {
+        Model {
             id: Id::new_v4(),
-            coaching_session_id: session_id,
+            coaching_session_id,
             goal_id,
             created_at: now.into(),
             updated_at: now.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_with_in_progress_goal_just_links_no_promotion() -> Result<(), Error> {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let goal = create_test_goal(relationship_id, Status::InProgress);
+        let link = build_link(session_id, goal.id);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // SELECT goal by id (lookup in create)
+            .append_query_results(vec![vec![goal.clone()]])
+            // SELECT existing link (duplicate check) — empty
+            .append_query_results(vec![Vec::<Model>::new()])
+            // INSERT join row
+            .append_query_results(vec![vec![link.clone()]])
+            .into_connection();
+
+        let (result_link, promoted) = create(&db, session_id, goal.id).await?;
+
+        assert_eq!(result_link.coaching_session_id, session_id);
+        assert_eq!(result_link.goal_id, goal.id);
+        assert!(
+            promoted.is_none(),
+            "InProgress goal should not be promoted again"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_with_not_started_goal_promotes_to_in_progress() -> Result<(), Error> {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let goal = create_test_goal(relationship_id, Status::NotStarted);
+        let link = build_link(session_id, goal.id);
+        let promoted = goals::Model {
+            status: Status::InProgress,
+            ..goal.clone()
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![expected_model.clone()]])
+            // SELECT goal by id (lookup in create)
+            .append_query_results(vec![vec![goal.clone()]])
+            // SELECT existing link (duplicate check) — empty
+            .append_query_results(vec![Vec::<Model>::new()])
+            // SELECT in-progress goals on relationship (cap check) — empty, under cap
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            // INSERT join row
+            .append_query_results(vec![vec![link.clone()]])
+            // UPDATE goal — promotion to InProgress
+            .append_query_results(vec![vec![promoted.clone()]])
             .into_connection();
 
-        let result = create(&db, session_id, goal_id).await?;
+        let (result_link, promoted_goal) = create(&db, session_id, goal.id).await?;
 
-        assert_eq!(result.coaching_session_id, session_id);
-        assert_eq!(result.goal_id, goal_id);
+        assert_eq!(result_link.goal_id, goal.id);
+        let promoted_goal = promoted_goal.expect("NotStarted goal should be promoted");
+        assert_eq!(promoted_goal.status, Status::InProgress);
+        assert_eq!(promoted_goal.id, goal.id);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_with_on_hold_goal_promotes_to_in_progress() -> Result<(), Error> {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let goal = create_test_goal(relationship_id, Status::OnHold);
+        let link = build_link(session_id, goal.id);
+        let promoted = goals::Model {
+            status: Status::InProgress,
+            ..goal.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![vec![link.clone()]])
+            .append_query_results(vec![vec![promoted.clone()]])
+            .into_connection();
+
+        let (_, promoted_goal) = create(&db, session_id, goal.id).await?;
+        let promoted_goal = promoted_goal.expect("OnHold goal should be promoted");
+        assert_eq!(promoted_goal.status, Status::InProgress);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_with_completed_goal_returns_cannot_link_completed_goal() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let goal = create_test_goal(relationship_id, Status::Completed);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // Only the goal lookup runs — we error before any writes
+            .append_query_results(vec![vec![goal.clone()]])
+            .into_connection();
+
+        let result = create(&db, session_id, goal.id).await;
+        let err = result.expect_err("linking a Completed goal should fail");
+        assert!(
+            matches!(err.error_kind, EntityApiErrorKind::CannotLinkCompletedGoal),
+            "expected CannotLinkCompletedGoal, got {:?}",
+            err.error_kind
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_wont_do_goal_returns_cannot_link_completed_goal() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let goal = create_test_goal(relationship_id, Status::WontDo);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal.clone()]])
+            .into_connection();
+
+        let result = create(&db, session_id, goal.id).await;
+        let err = result.expect_err("linking a WontDo goal should fail");
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::CannotLinkCompletedGoal
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_with_already_linked_goal_returns_goal_already_linked_to_session() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let goal = create_test_goal(relationship_id, Status::InProgress);
+        let existing_link = build_link(session_id, goal.id);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // SELECT goal by id
+            .append_query_results(vec![vec![goal.clone()]])
+            // SELECT existing link (duplicate check) — returns the existing row
+            .append_query_results(vec![vec![existing_link.clone()]])
+            // No further queries: error returns before INSERT
+            .into_connection();
+
+        let result = create(&db, session_id, goal.id).await;
+        let err = result.expect_err("linking an already-linked goal should fail");
+        assert!(
+            matches!(
+                err.error_kind,
+                EntityApiErrorKind::GoalAlreadyLinkedToSession
+            ),
+            "expected GoalAlreadyLinkedToSession, got {:?}",
+            err.error_kind
+        );
+    }
+
+    #[tokio::test]
+    async fn create_promotion_at_cap_returns_validation_error() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let target = create_test_goal(relationship_id, Status::NotStarted);
+        let cap_goals = vec![
+            create_test_goal(relationship_id, Status::InProgress),
+            create_test_goal(relationship_id, Status::InProgress),
+            create_test_goal(relationship_id, Status::InProgress),
+        ];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // SELECT goal by id (lookup in create)
+            .append_query_results(vec![vec![target.clone()]])
+            // SELECT existing link (duplicate check) — empty
+            .append_query_results(vec![Vec::<Model>::new()])
+            // SELECT in-progress goals on relationship (cap check) — at cap
+            .append_query_results(vec![cap_goals])
+            .into_connection();
+
+        let result = create(&db, session_id, target.id).await;
+        let err = result.expect_err("promoting past the cap should fail");
+        assert!(
+            matches!(err.error_kind, EntityApiErrorKind::ValidationError { .. }),
+            "expected ValidationError (cap), got {:?}",
+            err.error_kind
+        );
     }
 
     #[tokio::test]

@@ -183,7 +183,7 @@ pub async fn find_in_progress_goals_by_coaching_relationship_id(
 /// Checks that adding one more `InProgress` goal to a coaching relationship
 /// would not exceed `MAX_IN_PROGRESS_GOALS`. Returns a `ValidationError` carrying
 /// summaries of the current in-progress goals so the caller can present a "swap" dialog.
-async fn check_in_progress_goal_limit(
+pub(crate) async fn check_in_progress_goal_limit(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
 ) -> Result<(), Error> {
