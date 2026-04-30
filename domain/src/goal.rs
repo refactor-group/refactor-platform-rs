@@ -259,11 +259,28 @@ mod integration_tests {
             created_at: now,
             updated_at: now,
         };
+        // The session-link path enforces the goal-linked-to-session-must-be-InProgress
+        // invariant, so a NotStarted goal is auto-promoted on link. The mock provides
+        // the post-promotion model for the UPDATE step.
+        let promoted_goal = Model {
+            status: Status::InProgress,
+            ..new_goal.clone()
+        };
 
-        // Mock sequence (inside txn): goal save → join table save → relationship lookup
+        // Mock sequence (inside txn):
+        //   1. goal save (INSERT into goals)
+        //   2. coaching_session_goal::create — goal lookup (SELECT goals by id)
+        //   3. coaching_session_goal::create — cap check (SELECT in-progress goals)
+        //   4. coaching_session_goal::create — join row insert (INSERT)
+        //   5. coaching_session_goal::create — promotion update (UPDATE goals)
+        // After commit:
+        //   6. relationship lookup
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![Vec::<Model>::new()])
             .append_query_results(vec![vec![join_row]])
+            .append_query_results(vec![vec![promoted_goal]])
             .append_query_results(vec![vec![relationship]])
             .into_connection();
 

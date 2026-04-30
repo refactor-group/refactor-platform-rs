@@ -12,16 +12,24 @@ use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
 use entity_api::coaching_sessions_goals;
 use log::*;
-use sea_orm::{ConnectionTrait, DatabaseConnection};
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
-/// Links an existing goal to a coaching session and publishes an SSE event.
+/// Links an existing goal to a coaching session and publishes SSE events.
+///
+/// The link insert and any auto-promotion of the goal's status (from
+/// `NotStarted`/`OnHold` to `InProgress`) happen atomically inside a transaction.
+/// On commit, this publishes `CoachingSessionGoalCreated` and — when the link
+/// promoted the goal — also `GoalUpdated` so subscribers see the new status.
 pub async fn link_to_coaching_session(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     coaching_session_id: Id,
     goal_id: Id,
 ) -> Result<coaching_sessions_goals::Model, Error> {
-    let link = CoachingSessionGoalApi::create(db, coaching_session_id, goal_id).await?;
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let (link, promoted_goal) =
+        CoachingSessionGoalApi::create(&txn, coaching_session_id, goal_id).await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     let (_, relationship) =
         crate::coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id)
@@ -33,7 +41,7 @@ pub async fn link_to_coaching_session(
             coaching_relationship_id: relationship.id,
             coaching_session_id,
             goal_id,
-            notify_user_ids,
+            notify_user_ids: notify_user_ids.clone(),
         })
         .await;
 
@@ -41,6 +49,21 @@ pub async fn link_to_coaching_session(
         "Published CoachingSessionGoalCreated event for goal {} in session {}",
         goal_id, coaching_session_id
     );
+
+    if let Some(goal) = promoted_goal {
+        event_publisher
+            .publish(DomainEvent::GoalUpdated {
+                coaching_relationship_id: goal.coaching_relationship_id,
+                goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
+                notify_user_ids,
+            })
+            .await;
+
+        debug!(
+            "Published GoalUpdated event for promoted goal {} in relationship {}",
+            goal.id, goal.coaching_relationship_id
+        );
+    }
 
     Ok(link)
 }

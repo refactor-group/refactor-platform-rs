@@ -128,6 +128,17 @@ impl Error {
                 }
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
+            EntityErrorKind::CannotLinkCompletedGoal => {
+                warn!(
+                    "EntityErrorKind::CannotLinkCompletedGoal: Responding with 422 Unprocessable Entity. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 422,
+                    "error": "cannot_link_completed_goal",
+                    "message": "Completed goals cannot be linked to a coaching session.",
+                });
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
+            }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
                     "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"
