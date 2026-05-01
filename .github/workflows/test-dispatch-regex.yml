@@ -1,0 +1,38 @@
+# =============================================================================
+# Regression tests for dispatch-pr-preview.yml input regexes
+# =============================================================================
+# The classification logic in dispatch-pr-preview.yml (PR# vs numeric vs SHA
+# vs branch) is exactly the kind of code that silently breaks on edits.
+# This workflow runs the bats suite on PRs that touch the dispatch workflow
+# or the tests themselves, so any regression in the regex behavior is caught
+# at review time rather than at dispatch time.
+# =============================================================================
+name: Test Dispatch Regex
+
+on:
+    pull_request:
+        paths:
+            - ".github/workflows/dispatch-pr-preview.yml"
+            - ".github/workflows/tests/dispatch-pr-preview.bats"
+            - ".github/workflows/test-dispatch-regex.yml"
+    push:
+        branches: [main]
+        paths:
+            - ".github/workflows/dispatch-pr-preview.yml"
+            - ".github/workflows/tests/dispatch-pr-preview.bats"
+            - ".github/workflows/test-dispatch-regex.yml"
+    workflow_dispatch: {}
+
+permissions:
+    contents: read
+
+jobs:
+    bats:
+        name: Run bats classifier tests
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: Install bats
+              run: sudo apt-get update && sudo apt-get install -y bats
+            - name: Run tests
+              run: bats .github/workflows/tests/dispatch-pr-preview.bats
