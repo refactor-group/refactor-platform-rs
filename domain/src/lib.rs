@@ -41,6 +41,7 @@ pub mod transcription;
 pub mod user;
 
 pub mod gateway;
+pub mod webhook;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;
