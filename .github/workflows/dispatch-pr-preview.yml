@@ -20,11 +20,12 @@ on:
         required: true
         type: choice
         options:
+          - '6088d2d - chore: refresh preview commit choices [skip ci]'
           - '9513a78 - chore: refresh preview commit choices [skip ci]'
           - 'acf2c10 - chore: refresh preview commit choices [skip ci]'
-          - '9225027 - chore: refresh preview commit choices [skip ci]'
-          - f132c0f - PR#298 (mcp-proof-of-concept-via-warp)
-          - 27ce05a - PR#297 (mcp-server-adr)
+          - a4866af - PR#299 (fix/auto-promote-goal-on-sessi)
+          - b7e52e8 - PR#298 (mcp-proof-of-concept-via-warp)
+          - f0e953f - PR#297 (mcp-server-adr)
           - 8dda4ef - PR#291 (ci/runtime-ref-resolver)
           - e4dc873 - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
