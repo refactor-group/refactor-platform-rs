@@ -1,7 +1,9 @@
 //! Business logic for meeting transcription lifecycle management.
 
 pub use entity::transcription::{Model, TranscriptionStatus};
-pub use entity_api::transcription::{find_by_coaching_session, find_by_external_id, update_status};
+pub use entity_api::transcription::{
+    find_by_coaching_session, find_by_external_id, try_claim_for_processing, update_status,
+};
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::recall_ai;
@@ -25,15 +27,7 @@ fn recall_ai_provider(config: &Config) -> Result<recall_ai::Provider, Error> {
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
-    let webhook_base = config.webhook_base_url().ok_or_else(|| {
-        warn!("WEBHOOK_BASE_URL not configured");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-        }
-    })?;
-    let webhook_url = format!("{}/webhooks/recall_ai", webhook_base);
-    recall_ai::Provider::new(&api_key, config.recall_ai_region(), &webhook_url)
+    recall_ai::Provider::new(&api_key, config.recall_ai_region())
 }
 
 /// Triggers async transcription for the given recording and persists the `transcriptions` row.
@@ -104,24 +98,9 @@ pub async fn handle_completion(
             )),
         })?;
 
-    let recall_recording_id = transcription.recall_recording_id.as_deref().ok_or_else(|| {
-        warn!(
-            "transcript {} has no recall_recording_id — cannot fetch from Recall.ai",
-            transcription.id
-        );
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::NotFound,
-            )),
-        }
-    })?;
-
     let provider = recall_ai_provider(config)?;
 
-    let metadata = provider
-        .get_async_transcript(recall_recording_id, external_id)
-        .await?;
+    let metadata = provider.get_async_transcript(external_id).await?;
 
     let download_url = metadata.download_url().ok_or_else(|| {
         warn!(
@@ -196,12 +175,7 @@ pub async fn handle_completion(
                 seg_words.push(word.text.clone());
                 seg_end = word.end_s;
             } else {
-                segments.push((
-                    seg_speaker.clone(),
-                    seg_words.join(" "),
-                    seg_start,
-                    seg_end,
-                ));
+                segments.push((seg_speaker.clone(), seg_words.join(" "), seg_start, seg_end));
                 seg_speaker = word.speaker.clone();
                 seg_words = vec![word.text.clone()];
                 seg_start = word.start_s;

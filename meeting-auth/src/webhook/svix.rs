@@ -57,23 +57,36 @@ impl Validator {
 
 impl crate::webhook::Validator for Validator {
     fn validate(&self, headers: &HashMap<String, String>, body: &[u8]) -> Result<bool, Error> {
-        let svix_id = headers.get("svix-id").ok_or_else(|| {
-            webhook_error(WebhookErrorKind::MissingSignature, "Missing svix-id header")
-        })?;
+        // Recall.ai workspaces created after 2025-12-15 send "webhook-*" headers instead of "svix-*".
+        let svix_id = headers
+            .get("svix-id")
+            .or_else(|| headers.get("webhook-id"))
+            .ok_or_else(|| {
+                webhook_error(
+                    WebhookErrorKind::MissingSignature,
+                    "Missing svix-id/webhook-id header",
+                )
+            })?;
 
-        let svix_timestamp = headers.get("svix-timestamp").ok_or_else(|| {
-            webhook_error(
-                WebhookErrorKind::MissingSignature,
-                "Missing svix-timestamp header",
-            )
-        })?;
+        let svix_timestamp = headers
+            .get("svix-timestamp")
+            .or_else(|| headers.get("webhook-timestamp"))
+            .ok_or_else(|| {
+                webhook_error(
+                    WebhookErrorKind::MissingSignature,
+                    "Missing svix-timestamp/webhook-timestamp header",
+                )
+            })?;
 
-        let svix_signature = headers.get("svix-signature").ok_or_else(|| {
-            webhook_error(
-                WebhookErrorKind::MissingSignature,
-                "Missing svix-signature header",
-            )
-        })?;
+        let svix_signature = headers
+            .get("svix-signature")
+            .or_else(|| headers.get("webhook-signature"))
+            .ok_or_else(|| {
+                webhook_error(
+                    WebhookErrorKind::MissingSignature,
+                    "Missing svix-signature/webhook-signature header",
+                )
+            })?;
 
         // Replay protection: reject timestamps older than 5 minutes
         let timestamp: i64 = svix_timestamp.parse().map_err(|_| {

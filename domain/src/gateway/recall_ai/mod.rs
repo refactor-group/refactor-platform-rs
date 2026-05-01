@@ -8,14 +8,12 @@ use serde::{Deserialize, Serialize};
 pub struct Provider {
     client: reqwest::Client,
     base_url: String,
-    webhook_url: String,
 }
 
 #[derive(Debug, Serialize)]
 struct CreateBotRequest {
     meeting_url: String,
     bot_name: String,
-    webhook_url: String,
     metadata: BotMetadata,
 }
 
@@ -86,6 +84,7 @@ pub struct Participant {
     pub is_host: Option<bool>,
     pub platform: Option<String>,
     pub email: Option<String>,
+    pub extra_data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,8 +103,8 @@ pub struct Timestamp {
 }
 
 impl Provider {
-    /// Construct a provider from the system API key, region, and webhook callback URL.
-    pub fn new(api_key: &str, region: &str, webhook_url: &str) -> Result<Self, Error> {
+    /// Construct a provider from the system API key and region.
+    pub fn new(api_key: &str, region: &str) -> Result<Self, Error> {
         let mut headers = reqwest::header::HeaderMap::new();
 
         let auth_value = format!("Token {}", api_key);
@@ -129,11 +128,7 @@ impl Provider {
 
         let base_url = format!("https://{}.recall.ai/api/v1", region);
 
-        Ok(Self {
-            client,
-            base_url,
-            webhook_url: webhook_url.to_string(),
-        })
+        Ok(Self { client, base_url })
     }
 
     /// Creates a Recall.ai recording bot for the given meeting URL.
@@ -146,12 +141,11 @@ impl Provider {
         meeting_url: &str,
         bot_name: &str,
     ) -> Result<BotResponse, Error> {
-        let url = format!("{}/bot", self.base_url);
+        let url = format!("{}/bot/", self.base_url);
 
         let request = CreateBotRequest {
             meeting_url: meeting_url.to_string(),
             bot_name: bot_name.to_string(),
-            webhook_url: self.webhook_url.clone(),
             metadata: BotMetadata {
                 coaching_session_id: coaching_session_id.to_string(),
             },
@@ -196,27 +190,32 @@ impl Provider {
         }
     }
 
-    /// Removes a Recall.ai recording bot (stop and delete).
-    pub async fn delete_bot(&self, bot_id: &str) -> Result<(), Error> {
-        let url = format!("{}/bot/{}", self.base_url, bot_id);
+    /// Removes a Recall.ai bot from an active call.
+    ///
+    /// Uses `POST /bot/{id}/leave_call/` which is valid for bots currently in a meeting.
+    pub async fn leave_call(&self, bot_id: &str) -> Result<(), Error> {
+        let url = format!("{}/bot/{}/leave_call/", self.base_url, bot_id);
 
-        debug!("Deleting Recall.ai bot {}", bot_id);
+        debug!("Removing Recall.ai bot {} from call", bot_id);
 
-        let response = self.client.delete(&url).send().await.map_err(|e| {
-            warn!("Failed to delete Recall.ai bot {}: {:?}", bot_id, e);
+        let response = self.client.post(&url).send().await.map_err(|e| {
+            warn!(
+                "Failed to remove Recall.ai bot {} from call: {:?}",
+                bot_id, e
+            );
             Error {
                 source: Some(Box::new(e)),
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
             }
         })?;
 
-        if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
-            info!("Deleted Recall.ai bot {}", bot_id);
+        if response.status().is_success() {
+            info!("Removed Recall.ai bot {} from call", bot_id);
             Ok(())
         } else {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Recall.ai delete bot error ({}): {}", status, error_text);
+            warn!("Recall.ai leave_call error ({}): {}", status, error_text);
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Other(error_text)),
@@ -297,22 +296,13 @@ impl Provider {
     }
 
     /// Retrieves transcript metadata (including `download_url`) after `transcript.done`.
-    ///
-    /// `recall_recording_id` is Recall's recording UUID (`data.recording.id` from webhooks).
     pub async fn get_async_transcript(
         &self,
-        recall_recording_id: &str,
         transcript_id: &str,
     ) -> Result<TranscriptMetadata, Error> {
-        let url = format!(
-            "{}/recording/{}/transcript/{}/",
-            self.base_url, recall_recording_id, transcript_id
-        );
+        let url = format!("{}/transcript/{}/", self.base_url, transcript_id);
 
-        debug!(
-            "Retrieving async transcript {} for recording {}",
-            transcript_id, recall_recording_id
-        );
+        debug!("Retrieving async transcript {}", transcript_id);
 
         let response = self.client.get(&url).send().await.map_err(|e| {
             warn!("Failed to get Recall.ai async transcript: {:?}", e);

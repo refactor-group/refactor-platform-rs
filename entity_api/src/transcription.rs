@@ -5,7 +5,7 @@ use log::debug;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, DbBackend, Order, QueryOrder, Statement, TryIntoModel,
 };
 
 /// Creates a new transcription record
@@ -37,15 +37,32 @@ pub async fn create(db: &DatabaseConnection, model: Model) -> Result<Model, Erro
     Ok(active_model.save(db).await?.try_into_model()?)
 }
 
-/// Returns the transcription for a coaching session
+/// Returns the most recent transcription for a coaching session
 pub async fn find_by_coaching_session(
     db: &DatabaseConnection,
     session_id: Id,
 ) -> Result<Option<Model>, Error> {
     Ok(Entity::find()
         .filter(Column::CoachingSessionId.eq(session_id))
+        .order_by(Column::CreatedAt, Order::Desc)
         .one(db)
         .await?)
+}
+
+/// Atomically claims a transcription for processing by transitioning it from `Queued`
+/// to `Processing`. Returns `true` if the claim succeeded (only one concurrent caller
+/// will win), `false` if the transcription was already claimed or completed.
+pub async fn try_claim_for_processing(db: &DatabaseConnection, id: Id) -> Result<bool, Error> {
+    let result = db
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE refactor_platform.transcriptions \
+             SET status = 'processing', updated_at = NOW() \
+             WHERE id = $1 AND status = 'queued'",
+            [id.into()],
+        ))
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Finds a transcription by Recall.ai transcript ID — used by webhook handlers

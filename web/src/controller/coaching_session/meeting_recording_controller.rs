@@ -78,6 +78,10 @@ pub async fn create(
 ) -> Result<impl IntoResponse, Error> {
     debug!("POST meeting_recording for session {}", coaching_session_id);
 
+    if params.meeting_url.trim().is_empty() {
+        return Err(Error::Web(WebErrorKind::Input));
+    }
+
     // Prevent duplicate active bots
     if let Some(existing) = MeetingRecordingApi::find_latest_by_coaching_session(
         app_state.db_conn_ref(),

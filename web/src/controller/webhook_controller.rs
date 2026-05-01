@@ -103,7 +103,9 @@ pub async fn recall_ai(
             handle_bot_status(app_state, event.data, MeetingRecordingStatus::Processing).await
         }
         "recording.done" => handle_recording_done(app_state, event.data).await,
+        "recording.failed" => handle_recording_failed(app_state, event.data).await,
         "transcript.done" => handle_transcript_done(app_state, event.data).await,
+        "transcript.processing" => handle_transcript_processing(app_state, event.data).await,
         "transcript.failed" => handle_transcript_failed(app_state, event.data).await,
         "bot.fatal" => handle_bot_fatal(app_state, event.data).await,
         other => {
@@ -136,13 +138,22 @@ async fn handle_bot_status(
                 return StatusCode::OK.into_response();
             }
             Err(e) => {
-                error!(
-                    "bot status event: DB error for bot_id={}: {:?}",
-                    bot_id, e
-                );
+                error!("bot status event: DB error for bot_id={}: {:?}", bot_id, e);
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         };
+
+    // Never overwrite a terminal state — recording.done sets Completed and that must stick.
+    if matches!(
+        recording.status,
+        MeetingRecordingStatus::Completed | MeetingRecordingStatus::Failed
+    ) {
+        debug!(
+            "bot status event: recording {} already terminal ({:?}) — skipping",
+            recording.id, recording.status
+        );
+        return StatusCode::OK.into_response();
+    }
 
     if let Err(e) = MeetingRecordingApi::update_status(
         app_state.db_conn_ref(),
@@ -205,7 +216,7 @@ async fn handle_recording_done(app_state: AppState, data: Value) -> axum::respon
             Ok(Some(r)) => r,
             Ok(None) => {
                 warn!("recording.done: no recording for bot_id={}", bot_id);
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                return StatusCode::OK.into_response();
             }
             Err(e) => {
                 error!("recording.done: DB error for bot_id={}: {:?}", bot_id, e);
@@ -315,13 +326,26 @@ async fn handle_transcript_done(app_state: AppState, data: Value) -> axum::respo
         }
     };
 
-    // Idempotency: already completed
-    if transcription.status == TranscriptionStatus::Completed {
-        warn!(
-            "transcript.done: transcription {} already completed — skipping",
-            transcription.id
-        );
-        return StatusCode::OK.into_response();
+    // Atomic claim: transition Queued → Processing. If another delivery already claimed it
+    // (or it's already Completed/Failed), rows_affected = 0 and we skip.
+    match TranscriptionApi::try_claim_for_processing(app_state.db_conn_ref(), transcription.id)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            debug!(
+                "transcript.done: transcription {} not in queued state — skipping",
+                transcription.id
+            );
+            return StatusCode::OK.into_response();
+        }
+        Err(e) => {
+            error!(
+                "transcript.done: claim failed for external_id={}: {:?}",
+                transcript_id, e
+            );
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     }
 
     let transcription_id = transcription.id;
@@ -329,8 +353,7 @@ async fn handle_transcript_done(app_state: AppState, data: Value) -> axum::respo
     let config = app_state.config.clone();
 
     tokio::spawn(async move {
-        if let Err(e) =
-            domain::transcription::handle_completion(&db, &config, &transcript_id).await
+        if let Err(e) = domain::transcription::handle_completion(&db, &config, &transcript_id).await
         {
             error!(
                 "transcript.done: completion failed for external_id={}: {:?}",
@@ -402,6 +425,7 @@ async fn handle_transcript_failed(app_state: AppState, data: Value) -> axum::res
             "transcript.failed: failed to update transcription {}: {:?}",
             transcription.id, e
         );
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     StatusCode::OK.into_response()
@@ -451,7 +475,73 @@ async fn handle_bot_fatal(app_state: AppState, data: Value) -> axum::response::R
             "bot.fatal: failed to update recording {}: {:?}",
             recording.id, e
         );
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
+    StatusCode::OK.into_response()
+}
+
+async fn handle_recording_failed(app_state: AppState, data: Value) -> axum::response::Response {
+    let bot_id = match data.pointer("/bot/id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            warn!("recording.failed: missing /bot/id");
+            return StatusCode::OK.into_response();
+        }
+    };
+
+    let error_message = data
+        .pointer("/data/sub_code")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let recording =
+        match MeetingRecordingApi::find_by_bot_id(app_state.db_conn_ref(), &bot_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                warn!("recording.failed: no recording for bot_id={}", bot_id);
+                return StatusCode::OK.into_response();
+            }
+            Err(e) => {
+                error!("recording.failed: DB error for bot_id={}: {:?}", bot_id, e);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+    if let Err(e) = MeetingRecordingApi::update_status(
+        app_state.db_conn_ref(),
+        recording.id,
+        MeetingRecordingStatus::Failed,
+        None,
+        None,
+        None,
+        None,
+        None,
+        error_message,
+    )
+    .await
+    {
+        error!(
+            "recording.failed: failed to update recording {}: {:?}",
+            recording.id, e
+        );
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::OK.into_response()
+}
+
+async fn handle_transcript_processing(
+    _app_state: AppState,
+    data: Value,
+) -> axum::response::Response {
+    let transcript_id = data
+        .pointer("/transcript/id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    debug!(
+        "transcript.processing: informational event for external_id={} — no action taken",
+        transcript_id
+    );
     StatusCode::OK.into_response()
 }

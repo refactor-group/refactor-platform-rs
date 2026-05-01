@@ -21,15 +21,7 @@ fn recall_ai_provider(config: &Config) -> Result<recall_ai::Provider, Error> {
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
-    let webhook_base = config.webhook_base_url().ok_or_else(|| {
-        warn!("WEBHOOK_BASE_URL not configured");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-        }
-    })?;
-    let webhook_url = format!("{}/webhooks/recall_ai", webhook_base);
-    recall_ai::Provider::new(&api_key, config.recall_ai_region(), &webhook_url)
+    recall_ai::Provider::new(&api_key, config.recall_ai_region())
 }
 
 /// Creates a Recall.ai recording bot and persists the initial `meeting_recordings` row.
@@ -71,8 +63,9 @@ pub async fn start(
 
 /// Stops the active recording bot for a coaching session.
 ///
-/// Looks up the latest recording for the session, calls `DELETE /bot/{id}` on Recall.ai,
-/// and updates the recording status to `failed`.
+/// Looks up the latest recording for the session, calls `POST /bot/{id}/leave_call/` on
+/// Recall.ai, and updates the recording status to `Processing` while the recording artifact
+/// is uploaded and transcription begins.
 pub async fn stop(
     db: &DatabaseConnection,
     config: &Config,
@@ -88,10 +81,18 @@ pub async fn stop(
         })?;
 
     let provider = recall_ai_provider(config)?;
-    provider.delete_bot(&recording.bot_id).await?;
+
+    // leave_call is best-effort: if the bot has already left (meeting ended naturally,
+    // Recall.ai timeout, etc.) the call returns a 4xx which we treat as success.
+    if let Err(e) = provider.leave_call(&recording.bot_id).await {
+        warn!(
+            "leave_call failed for bot {} — bot may have already left: {}",
+            recording.bot_id, e
+        );
+    }
 
     info!(
-        "Deleted Recall.ai bot {} for session {}",
+        "Removed Recall.ai bot {} from call for session {}",
         recording.bot_id, session_id
     );
 
