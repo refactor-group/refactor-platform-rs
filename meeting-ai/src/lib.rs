@@ -13,6 +13,4 @@ pub mod error;
 pub mod traits;
 pub mod types;
 
-// Re-export commonly used types
 pub use error::Error;
-pub use types::analysis::ExtractedResource;

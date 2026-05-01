@@ -43,6 +43,8 @@ pub struct Model {
     /// Recall.ai's transcript ID, returned from the "Create Async Transcript" API.
     pub external_id: String,
     /// Recall.ai's recording UUID — required for transcript API calls (`/recording/{id}/...`).
+    /// Internal server-side correlation ID; not exposed to API clients.
+    #[serde(skip_serializing)]
     pub recall_recording_id: Option<String>,
     pub status: TranscriptionStatus,
     pub language_code: Option<String>,
