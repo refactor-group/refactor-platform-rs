@@ -61,7 +61,7 @@ sequenceDiagram
     rect rgb(235, 220, 255)
         Note over BE,Recall: Phase 5 — Bot Shutdown
         Recall->>BE: POST /webhooks/recall_ai { event: "bot.done",<br/>data: { bot: { id } } }
-        BE->>DB: update_status → Processing (idempotent — already Processing; skipped if terminal)
+        BE->>DB: update_status → Processing (idempotent — already Processing, skipped if terminal)
     end
 
     rect rgb(240, 220, 255)
@@ -72,7 +72,7 @@ sequenceDiagram
         BE->>DB: find_by_coaching_session (idempotency: transcription exists?)
         DB-->>BE: None
         BE->>DB: update_status → Completed, set ended_at
-        Note over BE: Async task spawned (tokio::spawn); 200 returned immediately
+        Note over BE: Async task spawned (tokio::spawn) — 200 returned immediately
         BE-->>Recall: 200 (webhook acknowledged)
         BE->>Recall: POST /api/v1/recording/:recall_recording_id/create_transcript/<br/>{ provider: { assembly_ai_async: { language_detection: true,<br/>sentiment_analysis: true, speaker_labels: true } },<br/>diarization: { use_separate_streams_when_available: true } }
         Recall-->>BE: { id: transcript_id }
@@ -90,20 +90,20 @@ sequenceDiagram
         Note over Recall: Recall.ai/AssemblyAI processes audio
 
         Recall->>BE: POST /webhooks/recall_ai<br/>{ event: "transcript.processing",<br/>data: { transcript: { id } } }
-        BE-->>Recall: 200 (acknowledged; debug log only)
+        BE-->>Recall: 200 (acknowledged — debug log only)
 
         Recall->>BE: POST /webhooks/recall_ai<br/>{ event: "transcript.done",<br/>data: { transcript: { id } } }
         BE->>DB: find_by_external_id (→ 500/Svix retry if not found)
         DB-->>BE: transcription (status: Queued)
-        BE->>DB: try_claim_for_processing (atomic UPDATE WHERE status='queued')
+        BE->>DB: try_claim_for_processing (atomic UPDATE WHERE status = queued)
         DB-->>BE: claimed = true
-        Note over BE: Async task spawned (tokio::spawn); 200 returned immediately
+        Note over BE: Async task spawned (tokio::spawn) — 200 returned immediately
         BE-->>Recall: 200 (webhook acknowledged)
         BE->>Recall: GET /api/v1/transcript/:transcript_id/
         Recall-->>BE: { id, status, data: { download_url } }
         BE->>Recall: GET {download_url} (pre-signed S3 URL, no auth)
         Recall-->>BE: transcript JSON [{ participant: { name, id },<br/>words: [{ text, start_timestamp: { relative },<br/>end_timestamp: { relative } }] }]
-        Note over BE: Flatten words by speaker → sort chronologically →<br/>coalesce (same speaker + gap < 1.5s = same segment)
+        Note over BE: Flatten words by speaker, sort chronologically,<br/>coalesce (same speaker + gap under 1.5s = same segment)
         BE->>DB: update_status → Completed, set word_count
         BE->>DB: batch INSERT transcript_segments<br/>(speaker_label, text, start_ms, end_ms)
     end
