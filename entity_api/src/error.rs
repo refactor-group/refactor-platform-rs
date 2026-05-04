@@ -35,6 +35,10 @@ pub enum EntityApiErrorKind {
         message: String,
         details: Option<serde_json::Value>,
     },
+    // Attempt to link a goal in a completed status (Completed or WontDo) to a coaching session.
+    CannotLinkCompletedGoal,
+    // Attempt to link a goal that is already linked to the same coaching session.
+    GoalAlreadyLinkedToSession,
     // Other errors
     Other(String),
 }

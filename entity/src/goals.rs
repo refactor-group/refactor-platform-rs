@@ -82,6 +82,11 @@ impl Model {
     pub fn in_progress(&self) -> bool {
         self.status == Status::InProgress
     }
+
+    /// Returns `true` if this goal is in a completed status (`Completed` or `WontDo`).
+    pub fn is_completed(&self) -> bool {
+        matches!(self.status, Status::Completed | Status::WontDo)
+    }
 }
 
 impl ActiveModelBehavior for ActiveModel {}
@@ -126,5 +131,30 @@ mod tests {
     #[test]
     fn in_progress_returns_false_for_wont_do() {
         assert!(!create_test_goal(Status::WontDo).in_progress());
+    }
+
+    #[test]
+    fn is_completed_returns_true_for_completed_status() {
+        assert!(create_test_goal(Status::Completed).is_completed());
+    }
+
+    #[test]
+    fn is_completed_returns_true_for_wont_do_status() {
+        assert!(create_test_goal(Status::WontDo).is_completed());
+    }
+
+    #[test]
+    fn is_completed_returns_false_for_not_started() {
+        assert!(!create_test_goal(Status::NotStarted).is_completed());
+    }
+
+    #[test]
+    fn is_completed_returns_false_for_in_progress() {
+        assert!(!create_test_goal(Status::InProgress).is_completed());
+    }
+
+    #[test]
+    fn is_completed_returns_false_for_on_hold() {
+        assert!(!create_test_goal(Status::OnHold).is_completed());
     }
 }

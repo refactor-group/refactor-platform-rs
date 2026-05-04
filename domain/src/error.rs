@@ -49,6 +49,8 @@ pub enum EntityErrorKind {
         message: String,
         details: Option<serde_json::Value>,
     },
+    CannotLinkCompletedGoal,
+    GoalAlreadyLinkedToSession,
     DbTransaction,
     ServiceUnavailable,
     Other(String),
@@ -87,6 +89,10 @@ impl From<EntityApiError> for Error {
                 message: message.clone(),
                 details: details.clone(),
             },
+            EntityApiErrorKind::CannotLinkCompletedGoal => EntityErrorKind::CannotLinkCompletedGoal,
+            EntityApiErrorKind::GoalAlreadyLinkedToSession => {
+                EntityErrorKind::GoalAlreadyLinkedToSession
+            }
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
