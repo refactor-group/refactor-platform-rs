@@ -20,21 +20,26 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 /// `NotStarted`/`OnHold` to `InProgress`) happen atomically inside a transaction.
 /// On commit, this publishes `CoachingSessionGoalCreated` and — when the link
 /// promoted the goal — also `GoalUpdated` so subscribers see the new status.
+///
+/// The relationship lookup needed for SSE event routing is performed **before**
+/// the write transaction opens, so a missing/inaccessible session fails fast
+/// without ever touching the join table or goal status — preventing the
+/// "writes committed, response errored, no SSE fired" inconsistency.
 pub async fn link_to_coaching_session(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     coaching_session_id: Id,
     goal_id: Id,
 ) -> Result<coaching_sessions_goals::Model, Error> {
-    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let (link, promoted_goal) =
-        CoachingSessionGoalApi::create(&txn, coaching_session_id, goal_id).await?;
-    txn.commit().await.map_err(entity_api::error::Error::from)?;
-
     let (_, relationship) =
         crate::coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id)
             .await?;
     let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let (link, promoted_goal) =
+        CoachingSessionGoalApi::create(&txn, coaching_session_id, goal_id).await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     event_publisher
         .publish(DomainEvent::CoachingSessionGoalCreated {
@@ -54,7 +59,11 @@ pub async fn link_to_coaching_session(
         event_publisher
             .publish(DomainEvent::GoalUpdated {
                 coaching_relationship_id: goal.coaching_relationship_id,
-                goal: serde_json::to_value(&goal).unwrap_or(serde_json::Value::Null),
+                // Serialization of a SeaORM Model cannot fail in practice
+                // (no non-string-key maps, no NaN floats). If it ever does,
+                // that's a real bug we want loud — not a silent null payload
+                // that the FE would have to defensively handle.
+                goal: serde_json::to_value(&goal).expect("Goal model must be JSON-serializable"),
                 notify_user_ids,
             })
             .await;
@@ -298,27 +307,25 @@ mod integration_tests {
         let link = build_link(new_session_id, goal.id);
         let relationship = build_relationship(relationship_id);
 
-        // Mock sequence (inside the txn opened by link_to_coaching_session):
-        //   1. SELECT goal by id (entity_api::coaching_session_goal::create)
-        //   2. SELECT existing link (duplicate-check, returns empty)
-        //   3. SELECT in-progress goals on relationship (cap check, returns empty)
-        //   4. INSERT into coaching_sessions_goals (the new link row)
-        //   5. UPDATE goals (auto-promotion to InProgress)
-        // After commit:
-        //   6. find_by_id_with_coaching_relationship for event-routing user IDs
+        // Mock sequence (relationship lookup now runs FIRST, before the txn opens,
+        // so a missing session fails fast without any writes):
+        //   1. find_by_id_with_coaching_relationship — JOIN returning (session, relationship)
+        // Then inside the txn opened by link_to_coaching_session:
+        //   2. SELECT goal by id (entity_api::coaching_session_goal::create)
+        //   3. SELECT existing link (duplicate-check, returns empty)
+        //   4. SELECT in-progress goals on relationship (cap check, returns empty)
+        //   5. INSERT into coaching_sessions_goals (the new link row)
+        //   6. UPDATE goals (auto-promotion to InProgress)
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![(
+                build_session(new_session_id, relationship_id),
+                Some(relationship.clone()),
+            )]])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
             .append_query_results(vec![Vec::<Model>::new()])
             .append_query_results(vec![vec![link.clone()]])
             .append_query_results(vec![vec![promoted.clone()]])
-            // The find_by_id_with_coaching_relationship query is a JOIN that
-            // returns (link, relationship) — the mock harness for find_also_linked
-            // expects a row of the joined shape.
-            .append_query_results(vec![vec![(
-                build_session(new_session_id, relationship_id),
-                Some(relationship.clone()),
-            )]])
             .into_connection();
 
         let (publisher, recorded) = recording_publisher();
@@ -385,19 +392,19 @@ mod integration_tests {
         let link = build_link(new_session_id, goal.id);
         let relationship = build_relationship(relationship_id);
 
-        // Mock sequence (no cap-check, no promotion update):
-        //   1. SELECT goal by id
-        //   2. SELECT existing link (duplicate-check, returns empty)
-        //   3. INSERT into coaching_sessions_goals
-        //   4. find_by_id_with_coaching_relationship
+        // Mock sequence (relationship lookup first, no cap-check, no promotion update):
+        //   1. find_by_id_with_coaching_relationship
+        //   2. SELECT goal by id
+        //   3. SELECT existing link (duplicate-check, returns empty)
+        //   4. INSERT into coaching_sessions_goals
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![goal.clone()]])
-            .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
-            .append_query_results(vec![vec![link.clone()]])
             .append_query_results(vec![vec![(
                 build_session(new_session_id, relationship_id),
                 Some(relationship.clone()),
             )]])
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
+            .append_query_results(vec![vec![link.clone()]])
             .into_connection();
 
         let (publisher, recorded) = recording_publisher();
@@ -426,12 +433,19 @@ mod integration_tests {
         let new_session_id = Id::new_v4();
         let goal = build_goal(Status::InProgress, relationship_id);
         let existing_link = build_link(new_session_id, goal.id);
+        let relationship = build_relationship(relationship_id);
 
-        // Mock sequence (inside txn):
-        //   1. SELECT goal by id
-        //   2. SELECT existing link — returns the existing row, triggering 409
+        // Mock sequence:
+        //   1. find_by_id_with_coaching_relationship (pre-txn, fail-fast lookup)
+        // Then inside txn:
+        //   2. SELECT goal by id
+        //   3. SELECT existing link — returns the existing row, triggering 409
         // No further queries — error returns before INSERT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![(
+                build_session(new_session_id, relationship_id),
+                Some(relationship.clone()),
+            )]])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![vec![existing_link]])
             .into_connection();
@@ -465,11 +479,18 @@ mod integration_tests {
         let relationship_id = Id::new_v4();
         let new_session_id = Id::new_v4();
         let goal = build_goal(Status::Completed, relationship_id);
+        let relationship = build_relationship(relationship_id);
 
         // Mock sequence:
-        //   1. SELECT goal by id (returns Completed goal)
+        //   1. find_by_id_with_coaching_relationship (pre-txn, fail-fast lookup)
+        // Then inside txn:
+        //   2. SELECT goal by id (returns Completed goal)
         // No further queries — error returns immediately.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![(
+                build_session(new_session_id, relationship_id),
+                Some(relationship.clone()),
+            )]])
             .append_query_results(vec![vec![goal.clone()]])
             .into_connection();
 
@@ -510,13 +531,20 @@ mod integration_tests {
             build_goal(Status::InProgress, relationship_id),
             build_goal(Status::InProgress, relationship_id),
         ];
+        let relationship = build_relationship(relationship_id);
 
-        // Mock sequence (inside txn):
-        //   1. SELECT goal by id (returns NotStarted)
-        //   2. SELECT existing link (duplicate-check, empty)
-        //   3. SELECT in-progress goals on relationship (cap check, returns 3 → at cap)
+        // Mock sequence:
+        //   1. find_by_id_with_coaching_relationship (pre-txn, fail-fast lookup)
+        // Then inside txn:
+        //   2. SELECT goal by id (returns NotStarted)
+        //   3. SELECT existing link (duplicate-check, empty)
+        //   4. SELECT in-progress goals on relationship (cap check, returns 3 → at cap)
         // No further queries — error returns before INSERT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![(
+                build_session(new_session_id, relationship_id),
+                Some(relationship.clone()),
+            )]])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
             .append_query_results(vec![cap_goals])
