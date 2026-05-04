@@ -45,6 +45,7 @@ struct TranscriptProvider {
 
 #[derive(Debug, Serialize)]
 struct AssemblyAiConfig {
+    speech_models: Vec<&'static str>,
     language_detection: bool,
     sentiment_analysis: bool,
     speaker_labels: bool,
@@ -60,11 +61,17 @@ struct TranscriptLinks {
     download_url: Option<String>,
 }
 
+/// Recall.ai returns `status` as an object: `{"code": "processing", "message": null}`.
+#[derive(Debug, Deserialize)]
+struct TranscriptStatusField {
+    code: Option<String>,
+}
+
 /// Response from the Recall.ai async transcript endpoints.
 #[derive(Debug, Deserialize)]
 pub struct TranscriptMetadata {
     pub id: String,
-    status: Option<String>,
+    status: Option<TranscriptStatusField>,
     data: Option<TranscriptLinks>,
 }
 
@@ -74,7 +81,7 @@ impl TranscriptMetadata {
     }
 
     pub fn status_str(&self) -> Option<&str> {
-        self.status.as_deref()
+        self.status.as_ref()?.code.as_deref()
     }
 }
 
@@ -425,6 +432,7 @@ impl Provider {
         let request = CreateTranscriptRequest {
             provider: TranscriptProvider {
                 assembly_ai_async: AssemblyAiConfig {
+                    speech_models: vec!["universal-2"],
                     language_detection: true,
                     sentiment_analysis: true,
                     speaker_labels: true,
