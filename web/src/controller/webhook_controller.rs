@@ -42,7 +42,13 @@ pub async fn recall_ai(
         }
     };
 
-    match domain::webhook::dispatch(&app_state.database_connection, &app_state.config, event).await
+    match domain::webhook::dispatch(
+        &app_state.database_connection,
+        &app_state.config,
+        &app_state.event_publisher,
+        event,
+    )
+    .await
     {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {

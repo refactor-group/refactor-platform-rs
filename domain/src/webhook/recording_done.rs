@@ -2,6 +2,7 @@ use crate::error::Error;
 use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus};
 use crate::transcription as transcription_api;
 use entity::Id;
+use events::{DomainEvent, EventPublisher};
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 pub async fn handle(
     db: Arc<DatabaseConnection>,
     config: Config,
+    event_publisher: EventPublisher,
     bot_id: &str,
     recall_recording_id: &str,
     coaching_session_id: Option<Id>,
@@ -55,28 +57,75 @@ pub async fn handle(
     )
     .await?;
 
+    match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await {
+        Ok(user_ids) => {
+            event_publisher
+                .publish(DomainEvent::MeetingRecordingUpdated {
+                    coaching_session_id,
+                    notify_user_ids: user_ids,
+                })
+                .await;
+        }
+        Err(e) => warn!(
+            "recording_done: could not resolve participants for session {}: {:?}",
+            coaching_session_id, e
+        ),
+    }
+
     let recall_recording_id = recall_recording_id.to_string();
 
     tokio::spawn(async move {
-        if let Err(e) =
-            crate::transcription::start(&db, &config, &recording, &recall_recording_id).await
-        {
-            error!(
-                "recording.done: transcription start failed for session={}: {:?}",
-                coaching_session_id, e
-            );
-            let _ = recording_api::update_status(
-                &db,
-                recording.id,
-                MeetingRecordingStatus::Failed,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(e.to_string()),
-            )
-            .await;
+        match crate::transcription::start(&db, &config, &recording, &recall_recording_id).await {
+            Ok(_) => {
+                match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await
+                {
+                    Ok(user_ids) => {
+                        event_publisher
+                            .publish(DomainEvent::TranscriptionUpdated {
+                                coaching_session_id,
+                                notify_user_ids: user_ids,
+                            })
+                            .await;
+                    }
+                    Err(e) => warn!(
+                        "recording_done: could not resolve participants for TranscriptionUpdated: {:?}",
+                        e
+                    ),
+                }
+            }
+            Err(e) => {
+                error!(
+                    "recording.done: transcription start failed for session={}: {:?}",
+                    coaching_session_id, e
+                );
+                let _ = recording_api::update_status(
+                    &db,
+                    recording.id,
+                    MeetingRecordingStatus::Failed,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(e.to_string()),
+                )
+                .await;
+                match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await
+                {
+                    Ok(user_ids) => {
+                        event_publisher
+                            .publish(DomainEvent::MeetingRecordingUpdated {
+                                coaching_session_id,
+                                notify_user_ids: user_ids,
+                            })
+                            .await;
+                    }
+                    Err(e) => warn!(
+                        "recording_done: could not resolve participants for failure MeetingRecordingUpdated: {:?}",
+                        e
+                    ),
+                }
+            }
         }
     });
 

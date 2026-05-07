@@ -4,6 +4,8 @@ Full lifecycle from coach starting a recording through transcript segments being
 
 **Webhook delivery note:** All events (`bot.*`, `recording.*`, `transcript.*`) are delivered via the account-level subscription configured in the Recall.ai dashboard to `POST /webhooks/recall_ai`. Each request is verified using Svix HMAC-SHA256 signature validation with a 5-minute replay window.
 
+**Real-time updates:** Status changes are pushed to connected clients via SSE (`meeting_recording_updated`, `transcription_updated` events). Each SSE event carries `coaching_session_id` and is routed to the coach and coachee. The frontend uses these events to invalidate SWR cache and refetch. SWR `revalidateOnFocus` / `revalidateOnReconnect` serve as the offline fallback — no polling.
+
 ```mermaid
 sequenceDiagram
     participant FE as Next.js (FE)
@@ -28,23 +30,22 @@ sequenceDiagram
         Note over FE,Recall: Phase 2 — Bot Joins Meeting
         Recall->>BE: POST /webhooks/recall_ai<br/>{ event: "bot.joining_call", data: { bot: { id } } }
         BE->>DB: update_status → Joining
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
+        FE->>BE: GET /coaching_sessions/:id/meeting_recording (SWR revalidate)
         Recall->>BE: POST /webhooks/recall_ai { event: "bot.in_waiting_room" }
         BE->>DB: update_status → WaitingRoom
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
         Recall->>BE: POST /webhooks/recall_ai { event: "bot.in_call_not_recording" }
         BE->>DB: update_status → InMeeting
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
         Recall->>BE: POST /webhooks/recall_ai { event: "bot.in_call_recording" }
         BE->>DB: update_status → Recording
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
     end
 
     rect rgb(255, 255, 220)
-        Note over FE,BE: Phase 3 — FE Polls During Active Recording (every 5s)
-        loop While status is Joining / WaitingRoom / InMeeting / Recording / Processing
-            FE->>BE: GET /coaching_sessions/:id/meeting_recording
-            BE->>DB: find_latest_by_coaching_session
-            DB-->>BE: recording
-            BE-->>FE: { status: "recording", ... }
-        end
-        Note over FE: Polling pauses when browser tab is hidden (Page Visibility API)
+        Note over FE,BE: Phase 3 — FE Receives SSE Push (replaces polling)
+        Note over FE: SSE connection open at /sse (authenticated)<br/>Each bot.* webhook emits meeting_recording_updated<br/>FE invalidates SWR cache → refetches current status<br/>Fallback: SWR revalidateOnFocus / revalidateOnReconnect
     end
 
     rect rgb(255, 235, 220)
@@ -72,20 +73,22 @@ sequenceDiagram
         BE->>DB: find_by_coaching_session (idempotency: transcription exists?)
         DB-->>BE: None
         BE->>DB: update_status → Completed, set ended_at
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
         Note over BE: Async task spawned (tokio::spawn) — 200 returned immediately
         BE-->>Recall: 200 (webhook acknowledged)
         BE->>Recall: POST /api/v1/recording/:recall_recording_id/create_transcript/<br/>{ provider: { assembly_ai_async: { language_detection: true,<br/>sentiment_analysis: true, speaker_labels: true } },<br/>diarization: { use_separate_streams_when_available: true } }
         Recall-->>BE: { id: transcript_id }
         BE->>DB: INSERT transcriptions (status: Queued, external_id: transcript_id,<br/>recall_recording_id)
+        BE-->>FE: SSE event: transcription_updated { coaching_session_id }
     end
 
     rect rgb(255, 220, 235)
-        Note over FE,Recall: Phase 7 — Transcription Processing
-        FE->>BE: GET /coaching_sessions/:id/transcriptions
+        Note over FE,Recall: Phase 7 — Transcription Processing (SSE-driven)
+        FE->>BE: GET /coaching_sessions/:id/transcriptions (SWR revalidate on SSE event)
         BE->>DB: find_by_coaching_session
         DB-->>BE: transcription (status: Queued)
         BE-->>FE: { status: "queued" }
-        FE->>FE: Begin polling every 10s (30 min timeout)
+        Note over FE: No polling — FE waits for next SSE push
 
         Note over Recall: Recall.ai/AssemblyAI processes audio
 
@@ -106,15 +109,16 @@ sequenceDiagram
         Note over BE: Flatten words by speaker, sort chronologically,<br/>coalesce (same speaker + gap under 1.5s = same segment)
         BE->>DB: update_status → Completed, set word_count
         BE->>DB: batch INSERT transcript_segments<br/>(speaker_label, text, start_ms, end_ms)
+        BE-->>FE: SSE event: transcription_updated { coaching_session_id }
     end
 
     rect rgb(220, 255, 245)
-        Note over FE,BE: Phase 8 — FE Renders Transcript
-        FE->>BE: GET /coaching_sessions/:id/transcriptions
+        Note over FE,BE: Phase 8 — FE Renders Transcript (SSE-triggered)
+        FE->>BE: GET /coaching_sessions/:id/transcriptions (SWR revalidate on SSE event)
         BE->>DB: find_by_coaching_session
         DB-->>BE: transcription (status: Completed)
         BE-->>FE: { status: "completed", id }
-        FE->>FE: Stop polling (terminal status)
+        Note over FE: SWR also invalidates transcription_segments cache
         FE->>BE: GET /coaching_sessions/:id/transcriptions/:id/transcription_segments
         BE->>DB: list segments for transcription_id ORDER BY start_ms ASC
         DB-->>BE: [{ speaker_label, text, start_ms, end_ms }]

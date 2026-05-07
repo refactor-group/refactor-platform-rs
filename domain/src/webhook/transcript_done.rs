@@ -1,5 +1,7 @@
 use crate::error::Error;
 use crate::transcription::{self as transcription_api, TranscriptionStatus};
+use entity::Id;
+use events::{DomainEvent, EventPublisher};
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
@@ -8,6 +10,7 @@ use std::sync::Arc;
 pub async fn handle(
     db: Arc<DatabaseConnection>,
     config: Config,
+    event_publisher: EventPublisher,
     transcript_id: &str,
 ) -> Result<(), Error> {
     let transcription = match transcription_api::find_by_external_id(&db, transcript_id).await? {
@@ -38,11 +41,13 @@ pub async fn handle(
     }
 
     let transcription_id = transcription.id;
+    let coaching_session_id: Id = transcription.coaching_session_id;
     let transcript_id = transcript_id.to_string();
 
     tokio::spawn(async move {
-        if let Err(e) = crate::transcription::handle_completion(&db, &config, &transcript_id).await
-        {
+        let result = crate::transcription::handle_completion(&db, &config, &transcript_id).await;
+
+        if let Err(e) = result {
             error!(
                 "transcript.done: completion failed for external_id={}: {:?}",
                 transcript_id, e
@@ -56,6 +61,21 @@ pub async fn handle(
                 Some(e.to_string()),
             )
             .await;
+        }
+
+        match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await {
+            Ok(user_ids) => {
+                event_publisher
+                    .publish(DomainEvent::TranscriptionUpdated {
+                        coaching_session_id,
+                        notify_user_ids: user_ids,
+                    })
+                    .await;
+            }
+            Err(e) => warn!(
+                "transcript_done: could not resolve participants for session {}: {:?}",
+                coaching_session_id, e
+            ),
         }
     });
 

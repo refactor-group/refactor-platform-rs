@@ -9,6 +9,7 @@ pub mod transcript_processing;
 use crate::error::{DomainErrorKind, Error};
 use crate::meeting_recording::MeetingRecordingStatus;
 use entity::Id;
+use events::EventPublisher;
 use log::debug;
 use sea_orm::DatabaseConnection;
 use serde::Deserialize;
@@ -208,14 +209,17 @@ impl Event {
 pub async fn dispatch(
     db: &Arc<DatabaseConnection>,
     config: &Config,
+    event_publisher: &EventPublisher,
     event: Event,
 ) -> Result<(), Error> {
     match event {
-        Event::BotStatus { bot_id, status } => bot_status::handle(db, &bot_id, status).await,
+        Event::BotStatus { bot_id, status } => {
+            bot_status::handle(db, event_publisher, &bot_id, status).await
+        }
         Event::BotFatal {
             bot_id,
             error_message,
-        } => bot_fatal::handle(db, &bot_id, error_message).await,
+        } => bot_fatal::handle(db, event_publisher, &bot_id, error_message).await,
         Event::RecordingDone {
             bot_id,
             recall_recording_id,
@@ -224,6 +228,7 @@ pub async fn dispatch(
             recording_done::handle(
                 Arc::clone(db),
                 config.clone(),
+                event_publisher.clone(),
                 &bot_id,
                 &recall_recording_id,
                 coaching_session_id,
@@ -233,14 +238,20 @@ pub async fn dispatch(
         Event::RecordingFailed {
             bot_id,
             error_message,
-        } => recording_failed::handle(db, &bot_id, error_message).await,
+        } => recording_failed::handle(db, event_publisher, &bot_id, error_message).await,
         Event::TranscriptDone { transcript_id } => {
-            transcript_done::handle(Arc::clone(db), config.clone(), &transcript_id).await
+            transcript_done::handle(
+                Arc::clone(db),
+                config.clone(),
+                event_publisher.clone(),
+                &transcript_id,
+            )
+            .await
         }
         Event::TranscriptFailed {
             transcript_id,
             error_message,
-        } => transcript_failed::handle(db, &transcript_id, error_message).await,
+        } => transcript_failed::handle(db, event_publisher, &transcript_id, error_message).await,
         Event::TranscriptProcessing { transcript_id } => {
             transcript_processing::handle(&transcript_id);
             Ok(())

@@ -1,10 +1,12 @@
 use crate::error::Error;
 use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus};
+use events::{DomainEvent, EventPublisher};
 use log::*;
 use sea_orm::DatabaseConnection;
 
 pub async fn handle(
     db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
     bot_id: &str,
     status: MeetingRecordingStatus,
 ) -> Result<(), Error> {
@@ -29,6 +31,22 @@ pub async fn handle(
 
     recording_api::update_status(db, recording.id, status, None, None, None, None, None, None)
         .await?;
+
+    let coaching_session_id = recording.coaching_session_id;
+    match crate::coaching_session::find_participant_ids(db, coaching_session_id).await {
+        Ok(user_ids) => {
+            event_publisher
+                .publish(DomainEvent::MeetingRecordingUpdated {
+                    coaching_session_id,
+                    notify_user_ids: user_ids,
+                })
+                .await;
+        }
+        Err(e) => warn!(
+            "bot_status: could not resolve participants for session {}: {:?}",
+            coaching_session_id, e
+        ),
+    }
 
     Ok(())
 }
