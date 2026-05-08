@@ -20,10 +20,9 @@ on:
         required: true
         type: choice
         options:
-          - 'e166cb0 - chore: refresh preview commit choices [skip ci]'
-          - '98994a1 - Merge pull request #299 from refactor-group/fix/auto-promote-goal-on-session-link'
-          - 'd4eaf4b - fix: lookup relationship before opening link txn'
-          - b569c3c - PR#301 (chore/pr-preview-env-parity)
+          - '65b81a0 - Merge pull request #301 from refactor-group/chore/pr-preview-env-parity'
+          - 0ecdc93 - Merge branch 'main' into chore/pr-preview-env-parity
+          - 'ff6092e - chore(pr-preview): drop env vars that already have correct Rust defaults'
           - 8356119 - PR#300 (dependabot/cargo/cargo-4410b43)
           - a1f8a01 - PR#298 (mcp-proof-of-concept-via-warp)
           - f0e953f - PR#297 (mcp-server-adr)
