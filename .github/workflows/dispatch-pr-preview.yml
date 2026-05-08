@@ -20,10 +20,9 @@ on:
         required: true
         type: choice
         options:
-          - '2ca6115 - chore: refresh preview commit choices [skip ci]'
-          - '9b4b017 - chore: refresh preview commit choices [skip ci]'
-          - '65b81a0 - Merge pull request #301 from refactor-group/chore/pr-preview-env-parity'
-          - 6ade653 - PR#303 (chore/pr-preview-configurable-)
+          - '9450a36 - Merge pull request #303 from refactor-group/chore/pr-preview-configurable-log-level'
+          - 357753c - Merge branch 'main' into chore/pr-preview-configurable-log-level
+          - 'ccba839 - chore: refresh preview commit choices [skip ci]'
           - 8356119 - PR#300 (dependabot/cargo/cargo-4410b43)
           - a1f8a01 - PR#298 (mcp-proof-of-concept-via-warp)
           - f0e953f - PR#297 (mcp-server-adr)
@@ -39,7 +38,7 @@ on:
           - '54e8b95 - Merge pull request #388 from refactor-group/feat/upcomi'
           - 28e4ab8 - Merge branch 'main' into feat/upcoming-sessions-weekday
           - b5bda75 - PR#379 (ci/runtime-ref-resolver)
-          - e0b0680 - PR#373 (feature/transcript-pane)
+          - 0cfab34 - PR#373 (feature/transcript-pane)
           - abe1231 - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
           - d9e1e08 - PR#243 (feature/146-ai-meeting-integra)
