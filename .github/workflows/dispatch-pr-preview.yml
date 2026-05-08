@@ -20,26 +20,26 @@ on:
         required: true
         type: choice
         options:
+          - 'e166cb0 - chore: refresh preview commit choices [skip ci]'
           - '98994a1 - Merge pull request #299 from refactor-group/fix/auto-promote-goal-on-session-link'
           - 'd4eaf4b - fix: lookup relationship before opening link txn'
-          - fab17fa - Merge branch 'main' into fix/auto-promote-goal-on-session-link
+          - b569c3c - PR#301 (chore/pr-preview-env-parity)
+          - 8356119 - PR#300 (dependabot/cargo/cargo-4410b43)
           - a1f8a01 - PR#298 (mcp-proof-of-concept-via-warp)
           - f0e953f - PR#297 (mcp-server-adr)
-          - 1123161 - PR#291 (ci/runtime-ref-resolver)
-          - b85b2ac - PR#254 (ai-transcription-milestone-2)
+          - 7b105de - PR#291 (ci/runtime-ref-resolver)
+          - 9b3da81 - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
         description: "Frontend commit to deploy"
         required: true
         type: choice
         options:
-          - 'fa9d597 - chore: refresh preview commit choices [skip ci]'
-          - '94435d6 - chore: refresh preview commit choices [skip ci]'
-          - 'c43ae9b - chore: refresh preview commit choices [skip ci]'
-          - 0a94cee - PR#383 (fix/goal-link-error-handling)
-          - 752f775 - PR#382 (feat/dashboard-sessions-list)
-          - 1a12c9a - PR#379 (ci/runtime-ref-resolver)
-          - 9d95029 - PR#373 (feature/transcript-pane)
+          - '78bee04 - chore: refresh preview commit choices [skip ci]'
+          - '54e8b95 - Merge pull request #388 from refactor-group/feat/upcomi'
+          - 28e4ab8 - Merge branch 'main' into feat/upcoming-sessions-weekday
+          - b5bda75 - PR#379 (ci/runtime-ref-resolver)
+          - e0b0680 - PR#373 (feature/transcript-pane)
           - abe1231 - PR#318 (docs/goals-implementation-plan)
           - 9e30ca1 - PR#315 (improve-nullable-types)
           - d9e1e08 - PR#243 (feature/146-ai-meeting-integra)
