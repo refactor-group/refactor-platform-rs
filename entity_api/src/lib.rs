@@ -326,7 +326,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // Jim: User in Refactor Coaching and Acme Corp
     user_roles::ActiveModel {
         role: Set(Role::User),
-        organization_id: Set(Some(refactor_coaching_id.clone())),
+        organization_id: Set(Some(refactor_coaching_id)),
         user_id: Set(jim_hodapp.id.clone().unwrap()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -351,7 +351,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // Caleb: User in Refactor Coaching and Acme Corp
     user_roles::ActiveModel {
         role: Set(Role::User),
-        organization_id: Set(Some(refactor_coaching_id.clone())),
+        organization_id: Set(Some(refactor_coaching_id)),
         user_id: Set(caleb_bourg.id.clone().unwrap()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
