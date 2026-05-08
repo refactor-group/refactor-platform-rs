@@ -83,8 +83,32 @@ services:
       TIPTAP_URL: ${TIPTAP_URL}
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+
+      # Email notifications
       MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
+      MAILERSEND_BASE_URL: ${MAILERSEND_BASE_URL}
       WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID}
+      SESSION_SCHEDULED_EMAIL_TEMPLATE_ID: ${SESSION_SCHEDULED_EMAIL_TEMPLATE_ID}
+      ACTION_ASSIGNED_EMAIL_TEMPLATE_ID: ${ACTION_ASSIGNED_EMAIL_TEMPLATE_ID}
+      SESSION_SCHEDULED_EMAIL_URL_PATH: ${SESSION_SCHEDULED_EMAIL_URL_PATH}
+      ACTION_ASSIGNED_EMAIL_URL_PATH: ${ACTION_ASSIGNED_EMAIL_URL_PATH}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
+
+      # Google OAuth / AI Meeting Integration
+      # NOTE: OAuth in PR previews uses a wildcard parent redirect URI strategy —
+      # one URI registered in the Google OAuth console (set as PR_PREVIEW_GOOGLE_REDIRECT_URI),
+      # backend bounces to /pr-<NUM>/ via the OAuth state param after token exchange.
+      # OAuth flow will not function until backend (meeting-auth/) and nginx-preview
+      # config implement the wildcard handler. Until then, secrets default to 'UNUSED'.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
+      OAUTH_SUCCESS_REDIRECT_URI: ${OAUTH_SUCCESS_REDIRECT_URI}
+      GOOGLE_OAUTH_AUTH_URL: ${GOOGLE_OAUTH_AUTH_URL}
+      GOOGLE_OAUTH_TOKEN_URL: ${GOOGLE_OAUTH_TOKEN_URL}
+      GOOGLE_USERINFO_URL: ${GOOGLE_USERINFO_URL}
+      GOOGLE_MEET_API_URL: ${GOOGLE_MEET_API_URL}
     # Expose port to Docker networks only (no host port binding)
     expose:
       - "4000"                            # Container listens on port 4000 (entrypoint.sh default)
