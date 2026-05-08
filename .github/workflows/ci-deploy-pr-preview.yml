@@ -75,6 +75,12 @@ on:
                 required: false
                 type: string
                 default: ""
+            # Backend log filter level for the deployed container (Rust env_logger / tracing-subscriber filter directive)
+            log_level:
+                description: "Backend log filter level (e.g. INFO, DEBUG, TRACE, WARN, ERROR)"
+                required: false
+                type: string
+                default: "INFO"
         # =========================================================================
         # SECRETS
         # =========================================================================
@@ -1079,7 +1085,7 @@ jobs:
                   RUST_BACKTRACE=1
                   BACKEND_INTERFACE=0.0.0.0
                   BACKEND_ALLOWED_ORIGINS=*
-                  BACKEND_LOG_FILTER_LEVEL=INFO
+                  BACKEND_LOG_FILTER_LEVEL=${{ inputs.log_level }}
                   BACKEND_SESSION_EXPIRY_SECONDS=86400
                   DB_MAX_CONNECTIONS=19
                   DB_MIN_CONNECTIONS=5

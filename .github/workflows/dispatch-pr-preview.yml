@@ -52,6 +52,17 @@ on:
         required: false
         type: string
         default: ""
+      log_level:
+        description: "Backend log filter level for this preview deploy"
+        required: false
+        type: choice
+        default: INFO
+        options:
+          - ERROR
+          - WARN
+          - INFO
+          - DEBUG
+          - TRACE
 # Prevent multiple manual deployments for the same PR
 concurrency:
   group: pr-preview-backend-dispatch-${{ inputs.backend_commit }}
@@ -187,4 +198,5 @@ jobs:
       backend_sha: ${{ needs.validate.outputs.backend_sha }}
       frontend_sha: ${{ needs.validate.outputs.frontend_sha }}
       force_rebuild: false
+      log_level: ${{ inputs.log_level }}
     secrets: inherit
