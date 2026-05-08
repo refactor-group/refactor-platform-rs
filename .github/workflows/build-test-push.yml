@@ -21,6 +21,23 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # === BATS JOB (Dispatch-Workflow Regex Regression Tests) ===
+  # Pins the input-classification regexes and field-protection helpers in
+  # dispatch-pr-preview.yml. Folded into this workflow so the Actions sidebar
+  # stays uncluttered (no separate "Test Dispatch Regex" entry).
+  bats:
+    name: Dispatch Regex Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run bats suite
+        run: bats .github/workflows/tests/dispatch-pr-preview.bats
+
   # === LINT JOB (Fast Feedback) ===
   lint:
     name: Lint & Format
