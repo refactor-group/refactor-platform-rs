@@ -15,6 +15,7 @@ use utoipa::ToSchema;
     Default,
     ToSchema,
 )]
+#[serde(rename_all = "snake_case")]
 #[sea_orm(
     rs_type = "String",
     db_type = "Enum",
