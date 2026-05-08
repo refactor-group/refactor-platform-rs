@@ -20,14 +20,15 @@ on:
         required: true
         type: choice
         options:
+          - '2ca6115 - chore: refresh preview commit choices [skip ci]'
           - '9b4b017 - chore: refresh preview commit choices [skip ci]'
           - '65b81a0 - Merge pull request #301 from refactor-group/chore/pr-preview-env-parity'
-          - 0ecdc93 - Merge branch 'main' into chore/pr-preview-env-parity
+          - 6ade653 - PR#303 (chore/pr-preview-configurable-)
           - 8356119 - PR#300 (dependabot/cargo/cargo-4410b43)
           - a1f8a01 - PR#298 (mcp-proof-of-concept-via-warp)
           - f0e953f - PR#297 (mcp-server-adr)
           - 7b105de - PR#291 (ci/runtime-ref-resolver)
-          - 4800622 - PR#254 (ai-transcription-milestone-2)
+          - 0b7cdad - PR#254 (ai-transcription-milestone-2)
           - dcaf354 - PR#213 (feature/146-ai-meeting-integra)
       frontend_commit:
         description: "Frontend commit to deploy"
