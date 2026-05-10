@@ -187,6 +187,11 @@ jobs:
           echo "🧹 Starting cleanup for PR #${PR_NUMBER}..."
 
           # Execute cleanup script on RPi5 with proper error handling
+          # The cleanup script below is heredoc'd to the RPi5 over SSH. It is
+          # designed to be fully idempotent and exhaustive: every PR-scoped
+          # resource (containers, volumes, networks, images, ports) is
+          # cleared, even if compose itself can't find the project anymore
+          # (e.g. compose file was already deleted by a half-completed run).
           cat << 'CLEANUP_SCRIPT' | ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
             ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
             /bin/bash
@@ -196,6 +201,9 @@ jobs:
           PR_NUMBER="${{ steps.context.outputs.pr_number }}"
           PROJECT_NAME="${{ steps.context.outputs.project_name }}"
           RPI5_USERNAME="${{ secrets.RPI5_USERNAME }}"
+          BACKEND_PORT="${{ steps.context.outputs.backend_port }}"
+          FRONTEND_PORT="${{ steps.context.outputs.frontend_port }}"
+          POSTGRES_PORT="${{ steps.context.outputs.postgres_port }}"
 
           # Guard against accidentally running on the GitHub runner
           if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
@@ -205,70 +213,95 @@ jobs:
 
           cd /home/${RPI5_USERNAME}
 
-          echo "🛑 Stopping and removing containers for ${PROJECT_NAME}..."
+          # ---------------------------------------------------------------
+          # Step 1 — Compose-driven teardown (the happy path).
+          # `--volumes --remove-orphans --rmi local` removes containers,
+          # named volumes declared in the compose file, orphan containers,
+          # and any image built by *this* compose project (postgres:17 and
+          # other tagged-elsewhere images survive).
+          # ---------------------------------------------------------------
+          echo "🛑 Compose-driven teardown for project ${PROJECT_NAME}..."
           if [[ -f pr-${PR_NUMBER}-compose.yaml ]]; then
-            if docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down --volumes --remove-orphans; then
-              echo "✅ Containers stopped and removed"
-            else
-              echo "⚠️  docker compose down failed, force-removing containers..."
-              docker ps -a --filter "name=${PROJECT_NAME}" --format '{{.ID}}' | xargs -r docker rm -f || true
+            docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml \
+              down --volumes --remove-orphans --rmi local --timeout 30 2>/dev/null || \
+              echo "⚠️  compose down hit an error — falling through to label-based cleanup"
+          else
+            echo "⚠️  Compose file missing — skipping compose down, will rely on label-based cleanup"
+          fi
+
+          # ---------------------------------------------------------------
+          # Step 2 — Defensive sweep by Compose project label.
+          # Compose tags every resource it creates with
+          # `com.docker.compose.project=<project>`. Filtering on that label
+          # is more reliable than container name globs.
+          # ---------------------------------------------------------------
+          PROJECT_FILTER="label=com.docker.compose.project=${PROJECT_NAME}"
+
+          echo "🧽 Sweeping any leftover resources tagged for ${PROJECT_NAME}..."
+          docker ps -aq --filter "${PROJECT_FILTER}" | xargs -r docker rm -f
+          docker volume ls -q --filter "${PROJECT_FILTER}" | xargs -r docker volume rm -f
+          docker network ls -q --filter "${PROJECT_FILTER}" | xargs -r docker network rm 2>/dev/null || true
+
+          # Belt-and-braces: postgres volume name is deterministic so remove
+          # it explicitly even if the label filter misses it.
+          docker volume rm -f ${PROJECT_NAME}_postgres_data 2>/dev/null || true
+
+          # ---------------------------------------------------------------
+          # Step 3 — Remove PR-tagged images from the local cache.
+          # Tag pattern is `ghcr.io/<owner>/<repo>:pr-<NUM>` for both
+          # backend and frontend. Untagged images created during the build
+          # are caught by the prune below.
+          # ---------------------------------------------------------------
+          echo "🗑️  Removing PR-${PR_NUMBER} images from local cache..."
+          docker images --format '{{.Repository}}:{{.Tag}}' \
+            | grep -E ":pr-${PR_NUMBER}(-[0-9a-f]{7,40})?$" \
+            | xargs -r docker rmi -f 2>/dev/null || true
+          echo "📦 Shared base images retained (postgres:17, etc.)"
+
+          # ---------------------------------------------------------------
+          # Step 4 — Drop on-disk artifacts.
+          # ---------------------------------------------------------------
+          rm -f pr-${PR_NUMBER}-compose.yaml pr-${PR_NUMBER}.env
+
+          # ---------------------------------------------------------------
+          # Step 5 — Prune dangling resources.
+          # `prune -f` only removes resources unattached to running
+          # containers, so this is safe to run while other PR previews
+          # are up.
+          # ---------------------------------------------------------------
+          echo "🧹 Pruning dangling resources..."
+          docker network prune -f >/dev/null 2>&1 || true
+          docker volume prune -f >/dev/null 2>&1 || true
+          docker image prune -f  >/dev/null 2>&1 || true
+
+          # ---------------------------------------------------------------
+          # Step 6 — Verify ports are released.
+          # If anything is still listening on the PR's port range we want
+          # a loud warning so the next deploy isn't quietly reusing a
+          # zombie service. Exits 0 either way; the warning surfaces in
+          # the workflow run summary.
+          # ---------------------------------------------------------------
+          echo "🔍 Verifying ports for PR #${PR_NUMBER} are free..."
+          PORT_BUSY=0
+          for P in ${BACKEND_PORT} ${FRONTEND_PORT} ${POSTGRES_PORT}; do
+            if ss -ltn "sport = :$P" 2>/dev/null | tail -n +2 | grep -q LISTEN; then
+              echo "::warning::Port $P still bound after cleanup — investigate orphan container"
+              PORT_BUSY=1
             fi
-          else
-            echo "⚠️  Compose file not found, force-removing containers by name..."
-            docker ps -a --filter "name=${PROJECT_NAME}" --format '{{.ID}}' | xargs -r docker rm -f || true
+          done
+          if [[ "$PORT_BUSY" -eq 0 ]]; then
+            echo "✅ Ports ${BACKEND_PORT}, ${FRONTEND_PORT}, ${POSTGRES_PORT} are all free"
           fi
-
-          echo "📁 Removing compose file..."
-          if rm -f pr-${PR_NUMBER}-compose.yaml; then
-            echo "✅ Compose file removed"
-          else
-            echo "⚠️  Compose file not found"
-          fi
-
-          echo "📁 Removing environment file..."
-          if rm -f pr-${PR_NUMBER}.env; then
-            echo "✅ Environment file removed"
-          else
-            echo "⚠️  Environment file not found"
-          fi
-
-          # Volume cleanup - always remove when PR is closed or merged
-          echo "🗑️  Removing database volume..."
-          if docker volume rm ${PROJECT_NAME}_postgres_data 2>/dev/null; then
-            echo "✅ Volume removed"
-          else
-            echo "⚠️  Volume not found (may have been cleaned up already)"
-          fi
-
-          # Remove PR-specific Docker images (keep shared postgres:17 image)
-          echo ""
-          echo "🗑️  Removing PR-specific Docker images..."
-          PR_IMAGES=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep "pr-${PR_NUMBER}" || true)
-          if [[ -n "$PR_IMAGES" ]]; then
-            echo "$PR_IMAGES" | while read -r image; do
-              echo "   Removing: $image"
-              docker rmi -f "$image" 2>/dev/null || echo "   ⚠️  Failed to remove $image"
-            done
-            echo "✅ PR-specific images removed"
-          else
-            echo "⚠️  No PR-specific images found (may have been cleaned up already)"
-          fi
-          echo "📦 Shared images retained: postgres:17 (used by all PRs)"
-
-          # Prune dangling resources to prevent accumulation
-          echo ""
-          echo "🧹 Pruning dangling Docker resources..."
-          docker network prune -f 2>/dev/null || true
-          docker volume prune -f 2>/dev/null || true
-          docker image prune -f 2>/dev/null || true
-          echo "✅ Dangling resources pruned"
 
           echo ""
           echo "📊 Remaining PR environments on RPi5:"
-          REMAINING=$(docker ps --filter 'name=pr-' --format '{{.Names}}' 2>/dev/null | wc -l || true)
-          if [[ $REMAINING -gt 0 ]]; then
-            echo "Active PR environments: $REMAINING"
-            docker ps --filter 'name=pr-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | head -6 || true
+          REMAINING=$(docker ps --filter 'label=com.docker.compose.project' \
+            --format '{{ index .Labels "com.docker.compose.project" }}' 2>/dev/null \
+            | sort -u | grep -E '^pr-[0-9]+$' | wc -l || true)
+          if [[ "$REMAINING" -gt 0 ]]; then
+            echo "Active PR previews: $REMAINING"
+            docker ps --filter 'label=com.docker.compose.project' \
+              --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | head -8 || true
           else
             echo "No PR environments currently running ✨"
           fi
@@ -287,9 +320,7 @@ jobs:
             const prNumber = ${{ steps.context.outputs.pr_number }};
             const isMerged = '${{ steps.context.outputs.is_merged }}' === 'true';
             const cleanupReason = isMerged ? 'merged into main' : 'closed without merging';
-            const volumeStatus = isMerged
-              ? '📅 Retained for 7 days (auto-cleanup scheduled)'
-              : '🗑️  Removed immediately';
+            const volumeStatus = '🗑️  Removed immediately (volume + data)';
             const backendPort = ${{ steps.context.outputs.backend_port }};
             const postgresPort = ${{ steps.context.outputs.postgres_port }};
 
@@ -320,10 +351,9 @@ jobs:
             - Images remain in GHCR for auditability and future deployments
             - Frees disk space on RPi5 while maintaining deployment history
 
-            ### ⏰ Volume Retention Policy
-            ${isMerged
-              ? '- **Merged PRs:** Database volume retained for 7 days\n- Allows post-merge investigation if needed\n- Volume: `pr-' + prNumber + '_postgres_data`\n- Auto-cleanup: ' + new Date(Date.now() + 7*24*60*60*1000).toISOString().split('T')[0]
-              : '- **Closed PRs:** Database volume removed immediately\n- Frees up disk space on RPi5\n- No data retention for abandoned PRs'}
+            ### 🗄️  Volume Retention Policy
+            - Database volume \`pr-${prNumber}_postgres_data\` is **removed immediately** on PR close or merge.
+            - Across redeploys of the *same* PR, the volume is preserved (with seeded + test data) unless \`reset_db\` is toggled on the dispatch input.
 
             ---
             *Cleaned up: ${new Date().toISOString()}*
