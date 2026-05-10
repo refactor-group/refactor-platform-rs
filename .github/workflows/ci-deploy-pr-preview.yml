@@ -75,6 +75,12 @@ on:
                 required: false
                 type: string
                 default: ""
+            # Backend log filter level for the deployed container (Rust env_logger / tracing-subscriber filter directive)
+            log_level:
+                description: "Backend log filter level (e.g. INFO, DEBUG, TRACE, WARN, ERROR)"
+                required: false
+                type: string
+                default: "INFO"
         # =========================================================================
         # SECRETS
         # =========================================================================
@@ -1079,7 +1085,7 @@ jobs:
                   RUST_BACKTRACE=1
                   BACKEND_INTERFACE=0.0.0.0
                   BACKEND_ALLOWED_ORIGINS=*
-                  BACKEND_LOG_FILTER_LEVEL=INFO
+                  BACKEND_LOG_FILTER_LEVEL=${{ inputs.log_level }}
                   BACKEND_SESSION_EXPIRY_SECONDS=86400
                   DB_MAX_CONNECTIONS=19
                   DB_MIN_CONNECTIONS=5
@@ -1093,6 +1099,14 @@ jobs:
                   TIPTAP_URL='${{ secrets.PR_PREVIEW_TIPTAP_URL || 'UNUSED' }}'
                   MAILERSEND_API_KEY='${{ secrets.PR_PREVIEW_MAILERSEND_API_KEY || 'UNUSED' }}'
                   WELCOME_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  SESSION_SCHEDULED_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_SESSION_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  ACTION_ASSIGNED_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_ACTION_ASSIGNED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  FRONTEND_BASE_URL=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}
+                  ENCRYPTION_KEY='${{ secrets.PR_PREVIEW_ENCRYPTION_KEY || 'UNUSED' }}'
+                  GOOGLE_CLIENT_ID='${{ secrets.PR_PREVIEW_GOOGLE_CLIENT_ID || 'UNUSED' }}'
+                  GOOGLE_CLIENT_SECRET='${{ secrets.PR_PREVIEW_GOOGLE_CLIENT_SECRET || 'UNUSED' }}'
+                  GOOGLE_REDIRECT_URI='${{ secrets.PR_PREVIEW_GOOGLE_REDIRECT_URI || 'UNUSED' }}'
+                  OAUTH_SUCCESS_REDIRECT_URI=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}/
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
                   RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}'
