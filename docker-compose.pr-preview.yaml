@@ -48,6 +48,30 @@ services:
       # Use default network - Docker Compose project creates unique network automatically
       - default
     restart: "no"                        # Run once and exit (don't restart)
+
+  # Seed service - one-shot, profile-gated. The deploy workflow runs this only
+  # on the initial preview creation (empty volume) or when the dispatch's
+  # `reset_db` toggle is true. Subsequent updates to the same preview leave
+  # the database alone, preserving any data created during testing.
+  seed:
+    image: ${BACKEND_IMAGE}               # Same image as backend (carries seed_db binary)
+    platform: linux/arm64/v8
+    profiles: [seed]                     # Excluded from default `compose up`
+    environment:
+      ROLE: seed_db
+      RUST_ENV: ${RUST_ENV}
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1}
+      # The seed binary uses Config which expects DATABASE_URL with search_path.
+      # Mirror the migrator's connection string; seed_db doesn't run migrations
+      # itself — migrator must complete first (compose dependency below).
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3D${POSTGRES_SCHEMA}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA}
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - default
+    restart: "no"
   
   # Main backend application service
   backend:

@@ -81,6 +81,16 @@ on:
                 required: false
                 type: string
                 default: "INFO"
+            # When true, drop the per-PR postgres volume before deploying so the
+            # next start re-seeds with fresh data. When false (default), the
+            # volume is preserved across redeploys — the migrator still runs
+            # and applies any new schema migrations, but seed data and any
+            # data created during testing stays put.
+            reset_db:
+                description: "Reset Postgres: drop the per-PR volume and re-seed (default: false)"
+                required: false
+                type: string
+                default: "false"
         # =========================================================================
         # SECRETS
         # =========================================================================
@@ -218,6 +228,11 @@ on:
                 required: false
                 type: string
                 default: ""
+            reset_db:
+                description: "Reset Postgres: drop the per-PR volume and re-seed (default: false)"
+                required: false
+                type: string
+                default: "false"
 
 # Prevent multiple deployments for the same PR from running simultaneously
 concurrency:
@@ -1013,18 +1028,86 @@ jobs:
                   fi
                   echo "::notice::✅ SSH connection verified"
 
-            # Clean previous deployment state (runs for ALL repo types)
-            # This prevents stale volumes/containers from causing failures on re-deploy
-            - name: Clean Previous Deployment
+            # Decide whether this deploy is an initial create or an update.
+            #
+            # Rules:
+            # - If the per-PR postgres volume does NOT exist on the runner →
+            #   this is an initial create. After deploy, the seed step will
+            #   run to populate the empty database with starter data.
+            # - If the volume DOES exist → this is an update. The volume
+            #   stays put; seeded data and anything created during testing
+            #   survives the redeploy.
+            # - If reset_db=true → wipe the volume regardless, then treat
+            #   this run as an initial create so the seed step fires.
+            #
+            # All other compose containers (migrator, backend, frontend) are
+            # always force-recreated against the latest image; only postgres
+            # is treated as durable.
+            - name: Decide DB Lifecycle (initial vs update vs reset)
+              id: db_lifecycle
               run: |
+                  set -euo pipefail
                   PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
                   PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
+                  RESET_DB="${{ inputs.reset_db }}"
+                  VOLUME_NAME="${PROJECT_NAME}_postgres_data"
 
-                  echo "🧹 Cleaning previous deployment for PR #${PR_NUMBER}..."
-                  ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
+                  # Probe the volume on the RPi5. We deliberately do not pipe
+                  # this through `|| true`; we want to know exit codes.
+                  VOLUME_EXISTS=$(ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                       ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
-                      "docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down -v 2>/dev/null || true"
-                  echo "::notice::✅ Previous deployment cleaned"
+                      "if docker volume inspect ${VOLUME_NAME} >/dev/null 2>&1; then echo yes; else echo no; fi")
+
+                  if [[ "${RESET_DB,,}" == "true" ]]; then
+                      INITIAL_CREATE=true
+                      RESET_REQUESTED=true
+                      echo "::notice::🔄 reset_db=true — will drop volume ${VOLUME_NAME} and re-seed."
+                  elif [[ "$VOLUME_EXISTS" == "no" ]]; then
+                      INITIAL_CREATE=true
+                      RESET_REQUESTED=false
+                      echo "::notice::🆕 No existing volume for PR #${PR_NUMBER} — initial create. Seed will run after migrator."
+                  else
+                      INITIAL_CREATE=false
+                      RESET_REQUESTED=false
+                      echo "::notice::♻️  Volume ${VOLUME_NAME} present — preserving data across this update."
+                  fi
+
+                  echo "initial_create=${INITIAL_CREATE}" >> "$GITHUB_OUTPUT"
+                  echo "reset_requested=${RESET_REQUESTED}" >> "$GITHUB_OUTPUT"
+                  echo "volume_name=${VOLUME_NAME}" >> "$GITHUB_OUTPUT"
+
+            # Tear down only the app-tier containers (backend / frontend / migrator
+            # / seed). Leave the postgres container and its volume in place
+            # unless we just decided this is an initial create or a reset.
+            #
+            # On initial create or reset, do a full `compose down --volumes`
+            # so postgres and its volume are dropped. The next `compose up`
+            # will create a fresh volume which the migrator + seed steps
+            # populate.
+            - name: Tear Down Stale App Containers
+              run: |
+                  set -eo pipefail
+                  PR_NUMBER="${{ needs.build-arm64-image.outputs.pr_number }}"
+                  PROJECT_NAME="${{ steps.ports.outputs.project_name }}"
+                  INITIAL_CREATE="${{ steps.db_lifecycle.outputs.initial_create }}"
+                  RESET_REQUESTED="${{ steps.db_lifecycle.outputs.reset_requested }}"
+
+                  echo "🧹 Tearing down stale containers for PR #${PR_NUMBER} (initial_create=${INITIAL_CREATE}, reset=${RESET_REQUESTED})"
+                  if [[ "${RESET_REQUESTED}" == "true" || "${INITIAL_CREATE}" == "true" ]]; then
+                      # Full teardown including volumes — postgres data is wiped.
+                      ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
+                          ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+                          "docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml down --volumes --remove-orphans 2>/dev/null || true"
+                      echo "::notice::✅ Full teardown (volumes dropped — fresh DB will be created)"
+                  else
+                      # Stop the app tier only; keep postgres running so the
+                      # volume is never disconnected from a stopped container
+                      # (avoids `volume rm` racing into the wrong state).
+                      ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
+                          ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
+                          "docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml rm -fsv backend frontend migrator seed 2>/dev/null || true"
+                      echo "::notice::✅ App-tier teardown complete (postgres + volume preserved)"
+                  fi
 
             # Prune stale Docker resources left behind by failed deployments
             # Only removes resources not connected to any running container
@@ -1072,6 +1155,8 @@ jobs:
                   BACKEND_IMAGE=${{ needs.build-arm64-image.outputs.backend_image }}
                   FRONTEND_IMAGE=${{ needs.build-arm64-image.outputs.frontend_image }}
                   PROJECT_NAME=${{ steps.ports.outputs.project_name }}
+                  INITIAL_CREATE=${{ steps.db_lifecycle.outputs.initial_create }}
+                  RESET_DB=${{ steps.db_lifecycle.outputs.reset_requested }}
                   PR_POSTGRES_PORT=${{ steps.ports.outputs.postgres_port }}
                   PR_BACKEND_PORT=${{ steps.ports.outputs.backend_port }}
                   PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
@@ -1188,9 +1273,13 @@ jobs:
                       docker pull \${FRONTEND_IMAGE}
                   fi
 
-                  # Start complete application stack
+                  # Start complete application stack.
+                  # --no-recreate keeps an already-running postgres container in
+                  # place (with its volume) on update deploys; the previous
+                  # teardown step already removed the app-tier services, so
+                  # they will be (re)created here against the new image.
                   echo "🚀 Starting PR preview environment..."
-                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" up -d
+                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" up -d --no-recreate
 
                   # Allow services time to start up
                   echo "⏳ Waiting \${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
@@ -1212,6 +1301,23 @@ jobs:
                       exit 1
                   fi
                   echo "✅ Migrations completed successfully"
+
+                  # Seed the database on initial create or when reset_db=true.
+                  # The seed binary is not idempotent (unique-constraint
+                  # violations on re-run), so we strictly avoid running it on
+                  # update deploys.
+                  if [[ "\${INITIAL_CREATE}" == "true" ]]; then
+                      echo "🌱 Seeding initial data via 'seed' service (profile=seed)..."
+                      if docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" --profile seed run --rm seed; then
+                          echo "✅ Seed completed successfully"
+                      else
+                          SEED_EXIT=\$?
+                          echo "::error::Seed step failed (exit \$SEED_EXIT). Check the seed_db logs above. The preview environment is up but the database is empty."
+                          exit \$SEED_EXIT
+                      fi
+                  else
+                      echo "↪️  Skipping seed step — preserving existing DB data for update deploy."
+                  fi
 
                   # Verify backend service is healthy
                   echo "📜 Checking backend status..."

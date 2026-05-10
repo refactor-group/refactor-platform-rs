@@ -65,5 +65,6 @@ jobs:
               echo ""
               echo "1. From the backend repo: run **Deploy PR Preview (Manual Select)**, pass \`backend_pr_number\` (required) and optionally \`frontend_ref\` (default \`main\`)."
               echo "2. From the frontend repo: run **Deploy PR Preview (Manual Select)**, pass \`frontend_pr_number\` (required) and optionally \`backend_ref\` (default \`main\`)."
-              echo "3. \`*_ref\` accepts: \`main\`, a branch name, a 7+ char SHA, or \`PR#<num>\`."
+              echo "3. \`*_ref\` accepts any treeish: \`main\`, a branch name, a tag, a full SHA, a 6+ char short SHA, or \`PR#<num>\`."
+              echo "4. \`*_sha_override\` (optional) accepts the same set, and falls back to the PR HEAD when empty."
           } >> "$GITHUB_STEP_SUMMARY"
