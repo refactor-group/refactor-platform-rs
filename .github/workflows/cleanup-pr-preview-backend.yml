@@ -52,7 +52,12 @@ jobs:
     name: Cleanup Backend PR Preview
     needs: check-preview
     if: needs.check-preview.outputs.has_preview == 'true'
-    uses: ./.github/workflows/cleanup-pr-preview.yml
+    # Pin to @main so the reusable workflow resolves against main's tip rather
+    # than the calling commit's SHA. When `gh pr merge --delete-branch` runs,
+    # the PR head SHA becomes orphaned and a relative `uses: ./...` reference
+    # fails to resolve, causing a startup_failure. Mirrors the cross-repo
+    # pattern already used in refactor-platform-fe/cleanup-pr-preview-frontend.yml.
+    uses: refactor-group/refactor-platform-rs/.github/workflows/cleanup-pr-preview.yml@main
     with:
       # This is a backend PR cleanup
       repo_type: 'backend'
