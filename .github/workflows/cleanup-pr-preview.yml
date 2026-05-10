@@ -8,7 +8,10 @@
 
 name: Cleanup PR Preview Environment
 
-# Trigger when PR is closed (includes both close and merge events)
+# Reusable workflow + manual dispatch only.
+# PR-close events are handled by the per-repo overlay workflows
+# (cleanup-pr-preview-backend.yml here, cleanup-pr-preview-frontend.yml in the FE repo),
+# which gate on "was a preview ever deployed?" before invoking this workflow.
 on:
   workflow_call:
     inputs:
@@ -24,10 +27,6 @@ on:
         description: "Branch name associated with the PR"
         required: false
         type: string
-  pull_request:
-    types: [closed]
-    branches:
-      - main
 
   # Manual trigger for cleanup of specific PR numbers
   workflow_dispatch:
