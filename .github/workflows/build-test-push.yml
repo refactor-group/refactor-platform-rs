@@ -10,48 +10,57 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+# Cancel in-progress runs for the same branch when a new commit lands.
+# Main is exempt: a deploy mid-merge shouldn't be killed by the next PR merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 1
+  # sccache + incremental compilation are mutually exclusive — sccache caches
+  # whole-crate codegen units, while incremental layers per-edit deltas on top
+  # of an already-built crate. Disable incremental so sccache can do its job.
+  CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: short
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Wire sccache as the rustc wrapper in every job that compiles Rust.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
-  # === BATS JOB (Dispatch-Workflow Regex Regression Tests) ===
-  # Pins the input-classification regexes and field-protection helpers in
-  # dispatch-pr-preview.yml. Folded into this workflow so the Actions sidebar
-  # stays uncluttered (no separate "Test Dispatch Regex" entry).
-  bats:
-    name: Dispatch Regex Tests
+  # === LINT JOB (Fast Feedback) ===
+  # BATS suite for the dispatch resolver runs as the first step of lint so
+  # a regex regression fails before clippy/test/docker eat their full
+  # runtime. Keeps the Actions sidebar uncluttered (no separate "bats" job).
+  lint:
+    name: Lint & Format
     runs-on: ubuntu-24.04
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Install bats
         run: sudo apt-get update && sudo apt-get install -y bats
 
-      - name: Run bats suite
+      - name: Run dispatch-workflow regex tests (bats)
         run: bats .github/workflows/tests/dispatch-pr-preview.bats
-
-  # === LINT JOB (Fast Feedback) ===
-  lint:
-    name: Lint & Format
-    runs-on: ubuntu-24.04
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: clippy, rustfmt
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
@@ -66,14 +75,19 @@ jobs:
       - name: Run format check
         run: cargo fmt --all -- --check
 
+      - name: Show sccache stats
+        run: sccache --show-stats
+
   # === TEST JOB ===
   test:
     name: Build & Test
     runs-on: ubuntu-24.04
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -85,6 +99,9 @@ jobs:
         run: |
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
@@ -101,6 +118,9 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - name: Show sccache stats
+        run: sccache --show-stats
+
   # === DOCKER BUILD & PUSH JOB ===
   docker:
     name: Build & Push Docker Image
@@ -116,6 +136,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
