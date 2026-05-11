@@ -1,8 +1,10 @@
 use crate::controller::ApiResponse;
+use crate::error::WebErrorKind;
 use crate::extractors::coaching_session_access::CoachingSessionAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::coaching_session::recurring::CreateRecurringParams;
 use crate::params::coaching_session::{IndexParams, SortField, UpdateParams};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
@@ -11,7 +13,11 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::{
-    coaching_session as CoachingSessionApi, coaching_sessions::Model, emails as EmailsApi, Id,
+    coaching_relationship as CoachingRelationshipApi, coaching_session as CoachingSessionApi,
+    coaching_sessions::Model,
+    emails as EmailsApi,
+    error::{DomainErrorKind, Error as DomainError},
+    Id,
 };
 use service::config::ApiVersion;
 
@@ -139,6 +145,55 @@ pub async fn create(
         StatusCode::CREATED.into(),
         coaching_session,
     )))
+}
+
+/// POST create a recurring series of coaching sessions in one request.
+/// Returns the inserted rows
+#[utoipa::path(
+    post,
+    path = "/coaching_sessions/recurring",
+    params(ApiVersion),
+    request_body = CreateRecurringParams,
+    responses(
+        (status = 201, description = "Successfully created the recurring series", body = [domain::coaching_sessions::Model]),
+        (status = 401, description = "Unauthorized"),
+        (status = 405, description = "Method not allowed"),
+        (status = 422, description = "Unprocessable Entity (invalid recurrence rule)"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn create_recurring(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Json(params): Json<CreateRecurringParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("POST Create recurring coaching sessions: {params:?}");
+
+    let db = app_state.db_conn_ref();
+
+    let relationship =
+        CoachingRelationshipApi::find_by_id(db, params.coaching_relationship_id).await?;
+    if relationship.coach_id != user.id {
+        return Err(Error::Web(WebErrorKind::Auth));
+    }
+
+    let dates = CoachingSessionApi::expand_recurrence(params.start_at, &params.recurrence)
+        .map_err(|e| DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Validation(e.message()),
+        })?;
+
+    // TODO: send a series-summary email once the recurring-sessions MailerSend
+    // template is configured. Single-session emails would spam a 24-session series.
+    let sessions =
+        CoachingSessionApi::bulk_create_recurring(db, params.coaching_relationship_id, dates)
+            .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), sessions)))
 }
 
 /// PUT update a Coaching Session
