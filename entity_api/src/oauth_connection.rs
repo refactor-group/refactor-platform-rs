@@ -6,7 +6,7 @@ use log::debug;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, TryIntoModel,
+    DatabaseConnection, QueryOrder, TryIntoModel,
 };
 
 /// Creates a new OAuth connection record
@@ -54,6 +54,16 @@ pub async fn find_all_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Ve
     Ok(Entity::find()
         .filter(Column::UserId.eq(user_id))
         .all(db)
+        .await?)
+}
+
+/// Returns the user's most recently updated OAuth connection, if any.
+pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::UserId.eq(user_id))
+        .order_by_desc(Column::UpdatedAt)
+        .order_by_desc(Column::Id)
+        .one(db)
         .await?)
 }
 
@@ -210,6 +220,64 @@ mod tests {
         let result = find_all_by_user(&db, model.user_id).await?;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].user_id, model.user_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_user_returns_none_when_user_has_no_connections() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_by_user(&db, Id::new_v4()).await?;
+        assert!(result.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_user_returns_the_single_connection_when_one_exists() -> Result<(), Error> {
+        let model = test_model();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![model.clone()]])
+            .into_connection();
+
+        let result = find_by_user(&db, model.user_id).await?.unwrap();
+        assert_eq!(result.id, model.id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_user_returns_most_recently_updated_when_multiple_exist() -> Result<(), Error> {
+        // The query orders by updated_at DESC, so the MockDatabase needs to
+        // return the newer row first to simulate Postgres' ordering.
+        let user_id = Id::new_v4();
+        let older = Model {
+            id: Id::new_v4(),
+            user_id,
+            provider: Provider::Google,
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .unwrap()
+                .into(),
+            ..test_model()
+        };
+        let newer = Model {
+            id: Id::new_v4(),
+            user_id,
+            provider: Provider::Zoom,
+            updated_at: chrono::DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z")
+                .unwrap()
+                .into(),
+            ..test_model()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![newer.clone(), older.clone()]])
+            .into_connection();
+
+        let result = find_by_user(&db, user_id).await?.unwrap();
+        assert_eq!(result.id, newer.id, "should pick the most recently updated");
+        assert_eq!(result.provider, Provider::Zoom);
         Ok(())
     }
 
