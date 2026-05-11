@@ -5,12 +5,13 @@
 
 use std::collections::HashMap;
 
-use entity::coaching_sessions_goals::{Column, Entity, Model};
+use entity::coaching_sessions_goals::{ActiveModel, Column, Entity, Model};
 use entity::links::SessionGoalToCoachingRelationship;
 use entity::status::Status;
 use entity::{coaching_relationships, coaching_sessions, goals, Id};
 use sea_orm::{
     entity::prelude::*,
+    sea_query::OnConflict,
     ActiveValue::{Set, Unchanged},
     ConnectionTrait, DatabaseConnection, TryIntoModel,
 };
@@ -287,8 +288,11 @@ pub async fn find_in_progress_goals_by_coaching_session_id(
 /// Links all in-progress goals from a coaching relationship to a session.
 ///
 /// Queries for goals with `InProgress` status on the given relationship,
-/// then creates a join table record for each one.
-/// Returns the number of goals linked.
+/// then bulk-inserts a join row for each one. Insertion uses
+/// `ON CONFLICT (coaching_session_id, goal_id) DO NOTHING`, so repeat calls
+/// for the same session are safe — already-linked goals are silently skipped.
+/// Returns the number of rows actually inserted (zero when every goal was
+/// already linked).
 ///
 /// This function does not manage its own transaction — callers are expected
 /// to wrap it in a transaction when atomicity with other operations is needed.
@@ -317,11 +321,27 @@ pub async fn link_in_progress_goals_to_session(
     }
 
     let now = chrono::Utc::now();
-    for g in &in_progress_goals {
-        insert_link_row(db, session_id, g.id, now).await?;
-    }
+    let rows: Vec<ActiveModel> = in_progress_goals
+        .iter()
+        .map(|g| ActiveModel {
+            coaching_session_id: Set(session_id),
+            goal_id: Set(g.id),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+            ..Default::default()
+        })
+        .collect();
 
-    Ok(in_progress_goals.len())
+    let on_conflict = OnConflict::columns([Column::CoachingSessionId, Column::GoalId])
+        .do_nothing()
+        .to_owned();
+
+    let inserted = Entity::insert_many(rows)
+        .on_conflict(on_conflict)
+        .exec_with_returning_many(db)
+        .await?;
+
+    Ok(inserted.len())
 }
 
 /// Finds all goal models for multiple coaching sessions at once, grouped by session ID.
@@ -742,11 +762,11 @@ mod tests {
             updated_at: now.into(),
         };
 
-        // Mock sequence: 1 SELECT (in-progress goals) + 2 INSERTs (one per goal)
+        // Mock sequence: 1 SELECT (in-progress goals) + 1 bulk INSERT...RETURNING
+        // that returns both freshly-inserted rows (no conflicts).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![goal1, goal2]])
-            .append_query_results(vec![vec![join1]])
-            .append_query_results(vec![vec![join2]])
+            .append_query_results(vec![vec![join1, join2]])
             .into_connection();
 
         let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
@@ -767,6 +787,32 @@ mod tests {
 
         let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
         assert_eq!(count, 0, "should link 0 goals when none are in-progress");
+
+        Ok(())
+    }
+
+    /// When every in-progress goal is already linked to the session, the bulk
+    /// `ON CONFLICT DO NOTHING` insert returns zero rows and the function
+    /// reports zero new links without raising.
+    #[tokio::test]
+    async fn link_in_progress_goals_to_session_is_idempotent_on_replay() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let goal1 = create_test_goal(relationship_id, entity::status::Status::InProgress);
+        let goal2 = create_test_goal(relationship_id, entity::status::Status::InProgress);
+
+        // Mock: SELECT returns both goals, INSERT RETURNING returns 0 rows
+        // (every row hit ON CONFLICT DO NOTHING).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![goal1, goal2]])
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let count = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
+        assert_eq!(
+            count, 0,
+            "should report 0 new links when all goals were already linked"
+        );
 
         Ok(())
     }
