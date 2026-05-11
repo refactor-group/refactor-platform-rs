@@ -114,6 +114,21 @@ pub async fn create(
     result
 }
 
+pub async fn bulk_create_recurring(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+    dates: Vec<NaiveDateTime>,
+) -> Result<Vec<Model>, Error> {
+    coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
+
+    let truncated = dates
+        .into_iter()
+        .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(coaching_session::bulk_create_recurring(db, coaching_relationship_id, truncated).await?)
+}
+
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where
     P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
@@ -492,6 +507,51 @@ mod tests {
         let result = create(&db, &config, session.clone()).await?;
 
         assert!(result.meeting_url.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bulk_create_recurring_inserts_rows_with_all_lazy_fields_null() -> Result<(), Error> {
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let dates = vec![
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 8)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+        ];
+
+        let row_template = coaching_sessions::Model {
+            hydrated_at: None,
+            ..test_session(relationship.id, None)
+        };
+        let row1 = coaching_sessions::Model {
+            id: Id::new_v4(),
+            date: dates[0],
+            ..row_template.clone()
+        };
+        let row2 = coaching_sessions::Model {
+            id: Id::new_v4(),
+            date: dates[1],
+            ..row_template
+        };
+
+        // Query sequence: 1 SELECT (relationship) + 1 bulk INSERT...RETURNING.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![row1.clone(), row2.clone()]])
+            .into_connection();
+
+        let inserted = bulk_create_recurring(&db, relationship.id, dates).await?;
+        assert_eq!(inserted.len(), 2);
+        assert!(inserted.iter().all(|s| s.provider.is_none()));
+        assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
+        assert!(inserted.iter().all(|s| s.meeting_url.is_none()));
+        assert!(inserted.iter().all(|s| s.hydrated_at.is_none()));
         Ok(())
     }
 }

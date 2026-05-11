@@ -39,6 +39,45 @@ pub async fn create(
         .try_into_model()?)
 }
 
+/// Bulk-insert a recurring series of coaching sessions in a single round-trip.
+/// All lazy fields (`provider`, `collab_document_name`, `meeting_url`,
+/// `hydrated_at`) are NULL; population happens on first read.
+pub async fn bulk_create_recurring(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    dates: Vec<chrono::NaiveDateTime>,
+) -> Result<Vec<Model>, Error> {
+    debug!(
+        "Bulk-creating {} recurring sessions on relationship {}",
+        dates.len(),
+        coaching_relationship_id
+    );
+
+    if dates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let now = chrono::Utc::now();
+    let active_models: Vec<ActiveModel> = dates
+        .into_iter()
+        .map(|date| ActiveModel {
+            coaching_relationship_id: Set(coaching_relationship_id),
+            date: Set(date),
+            collab_document_name: Set(None),
+            meeting_url: Set(None),
+            provider: Set(None),
+            hydrated_at: Set(None),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+            ..Default::default()
+        })
+        .collect();
+
+    Ok(Entity::insert_many(active_models)
+        .exec_with_returning_many(db)
+        .await?)
+}
+
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
@@ -612,6 +651,60 @@ mod tests {
 
         assert_eq!(coaching_session.id, coaching_session_model.id);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bulk_create_recurring_inserts_all_rows_with_lazy_fields_null() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let dates = vec![
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 8)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+        ];
+        let session1 = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            date: dates[0],
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+        let session2 = Model {
+            id: Id::new_v4(),
+            date: dates[1],
+            ..session1.clone()
+        };
+
+        // One round-trip: a single INSERT ... VALUES (...), (...) RETURNING * .
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session1.clone(), session2.clone()]])
+            .into_connection();
+
+        let inserted = bulk_create_recurring(&db, relationship_id, dates).await?;
+        assert_eq!(inserted.len(), 2);
+        assert!(inserted.iter().all(|s| s.provider.is_none()));
+        assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
+        assert!(inserted.iter().all(|s| s.meeting_url.is_none()));
+        assert!(inserted.iter().all(|s| s.hydrated_at.is_none()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bulk_create_recurring_returns_empty_for_no_dates() -> Result<(), Error> {
+        // No mock query expected — the function short-circuits before touching the DB.
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let result = bulk_create_recurring(&db, Id::new_v4(), vec![]).await?;
+        assert!(result.is_empty());
         Ok(())
     }
 
