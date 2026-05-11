@@ -44,8 +44,15 @@ use log::*;
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
+    State(app_state): State<AppState>,
     CoachingSessionAccess(coaching_session): CoachingSessionAccess,
 ) -> Result<impl IntoResponse, Error> {
+    let coaching_session = CoachingSessionApi::ensure_hydrated(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        coaching_session,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
         coaching_session,
