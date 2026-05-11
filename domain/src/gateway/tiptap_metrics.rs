@@ -1,145 +1,206 @@
 //! TipTap Cloud metrics gateway.
 //!
-//! Exposes read-only methods over TipTap's REST surface for platform-level
-//! observability: total document counts, per-document listings, and the
-//! ingredients for abandoned document detection.
+//! Read-only methods over TipTap's REST surface: total doc counts, per-doc
+//! listings, and ingredients for abandoned-doc detection.
 //!
-//! Pattern source: sibling `mailersend.rs` and `tiptap.rs` are the canonical
-//! gateway shapes used in this crate. We follow their auth-header,
+//! Pattern source: `mailersend.rs` + `tiptap.rs`. Match their auth-header,
 //! error-mapping, and inline-test conventions.
 
-// `//!` is an *inner* doc comment - it documents the containing module/file.
-// `///` is an *outer* doc comment - it documents the next item below it.
+// Doc comments: `//!` is *inner* (documents the enclosing module/file);
+// `///` is *outer* (documents the next item).
 
-// Conventions: every gateway module starts with a `//!` block describing
-// scope, source-of-truth API, and the existing pattern it follows.
+// Import order: std → external crates → crate::*, blank line between blocks.
+// `log`::*` glob brings warn!/info!/debug!/error! into scope.
+use std::time::Duration;
 
-// Imports follow a strict three-block order from `.claude/coding-standards.md`:
-//  1. `std::*`         (none needed yet - added in Session 2)
-//  2. external crates  (alphabetical)
-//  3. `crate::*`       (alphabetical)
-// Each block is separated by a single blank line. Clippy will not flag
-// disorder, but reviewers will.
+use log::*;
 use serde::Deserialize;
 
-#[allow(unused_imports)]
 use service::config::Config;
 
 #[allow(unused_imports)]
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 
-// ------------------------------------------------
-// Client
-// ------------------------------------------------
+// Bounded waits per call. `Duration` is the canonical type at API boundaries
+// never raw `u64` seconds. The sibling `tiptap.rs` sets no timeout (a known
+// foutgun;) admin endpoints need bounded budgets so a dead upstream can't
+// hold an Axum worker. `connect_timeout` covers DNS+TCP+TLS only; setting it
+// short means we fail fast instead of burning the full 40s on a dead SYN.
+#[allow(dead_code)]
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[allow(dead_code)]
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-// `pub(crate)` = visible inside the `domain` crate, invisible to `web/` and `entity_api/`.
-// This is the encapsulation boundary CLAUDE.md enforces:
-// gateways are a domain-layer implementation detail. If `web/` ever needs
-// a gateway type, that's a smell - domain should expose its own type instead.
+// -----------------------------------------------------------------------------
+// Client
+// -----------------------------------------------------------------------------
+
+// `pub(crate)`: visible inside `domain`, hidden from `web/` and `entity_api/`.
+// Gateways are a domain-layer implementation detail (CLAUDE.md rule).
 #[allow(dead_code)]
 pub(crate) struct Client {
-    // `reqwest::Client` is internally `Arc<...>`. Cloning is a cheap atomic
-    // refcount bump that shares one connection pool process-wide.
-    // The recommended pattern is "one Client, clone freely." We hold by
-    // value here; callers can hold by value or behind their own `Arc` if they
-    // share across many tasks.
+    // `reqwest::Client` is internally `Arc<...>`: cloning is a cheap atomic
+    // refcount bump that shares one connection pool. One per process; clone freely.
     client: reqwest::Client,
-    // The resolved base URL (e.g. "https://<app_id>.collab.tiptap.cloud").
-    // Storing it once means each method `format!`s a path against it
-    // rather than re-reading config on every call. Fewer allocations, fewer
-    // `Option<String>` unwraps later.
+    // Resolved base URL (e.g. "https://<app_id>.collab.tiptap.cloud"). Stored
+    // once so methods just `format!` paths against it.
     base_url: String,
 }
 
-// -------------------------------------------------
+impl Client {
+    /// Construct a TipTap metrics client from app config.
+    ///
+    /// Returns `InternalErrorKind::Config` if `tiptap_url` or `tiptap_auth_key`
+    /// is missing - operator-visible misconfiguration, not transient failure
+    //
+    // `async fn` matches sibling gateway signatures even though nothing here
+    // awaits - keep the API stable if a future impl needs to.
+    #[allow(dead_code)]
+    pub(crate) async fn new(config: &Config) -> Result<Self, Error> {
+        // `?` propogates `domain::Error` unchanged - types match exactly.
+        let client = build_client(config).await?;
+
+        // `ok_or_else` (not `ok_or`): closure runs only on `None, deferring
+        // the `Error` allocation. Clippy's `or_fun_call` flags the eager form.
+        let base_url = config.tiptap_url().ok_or_else(|| {
+            // `warn!` captures file:line automatically.
+            warn!("TipTap URL missing from config (metrics gateway init)");
+            Error {
+                // Missing input, not a wrapped downstream failure -> no `source`.
+                source: None,
+                // `Config` variant = "operator forgot TIPTAP_URL"; maps to HTTP 500
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            }
+        })?;
+
+        // Field-init shorthand: `Self { client: client, base_url: base_url }`.
+        Ok(Self { client, base_url })
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Response types
-// -------------------------------------------------
+// -----------------------------------------------------------------------------
 //
-// Two design principles for these structs:
-//
-//  1.  Match the wire format with `#[serde(rename_all = "camelCase")]`. TipTap's
-//      JSON uses camelCase; Rust convention is snake_case. The attribute does
-//      the rename on every field automatically - much cleaner than per-field
-//      `#[serde(rename = "totalDocuments")]`.
-//
-//  2.  Be tolerant of missing/unknown fields. We deliberately do NOT use
-//      `#[serde(deny_unknown_fields)]` - TipTap is an external API we don't
-//      own, and additive changes shouldn't 500 our endpoint. Per-field
-//      `#[serde(default)]` lets a missing key parse as `Default::default()`
-//      rather than failing the whole response.
+// 1. `#[serde(rename_all = "camelCase")]` maps wire camelCase → snake_case fields.
+// 2. NO `deny_unknown_fields` — TipTap is external; additive changes shouldn't
+//    500 us. `#[serde(default)]` on optional fields parses missing keys as
+//    `Default::default()`.
 
 /// Global TipTap statistics returned by `GET /api/statistics`.
-///
-/// One-shot summary endpoint, no pagination. We pull only the fields we
-/// surface; the rest of TipTap's response (e.g. `openDocuments`,
-/// `connectionsPerDocument`) is silently ignored thanks to default serde
-/// tolerance.
-// `Debug` for log lines. `Clone` so the value can be passed by value cheaply.
-// `Deserialize` for JSON parsing - and *only* `Deserialize`, no `Serialize`,
-// because we never send this struct on the wire (it's an API response).
+/// One-shot summary, no pagination. Unsurfaced fields are silently ignored.
+// `Deserialize` only — never sent on the wire. `Debug` for logs, `Clone` for cheap copy.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
-// `rename_all` on the struct applies the rename to *every* field. So
-// `total_documents` here matches the wire-format `totalDocuments`.
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Statistics {
-    // `u64` rather than `usize`: counts crossing a JSON boundary should be
-    // platform-independent. `usize` varies by target architecture; `u64`
-    // doesn't.
+    // `u64` not `usize`: wire counts must be platform-independent.
     pub(crate) total_documents: u64,
 
-    // `#[serde(default)]` = if `currentLoadedDocumentsCount` is missing in
-    // the response, parse as `0` (the `Default` for `u64`). This keeps us
-    // forward-compatible if TipTap drops a non-essential field - the call
-    // still succeeds, the metric just shows 0.
+    // Missing key → 0. Forward-compatible if TipTap drops this field.
     #[serde(default)]
     pub(crate) current_loaded_documents_count: u64,
 
-    // We don't surface `version` to admins, but capturing it lets us include
-    // it in log lines for diagnostics - useful when TipTap server-side
-    // schema drifts and we need to correlate with their release notes.
+    // Capture for diagnostic logs; useful when TipTap's schema drifts.
     #[serde(default)]
     pub(crate) version: String,
 }
 
-/// A single TipTap document as returned by `GET /api/documents`.
+/// A single TipTap document returned by `GET /api/documents`.
 ///
-/// IMPORTANT - TipTap's documents-list response shape is loosely documented.
-/// The `name` field IS guaranteed (it's the document identifier; in our
-/// product it equals a coaching_session UUID via
-/// `coaching_sessions.collab_document_name`). Other fields here are
-/// best-effort - verify against a live response on first deploy and pin
-/// the struct to whatever ships.
+/// IMPORTANT: response shape is loosely documented. `name` IS guaranteed (it's
+/// the identifier, equal to coaching_session UUID via
+/// `coaching_sessions.collab_document_name`). Other fields are best-effort —
+/// verify against a live response on first deploy.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Document {
-    // The document identifier. Maps 1:1 to a coaching session UUID via
-    // `coaching_sessions.collab_document_name`. This is the join column
-    // we'll use in Sessions 5/6 for per-org aggregation and abandoned-doc
-    // detection. Keep it `String` (not `Uuid`) - TipTap treats it as
-    // opaque, and so should we until we explicitly parse for our DB query.
+    // Join column for Sessions 5/6. Keep `String` (not `Uuid`) — TipTap treats
+    // it as opaque; we should too until we explicitly parse for DB queries.
     pub(crate) name: String,
 
-    // Approximate byte size of the doc payload. Field name is a best-guess
-    // based on TipTap conventions - confirm against a live response. We
-    // default to 0 so a missing key produces an undercount rather than a panic.
-    // Undercounts are easy to diagnose; panics in admin endpoints are not.
+    // Approximate byte size. Field name is a best-guess — confirm against
+    // live response. Default 0 → undercount on missing key beats a panic.
     #[serde(default)]
     pub(crate) size: u64,
 
-    // Server-side archive flag. Defaulting to `false` matches TipTap's
-    // semantics: only explicitly archived docs are flagged.
+    // Default `false` matches TipTap: only explicit archives are flagged.
     #[serde(default)]
     pub(crate) archived: bool,
 }
 
-// We'll need a paginated response wrapper in Session 4. Add it now because
-// it's a "type that exists," not behavior.
-//
-// TipTap returns documents as a JSON array at the top level. If on first
-// probe the response is wrapped (e.g. `{ "data": [...] }`), adjust this
-// alias to a struct. Defensive default: alias the array directly and let
-// integration tests catch any wrapper drift.
+// Paginated listing wrapper. TipTap returns a JSON array at the top level; if
+// first probe reveals a wrapper (e.g. `{ "data": [...] }`), upgrade to a struct.
 #[allow(dead_code)]
 pub(crate) type DocumentsPage = Vec<Document>;
+
+/// Build a reqwest::Client with TipTap auth headers and bounded timeouts.
+/// Sibling pattern: `tiptap.rs::Client()` / `mailersend.rs::build_client()`,
+/// plus explicit timeouts
+//
+// Free function (not method): lets tests exercise it without constructing
+// a `Client` first.
+#[allow(dead_code)]
+async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
+    let headers = build_auth_headers(config).await?;
+
+    // `From<reqwest::Error> for Error` (domain/src/error.rs:107-126) maps
+    // builder errors -> Internal::Other, network errors -> External::Network.
+    // So `.build()?` Just Works.
+    Ok(reqwest::Client::builder()
+        // Pure-Rust TLS: no OpenSSL system dep in the Docker image.
+        .use_rustls_tls()
+        // Attaches headers to every request; cloned per-request, concurrency-safe.
+        .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()?)
+}
+
+/// Build the `Authorization` header for TipTap REST
+///
+/// IMPORTANT: TipTap auth is the Raw secret value - NOT `Bearer <secret>`.
+/// Matches `tiptap.rs::build_auth_headers()`. Do NOT copy mailersend's
+/// Bearer pattern blindly
+#[allow(dead_code)]
+async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
+    // Same missing-config shape as Client::new, different field.
+    let auth_key = config.tiptap_auth_key().ok_or_else(|| {
+        warn!("TipTap auth key missing from config (metrics gateway init)");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+        }
+    })?;
+
+    // `HeaderMap` is reqwest's case-insensitive header store.
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    // `from_str` validates the bytes (no control chars). Defensive guard
+    // against operators pasting a key with stray newlines. `mut` because
+    // `set_sensitive` mutates next
+    let mut auth_value = reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| {
+        warn!("Failed to build TipTap auth header value: {err:?}");
+        Error {
+            // `Box::new` erases the concrete type into a trait object; preserves
+            // the cause for log dumps via Error::source
+            source: Some(Box::new(err)),
+            // `Other` (not `Config`): code/data/ shape problem, distinct triage signal.
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Failed to create TipTap auth header value".to_string(),
+            )),
+        }
+    })?;
+
+    // Redact this value from `Debug` output - protects against accidental leaks
+    // via dbg!, log lines, or panic backtraces, Free habit
+    auth_value.set_sensitive(true);
+
+    // Typed constant (not the string "Authorization"): typos become compile
+    // errors, not 401s in production.
+    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+
+    // No Content-Type: GETs only; reqwest's default Accept is fine.
+    Ok(headers)
+}
