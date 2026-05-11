@@ -119,6 +119,26 @@ main() {
             exec /app/migrationctl up -s $DATABASE_SCHEMA
             ;;
             
+        seed_db)
+            log_info "Running in SEED_DB mode"
+            validate_binary "seed_db"
+            validate_env "DATABASE_URL"
+            validate_env "RUST_ENV"
+
+            log_info "Running in $RUST_ENV environment"
+            log_info "Seeding initial data into database..."
+
+            # The seed binary reads DATABASE_URL directly — no schema setup is
+            # done here. The migrator service is expected to have run first
+            # (compose service_completed_successfully gate enforces this).
+            #
+            # NOTE: the underlying entity_api::seed_database is not currently
+            # idempotent — running it twice on the same DB will fail with a
+            # unique-constraint violation on user emails. Callers must only
+            # invoke the seed_db role on a freshly created (empty) database.
+            exec /app/seed_db
+            ;;
+
         app)
             log_info "Running in APP mode"
             validate_binary "refactor_platform_rs"
@@ -149,7 +169,7 @@ main() {
             ;;
             
         *)
-            log_error "Unknown ROLE: '$ROLE'. Valid roles are: migrator, app"
+            log_error "Unknown ROLE: '$ROLE'. Valid roles are: migrator, seed_db, app"
             log_error "Set ROLE environment variable to one of the valid values"
             exit 1
             ;;

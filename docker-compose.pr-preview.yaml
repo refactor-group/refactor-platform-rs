@@ -48,6 +48,30 @@ services:
       # Use default network - Docker Compose project creates unique network automatically
       - default
     restart: "no"                        # Run once and exit (don't restart)
+
+  # Seed service - one-shot, profile-gated. The deploy workflow runs this only
+  # on the initial preview creation (empty volume) or when the dispatch's
+  # `reset_db` toggle is true. Subsequent updates to the same preview leave
+  # the database alone, preserving any data created during testing.
+  seed:
+    image: ${BACKEND_IMAGE}               # Same image as backend (carries seed_db binary)
+    platform: linux/arm64/v8
+    profiles: [seed]                     # Excluded from default `compose up`
+    environment:
+      ROLE: seed_db
+      RUST_ENV: ${RUST_ENV}
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1}
+      # The seed binary uses Config which expects DATABASE_URL with search_path.
+      # Mirror the migrator's connection string; seed_db doesn't run migrations
+      # itself — migrator must complete first (compose dependency below).
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?options=-csearch_path%3D${POSTGRES_SCHEMA}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA}
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - default
+    restart: "no"
   
   # Main backend application service
   backend:
@@ -83,8 +107,34 @@ services:
       TIPTAP_URL: ${TIPTAP_URL}
       TIPTAP_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+
+      # Email notifications
+      # MAILERSEND_BASE_URL and the *_EMAIL_URL_PATH templates are deliberately
+      # NOT set here — Clap's #[arg(env)] default_value in service/src/config.rs
+      # is the source of truth. Setting them again here would either duplicate
+      # the value (drift hazard) or silently override the correct in-code default.
       MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
       WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID}
+      SESSION_SCHEDULED_EMAIL_TEMPLATE_ID: ${SESSION_SCHEDULED_EMAIL_TEMPLATE_ID}
+      ACTION_ASSIGNED_EMAIL_TEMPLATE_ID: ${ACTION_ASSIGNED_EMAIL_TEMPLATE_ID}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
+
+      # Google OAuth / AI Meeting Integration
+      # NOTE: OAuth in PR previews uses a wildcard parent redirect URI strategy —
+      # one URI registered in the Google OAuth console (set as PR_PREVIEW_GOOGLE_REDIRECT_URI),
+      # backend bounces to /pr-<NUM>/ via the OAuth state param after token exchange.
+      # OAuth flow will not function until backend (meeting-auth/) and nginx-preview
+      # config implement the wildcard handler. Until then, secrets default to 'UNUSED'.
+      #
+      # GOOGLE_OAUTH_AUTH_URL, GOOGLE_OAUTH_TOKEN_URL, GOOGLE_USERINFO_URL,
+      # GOOGLE_MEET_API_URL are deliberately NOT set here — Clap's default_value in
+      # service/src/config.rs already pins the canonical Google endpoints, and they
+      # don't vary by environment.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
+      OAUTH_SUCCESS_REDIRECT_URI: ${OAUTH_SUCCESS_REDIRECT_URI}
     # Expose port to Docker networks only (no host port binding)
     expose:
       - "4000"                            # Container listens on port 4000 (entrypoint.sh default)
