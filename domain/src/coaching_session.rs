@@ -63,6 +63,7 @@ pub async fn create(
     let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
+    coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
 
     maybe_attach_meeting_url(
         db,
@@ -331,6 +332,7 @@ mod tests {
             provider,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         }
     }
 
@@ -407,6 +409,11 @@ mod tests {
             updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
                 .unwrap()
                 .into(),
+            hydrated_at: Some(
+                chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                    .unwrap()
+                    .into(),
+            ),
         };
 
         // The session as the DB would return it after INSERT (with the reused meeting URL)

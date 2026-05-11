@@ -592,6 +592,7 @@ mod tests {
             provider: None,
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
+            hydrated_at: Some(chrono::Utc::now().fixed_offset()),
         }
     }
 

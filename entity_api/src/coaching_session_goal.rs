@@ -886,6 +886,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
         let session2 = entity::coaching_sessions::Model {
             id: session2_id,
@@ -896,6 +897,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
