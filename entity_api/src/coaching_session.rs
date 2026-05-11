@@ -8,8 +8,8 @@ use entity::{
 };
 use log::debug;
 use sea_orm::{
-    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QueryOrder, QuerySelect,
-    Set, TryIntoModel,
+    entity::prelude::*, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
+    DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, Statement, TryIntoModel,
 };
 use std::collections::HashMap;
 
@@ -78,7 +78,7 @@ pub async fn bulk_create_recurring(
         .await?)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
@@ -107,6 +107,51 @@ pub async fn find_by_id_with_coaching_relationship(
 pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(coaching_session_id).exec(db).await?;
     Ok(())
+}
+
+/// Acquires a transaction-scoped Postgres advisory lock keyed on the session
+/// id. Other callers requesting the same lock block until this transaction
+/// commits or rolls back. Used by the lazy-hydration path to serialize
+/// concurrent first-load requests for the same session.
+pub async fn acquire_advisory_lock(
+    txn: &impl ConnectionTrait,
+    session_id: Id,
+) -> Result<(), Error> {
+    let key = advisory_lock_key(session_id);
+    txn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT pg_advisory_xact_lock($1)",
+        [key.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+fn advisory_lock_key(session_id: Id) -> i64 {
+    let bytes = session_id.as_bytes();
+    let mut upper = [0u8; 8];
+    upper.copy_from_slice(&bytes[..8]);
+    i64::from_be_bytes(upper)
+}
+
+/// Persists the resolved deferred fields and stamps `hydrated_at = NOW()`.
+/// Called at the end of the lazy-hydration sequence to commit the row's
+/// hydrated state. `target` carries the desired final values for the lazy
+/// fields; immutable columns are preserved.
+pub async fn mark_hydrated(txn: &impl ConnectionTrait, target: &Model) -> Result<Model, Error> {
+    let now = chrono::Utc::now();
+    let active_model = ActiveModel {
+        id: Unchanged(target.id),
+        coaching_relationship_id: Unchanged(target.coaching_relationship_id),
+        date: Unchanged(target.date),
+        collab_document_name: Set(target.collab_document_name.clone()),
+        meeting_url: Set(target.meeting_url.clone()),
+        provider: Set(target.provider),
+        created_at: Unchanged(target.created_at),
+        updated_at: Set(now.into()),
+        hydrated_at: Set(Some(now.into())),
+    };
+    Ok(active_model.update(txn).await?.try_into_model()?)
 }
 
 pub async fn update_meeting(
@@ -705,6 +750,42 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
         let result = bulk_create_recurring(&db, Id::new_v4(), vec![]).await?;
         assert!(result.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mark_hydrated_writes_lazy_fields_and_stamps_hydrated_at() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let target = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            collab_document_name: Some("doc-name".to_string()),
+            meeting_url: Some("https://meet.example/x".to_string()),
+            provider: Some(Provider::Zoom),
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+        // Whatever the DB returns from UPDATE ... RETURNING.
+        let after = Model {
+            hydrated_at: Some(now.into()),
+            ..target.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![after.clone()]])
+            .into_connection();
+
+        let result = mark_hydrated(&db, &target).await?;
+        assert_eq!(result.id, target.id);
+        assert_eq!(result.collab_document_name, target.collab_document_name);
+        assert_eq!(result.meeting_url, target.meeting_url);
+        assert_eq!(result.provider, target.provider);
+        assert!(result.hydrated_at.is_some());
         Ok(())
     }
 

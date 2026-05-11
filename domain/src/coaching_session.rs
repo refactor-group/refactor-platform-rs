@@ -129,6 +129,66 @@ pub async fn bulk_create_recurring(
     Ok(coaching_session::bulk_create_recurring(db, coaching_relationship_id, truncated).await?)
 }
 
+pub async fn ensure_hydrated(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: Model,
+) -> Result<Model, Error> {
+    if session.hydrated_at.is_some() {
+        return Ok(session);
+    }
+
+    let session_id = session.id;
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    coaching_session::acquire_advisory_lock(&txn, session_id).await?;
+
+    let mut session = coaching_session::find_by_id(&txn, session_id).await?;
+    if session.hydrated_at.is_some() {
+        txn.commit().await.map_err(entity_api::error::Error::from)?;
+        return Ok(session);
+    }
+
+    let coaching_relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+
+    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    let tiptap = TiptapDocument::new(config).await?;
+    tiptap.create(&document_name).await?;
+    session.collab_document_name = Some(document_name.clone());
+
+    let coach_id = coaching_relationship.coach_id;
+    let result: Result<Model, Error> = async {
+        if let Some(connection) = crate::oauth_connection::find_by_user(db, coach_id).await? {
+            session.provider = Some(connection.provider);
+            maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
+        }
+
+        coaching_session_goal::link_in_progress_goals_to_session(
+            &txn,
+            session.coaching_relationship_id,
+            session.id,
+        )
+        .await?;
+
+        let updated = coaching_session::mark_hydrated(&txn, &session).await?;
+        txn.commit().await.map_err(entity_api::error::Error::from)?;
+        Ok(updated)
+    }
+    .await;
+
+    if result.is_err() {
+        if let Err(e) = tiptap.delete(&document_name).await {
+            warn!(
+                "Failed to clean up Tiptap document '{document_name}' after hydration error: {e}"
+            );
+        }
+    }
+
+    result
+}
+
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where
     P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
@@ -507,6 +567,30 @@ mod tests {
         let result = create(&db, &config, session.clone()).await?;
 
         assert!(result.meeting_url.is_none());
+        Ok(())
+    }
+
+    /// Already-hydrated input short-circuits before any DB or HTTP call: the
+    /// MockDatabase has no appended results and the function still returns the
+    /// input model unchanged.
+    #[tokio::test]
+    async fn ensure_hydrated_short_circuits_for_already_hydrated_session() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        // Asserts Tiptap is never hit — any HTTP call to mockito server would 404.
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let session = test_session(Id::new_v4(), None);
+        assert!(session.hydrated_at.is_some());
+
+        let result = ensure_hydrated(&db, &config, session.clone()).await?;
+        assert_eq!(result.id, session.id);
         Ok(())
     }
 
