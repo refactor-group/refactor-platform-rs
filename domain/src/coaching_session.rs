@@ -1,3 +1,5 @@
+pub mod recurrence;
+
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::tiptap::TiptapDocument;
@@ -15,6 +17,10 @@ use service::config::Config;
 
 pub use entity_api::coaching_session::{
     find_by_id, find_by_user_with_includes, EnrichedSession, IncludeOptions, SessionQueryOptions,
+};
+pub use recurrence::{
+    expand_recurrence, validate_recurrence, Frequency, Recurrence, RecurrenceError,
+    MAX_RECURRING_OCCURRENCES, MAX_RECURRING_SPAN_DAYS,
 };
 
 /// Wraps the entity_api function to convert `entity_api::Error` into `domain::Error`,
