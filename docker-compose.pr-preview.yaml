@@ -28,7 +28,7 @@ services:
       retries: 5        # Try 5 times before marking unhealthy
       start_period: 30s # Grace period for ARM64 init before counting failures
     restart: unless-stopped  # Restart automatically unless manually stopped
-  
+
   # Database migration service - runs once to setup schema
   migrator:
     image: ${BACKEND_IMAGE}               # Use same image as backend
@@ -72,7 +72,7 @@ services:
     networks:
       - default
     restart: "no"
-  
+
   # Main backend application service
   backend:
     image: ${BACKEND_IMAGE}               # PR-specific backend image
@@ -116,6 +116,7 @@ services:
       MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
       WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID}
       SESSION_SCHEDULED_EMAIL_TEMPLATE_ID: ${SESSION_SCHEDULED_EMAIL_TEMPLATE_ID}
+      RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID: ${RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID}
       ACTION_ASSIGNED_EMAIL_TEMPLATE_ID: ${ACTION_ASSIGNED_EMAIL_TEMPLATE_ID}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
 

@@ -72,6 +72,19 @@ impl EmailNotification for SessionScheduled {
     }
 }
 
+struct RecurringSessionsScheduled;
+impl EmailNotification for RecurringSessionsScheduled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.recurring_sessions_scheduled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "recurring sessions scheduled"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
+}
+
 struct ActionAssigned;
 impl EmailNotification for ActionAssigned {
     fn template_id(config: &Config) -> Option<String> {
@@ -453,6 +466,145 @@ pub async fn notify_session_scheduled(
     }
 }
 
+/// Send a recurring-sessions-scheduled notification email to a single recipient.
+/// One email per recipient — coach and coachee each get their own summarizing
+/// the freshly scheduled series.
+async fn send_recurring_series_email_to_recipient(
+    email_config: &ResolvedEmailConfig,
+    recipient: &users::Model,
+    other_user: &users::Model,
+    other_user_role: &str,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    let first = sessions.first().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            "Cannot send recurring sessions email: sessions slice is empty".to_string(),
+        )),
+    })?;
+    let last = sessions.last().expect("non-empty slice already checked");
+
+    let (first_session_date, first_session_time) =
+        format_session_date_time(first.date, &recipient.timezone);
+    let (last_session_date, _last_session_time) =
+        format_session_date_time(last.date, &recipient.timezone);
+    let session_url = email_config.build_session_url(&first.id)?;
+    let session_count = sessions.len().to_string();
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from("hello@myrefactor.com")
+        .to_with_name(
+            &recipient.email,
+            format!("{} {}", recipient.first_name, recipient.last_name),
+        )
+        .subject(format!(
+            "{session_count} recurring coaching sessions scheduled"
+        ))
+        .template_id(&email_config.template_id)
+        .add_personalization("first_name", &recipient.first_name)
+        .add_personalization("other_user_first_name", &other_user.first_name)
+        .add_personalization("other_user_last_name", &other_user.last_name)
+        .add_personalization("other_user_role", other_user_role)
+        .add_personalization("organization_name", &organization.name)
+        .add_personalization("session_count", &session_count)
+        .add_personalization("first_session_date", &first_session_date)
+        .add_personalization("first_session_time", &first_session_time)
+        .add_personalization("last_session_date", &last_session_date)
+        .add_personalization("session_url", &session_url)
+        .build()
+        .await?;
+
+    email_config.client.send_email(email_request).await
+}
+
+/// Send recurring-sessions-scheduled notification emails to both coach and coachee.
+async fn send_recurring_sessions_scheduled_email(
+    config: &Config,
+    coach: &users::Model,
+    coachee: &users::Model,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    info!(
+        "Initiating recurring sessions scheduled emails for {} sessions (coach: {}, coachee: {})",
+        sessions.len(),
+        coach.email,
+        coachee.email
+    );
+
+    let email_config = ResolvedEmailConfig::new::<RecurringSessionsScheduled>(config).await?;
+
+    if let Err(e) = send_recurring_series_email_to_recipient(
+        &email_config,
+        coachee,
+        coach,
+        "coach",
+        sessions,
+        organization,
+    )
+    .await
+    {
+        warn!(
+            "Failed to send recurring sessions scheduled email to coachee {}: {e:?}",
+            coachee.email
+        );
+    }
+
+    if let Err(e) = send_recurring_series_email_to_recipient(
+        &email_config,
+        coach,
+        coachee,
+        "coachee",
+        sessions,
+        organization,
+    )
+    .await
+    {
+        warn!(
+            "Failed to send recurring sessions scheduled email to coach {}: {e:?}",
+            coach.email
+        );
+    }
+
+    Ok(())
+}
+
+/// Orchestrate sending recurring-sessions-scheduled emails (best-effort).
+///
+/// Looks up the coaching relationship, both users, and the organization,
+/// then sends a single summary email per recipient covering the whole series — count.
+///
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
+pub async fn notify_recurring_sessions_scheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    sessions: &[coaching_sessions::Model],
+) {
+    if sessions.is_empty() {
+        return;
+    }
+
+    let result: Result<(), Error> = async {
+        let relationship_id = sessions[0].coaching_relationship_id;
+        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+        send_recurring_sessions_scheduled_email(config, &coach, &coachee, sessions, &org).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send recurring sessions scheduled emails for {} sessions: {e:?}",
+            sessions.len()
+        );
+    }
+}
+
 /// Returns a comma-separated list of in-progress goal titles linked to a coaching session.
 ///
 /// This is best-effort: any DB error returns an empty string so email delivery is never blocked.
@@ -623,6 +775,7 @@ mod tests {
             "--mailersend-api-key=test_api_key_123",
             "--welcome-email-template-id=template_123",
             "--session-scheduled-email-template-id=session_template_456",
+            "--recurring-sessions-scheduled-email-template-id=recurring_template_xyz",
             "--action-assigned-email-template-id=action_template_789",
             "--frontend-base-url=https://app.example.com",
             &format!("--mailersend-base-url={server_url}/v1"),
@@ -1187,6 +1340,196 @@ mod tests {
             match e.error_kind {
                 DomainErrorKind::Internal(InternalErrorKind::Config) => {}
                 _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+            }
+        }
+    }
+
+    // ── Recurring Sessions Scheduled Email Tests ───────────────────────
+
+    fn create_test_session_on(date: NaiveDate) -> coaching_sessions::Model {
+        coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            collab_document_name: None,
+            date: date.and_hms_opt(15, 0, 0).unwrap(),
+            meeting_url: None,
+            provider: None,
+            created_at: chrono::Utc::now().fixed_offset(),
+            updated_at: chrono::Utc::now().fixed_offset(),
+            hydrated_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_recurring_sessions_scheduled_email_personalization() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+
+        let sessions = vec![
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+        ];
+
+        let first_session_url = format!(
+            "https://app.example.com/coaching-sessions/{}",
+            sessions[0].id
+        );
+
+        // First email goes to coachee — verify full personalization
+        let _mock_coachee = server
+            .mock("POST", "/v1/email")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "from": { "email": "hello@myrefactor.com", "name": null },
+                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "subject": "3 recurring coaching sessions scheduled",
+                "template_id": "recurring_template_xyz",
+                "personalization": [{
+                    "email": "jane@example.com",
+                    "data": {
+                        "first_name": "Jane",
+                        "other_user_first_name": "Alex",
+                        "other_user_last_name": "Smith",
+                        "other_user_role": "coach",
+                        "organization_name": "Acme Corp",
+                        "session_count": "3",
+                        "first_session_date": "Wednesday, March 4, 2026",
+                        "first_session_time": "3:00 PM",
+                        "last_session_date": "Wednesday, March 18, 2026",
+                        "session_url": first_session_url,
+                    }
+                }]
+            })))
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+
+        // Second email goes to coach — only verify it was sent
+        let _mock_coach = server
+            .mock("POST", "/v1/email")
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let result =
+            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
+                .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_recurring_sessions_scheduled_email_single_session() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+
+        let sessions = vec![create_test_session_on(
+            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+        )];
+
+        // With a single session, first and last dates must match
+        let _mock_coachee = server
+            .mock("POST", "/v1/email")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "subject": "1 recurring coaching sessions scheduled",
+                "personalization": [{
+                    "data": {
+                        "session_count": "1",
+                        "first_session_date": "Wednesday, March 4, 2026",
+                        "last_session_date": "Wednesday, March 4, 2026",
+                    }
+                }]
+            })))
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let _mock_coach = server
+            .mock("POST", "/v1/email")
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let result =
+            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
+                .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
+        let server = setup_test_server().await;
+        let config = Config::from_args([
+            "test",
+            "--mailersend-api-key=test_api_key_123",
+            &format!("--mailersend-base-url={}/v1", server.url()),
+            "--frontend-base-url=https://app.example.com",
+        ]);
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+        let sessions = vec![create_test_session_on(
+            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+        )];
+
+        let result =
+            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
+                .await;
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            match e.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
+        let server = setup_test_server().await;
+        let email_config = create_test_email_config(
+            &server.url(),
+            Some(SessionUrlBuilder {
+                base_url: "https://app.example.com".to_string(),
+                path_template: "/coaching-sessions/{session_id}".to_string(),
+            }),
+        )
+        .await;
+
+        let recipient = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let other = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let org = create_test_organization();
+
+        let result = send_recurring_series_email_to_recipient(
+            &email_config,
+            &recipient,
+            &other,
+            "coach",
+            &[],
+            &org,
+        )
+        .await;
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            match e.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Other(msg)) => {
+                    assert!(msg.contains("sessions slice is empty"));
+                }
+                _ => panic!("Expected Internal(Other) error, got: {:?}", e.error_kind),
             }
         }
     }

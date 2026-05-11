@@ -194,11 +194,11 @@ pub async fn create_recurring(
             error_kind: DomainErrorKind::Validation(e.message()),
         })?;
 
-    // TODO: send a series-summary email once the recurring-sessions MailerSend
-    // template is configured. Single-session emails would spam a 24-session series.
     let sessions =
         CoachingSessionApi::bulk_create_recurring(db, params.coaching_relationship_id, dates)
             .await?;
+
+    EmailsApi::notify_recurring_sessions_scheduled(db, &app_state.config, &sessions).await;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), sessions)))
 }
