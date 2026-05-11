@@ -1,8 +1,8 @@
 # =============================================================================
 # Manual PR Preview Deployment (Backend)
 # =============================================================================
-# Purpose: Deploy a PR preview environment for a backend PR, paired with any
-#          frontend ref (main, branch, SHA, or a frontend PR).
+# Purpose: Deploy a PR preview environment for a backend PR, paired with a
+#          frontend ref (any treeish, including PR#<num>).
 #
 # Inputs are resolved at dispatch time via the GitHub API — this workflow does
 # NOT depend on any pre-populated dropdown lists and does NOT need any external
@@ -10,54 +10,81 @@
 #
 # Usage:
 #   Actions → Deploy PR Preview (Manual Select) → Run workflow
-#     backend_pr_number: 289                (required — PR in this repo)
-#     backend_sha_override: <7+ hex>        (optional — override PR branch HEAD)
-#     frontend_ref:       main              (default; or a branch, SHA, PR#<num>)
+#     backend_ref:  PR#289                  (required — accepts PR#<num>,
+#                                             <num>, branch, tag, full SHA,
+#                                             or short SHA ≥6 hex)
+#     frontend_ref: main                    (required — same vocabulary)
 #
-# Companion helper: the backend repo also hosts `list-preview-refs.yml`, a
-# read-only workflow that prints current main commits + open PRs from both
-# repos to the run summary. Use it when you don't remember a ref.
+# Companion helper: `list-preview-refs.yml` is a read-only workflow that
+# prints current main commits + open PRs from both repos to the run summary.
+# Use it when you don't remember a ref.
+#
+# Note on the "Use workflow from" branch picker that GitHub renders above
+# these inputs: that picker is built into the workflow_dispatch UI and cannot
+# be hidden from YAML. This workflow is only meaningful when dispatched from
+# `main`; the first job rejects any other ref so a mis-selection fails fast
+# with a clear error rather than producing a partial deploy.
 # =============================================================================
 
 name: Deploy PR Preview (Manual Select)
 on:
   workflow_dispatch:
     inputs:
-      backend_pr_number:
-        description: "Backend PR number to deploy (e.g. 289 or PR#289)"
+      backend_ref:
+        description: "Backend ref to deploy: PR#<num>, <num>, branch, tag, full SHA, or short SHA (≥6 hex)"
         required: true
         type: string
-      backend_sha_override:
-        description: "Optional: backend commit treeish — full SHA, 6+ char short SHA, branch, or tag (default: PR HEAD)"
-        required: false
-        type: string
-        default: ""
       frontend_ref:
-        description: "Frontend ref: main (default), branch, tag, full or 6+ char short SHA, or PR#<num>"
-        required: false
+        description: "Frontend ref to deploy: PR#<num>, branch, tag, full SHA, or short SHA (≥6 hex)"
+        required: true
         type: string
-        default: "main"
       reset_db:
         description: "Reset Postgres: drop the per-PR volume and re-seed (default: off — DB preserved across redeploys)"
         required: false
         type: boolean
         default: false
-# Prevent concurrent deployments for the same backend PR
+
+# Concurrency is keyed off the raw input. If a user dispatches the same PR
+# under two different ref forms (e.g. `PR#289` then `feat/foo` for the same
+# PR), they land in separate concurrency groups. Job-level locking inside
+# the deploy stack still prevents actual collisions on RPi5.
 concurrency:
-  group: pr-preview-backend-dispatch-${{ inputs.backend_pr_number }}
+  group: pr-preview-backend-dispatch-${{ inputs.backend_ref }}
   cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
   pull-requests: write
   attestations: write
   id-token: write
+
 jobs:
   # ===========================================================================
-  # JOB 1: Validate inputs and resolve refs → full SHAs
+  # JOB 0: Reject dispatches that target a non-main ref. The "Use workflow
+  # from" picker is GitHub's built-in UI and cannot be removed, so this guard
+  # turns a silent foot-gun into a fast, obvious error.
+  # ===========================================================================
+  guard-ref:
+    name: Reject non-main dispatch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify dispatch from main
+        run: |
+          if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+            echo "::error::This workflow must be dispatched from the 'main' branch."
+            echo "::error::You ran from: ${{ github.ref }}"
+            echo "::error::Set the 'Use workflow from' picker to 'Branch: main' and re-dispatch."
+            exit 1
+          fi
+          echo "::notice::Dispatched from main ✓"
+
+  # ===========================================================================
+  # JOB 1: Validate inputs and resolve refs → full SHAs + PR number.
   # ===========================================================================
   validate:
-    name: Validate PR & Resolve Refs
+    name: Validate inputs & resolve refs
+    needs: guard-ref
     runs-on: ubuntu-latest
     outputs:
       backend_sha: ${{ steps.resolve.outputs.backend_sha }}
@@ -65,16 +92,17 @@ jobs:
       branch_name: ${{ steps.resolve.outputs.branch_name }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
     steps:
-      - name: Resolve PR + refs to full SHAs
+      - name: Resolve refs to full SHAs and derive PR number
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_BACKEND_PR: ${{ inputs.backend_pr_number }}
-          INPUT_BACKEND_SHA_OVERRIDE: ${{ inputs.backend_sha_override }}
+          INPUT_BACKEND_REF: ${{ inputs.backend_ref }}
           INPUT_FRONTEND_REF: ${{ inputs.frontend_ref }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          BE_REPO="$OWNER/refactor-platform-rs"
+          FE_REPO="$OWNER/refactor-platform-fe"
 
           # ------------------------------------------------------------------
           # Field protection: every dispatch input is free-text and flows into
@@ -87,9 +115,8 @@ jobs:
           # Allowed: alphanumerics, dot, underscore, slash, hyphen, hash, plus, at-sign
           SAFE_INPUT_RE='^[A-Za-z0-9._/#+@-]+$'
           validate_input() {
-              local label="$1" value="$2" allow_empty="${3:-no}"
+              local label="$1" value="$2"
               if [[ -z "$value" ]]; then
-                  if [[ "$allow_empty" == "yes" ]]; then return 0; fi
                   echo "::error::$label must not be empty"; exit 1
               fi
               if (( ${#value} > MAX_INPUT_LEN )); then
@@ -103,28 +130,64 @@ jobs:
               fi
           }
 
-          validate_input "backend_pr_number"     "$INPUT_BACKEND_PR"
-          validate_input "backend_sha_override"  "$INPUT_BACKEND_SHA_OVERRIDE" yes
-          validate_input "frontend_ref"          "$INPUT_FRONTEND_REF"
+          validate_input "backend_ref"  "$INPUT_BACKEND_REF"
+          validate_input "frontend_ref" "$INPUT_FRONTEND_REF"
 
           # ------------------------------------------------------------------
-          # Normalize the backend PR number: accept "289" or "PR#289"
+          # Treeish guard: if the input is hex-only, require ≥6 chars to avoid
+          # accidental short-prefix matches at the GitHub API layer.
           # ------------------------------------------------------------------
-          if [[ "$INPUT_BACKEND_PR" =~ ^PR#([0-9]+)$ ]]; then
+          guard_treeish() {
+              local label="$1" value="$2"
+              if [[ "$value" =~ ^[0-9a-fA-F]+$ ]] && (( ${#value} < 6 )); then
+                  echo "::error::$label looks like a SHA but is shorter than 6 chars (got ${#value}). Use at least 6 hex chars, or pass a branch/tag name."
+                  exit 1
+              fi
+          }
+
+          # ------------------------------------------------------------------
+          # Backend resolution. Two arms keyed on the input shape:
+          #   PR# / numeric   → take that PR number directly.
+          #   <treeish>       → resolve to SHA via commits/<ref>, then look up
+          #                     the open PR that contains that SHA. Required
+          #                     because port allocation, comment posting, and
+          #                     concurrency keys all need a PR number.
+          # ------------------------------------------------------------------
+          if [[ "$INPUT_BACKEND_REF" =~ ^PR#([0-9]+)$ ]]; then
               PR_NUMBER="${BASH_REMATCH[1]}"
-          elif [[ "$INPUT_BACKEND_PR" =~ ^[0-9]+$ ]]; then
-              PR_NUMBER="$INPUT_BACKEND_PR"
+          elif [[ "$INPUT_BACKEND_REF" =~ ^[0-9]+$ ]]; then
+              PR_NUMBER="$INPUT_BACKEND_REF"
           else
-              echo "::error::backend_pr_number must be a number or 'PR#<num>', got: $INPUT_BACKEND_PR"
-              exit 1
+              guard_treeish "backend_ref" "$INPUT_BACKEND_REF"
+              BACKEND_FULL_SHA=$(gh api "repos/$BE_REPO/commits/$INPUT_BACKEND_REF" \
+                  --jq '.sha' 2>&1) || {
+                  echo "::error::Backend ref '$INPUT_BACKEND_REF' not found in $BE_REPO (tried as full/short SHA, branch, tag). Run list-preview-refs.yml to see available refs."
+                  exit 1
+              }
+              # Find the open PR(s) whose head, base, or merge-commit chain
+              # contains this SHA. The /pulls endpoint returns all matches.
+              PR_NUMBERS=$(gh api "repos/$BE_REPO/commits/$BACKEND_FULL_SHA/pulls" \
+                  --jq '[.[] | select(.state == "open") | .number] | unique')
+              OPEN_COUNT=$(echo "$PR_NUMBERS" | jq 'length')
+              if (( OPEN_COUNT == 0 )); then
+                  echo "::error::Backend ref '$INPUT_BACKEND_REF' (resolved to ${BACKEND_FULL_SHA:0:7}) is not associated with any open PR in $BE_REPO. Open a PR for that branch/SHA first, or pass an explicit PR# token."
+                  exit 1
+              fi
+              if (( OPEN_COUNT > 1 )); then
+                  PR_LIST=$(echo "$PR_NUMBERS" | jq -r '. | join(", #")')
+                  echo "::error::Backend ref '$INPUT_BACKEND_REF' is associated with multiple open PRs (#${PR_LIST}). Re-dispatch with an explicit PR# token to disambiguate."
+                  exit 1
+              fi
+              PR_NUMBER=$(echo "$PR_NUMBERS" | jq -r '.[0]')
+              echo "::notice::Backend ref '$INPUT_BACKEND_REF' (${BACKEND_FULL_SHA:0:7}) resolved to PR #${PR_NUMBER}"
           fi
 
           # ------------------------------------------------------------------
-          # Validate the backend PR exists and is OPEN (drafts allowed)
+          # Validate the resolved backend PR exists and is OPEN (drafts allowed).
           # ------------------------------------------------------------------
-          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$OWNER/refactor-platform-rs" \
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$BE_REPO" \
               --json state,isDraft,headRefName,headRefOid 2>&1) || {
-              echo "::error::Backend PR #$PR_NUMBER not found in $OWNER/refactor-platform-rs"
+              echo "::error::Backend PR #$PR_NUMBER not found in $BE_REPO"
               exit 1
           }
           PR_STATE=$(echo "$PR_JSON" | jq -r '.state')
@@ -138,45 +201,22 @@ jobs:
           fi
           echo "::notice::Backend PR #$PR_NUMBER is valid (state: $PR_STATE, draft: $PR_IS_DRAFT, branch: $BRANCH_NAME)"
 
-          # ------------------------------------------------------------------
-          # Determine the backend SHA. Accepted forms:
-          #   (empty)    → use the PR branch HEAD
-          #   <treeish>  → anything `gh api commits/<ref>` resolves: full SHA,
-          #                short SHA (≥6 chars), branch, or tag.
-          # The 6-char floor is a guard against single-character collisions
-          # in busy repos; GitHub itself accepts ≥4, but matches get fuzzy.
-          # ------------------------------------------------------------------
-          if [[ -n "$INPUT_BACKEND_SHA_OVERRIDE" ]]; then
-              # If it looks like an all-hex committish, enforce the ≥6 floor.
-              # Anything else (branch, tag, slash-containing ref) is passed
-              # through to the API which will validate semantically.
-              if [[ "$INPUT_BACKEND_SHA_OVERRIDE" =~ ^[0-9a-fA-F]+$ ]] \
-                 && (( ${#INPUT_BACKEND_SHA_OVERRIDE} < 6 )); then
-                  echo "::error::backend_sha_override looks like a SHA but is shorter than 6 chars (got ${#INPUT_BACKEND_SHA_OVERRIDE}). Use at least 6 hex chars, or pass a branch/tag name."
-                  exit 1
-              fi
-              BACKEND_FULL_SHA=$(gh api "repos/$OWNER/refactor-platform-rs/commits/$INPUT_BACKEND_SHA_OVERRIDE" \
-                  --jq '.sha' 2>&1) || {
-                  echo "::error::Backend ref '$INPUT_BACKEND_SHA_OVERRIDE' not found in $OWNER/refactor-platform-rs (tried as full/short SHA, branch, tag). Run list-preview-refs.yml to see available refs."
-                  exit 1
-              }
-              echo "::notice::Using backend ref override '$INPUT_BACKEND_SHA_OVERRIDE' → ${BACKEND_FULL_SHA:0:7}"
-          else
+          # If the backend ref was a PR# / numeric token, deploy the PR's HEAD.
+          # If it was a treeish, BACKEND_FULL_SHA was already resolved above.
+          if [[ -z "${BACKEND_FULL_SHA:-}" ]]; then
               BACKEND_FULL_SHA="$PR_HEAD_SHA"
               echo "::notice::Using backend PR #$PR_NUMBER HEAD: ${BACKEND_FULL_SHA:0:7}"
           fi
 
           # ------------------------------------------------------------------
-          # Resolve the frontend ref. Two arms:
-          #   1. PR#<num>   → look up the PR's HEAD SHA
-          #   2. <treeish>  → `gh api commits/<ref>` (full/short SHA, branch, tag, HEAD)
+          # Frontend resolution. Two arms:
+          #   PR#<num>   → look up the FE PR's HEAD SHA.
+          #   <treeish>  → commits/<ref> (full/short SHA, branch, tag, HEAD).
           #
           # The commits API is ref-type-agnostic: a branch literally named in
-          # 6-40 hex chars resolves the same way as the SHA itself, so we
-          # don't need a separate SHA arm. The 6-char floor still applies
-          # for hex-only inputs.
+          # 6-40 hex chars resolves the same way as the SHA itself. The 6-char
+          # floor still applies for hex-only inputs.
           # ------------------------------------------------------------------
-          FE_REPO="$OWNER/refactor-platform-fe"
           if [[ "$INPUT_FRONTEND_REF" =~ ^PR#([0-9]+)$ ]]; then
               FE_PR="${BASH_REMATCH[1]}"
               FRONTEND_FULL_SHA=$(gh pr view "$FE_PR" --repo "$FE_REPO" \
@@ -186,11 +226,7 @@ jobs:
               }
               echo "::notice::Frontend ref resolved from PR #$FE_PR: ${FRONTEND_FULL_SHA:0:7}"
           else
-              if [[ "$INPUT_FRONTEND_REF" =~ ^[0-9a-fA-F]+$ ]] \
-                 && (( ${#INPUT_FRONTEND_REF} < 6 )); then
-                  echo "::error::frontend_ref looks like a SHA but is shorter than 6 chars (got ${#INPUT_FRONTEND_REF}). Use at least 6 hex chars, or pass a branch/tag name."
-                  exit 1
-              fi
+              guard_treeish "frontend_ref" "$INPUT_FRONTEND_REF"
               FRONTEND_FULL_SHA=$(gh api "repos/$FE_REPO/commits/$INPUT_FRONTEND_REF" \
                   --jq '.sha' 2>&1) || {
                   echo "::error::Frontend ref '$INPUT_FRONTEND_REF' not found in $FE_REPO (tried as full/short SHA, branch, tag). Run list-preview-refs.yml to see available refs."
@@ -205,8 +241,9 @@ jobs:
               echo "branch_name=$BRANCH_NAME"
               echo "pr_number=$PR_NUMBER"
           } >> "$GITHUB_OUTPUT"
+
   # ===========================================================================
-  # JOB 2: Deploy using the reusable workflow
+  # JOB 2: Deploy using the reusable workflow.
   # ===========================================================================
   deploy:
     name: Deploy PR Preview

@@ -9,8 +9,13 @@
 name: Cleanup PR Preview (Backend)
 
 on:
-  pull_request:
-    # Trigger on PR close (includes merge)
+  # pull_request_target loads the workflow file from the BASE branch (main)
+  # rather than the PR head SHA. This is immune to the gh-pr-merge
+  # --delete-branch race that orphans the head SHA seconds before this run is
+  # scheduled (which causes startup_failure under the older `pull_request`
+  # trigger). Safe here because we never `actions/checkout` PR code and only
+  # run after close.
+  pull_request_target:
     types: [closed]
 
 permissions:
