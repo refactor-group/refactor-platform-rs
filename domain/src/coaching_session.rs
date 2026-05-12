@@ -665,7 +665,10 @@ mod tests {
             .into_connection();
 
         let result = ensure_hydrated(&db, &config, input).await;
-        assert!(result.is_err(), "expected ensure_hydrated to surface the error");
+        assert!(
+            result.is_err(),
+            "expected ensure_hydrated to surface the error"
+        );
 
         delete_mock.assert_async().await;
     }

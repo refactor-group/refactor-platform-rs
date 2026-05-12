@@ -356,7 +356,9 @@ mod tests {
         )
         .await;
 
-        let err = result.err().expect("expected the handler to reject a non-coach caller");
+        let err = result
+            .err()
+            .expect("expected the handler to reject a non-coach caller");
         assert!(
             matches!(err, Error::Web(WebErrorKind::Auth)),
             "expected Err(Web(Auth)), got {err:?}"
