@@ -167,11 +167,12 @@ pub async fn ensure_hydrated(
 
     let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
     let tiptap = TiptapDocument::new(config).await?;
-    tiptap.create(&document_name).await?;
-    session.collab_document_name = Some(document_name.clone());
 
     let coach_id = coaching_relationship.coach_id;
     let result: Result<Model, Error> = async {
+        tiptap.create(&document_name).await?;
+        session.collab_document_name = Some(document_name.clone());
+
         if let Some(connection) = crate::oauth_connection::find_by_user(db, coach_id).await? {
             session.provider = Some(connection.provider);
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
