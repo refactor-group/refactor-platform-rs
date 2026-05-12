@@ -76,6 +76,52 @@ impl Client {
         // Field-init shorthand: `Self { client: client, base_url: base_url }`.
         Ok(Self { client, base_url })
     }
+
+    /// Fetch global TipTap statistics: Get/api/statistics.
+    ///
+    /// One-shot summary; no pagination. Upstream HTTP and deserialize
+    /// failures oboth map to `External::Network` - TipTap drift is an
+    /// external concern, not our bug.
+    #[allow(dead_code)]
+    pub(crate) async fn fetch_statistics(&self) -> Result<Statistics, Error> {
+        // `format!` against the stored base. Hardcoded path - TipTap's
+        // metrics endpoint is well-defined
+        let url = format!("{}/api/statistics", self.base_url);
+
+        // GET with default headers (auth attached in build client).
+        // `map_err` over `?` here because reqwest::Error -> External::Network
+        // is the default `From` impl, but we want to log the URL too.
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            warn!("Failed to fetch TipTap statistics from {url}: {e:?}");
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            }
+        })?;
+
+        // Check status BEFORE deserializing - an error body won't shape-match
+        // `Statistics`. Reqwest alternative: `response.error_for_status()`.
+        // We follow `tiptap.rs`'s manual style for consistency.
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            warn!("TipTap /api/statistics returned {status}: {body}");
+            return Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            });
+        }
+
+        // `.json::<T>()` reads body + parses as JSON into `T`. Deserialize
+        // failures = TipTap schema drift = External::Network.
+        response.json::<Statistics>().await.map_err(|e| {
+            warn!("Failed to deserialize TipTap statistics: {e:?}");
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            }
+        })
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -203,4 +249,68 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
 
     // No Content-Type: GETs only; reqwest's default Accept is fine.
     Ok(headers)
+}
+
+// -----------------------------------------------
+// Tests
+// -----------------------------------------------
+
+// Convention here: inline `#[cfg(test)] mod tests` at the bottom of each source
+// file. Async tests use `#[tokio::test]`. HTTP is mocked via `mockito` (the
+// only mock-server crate in this repo's dev-deps).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::Server;
+
+    /// Test-only Config factory. Mirrors `coaching_session.rs::test_config`.
+    /// `Config::from_args` parses clap args; passing `--key=value` populates
+    /// fields without touching env vars.
+    fn test_config(tiptap_url: &str) -> Config {
+        Config::from_args([
+            "test",
+            "--tiptap-auth-key=test-auth-key",
+            &format!("--tiptap-url={tiptap_url}"),
+        ])
+    }
+
+    /// Happy path: TipTap returns 200 + well-formed JSON, we get back a
+    /// populated `Statistics`. Exercises auth-header plumbing, URL
+    /// construction, status check, and rename_all deserialization in one shot
+    #[tokio::test]
+    async fn fetch_statistics_happy_path() -> Result<(), Error> {
+        // `Server::new_async` binds a random port. The `_async` variant
+        // is required inside a tokio runtime.
+        let mut server = Server::new_async().await;
+
+        // Register: GET /api/statistics -> 200 + JSON body. The `_mock`
+        // binding owns the registration - dropping it before assertions
+        // would un-register the route. Use `_mock`, Not `_`.
+        let _mock = server
+            .mock("GET", "/api/statistics")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "totalDocuments": 42,
+                    "currentLoadedDocumentsCount": 7,
+                    "version": "1.2.3"
+                    }"#,
+            )
+            .create_async()
+            .await;
+
+        // Build a Client pointed at the mock server.
+        let config = test_config(&server.url());
+        let client = Client::new(&config).await?;
+
+        let stats = client.fetch_statistics().await?;
+
+        // Assertions cover shape And the rename_all camelCase mapping
+        assert_eq!(stats.total_documents, 42);
+        assert_eq!(stats.current_loaded_documents_count, 7);
+        assert_eq!(stats.version, "1.2.3");
+
+        Ok(())
+    }
 }
