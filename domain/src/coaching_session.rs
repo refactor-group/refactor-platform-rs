@@ -583,6 +583,44 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn ensure_hydrated_short_circuits_after_lock_when_row_hydrated_concurrently(
+    ) -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let input = coaching_sessions::Model {
+            hydrated_at: None,
+            ..test_session(Id::new_v4(), None)
+        };
+        let hydrated_row = coaching_sessions::Model {
+            hydrated_at: Some(chrono::Utc::now().into()),
+            ..input.clone()
+        };
+
+        // Sequence under the lock: pg_advisory_xact_lock exec → SELECT
+        // (re-fetch returns the already-hydrated row) → COMMIT. No further
+        // DB calls and no Tiptap traffic.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![hydrated_row.clone()]])
+            .into_connection();
+
+        let result = ensure_hydrated(&db, &config, input.clone()).await?;
+        assert_eq!(result.id, input.id);
+        assert!(result.hydrated_at.is_some());
+        Ok(())
+    }
+
     /// Already-hydrated input short-circuits before any DB or HTTP call: the
     /// MockDatabase has no appended results and the function still returns the
     /// input model unchanged.
