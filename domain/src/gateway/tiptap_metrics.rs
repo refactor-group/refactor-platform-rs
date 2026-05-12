@@ -31,6 +31,17 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[allow(dead_code)]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+// TipTap's documented default; max isn't published. 100 keeps us well clear
+// of the rate limit (100 req / 5s per IP) and within sane payload sizes.
+#[allow(dead_code)]
+const PAGE_SIZE: u32 = 100;
+
+// Safety cap. At 100 docs/page this allows 1M docs before we bail. If we
+// ever hit this in practice something is wrong upstream - log + return what
+// we have rather than OOM the worker.
+#[allow(dead_code)]
+const MAX_PAGES: u32 = 10_000;
+
 // -----------------------------------------------------------------------------
 // Client
 // -----------------------------------------------------------------------------
@@ -121,6 +132,94 @@ impl Client {
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
             }
         })
+    }
+
+    /// Fetch a single page from `GET /api/documents?skip&take`.
+    ///
+    /// Private helper - the public surface is `list_all_documents`. Same
+    /// error-mapping pattern as `fetch_statistics`: HTTP and deserialize
+    /// failures both become `External::Network`.
+    #[allow(dead_code)]
+    async fn fetch_documents_page(&self, skip: u32, take: u32) -> Result<DocumentsPage, Error> {
+        let url = format!("{}/api/documents", self.base_url);
+
+        // `.query(&[(...)])` is reqwest's typed query-builder. Values are
+        // serialized via Display; integers stringify safely. Cleaner than
+        // hand-formatting `?skip=X&take=Y` and avoids URL-encoding bugs.
+        let response = self
+            .client
+            .get(&url)
+            .query(&[("skip", skip), ("take", take)])
+            .send()
+            .await
+            .map_err(|e| {
+                warn!("Failed to fetch TipTap documents page (skip={skip}): {e:?}");
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+                }
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            warn!("TipTap /api/documents/returned {status} at skip={skip}: {body}");
+            return Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            });
+        }
+
+        response.json::<DocumentsPage>().await.map_err(|e| {
+            warn!("Failed to deserialize TipTap documents page: {e:?}");
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            }
+        })
+    }
+
+    /// Fetch every TipTap document via offset pagination
+    ///
+    /// CAVEAT: offset pagination is racy under concurrent writes - a doc
+    /// inserted at offset N mid-walk can be missed or double-counted
+    /// Acceptable for admin observability (eventual consistency is fine)
+    /// a stricture consumer would snapshot a timestamp and filter results
+    #[allow(dead_code)]
+    pub(crate) async fn list_all_documents(&self) -> Result<Vec<Document>, Error> {
+        let mut all: Vec<Document> = Vec::new();
+        let mut skip: u32 = 0;
+
+        // Cap iterations to avoid infinite loop if TipTap misbehaves
+        // `0..MAX_PAGES` is exclusive so we stop at MAX_PAGES iterations.
+        for _ in 0..MAX_PAGES {
+            let page = self.fetch_documents_page(skip, PAGE_SIZE).await?;
+            let page_len = page.len() as u32;
+
+            // Move the page into `all` (no clone - `extend` consumes).
+            all.extend(page);
+
+            // Short page = end of data. TipTap has no `total` field, so this
+            // is the only termination signal we have. Equality check (not <)
+            // because exactly-PAGE_SIZE means "more pages possible."
+            if page_len < PAGE_SIZE {
+                return Ok(all);
+            }
+
+            // `saturating_add` defends against u32 overflow ( would take 4B+
+            // docs to hit, but it's free defensive coding).
+            skip = skip.saturating_add(PAGE_SIZE);
+        }
+
+        // Hit the safety cap. Log and return what we collected - partial
+        // results are better than an error here because admins still get
+        // useful aggregate numbers
+        warn!(
+            "TipTap document pagination hit MAX_PAGES={MAX_PAGES} cap; \
+            returning {} partial results",
+            all.len()
+        );
+        Ok(all)
     }
 }
 
@@ -310,6 +409,68 @@ mod tests {
         assert_eq!(stats.total_documents, 42);
         assert_eq!(stats.current_loaded_documents_count, 7);
         assert_eq!(stats.version, "1.2.3");
+
+        Ok(())
+    }
+
+    /// Build a JSON array of N synthetic documents starting at `start`.
+    /// `serde_json::json!` is the idiomatic way to construct JSON literals
+    /// in tests - type-checked at compile time, no escaping headaches.
+    fn make_documents_page(start: usize, count: usize) -> String {
+        let docs: Vec<_> = (0..count)
+            .map(|i| {
+                serde_json::json!({
+                    "name": format!("doc-{}", start + i),
+                    "size": 1024,
+                    "archived": false,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(docs).to_string()
+    }
+
+    /// Two-page pagination: first page is full (100 docs -> keep going);
+    /// second page is short (10 docs -> terminate). Verifies we collect
+    /// all 110 across the call boundary, and that `skip` advances.
+    #[tokio::test]
+    async fn list_all_documents_paginates_until_short_page() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+
+        // First page: skip=0&take=100 -> 100 docs
+        let _page1 = server
+            .mock("GET", "/api/documents")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("skip".into(), "0".into()),
+                mockito::Matcher::UrlEncoded("take".into(), "100".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(make_documents_page(0, 100))
+            .create_async()
+            .await;
+
+        // Second page: skip=100&take=100 -> 10 docs (short -> terminate).
+        let _page2 = server
+            .mock("GET", "/api/documents")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("skip".into(), "100".into()),
+                mockito::Matcher::UrlEncoded("take".into(), "100".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(make_documents_page(100, 10))
+            .create_async()
+            .await;
+
+        let config = test_config(&server.url());
+        let client = Client::new(&config).await?;
+
+        let docs = client.list_all_documents().await?;
+
+        // Total count + first/last name verify ordering and completeness
+        assert_eq!(docs.len(), 110);
+        assert_eq!(docs[0].name, "doc-0");
+        assert_eq!(docs[109].name, "doc-109");
 
         Ok(())
     }
