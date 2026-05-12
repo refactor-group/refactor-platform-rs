@@ -56,6 +56,28 @@ classify_treeish_input() {
     fi
 }
 
+# Backend-ref classifier used by the unified `backend_ref` input on the
+# dispatch workflow. The workflow checks PR# / numeric first and uses that
+# PR number directly; anything else falls through to treeish handling
+# (resolve to SHA via commits/<ref>, then look up the open PR via
+# commits/<sha>/pulls). Returns one of:
+#   PR_HASH <num>     — explicit PR# token
+#   NUMERIC <num>     — bare digits, treated as a PR number
+#   TOO_SHORT_HEX     — hex-only input below the 6-char floor
+#   TREEISH <ref>     — branch / tag / SHA / hex-named branch
+classify_backend_ref_input() {
+    local input="$1"
+    if [[ "$input" =~ ^PR#([0-9]+)$ ]]; then
+        echo "PR_HASH ${BASH_REMATCH[1]}"
+    elif [[ "$input" =~ ^[0-9]+$ ]]; then
+        echo "NUMERIC $input"
+    elif [[ "$input" =~ ^[0-9a-fA-F]+$ ]] && (( ${#input} < 6 )); then
+        echo "TOO_SHORT_HEX"
+    else
+        echo "TREEISH $input"
+    fi
+}
+
 # The new override validator (used for *_sha_override and the *_ref input).
 # Treeish-shape: any non-empty string that the field-protection layer has
 # already accepted, with the only extra rule being the 6-char floor for
@@ -703,4 +725,124 @@ validate_input() {
 @test "Lifecycle: empty reset arg defaults to false" {
     run decide_db_lifecycle "yes" ""
     [ "$output" = "UPDATE" ]
+}
+
+# ---------------------------------------------------------------------------
+# Backend-ref classification (unified `backend_ref` input).
+# Mirrors the 4-arm chain in dispatch-pr-preview.yml's resolver step:
+#   PR_HASH > NUMERIC > TOO_SHORT_HEX > TREEISH.
+# PR_HASH and NUMERIC are short-circuit paths (no API SHA lookup needed);
+# TREEISH triggers SHA resolution + commits/<sha>/pulls to derive the PR.
+# ---------------------------------------------------------------------------
+@test "BERef: 'PR#289' parsed as PR_HASH 289" {
+    run classify_backend_ref_input "PR#289"
+    [ "$output" = "PR_HASH 289" ]
+}
+
+@test "BERef: bare '289' parsed as NUMERIC 289" {
+    run classify_backend_ref_input "289"
+    [ "$output" = "NUMERIC 289" ]
+}
+
+@test "BERef: 'PR#1' single-digit parsed as PR_HASH 1" {
+    run classify_backend_ref_input "PR#1"
+    [ "$output" = "PR_HASH 1" ]
+}
+
+@test "BERef: '0' parsed as NUMERIC 0 (semantic check is later)" {
+    run classify_backend_ref_input "0"
+    [ "$output" = "NUMERIC 0" ]
+}
+
+@test "BERef: 'main' falls through as TREEISH (no associated PR check is later)" {
+    run classify_backend_ref_input "main"
+    [ "$output" = "TREEISH main" ]
+}
+
+@test "BERef: feature branch 'feat/foo' falls through as TREEISH" {
+    run classify_backend_ref_input "feat/foo"
+    [ "$output" = "TREEISH feat/foo" ]
+}
+
+@test "BERef: tag-like 'v1.0.0' falls through as TREEISH" {
+    run classify_backend_ref_input "v1.0.0"
+    [ "$output" = "TREEISH v1.0.0" ]
+}
+
+@test "BERef: 6-char hex accepted as TREEISH (lower bound)" {
+    run classify_backend_ref_input "abc123"
+    [ "$output" = "TREEISH abc123" ]
+}
+
+@test "BERef: 7-char hex accepted as TREEISH" {
+    run classify_backend_ref_input "abc1234"
+    [ "$output" = "TREEISH abc1234" ]
+}
+
+@test "BERef: 40-char full SHA accepted as TREEISH" {
+    run classify_backend_ref_input "0123456789abcdef0123456789abcdef01234567"
+    [ "$output" = "TREEISH 0123456789abcdef0123456789abcdef01234567" ]
+}
+
+@test "BERef: 5-char hex rejected as TOO_SHORT_HEX (below SHA floor)" {
+    run classify_backend_ref_input "abcde"
+    [ "$output" = "TOO_SHORT_HEX" ]
+}
+
+@test "BERef: 1-char hex rejected as TOO_SHORT_HEX" {
+    run classify_backend_ref_input "a"
+    [ "$output" = "TOO_SHORT_HEX" ]
+}
+
+@test "BERef: branch literally named 'deadbeef' (hex) classified as TREEISH" {
+    # Same precedence note as classify_treeish_input: hex-only 6+ char inputs
+    # always look like SHAs. The /commits/<ref> endpoint resolves both
+    # identically, so the classification is correct from the workflow's view.
+    run classify_backend_ref_input "deadbeef"
+    [ "$output" = "TREEISH deadbeef" ]
+}
+
+@test "BERef: 'PR#abc' (non-numeric after PR#) falls through as TREEISH" {
+    # Workflow will then attempt commits/PR%23abc which 404s — the expected
+    # user error. The classifier doesn't reject; the gh API does.
+    run classify_backend_ref_input "PR#abc"
+    [ "$output" = "TREEISH PR#abc" ]
+}
+
+@test "BERef: empty string falls through as TREEISH (field-protection rejects earlier)" {
+    # In the live workflow, validate_input rejects empty inputs BEFORE this
+    # classifier runs. The classifier itself doesn't have a special-case for
+    # empty strings — it just classifies. Pinning that contract here.
+    run classify_backend_ref_input ""
+    [ "$output" = "TREEISH " ]
+}
+
+# ---------------------------------------------------------------------------
+# Cross-cutting: backend_ref contract guarantees
+# ---------------------------------------------------------------------------
+@test "Contract: backend_ref PR# precedence holds even when number could also be a SHA" {
+    # 'PR#1234567' has 7 hex-compatible digits after PR#. PR# arm wins.
+    run classify_backend_ref_input "PR#1234567"
+    [ "$output" = "PR_HASH 1234567" ]
+}
+
+@test "Contract: backend_ref NUMERIC precedence over hex (bare digits never classified as SHA)" {
+    # '1234567' is hex-compatible but the NUMERIC arm runs before the
+    # treeish arm — so a bare integer is always interpreted as a PR number,
+    # never as a hex SHA. Documents intentional ambiguity resolution.
+    run classify_backend_ref_input "1234567"
+    [ "$output" = "NUMERIC 1234567" ]
+}
+
+@test "Contract: backend_ref classifier never silently mis-resolves hex-only short input" {
+    # A hex-only input below 6 chars must hit TOO_SHORT_HEX, never TREEISH.
+    # Catches the regression where short SHAs accidentally resolved to a
+    # different commit at the GitHub API.
+    for input in "a" "ab" "abc" "abcd" "abcde"; do
+        result=$(classify_backend_ref_input "$input")
+        [[ "$result" == "TOO_SHORT_HEX" ]] || {
+            echo "expected TOO_SHORT_HEX for '$input', got '$result'"
+            return 1
+        }
+    done
 }
