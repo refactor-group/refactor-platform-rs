@@ -267,3 +267,99 @@ pub async fn delete(
 
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use chrono::Utc;
+    use domain::{
+        coaching_relationships,
+        coaching_session::{Frequency, Recurrence},
+        users,
+    };
+    use sea_orm::{DatabaseBackend, MockDatabase};
+    use service::config::Config;
+    use std::sync::Arc;
+
+    fn test_user(id: Id) -> users::Model {
+        let now = Utc::now();
+        users::Model {
+            id,
+            email: "user@example.com".to_string(),
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+            display_name: None,
+            password: None,
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            role: users::Role::User,
+            roles: vec![],
+            invite_status: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    fn test_app_state(db: Arc<sea_orm::DatabaseConnection>) -> AppState {
+        AppState::new(
+            service::AppState::new(Config::default(), &db),
+            Arc::new(sse::Manager::default()),
+            domain::events::EventPublisher::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_recurring_rejects_non_coach_with_auth_error() {
+        let user = test_user(Id::new_v4());
+        let now = Utc::now();
+        let relationship = coaching_relationships::Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            slug: "test".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        assert_ne!(user.id, relationship.coach_id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![relationship.clone()]])
+                .into_connection(),
+        );
+        let app_state = test_app_state(db);
+
+        let params = CreateRecurringParams {
+            coaching_relationship_id: relationship.id,
+            start_at: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            recurrence: Recurrence {
+                frequency: Frequency::Weekly,
+                interval: 1,
+                by_weekdays: None,
+                count: Some(3),
+                until: None,
+            },
+        };
+
+        let result = create_recurring(
+            CompareApiVersion(HeaderValue::from_static("1.0.0")),
+            AuthenticatedUser(user),
+            State(app_state),
+            Json(params),
+        )
+        .await;
+
+        let err = result.err().expect("expected the handler to reject a non-coach caller");
+        assert!(
+            matches!(err, Error::Web(WebErrorKind::Auth)),
+            "expected Err(Web(Auth)), got {err:?}"
+        );
+    }
+}
