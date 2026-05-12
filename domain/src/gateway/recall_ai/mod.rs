@@ -48,7 +48,6 @@ struct AssemblyAiConfig {
     speech_models: Vec<&'static str>,
     language_detection: bool,
     sentiment_analysis: bool,
-    speaker_labels: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -435,7 +434,6 @@ impl Provider {
                     speech_models: vec!["universal-2"],
                     language_detection: true,
                     sentiment_analysis: true,
-                    speaker_labels: true,
                 },
             },
             diarization: DiarizationConfig {
