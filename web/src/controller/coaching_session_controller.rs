@@ -155,7 +155,13 @@ pub async fn create(
 }
 
 /// POST create a recurring series of coaching sessions in one request.
-/// Returns the inserted rows
+/// Returns the inserted rows.
+///
+/// Each session's meeting provider (Zoom, Google Meet, etc.) is resolved
+/// lazily on first read using the coach's then-current OAuth connection —
+/// not at the time this endpoint is called. If the coach reconnects a
+/// different provider before opening a session, that session will use the
+/// new provider.
 #[utoipa::path(
     post,
     path = "/coaching_sessions/recurring",

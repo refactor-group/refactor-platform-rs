@@ -114,6 +114,9 @@ pub async fn create(
     result
 }
 
+/// Bulk-creates a series of coaching sessions. Provider is intentionally not
+/// captured here — every row's `provider` stays NULL until [`ensure_hydrated`]
+/// fills it in on first read, using the coach's then-current OAuth connection.
 pub async fn bulk_create_recurring(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
@@ -129,6 +132,15 @@ pub async fn bulk_create_recurring(
     Ok(coaching_session::bulk_create_recurring(db, coaching_relationship_id, truncated).await?)
 }
 
+/// Runs deferred side-effects (Tiptap doc, meeting URL, in-progress-goal links)
+/// on first read, stamping `hydrated_at` so subsequent reads short-circuit.
+///
+/// Provider is resolved at hydration time from the coach's most-recently-updated
+/// OAuth connection — not at session-create time. For recurring series created
+/// via [`bulk_create_recurring`], this means changing or reconnecting providers
+/// between bulk-create and first read will change which provider the session
+/// uses. This is the intended behavior: recurring sessions defer the choice
+/// until the coach actually opens them.
 pub async fn ensure_hydrated(
     db: &DatabaseConnection,
     config: &Config,
