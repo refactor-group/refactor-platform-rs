@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn expand_rejects_until_producing_too_long_span() {
+    fn expand_rejects_count_producing_too_long_span() {
         // Weekly for 60 weeks: 60*7 = 420 days, exceeds MAX_RECURRING_SPAN_DAYS (366).
         let start = dt(2026, 1, 1, 10, 0);
         let r = Recurrence {
@@ -650,6 +650,23 @@ mod tests {
             by_weekdays: None,
             count: Some(60),
             until: None,
+        };
+        let err = expand_recurrence(start, &r).unwrap_err();
+        assert!(matches!(err, RecurrenceError::SpanTooLong { .. }));
+    }
+
+    #[test]
+    fn expand_rejects_until_producing_too_long_span() {
+        // Weekly with `until` ~14 months out: produces 61 occurrences (well under
+        // the 365-occurrence cap) but spans 420 days, exceeding the 366-day cap.
+        // Exercises the span cap via the `until` terminator path.
+        let start = dt(2026, 1, 1, 10, 0);
+        let r = Recurrence {
+            frequency: Frequency::Weekly,
+            interval: 1,
+            by_weekdays: None,
+            count: None,
+            until: Some(dt(2027, 3, 1, 10, 0)),
         };
         let err = expand_recurrence(start, &r).unwrap_err();
         assert!(matches!(err, RecurrenceError::SpanTooLong { .. }));
