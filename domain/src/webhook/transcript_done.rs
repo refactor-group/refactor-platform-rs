@@ -16,15 +16,14 @@ pub async fn handle(
     let transcription = match transcription_api::find_by_external_id(&db, transcript_id).await? {
         Some(t) => t,
         None => {
-            // Retry — transcript.processing should have created this record already.
-            return Err(Error {
-                source: None,
-                error_kind: crate::error::DomainErrorKind::Internal(
-                    crate::error::InternalErrorKind::Entity(
-                        crate::error::EntityErrorKind::NotFound,
-                    ),
-                ),
-            });
+            // No transcription row means recording.done was never processed or
+            // transcription::start failed — a permanent condition. Return Ok so
+            // Svix does not retry for ~27 hours on a miss that will never resolve.
+            warn!(
+                "transcript.done: no transcription found for external_id={} — skipping",
+                transcript_id
+            );
+            return Ok(());
         }
     };
 
