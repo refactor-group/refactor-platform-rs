@@ -85,7 +85,6 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "recall_ai_api_key",
     "recall_ai_region",
     "recall_ai_webhook_secret",
-    "webhook_base_url",
 ];
 
 #[derive(Deserialize, IntoParams)]
@@ -418,10 +417,6 @@ pub struct Config {
     /// Recall.ai webhook signing secret (Svix `whsec_...` format)
     #[arg(long, env)]
     recall_ai_webhook_secret: Option<String>,
-
-    /// Public base URL used to construct webhook callback URLs (e.g. https://app.refactorcoach.com)
-    #[arg(long, env)]
-    webhook_base_url: Option<String>,
 
     /// Tracks whether each config field was explicitly set or uses its default.
     /// Populated during construction; not a CLI argument.
@@ -832,10 +827,6 @@ impl Config {
 
     pub fn recall_ai_webhook_secret(&self) -> Option<String> {
         self.recall_ai_webhook_secret.clone()
-    }
-
-    pub fn webhook_base_url(&self) -> Option<String> {
-        self.webhook_base_url.clone()
     }
 }
 
