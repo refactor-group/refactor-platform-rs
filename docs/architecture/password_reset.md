@@ -59,12 +59,32 @@ sequenceDiagram
 
 ## Token Lifecycle
 
-| Stage | Action | What's Stored |
-|---|---|---|
-| Issuance | 32 random bytes → URL-safe base64 → SHA-256 hex digest | DB stores hash only; raw token in email URL path segment |
-| Validation (GET) | Hash incoming raw token, lookup by hash, check `exp > now`, check `purpose = PasswordReset` | No DB mutation |
-| Consumption (POST complete) | Same checks as validation, then `DELETE` all of user's `PasswordReset` tokens + `UPDATE users.password` in one transaction | Token removed; password updated atomically |
-| Expiry | 30 minutes from issuance (`PASSWORD_RESET_TOKEN_EXPIRY_SECONDS=1800`) | Expired tokens remain in DB until next issuance or admin cleanup; queries filter on `exp > now` |
+Two distinct tables are involved in the password-reset flow, with very different semantics:
+
+| Table | Role | Cardinality | Lifecycle |
+|---|---|---|---|
+| `magic_link_tokens` (purpose = `PasswordReset`) | **State table** — the currently-redeemable token | At most one row per user (delete-then-create on issuance) | Created on `/request`, deleted on `/complete` or on next issuance |
+| `password_reset_attempts` | **Append-only audit log** — every request attempt | One row per request for known emails (no row for unknown-email path) | Created on `/request`, only removed by the ops sweep job |
+
+Keeping them separate prevents a design conflict that would otherwise make the daily-cap rate limit unenforceable: counting rows in the state table would always return 0 or 1 because the state-table semantics require deletion of the prior row on every issuance. The audit table preserves history so `count_since(user_id, now − 24h)` produces a meaningful count.
+
+| Stage | Action | Effect on `magic_link_tokens` | Effect on `password_reset_attempts` |
+|---|---|---|---|
+| Issuance — `/request` (known email, rate limit passes) | 32 random bytes → URL-safe base64 → SHA-256 hex digest | Delete prior PasswordReset row(s); insert new row | INSERT one row at `NOW()` (before token issuance, see "Why record-first") |
+| Issuance — `/request` (unknown email) | Constant-time padding only | No change | No change (no audit row for unknown emails — no inbox to flood) |
+| Validation — `/validate` | Hash incoming raw token, lookup by hash, check `exp > now`, check `purpose = PasswordReset` | No mutation | No mutation |
+| Consumption — `/complete` | Same checks as validation, then `DELETE` all of user's `PasswordReset` tokens + `UPDATE users.password` in one transaction | Row removed; password updated atomically | No change — attempts are kept; deleting them would let an attacker mask their tracks by completing a reset |
+| Expiry (passive) | 30 minutes from issuance (`PASSWORD_RESET_TOKEN_EXPIRY_SECONDS=1800`) | Expired rows remain until next issuance or admin cleanup; queries filter on `exp > now` | N/A — attempts have no TTL semantic |
+| Ops sweep (active) | `domain::password_reset::sweep_old_attempts(db, retention_days)` | No effect | DELETE rows where `attempted_at < NOW() - retention_days` |
+
+### Why record-first
+
+The audit row is inserted **before** token creation, not after. Two reasons:
+
+1. **Consistency under failure.** If the rate-limit check passes but token issuance fails (DB transient error), the next request — moments later — must still see the previous attempt and apply rate-limiting. Recording first guarantees this.
+2. **Conceptual correctness.** "Attempt" means "user tried to trigger a reset," not "we succeeded." A user who triggers 5 requests that all fail mid-issuance has still used the system 5 times in the rate-limit's eyes.
+
+The cost is that a transient DB error during issuance burns one of the user's 5 daily attempts — slightly user-hostile but the right default for a security mechanism.
 
 ## Security Decisions
 
@@ -88,7 +108,7 @@ Every decision below was made deliberately to defeat a specific class of attack.
 | Single-use: token deleted atomically with password update | Replay after legitimate use |
 | 30-minute TTL (vs 72h for setup tokens) | Bounded exposure if email is intercepted or phished |
 | Path-segment URL format (`/reset-password/<token>`) | Token leakage via HTTP `Referer` and query-string-aware logs |
-| Per-email DB-based rate limit (1/60s, 5/24h) → `429 password_reset_rate_limited` | Inbox-flooding harassment and brute-force probing |
+| Per-email rate limit (1/60s, 5/24h) backed by a **separate append-only `password_reset_attempts` audit table** → `429 password_reset_rate_limited` | Inbox-flooding harassment and brute-force probing |
 
 ### Purpose Separation
 
@@ -154,9 +174,10 @@ Each deferral is a deliberate scoping decision, not an oversight.
 | Item | Reason for Deferral |
 |---|---|
 | Multi-device session invalidation on successful reset | Current `tower_sessions` store is in-memory — sessions don't survive a backend restart anyway. Will land alongside the future persistent-session-store migration (Redis/Postgres). The FE's existing `SessionCleanupProvider` will handle the 401-on-next-request flow automatically when this ships. |
-| Per-IP rate limiting | v1 ships with per-email DB-based limit only (cheap, no new dependencies). Per-IP throttle deferred to a follow-up — likely `tower_governor` middleware applied globally to authentication endpoints. |
+| Per-IP rate limiting | v1 ships with per-email DB-based limit only (cheap, no new dependencies). Per-IP throttle deferred to a follow-up — likely `tower_governor` middleware applied globally to authentication endpoints. The `password_reset_attempts` table is positioned to accept an `ip_address INET` column when this lands. |
 | Password strength rules (length, complexity) | v1 accepts any non-empty password, matching the existing `/magic-link/complete-setup` behavior. Strength rules will be applied to both setup and reset endpoints together when introduced, to avoid divergent UX. |
-| Periodic sweep of expired tokens | Expired tokens are validated as inert (`validate_token` refuses them) but are not auto-deleted from `magic_link_tokens`. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep (e.g. `DELETE WHERE expires_at < now() - INTERVAL '7 days'`) would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
+| Periodic sweep of expired tokens | Expired tokens in `magic_link_tokens` are validated as inert (`validate_token` refuses them) but are not auto-deleted. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
+| Automatic scheduled sweep of `password_reset_attempts` | v1 ships the `sweep_old_attempts(db, retention_days)` function but **does not** invoke it on a schedule. Ops are expected to run it as a nightly cron / external job (see [Ops Maintenance](#ops-maintenance) below). Bringing this in-process would couple retention policy to deployment cadence and complicate alerting on missed sweeps. |
 
 ## Monitoring & Operational Visibility
 
@@ -229,15 +250,69 @@ password_reset_email_send_failure_total
 
 Both signals (log + counter) can coexist; the counter would just become the primary panel source. Not in v1 scope.
 
+## Ops Maintenance
+
+### Sweeping the `password_reset_attempts` audit table
+
+The audit table is append-only and is not pruned automatically. Two retention horizons matter:
+
+| Horizon | Why |
+|---|---|
+| 24 hours | **Hard lower bound.** The daily-cap rate-limit check looks back 24 hours; deleting rows younger than this would silently corrupt rate-limit state. The Rust function rejects `retention_days < 1` with a `Validation` error. |
+| 30 days | **Recommended.** Long enough for security forensics (a user reports "someone kept trying to reset my password last week"); short enough to keep the table small. Adjust upward if you have compliance requirements. |
+
+#### Invocation options
+
+**Option A — Rust function (preferred when a scheduled job is in place):**
+
+```rust
+use sea_orm::Database;
+
+// Inside an ops binary, cron handler, or admin endpoint:
+let db = Database::connect(env!("DATABASE_URL")).await?;
+let deleted = domain::password_reset::sweep_old_attempts(&db, 30).await?;
+log::info!("nightly sweep removed {deleted} old password-reset attempts");
+```
+
+Logs an INFO-level message with the count when non-zero so the job's effect is visible in normal log queries.
+
+**Option B — ad-hoc psql (for incident response or before scheduled jobs exist):**
+
+```sql
+-- Dry-run: how many rows would be removed?
+SELECT COUNT(*) FROM refactor_platform.password_reset_attempts
+WHERE attempted_at < NOW() - INTERVAL '30 days';
+
+-- Actually delete:
+DELETE FROM refactor_platform.password_reset_attempts
+WHERE attempted_at < NOW() - INTERVAL '30 days';
+```
+
+Both options are safe to run concurrently with live request traffic — PostgreSQL MVCC ensures an INSERT with `attempted_at = NOW()` is outside the `< cutoff` predicate.
+
+### Suggested scheduled cadence
+
+| Cadence | Why |
+|---|---|
+| Daily, off-peak (e.g. 03:00 UTC) | At ≤5 attempts/user/day, daily sweeps keep the working set bounded without competing with peak traffic. |
+| Weekly | Acceptable if traffic is low and table growth is minimal. |
+| Hourly | Overkill — wastes write amplification on the WAL. |
+
+Pair the scheduled run with a monitoring alert: if `sweep_old_attempts` hasn't logged a success message in >2 days, page on-call. Without that, a silently-failing cron leaves the table to grow unbounded.
+
 ## Key Files
 
 | File | Role |
 |---|---|
-| `migration/src/m<date>_add_purpose_to_magic_link_tokens.rs` | Adds `purpose` column, backfills existing rows |
-| `entity/src/magic_link_tokens.rs` | `TokenPurpose` enum + `purpose` field |
-| `entity_api/src/magic_link_token.rs` | Purpose-scoped `find_by_token_hash` and `delete_all_for_user` |
-| `domain/src/password_reset.rs` | `request_password_reset()`, `complete_password_reset()`, rate-limit check, constant-time padding |
-| `domain/src/emails.rs` | `notify_password_reset()` + private `send_password_reset_email()` following the [two-tier pattern](email_notifications.md#two-tier-pattern) |
+| `migration/src/m20260513_000000_add_purpose_to_magic_link_tokens.rs` | Adds `purpose` column to `magic_link_tokens`, backfills existing rows to `setup` |
+| `migration/src/m20260514_000000_add_password_reset_attempts.rs` | Creates the append-only `password_reset_attempts` audit table + composite index |
+| `entity/src/token_purpose.rs` | `TokenPurpose` enum (Setup / PasswordReset) |
+| `entity/src/magic_link_tokens.rs` | `purpose` field on the token model |
+| `entity/src/password_reset_attempts.rs` | Audit-row entity |
+| `entity_api/src/magic_link_token.rs` | Purpose-scoped `find_by_token_hash`, `delete_all_for_user`, `find_by_user_ids` |
+| `entity_api/src/password_reset_attempt.rs` | `record`, `find_most_recent`, `count_since`, `delete_older_than` |
+| `domain/src/password_reset.rs` | `request_password_reset()`, `validate_reset_token()`, `complete_password_reset()`, rate-limit check, constant-time padding, `sweep_old_attempts()` ops function |
+| `domain/src/emails.rs` | `send_password_reset_email()` following the [two-tier pattern](email_notifications.md#two-tier-pattern) |
 | `web/src/controller/password_reset_controller.rs` | Three handlers (request / validate / complete) |
 | `web/src/router.rs` | Route registration + `ApiDoc::paths(...)` registration |
 | `service/src/config.rs` | `password_reset_email_template_id`, `password_reset_email_url_path`, `password_reset_token_expiry_seconds` |

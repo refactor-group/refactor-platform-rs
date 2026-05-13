@@ -24,6 +24,7 @@ mod m20260316_000000_fix_goals_session_fk_on_delete;
 mod m20260317_000000_add_on_hold_to_status_enum;
 mod m20260330_000000_add_magic_link_tokens;
 mod m20260513_000000_add_purpose_to_magic_link_tokens;
+mod m20260514_000000_add_password_reset_attempts;
 
 pub struct Migrator;
 
@@ -55,6 +56,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260317_000000_add_on_hold_to_status_enum::Migration),
             Box::new(m20260330_000000_add_magic_link_tokens::Migration),
             Box::new(m20260513_000000_add_purpose_to_magic_link_tokens::Migration),
+            Box::new(m20260514_000000_add_password_reset_attempts::Migration),
         ]
     }
 }
