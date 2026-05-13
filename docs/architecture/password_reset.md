@@ -158,6 +158,77 @@ Each deferral is a deliberate scoping decision, not an oversight.
 | Password strength rules (length, complexity) | v1 accepts any non-empty password, matching the existing `/magic-link/complete-setup` behavior. Strength rules will be applied to both setup and reset endpoints together when introduced, to avoid divergent UX. |
 | Periodic sweep of expired tokens | Expired tokens are validated as inert (`validate_token` refuses them) but are not auto-deleted from `magic_link_tokens`. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep (e.g. `DELETE WHERE expires_at < now() - INTERVAL '7 days'`) would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
 
+## Monitoring & Operational Visibility
+
+The WARN-level audit trail (see [Logging Hygiene & Security Audit Trail](#logging-hygiene--security-audit-trail) above) is the substrate for both ad-hoc operator triage and a dedicated Grafana monitoring panel. Every monitoring recipe in this section builds on the same `[password-reset]` log prefix — no new instrumentation is required for v1.
+
+### Ad-hoc Operator Recipes (`journalctl`)
+
+Use these for incident triage or quick spot-checks from a shell on the backend host.
+
+```bash
+# What's happening on the reset endpoints right now?
+journalctl -u refactor-platform -f | grep '\[password-reset\]'
+
+# Audit: who got reset emails in the last hour?
+journalctl --since '1 hour ago' | grep '\[password-reset\] reset link issued for user'
+
+# Abuse signal: anyone hitting the rate limit?
+journalctl --since today | grep '\[password-reset\] rate-limited'
+
+# Enumeration probes: requests for unknown emails over the last 24h
+journalctl --since '24 hours ago' | grep '\[password-reset\] reset requested for unknown email' | wc -l
+
+# Operational health: email-send failures
+journalctl --since '6 hours ago' | grep '\[password-reset\] failed to send email'
+
+# Forensic: which email values hit /request? (requires DEBUG log level)
+journalctl --since '15 minutes ago' | grep '\[password-reset\] unknown-email value was:'
+```
+
+### Grafana Panel Setup (Loki + LogQL)
+
+A single Grafana dashboard — call it **"Password Reset (Security)"** — should host the panels below. All queries assume logs are shipped to Loki with `app="refactor-platform"` as a label; adjust the selector to match your shipping setup.
+
+| Panel | Type | LogQL query | Why it matters |
+|---|---|---|---|
+| **Endpoint activity** (stacked rate) | Time-series, stacked | `sum by (endpoint) (rate({app="refactor-platform"} \|~ "\\[password-reset\\] /(?P<endpoint>request\|validate\|complete) endpoint hit" [5m]))` | Shows traffic shape across the three endpoints. Baseline is near-zero; spikes warrant investigation. |
+| **Reset links issued** | Time-series + single-stat | `sum(rate({app="refactor-platform"} \|~ "\\[password-reset\\] reset link issued for user" [5m]))` | Direct count of successful issuances. Should correlate with email-send success below. |
+| **Passwords actually changed** | Time-series + single-stat | `sum(rate({app="refactor-platform"} \|~ "\\[password-reset\\] .* completed password reset" [5m]))` | Most consequential event — a password actually changed. Compare against "links issued" for drop-off rate. |
+| **Rate-limit triggers** ⚠️ | Time-series, alert candidate | `sum by (kind) (rate({app="refactor-platform"} \|~ "\\[password-reset\\] rate-limited \\((?P<kind>min-interval\|daily-cap)\\)" [5m]))` | Healthy baseline = zero. Sustained non-zero is the abuse signal. Split by `min-interval` vs `daily-cap` to distinguish rapid-fire from slow-and-steady. |
+| **Unknown-email probes** ⚠️ | Time-series, alert candidate | `sum(rate({app="refactor-platform"} \|~ "\\[password-reset\\] reset requested for unknown email" [5m]))` | Healthy baseline = near-zero (legitimate typos). Sustained elevated rate = enumeration probe; pair with IP-level inspection. |
+| **Email-send failures** | Time-series, alert candidate | `sum(rate({app="refactor-platform"} \|~ "\\[password-reset\\] failed to send email" [5m]))` | Operational health — distinguishes "MailerSend is down" from "our code is broken." |
+| **Password-mismatch errors** | Time-series | `sum(rate({app="refactor-platform"} \|~ "\\[password-reset\\] password confirmation mismatch" [5m]))` | Mostly user error (typos in the form). A persistent spike for a single user could indicate phishing attempt with stolen-link replay against a real user. |
+| **Issuance → completion ratio** (gauge) | Stat / gauge | `sum(count_over_time({app="refactor-platform"} \|~ "completed password reset" [24h])) / sum(count_over_time({app="refactor-platform"} \|~ "reset link issued for user" [24h]))` | The healthy ratio is roughly 0.6–0.9 (some users start the flow and never finish). Sustained <0.2 = bogus reset emails being sent (phishing campaign targeting your users); sustained >1.0 is impossible and indicates a parser bug. |
+| **Recent audit log** (table) | Logs | `{app="refactor-platform"} \|~ "\\[password-reset\\]" \| line_format "{{.timestamp}} {{.message}}"` | Raw scrolling audit table for the most recent N events. |
+
+#### Suggested alert rules
+
+Each is paired with the panel it sits on. Set in Grafana Alerting or whatever the platform uses.
+
+| Alert | Condition | Severity | Why |
+|---|---|---|---|
+| **Reset-rate-limit storm** | Rate-limit triggers > 10 per 5-min window | Warning | Either a single attacker or a misbehaving FE retry loop. |
+| **Enumeration probe** | Unknown-email rate > 20 per 5-min window | Warning | Someone is mapping the user base via `/request`. |
+| **Email-send failure** | Failures > 5% of issuances over 15 min | Critical | MailerSend or config breakage — users can't get reset links. |
+| **Anomalous completion drop** | Issuance→completion ratio drops <0.2 over 24h | Warning | Possible phishing campaign or systemic problem with the FE reset page. |
+| **No activity at all** | Zero `/request` hits over 7 days | Informational | The endpoint may be unreachable (routing/DNS regression). Catches silent breakage. |
+
+#### Optional future enhancement — Prometheus counters
+
+If steady-state log volume hits a level where LogQL queries become expensive (rough threshold: tens of thousands of password-reset events per day), the right move is to add Prometheus counter instrumentation in [domain/src/password_reset.rs](../../domain/src/password_reset.rs). Counter names should mirror the log signals:
+
+```
+password_reset_endpoint_hit_total{endpoint="request|validate|complete"}
+password_reset_link_issued_total
+password_reset_completed_total
+password_reset_rate_limit_total{kind="min_interval|daily_cap"}
+password_reset_unknown_email_total
+password_reset_email_send_failure_total
+```
+
+Both signals (log + counter) can coexist; the counter would just become the primary panel source. Not in v1 scope.
+
 ## Key Files
 
 | File | Role |
