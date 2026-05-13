@@ -198,6 +198,30 @@ The password-reset code path emits a **WARN-level audit trail** so security/ops 
 - The raw token is **never** logged at any level. Only the SHA-256 hash (already stored in the DB) may be logged, and even that is reserved for ERROR-level audit traces if needed.
 - Every WARN message uses the `[password-reset]` prefix so operators can `grep` the entire flow with one search.
 
+### Layered Rate Limiting: Per-IP and Per-Email
+
+The endpoints are defended by **two complementary rate limits** working at different scopes. They are not substitutable — each closes attacks the other can't:
+
+| Layer | Scope | Defends | Doesn't defend |
+|---|---|---|---|
+| Per-IP throttle ([`tower_governor`](../../web/src/middleware/throttle.rs)) | Per client IP across all 3 endpoints — `AUTH_ENDPOINT` policy: ~10 req/min, burst 10 | Mass scanning (one attacker varying emails or tokens per request) | Targeted abuse from many IPs (botnet) |
+| Per-email DB rate limit (`password_reset_attempts`) | Per email-hash, scoped to `/request` only — 1/60s + 5/24h | Targeted Alice-flooding (one attacker repeatedly hitting Alice's email) | Mass enumeration (different email per request) |
+
+**Why both are required.** An earlier PR-review iteration treated these as comparable defenses ("v1 ships with per-email DB-based limit only; per-IP deferred to a follow-up"). That was wrong: an attacker varying emails per request never trips a per-email limit, no matter how strict. Per-email limits defend **one specific email**; per-IP limits defend **the endpoint surface as a whole**. Either alone leaves a wide gap.
+
+The 429 response shapes also differ — see the [Layered 429 Responses](#layered-429-responses-shape) note below.
+
+**Trust assumption** (briefly): the per-IP layer uses `SmartIpKeyExtractor`, which trusts `X-Forwarded-For` from our nginx reverse proxy. Without nginx in front, headers are spoofable and the throttle is defeated. See [`throttling.md`](throttling.md) for the full trust model and what happens in local-dev vs production environments.
+
+#### Layered 429 responses (shape)
+
+| Trigger | Status | Body |
+|---|---|---|
+| Per-IP throttle (outer ring) | `429 Too Many Requests` | Plain text `Too Many Requests` + `Retry-After` header |
+| Per-email rate limit (inner ring, only on `/request`) | `429 Too Many Requests` | JSON `{ status_code: 429, error: "password_reset_rate_limited", message: "..." }` |
+
+Both are 429; the body differs. The FE should handle 429 generically (show "you're rate-limited, please wait") without depending on the body shape — it sees whichever fired first. Documented on the wire-format contract.
+
 ### Authorization Model
 
 | Endpoint | Authorization Signal |
@@ -214,7 +238,9 @@ The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /us
 | Scenario | Mitigation |
 |---|---|
 | Mallory submits Alice's email to `/password-reset/request` to take over her account | Reset link is delivered to Alice's inbox, not Mallory. Mallory has no path to the token. Alice's current password is unchanged. |
-| Mallory floods Alice's inbox with reset emails | Per-email rate limit caps issuance at 1/60s, 5/24h → `429`. Enforced via the `password_reset_attempts` audit table — see [Rate-Limit Audit Separate from Token State](#rate-limit-audit-separate-from-token-state) for the design rationale and the bug this separation prevents. |
+| Mallory floods Alice's inbox with reset emails (one email, many requests) | Per-email rate limit caps issuance at 1/60s, 5/24h → `429`. Enforced via the `password_reset_attempts` audit table — see [Rate-Limit Audit Separate from Token State](#rate-limit-audit-separate-from-token-state) for the design rationale and the bug this separation prevents. |
+| Mallory mass-scans `/password-reset/request` with millions of emails to enumerate the user base or burn MailerSend cost | Per-IP throttle on the endpoint group (`AUTH_ENDPOINT` policy: ~10 req/min, burst 10) limits one attacker to a few hundred attempts per day, far below useful enumeration rate. See [Layered Rate Limiting: Per-IP and Per-Email](#layered-rate-limiting-per-ip-and-per-email). |
+| Mallory spams `/password-reset/validate?token=…` with random tokens to brute-force or strain the DB | Per-IP throttle applies to `/validate` and `/complete` the same way it does to `/request` — single attacker can't issue more than 10 req/min against the endpoint group. (256-bit token entropy means even an unlimited attacker couldn't guess; the throttle defends DB load.) |
 | Mallory probes the request endpoint **once** per email to map which emails have accounts | Always-200 response + constant-time padding eliminate both status and timing oracles on the first request. |
 | Mallory probes the request endpoint **twice in quick succession** with the same email — looking for a 200/429 split to leak existence | Rate-limit fires uniformly on both paths via email-hash key checked before user lookup — both unknown emails and known users get 429 on the 2nd request inside the min-interval window. See [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths). |
 | Mallory probes with capitalization or whitespace variants (`Alice@x.com` vs `alice@x.com`) to bypass per-email rate limit | Email is normalized (lowercase + trim) before hashing, so all variants share a single rate-limit bucket. |
@@ -233,7 +259,7 @@ Each deferral is a deliberate scoping decision, not an oversight.
 | Item | Reason for Deferral |
 |---|---|
 | Multi-device session invalidation on successful reset | Current `tower_sessions` store is in-memory — sessions don't survive a backend restart anyway. Will land alongside the future persistent-session-store migration (Redis/Postgres). The FE's existing `SessionCleanupProvider` will handle the 401-on-next-request flow automatically when this ships. |
-| Per-IP rate limiting | v1 ships with per-email DB-based limit only (cheap, no new dependencies). Per-IP throttle deferred to a follow-up — likely `tower_governor` middleware applied globally to authentication endpoints. The `password_reset_attempts` table is positioned to accept an `ip_address INET` column when this lands. |
+| **Per-IP rate limiting at the application layer is shipped in v1** (was originally deferred) | See [`throttling.md`](throttling.md) for the design. What remains out of scope: per-AS / per-network-owner throttling and reputation-based blocking — those defend distributed-botnet attacks and belong at the CDN/WAF edge, not the application layer. Add when we ever sit behind Cloudflare or similar. |
 | Password strength rules (length, complexity) | v1 accepts any non-empty password, matching the existing `/magic-link/complete-setup` behavior. Strength rules will be applied to both setup and reset endpoints together when introduced, to avoid divergent UX. |
 | Periodic sweep of expired tokens | Expired tokens in `magic_link_tokens` are validated as inert (`validate_token` refuses them) but are not auto-deleted. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
 | Automatic scheduled sweep of `password_reset_attempts` | v1 ships the `sweep_old_attempts(db, retention_days)` function but **does not** invoke it on a schedule. Ops are expected to run it as a nightly cron / external job (see [Ops Maintenance](#ops-maintenance) below). Bringing this in-process would couple retention policy to deployment cadence and complicate alerting on missed sweeps. |
@@ -373,7 +399,8 @@ Pair the scheduled run with a monitoring alert: if `sweep_old_attempts` hasn't l
 | `domain/src/password_reset.rs` | `request_password_reset()`, `validate_reset_token()`, `complete_password_reset()`, rate-limit check, constant-time padding, `sweep_old_attempts()` ops function |
 | `domain/src/emails.rs` | `send_password_reset_email()` following the [two-tier pattern](email_notifications.md#two-tier-pattern) |
 | `web/src/controller/password_reset_controller.rs` | Three handlers (request / validate / complete) |
-| `web/src/router.rs` | Route registration + `ApiDoc::paths(...)` registration |
+| `web/src/router.rs` | Route registration + `ApiDoc::paths(...)` registration + `PerIpThrottle` layer attached to the `/password-reset/*` route group |
+| `web/src/middleware/throttle.rs` | `Throttle` trait, `ThrottlePolicy::AUTH_ENDPOINT`, `PerIpThrottle` impl — see [`throttling.md`](throttling.md) |
 | `service/src/config.rs` | `password_reset_email_template_id`, `password_reset_email_url_path`, `password_reset_token_expiry_seconds` |
 
 ## Environment Variables
@@ -387,5 +414,5 @@ Pair the scheduled run with a monitoring alert: if `sweep_old_attempts` hasn't l
 ## Cross-References
 
 - **Wire contract:** `PasswordResetEndpoints` v1 on the coordinator blackboard (single source of truth for request/response shapes; this doc cross-references but does not duplicate it).
-- **Related architecture:** [email_notifications.md](email_notifications.md) (two-tier email pattern), [authentication_error_flow.md](authentication_error_flow.md) (login error propagation — same `password_auth` crate and error chain).
+- **Related architecture:** [email_notifications.md](email_notifications.md) (two-tier email pattern), [authentication_error_flow.md](authentication_error_flow.md) (login error propagation — same `password_auth` crate and error chain), [throttling.md](throttling.md) (per-IP rate-limit module shared across auth endpoints).
 - **Frontend coordination:** `referrer_policy_token_pages` question on the coordinator blackboard (FE-side `Referrer-Policy` audit for `/setup/[token]` and `/reset-password/[token]` pages).

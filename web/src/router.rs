@@ -1,3 +1,4 @@
+use crate::middleware::throttle::{PerIpThrottle, Throttle, ThrottlePolicy};
 use crate::{
     controller::{health_check_controller, oauth_callback_controller},
     middleware::auth::require_auth,
@@ -505,6 +506,14 @@ fn magic_link_routes(app_state: AppState) -> Router {
 }
 
 fn password_reset_routes(app_state: AppState) -> Router {
+    // Per-IP rate limit applied to ALL password-reset endpoints. Defends
+    // the endpoint surface against mass scanning (an attacker varying
+    // emails or tokens per request) — orthogonal to the per-email DB rate
+    // limit which defends Alice's inbox from targeted flooding. Both
+    // layers are load-bearing.
+    //
+    // See `web::middleware::throttle` for the policy definition and
+    // `docs/architecture/throttling.md` for the design and trust model.
     Router::new()
         .route(
             "/password-reset/request",
@@ -518,6 +527,7 @@ fn password_reset_routes(app_state: AppState) -> Router {
             "/password-reset/complete",
             post(password_reset_controller::complete),
         )
+        .layer(PerIpThrottle::new(ThrottlePolicy::AUTH_ENDPOINT).into_layer())
         .with_state(app_state)
 }
 
