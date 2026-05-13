@@ -11,27 +11,15 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[sea_orm(primary_key)]
     pub id: Id,
-    pub user_id: Id,
+    /// SHA-256 hex digest of the normalized email (lowercased, trimmed).
+    /// Opaque key — no FK to `users`, because attempts are recorded for
+    /// unknown emails too (uniform enumeration-safe handling).
+    pub email_hash: String,
     #[serde(skip_deserializing)]
     pub attempted_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(
-        belongs_to = "super::users::Entity",
-        from = "Column::UserId",
-        to = "super::users::Column::Id",
-        on_update = "NoAction",
-        on_delete = "Cascade"
-    )]
-    Users,
-}
-
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Users.def()
-    }
-}
+pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}

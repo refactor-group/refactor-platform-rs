@@ -9,6 +9,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use entity_api::mutate;
 use log::*;
 use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait, Value};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -38,22 +39,52 @@ const RATE_LIMIT_DAILY_CAP: u64 = 5;
 /// Behavior contract:
 /// - Returns `Ok(())` whether the email maps to a real user or not
 ///   (enumeration-safe; the web layer maps this to HTTP 200).
-/// - Returns `Err(InvalidOrExpiredToken)` is **not** possible from this
-///   endpoint — that error only occurs at `validate` / `complete` time.
 /// - Returns `Err(PasswordResetRateLimited)` when the per-email rate limit
-///   is exceeded (web layer maps to HTTP 429).
+///   is exceeded (web layer maps to HTTP 429). This response is identical
+///   whether the email maps to a real user or not — see "Enumeration
+///   Safety on Both Paths" in the architecture doc.
 /// - Returns `Err(...)` for genuine internal failures (DB, config) — the
 ///   web layer maps those to 5xx.
 ///
 /// Email sending is best-effort: a downstream MailerSend failure is logged
-/// but does not propagate to the caller (preserves the 200 contract). Token
-/// creation, however, is required — if the DB transaction fails we surface
-/// it.
+/// but does not propagate to the caller (preserves the 200 contract).
+///
+/// ## Operation order (critical for enumeration safety)
+///
+/// Rate-limit + attempt-record happen **before** the user lookup. This is
+/// what makes the response observationally identical between the two paths
+/// — any state-dependent behavior (like rate-limit rejection) that fires
+/// on one path but not the other would itself be an enumeration oracle.
+/// The previous design failed this by running rate-limit only on the
+/// known-user path; the second request from an attacker would return 429
+/// for known users vs 200 for unknown emails, leaking existence.
 pub async fn request_password_reset(
     db: &DatabaseConnection,
     email: &str,
     config: &Config,
 ) -> Result<(), Error> {
+    // 1. Compute the rate-limit key BEFORE any DB lookup. The hash is
+    //    derived from the normalized email so case variants of the same
+    //    address share rate-limit budget.
+    let email_hash = hash_email(email);
+
+    // 2. Enforce rate limit on the email hash. Fires uniformly whether or
+    //    not the email maps to a real user — this is the property that
+    //    closes the 200/429 enumeration oracle.
+    enforce_rate_limit(db, &email_hash).await?;
+
+    // 3. Record the attempt BEFORE the user lookup (and before token
+    //    issuance below). Rationale: an "attempt" is "user tried to
+    //    trigger a reset" — whether the email matches a user or not, and
+    //    whether token issuance subsequently succeeds, is our problem.
+    //    Recording first also closes the race where two concurrent
+    //    requests both pass the rate-limit check before either has
+    //    incremented the audit count.
+    entity_api::password_reset_attempt::record(db, &email_hash).await?;
+
+    // 4. NOW look up the user. Up to this point the unknown-email and
+    //    known-user paths have done identical work and produced identical
+    //    side effects (one row in `password_reset_attempts`).
     let user = entity_api::user::find_by_email(db, email).await?;
 
     let Some(user) = user else {
@@ -66,15 +97,6 @@ pub async fn request_password_reset(
         sleep(Duration::from_millis(ENUMERATION_PADDING_MS)).await;
         return Ok(());
     };
-
-    enforce_rate_limit(db, user.id).await?;
-
-    // Record the attempt BEFORE issuing the token. Rationale: an "attempt"
-    // is "user tried to trigger a reset" — whether the token issuance
-    // subsequently succeeds is our problem, not theirs. Recording first
-    // also closes the race where two concurrent requests both pass the
-    // rate-limit check before either has incremented the audit count.
-    entity_api::password_reset_attempt::record(db, user.id).await?;
 
     let expiry_seconds = config.password_reset_token_expiry_seconds() as i64;
     let raw_token = crate::magic_link_token::create_magic_link(
@@ -96,6 +118,19 @@ pub async fn request_password_reset(
 
     warn!("[password-reset] reset link issued for user {}", user.id);
     Ok(())
+}
+
+/// Normalize an email (lowercase + trim) and return its SHA-256 hex digest.
+///
+/// Normalization ensures `Foo@Example.COM` and ` foo@example.com ` share
+/// a rate-limit bucket — without it, capitalization variants could bypass
+/// the limit. Hash-then-key prevents the audit table from storing email
+/// plaintext (modest defense-in-depth against DB leak).
+fn hash_email(email: &str) -> String {
+    let normalized = email.trim().to_lowercase();
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Validate a raw password-reset token without consuming it.
@@ -183,32 +218,30 @@ pub async fn complete_password_reset(
 ///    (catches slower but persistent abuse).
 ///
 /// Both checks query the **`password_reset_attempts`** append-only audit
-/// table (NOT `magic_link_tokens`, which is a state table holding at most
-/// one live token per user/purpose — counting rows in it would always
-/// return 0 or 1, making the daily cap unreachable). Returns
-/// `PasswordResetRateLimited` on either breach.
-async fn enforce_rate_limit(db: &DatabaseConnection, user_id: crate::Id) -> Result<(), Error> {
-    let most_recent = entity_api::password_reset_attempt::find_most_recent(db, user_id).await?;
+/// table keyed by `email_hash`, NOT `user_id`. Keying by email hash means
+/// the rate limit applies before — and uniformly to — both the unknown-
+/// email and known-user paths, closing the 200/429 enumeration oracle.
+///
+/// Returns `PasswordResetRateLimited` on either breach (mapped to HTTP 429
+/// by the web layer). The same `[password-reset] rate-limited` WARN line
+/// fires regardless of whether the email matched a user.
+async fn enforce_rate_limit(db: &DatabaseConnection, email_hash: &str) -> Result<(), Error> {
+    let most_recent = entity_api::password_reset_attempt::find_most_recent(db, email_hash).await?;
 
     if let Some(attempt) = most_recent {
         let elapsed = Utc::now() - attempt.attempted_at.with_timezone(&Utc);
         if elapsed < ChronoDuration::seconds(RATE_LIMIT_MIN_INTERVAL_SECS) {
-            warn!(
-                "[password-reset] rate-limited (min-interval) for user {}",
-                user_id
-            );
+            warn!("[password-reset] rate-limited (min-interval)");
             return Err(rate_limited_error());
         }
     }
 
     let since = (Utc::now() - ChronoDuration::hours(24)).into();
-    let recent_count = entity_api::password_reset_attempt::count_since(db, user_id, since).await?;
+    let recent_count =
+        entity_api::password_reset_attempt::count_since(db, email_hash, since).await?;
 
     if recent_count >= RATE_LIMIT_DAILY_CAP {
-        warn!(
-            "[password-reset] rate-limited (daily-cap) for user {}",
-            user_id
-        );
+        warn!("[password-reset] rate-limited (daily-cap)");
         return Err(rate_limited_error());
     }
 
@@ -320,11 +353,32 @@ mod tests {
     /// Enumeration safety: when the email maps to no user, `request_password_reset`
     /// must return `Ok(())` (the web layer maps this to 200). The controller cannot
     /// distinguish "email exists" from "email does not exist" via the response.
+    ///
+    /// Post-fix flow on the unknown-email path:
+    ///   find_most_recent (None) → count_since (0) → record (insert) → find_by_email (None) → padding → Ok
     #[tokio::test]
     async fn request_password_reset_returns_ok_when_user_not_found() {
+        use sea_orm::MockExecResult;
+
+        let attempt_row = password_reset_attempts::Model {
+            id: crate::Id::new_v4(),
+            email_hash: hash_email("nobody@example.com"),
+            attempted_at: Utc::now().into(),
+        };
+
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // find_by_email returns no rows
-            .append_query_results(vec![Vec::<users::Model>::new()])
+            // 1. find_most_recent → None (no prior attempts for this email)
+            .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
+            // 2. count_since (.all().len()) → 0
+            .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
+            // 3. record (INSERT) — returns the inserted row
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![attempt_row]])
+            // 4. find_by_email (find_with_related) → no user
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>(vec![vec![]])
             .into_connection();
 
         let config = Config::default();
@@ -420,33 +474,32 @@ mod tests {
         }
     }
 
-    fn test_attempt(user_id: crate::Id, age: ChronoDuration) -> password_reset_attempts::Model {
+    fn test_attempt(email_hash: &str, age: ChronoDuration) -> password_reset_attempts::Model {
         password_reset_attempts::Model {
             id: crate::Id::new_v4(),
-            user_id,
+            email_hash: email_hash.to_string(),
             attempted_at: (Utc::now() - age).into(),
         }
     }
 
-    /// Min-interval guard: a recent attempt within `RATE_LIMIT_MIN_INTERVAL_SECS`
-    /// must trip `PasswordResetRateLimited` (mapped to HTTP 429 by the web layer).
+    /// Min-interval guard for a KNOWN-user email: a recent attempt within
+    /// `RATE_LIMIT_MIN_INTERVAL_SECS` must trip `PasswordResetRateLimited`.
+    ///
+    /// Post-fix flow: find_most_recent fires BEFORE find_by_email, so the
+    /// test does not need to mock the user lookup at all — the rate-limit
+    /// short-circuits the function before it gets there.
     #[tokio::test]
     async fn request_password_reset_returns_429_on_min_interval() {
-        let user = test_user("alice@example.com");
-        // Attempt 10 seconds ago — well inside the 60s min-interval window.
-        let recent_attempt = test_attempt(user.id, ChronoDuration::seconds(10));
+        let email = "alice@example.com";
+        let email_hash = hash_email(email);
+        let recent_attempt = test_attempt(&email_hash, ChronoDuration::seconds(10));
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // 1. find_by_email uses find_with_related → tuples
-            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>(vec![vec![(
-                user.clone(),
-                None,
-            )]])
-            // 2. find_most_recent → returns the 10s-old attempt
+            // find_most_recent → 10s-old attempt; short-circuits before user lookup
             .append_query_results(vec![vec![recent_attempt]])
             .into_connection();
 
-        let err = request_password_reset(&db, &user.email, &Config::default())
+        let err = request_password_reset(&db, email, &Config::default())
             .await
             .expect_err("expected PasswordResetRateLimited");
 
@@ -459,34 +512,65 @@ mod tests {
         );
     }
 
+    /// **Enumeration-oracle regression test.**
+    ///
+    /// Before this fix, the unknown-email path skipped `enforce_rate_limit`,
+    /// so a second request from an attacker would return 200 (unknown email)
+    /// vs 429 (known user) — a deterministic existence oracle on the second
+    /// request. Post-fix, the rate limit fires uniformly on both paths.
+    ///
+    /// This test mocks the unknown-email path AND a recent prior attempt
+    /// for the same email hash: the function must return 429 even though
+    /// the email has no matching user.
+    #[tokio::test]
+    async fn request_password_reset_rate_limits_unknown_email_path_too() {
+        let email = "nobody@example.com";
+        let email_hash = hash_email(email);
+        let recent_attempt = test_attempt(&email_hash, ChronoDuration::seconds(10));
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // find_most_recent → 10s-old attempt (recorded by attacker's first probe)
+            .append_query_results(vec![vec![recent_attempt]])
+            // (find_by_email never runs — short-circuited by rate limit)
+            .into_connection();
+
+        let err = request_password_reset(&db, email, &Config::default())
+            .await
+            .expect_err("expected PasswordResetRateLimited on unknown-email path");
+
+        assert_eq!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::PasswordResetRateLimited
+            )),
+            "unknown-email path MUST rate-limit too — asymmetric handling is an enumeration oracle"
+        );
+    }
+
     /// Daily-cap guard: 5 attempts in the last 24h must trip the rate limit.
     /// This is the bug the PR #311 review caught — `magic_link_tokens` could
     /// only ever return count=1 because delete-then-create wipes prior rows.
     /// The new audit table keeps history and the cap is actually reachable.
     #[tokio::test]
     async fn request_password_reset_returns_429_on_daily_cap() {
-        let user = test_user("alice@example.com");
-        // Most-recent attempt was 5 minutes ago — past the min-interval window
-        // so the daily-cap check is reached, but well within the 24h window.
-        let most_recent = test_attempt(user.id, ChronoDuration::minutes(5));
+        let email = "alice@example.com";
+        let email_hash = hash_email(email);
+        // Most-recent attempt was 5 minutes ago — past the min-interval
+        // window so the daily-cap check is reached, but well within 24h.
+        let most_recent = test_attempt(&email_hash, ChronoDuration::minutes(5));
         // Five attempts across the last 24h (cap is 5, check is `>= cap`).
         let attempts_24h: Vec<password_reset_attempts::Model> = (1..=5)
-            .map(|h| test_attempt(user.id, ChronoDuration::hours(h)))
+            .map(|h| test_attempt(&email_hash, ChronoDuration::hours(h)))
             .collect();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // 1. find_by_email uses find_with_related → tuples
-            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>(vec![vec![(
-                user.clone(),
-                None,
-            )]])
-            // 2. find_most_recent → most recent (5 min ago, past min-interval)
+            // 1. find_most_recent → 5min ago (past min-interval)
             .append_query_results(vec![vec![most_recent]])
-            // 3. count_since (.all().len()) → 5 rows in the window
+            // 2. count_since (.all().len()) → 5 rows in window
             .append_query_results(vec![attempts_24h])
             .into_connection();
 
-        let err = request_password_reset(&db, &user.email, &Config::default())
+        let err = request_password_reset(&db, email, &Config::default())
             .await
             .expect_err("expected PasswordResetRateLimited at daily cap");
 
@@ -497,6 +581,33 @@ mod tests {
             )),
             "5 attempts in last 24h must trip the daily-cap (was unreachable before the fix)"
         );
+    }
+
+    /// Email normalization must collapse capitalization and surrounding
+    /// whitespace into a single rate-limit bucket. Without normalization,
+    /// an attacker could probe `Alice@example.com`, ` alice@example.com `,
+    /// and `ALICE@example.com` as three independent rate-limit keys and
+    /// trivially bypass the 5/24h cap.
+    #[test]
+    fn hash_email_normalizes_case_and_whitespace() {
+        let canonical = hash_email("alice@example.com");
+        assert_eq!(hash_email("ALICE@example.com"), canonical);
+        assert_eq!(hash_email("Alice@Example.COM"), canonical);
+        assert_eq!(hash_email("  alice@example.com  "), canonical);
+        assert_eq!(hash_email("alice@example.com\n"), canonical);
+        // Different addresses must NOT collide.
+        assert_ne!(hash_email("bob@example.com"), canonical);
+        // SHA-256 hex digest is 64 chars.
+        assert_eq!(canonical.len(), 64);
+    }
+
+    /// Test-fixture sanity — keeps the `test_user` helper referenced so
+    /// future tests that need a known user can construct one.
+    #[test]
+    fn test_user_helper_produces_distinct_uuids() {
+        let a = test_user("a@example.com");
+        let b = test_user("b@example.com");
+        assert_ne!(a.id, b.id);
     }
 
     /// Defense-in-depth on the ops sweep API: retention shorter than 1 day

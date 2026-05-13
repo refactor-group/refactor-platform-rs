@@ -61,17 +61,20 @@ sequenceDiagram
 
 Two distinct tables are involved in the password-reset flow, with very different semantics:
 
-| Table | Role | Cardinality | Lifecycle |
-|---|---|---|---|
-| `magic_link_tokens` (purpose = `PasswordReset`) | **State table** — the currently-redeemable token | At most one row per user (delete-then-create on issuance) | Created on `/request`, deleted on `/complete` or on next issuance |
-| `password_reset_attempts` | **Append-only audit log** — every request attempt | One row per request for known emails (no row for unknown-email path) | Created on `/request`, only removed by the ops sweep job |
+| Table | Role | Key | Cardinality | Lifecycle |
+|---|---|---|---|---|
+| `magic_link_tokens` (purpose = `PasswordReset`) | **State table** — the currently-redeemable token | `user_id` (FK to users) | At most one row per user (delete-then-create on issuance) | Created on `/request` for known users only, deleted on `/complete` or on next issuance |
+| `password_reset_attempts` | **Append-only audit log** — every request attempt | `email_hash` (SHA-256 of normalized email; no FK) | One row per request, recorded for **both** known and unknown emails | Created on `/request`, only removed by the ops sweep job |
 
-Keeping them separate prevents a design conflict that would otherwise make the daily-cap rate limit unenforceable: counting rows in the state table would always return 0 or 1 because the state-table semantics require deletion of the prior row on every issuance. The audit table preserves history so `count_since(user_id, now − 24h)` produces a meaningful count.
+Two structural decisions are encoded above: (1) the **state-vs-audit split** prevents the daily-cap from being unreachable (see [Rate-Limit Audit Separate from Token State](#rate-limit-audit-separate-from-token-state)); (2) the **email-hash key on the audit table** (not user_id) makes the rate limit apply uniformly to unknown-email and known-user paths (see [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths)).
 
 | Stage | Action | Effect on `magic_link_tokens` | Effect on `password_reset_attempts` |
 |---|---|---|---|
-| Issuance — `/request` (known email, rate limit passes) | 32 random bytes → URL-safe base64 → SHA-256 hex digest | Delete prior PasswordReset row(s); insert new row | INSERT one row at `NOW()` (before token issuance, see "Why record-first") |
-| Issuance — `/request` (unknown email) | Constant-time padding only | No change | No change (no audit row for unknown emails — no inbox to flood) |
+| Step 1 — `/request` rate-limit check (every request, before user lookup) | Hash email; query attempts by `email_hash` over the 60s and 24h windows | No effect | No effect (read-only) |
+| Step 2 — `/request` attempt-record (every request that passes rate-limit) | INSERT one row at `NOW()` keyed by `email_hash` | No effect | INSERT one row |
+| Step 3 — `/request` user lookup | `find_by_email` (the first DB read that *could* differ between the two paths) | No effect | No effect |
+| Step 4a — `/request` (unknown email) | Constant-time padding, return Ok | No change | (already recorded in step 2) |
+| Step 4b — `/request` (known email) | 32 random bytes → URL-safe base64 → SHA-256 token hash → INSERT into `magic_link_tokens` (deleting any prior PasswordReset row first); send email | Delete prior PasswordReset row(s); insert new row | (already recorded in step 2) |
 | Validation — `/validate` | Hash incoming raw token, lookup by hash, check `exp > now`, check `purpose = PasswordReset` | No mutation | No mutation |
 | Consumption — `/complete` | Same checks as validation, then `DELETE` all of user's `PasswordReset` tokens + `UPDATE users.password` in one transaction | Row removed; password updated atomically | No change — attempts are kept; deleting them would let an attacker mask their tracks by completing a reset |
 | Expiry (passive) | 30 minutes from issuance (`PASSWORD_RESET_TOKEN_EXPIRY_SECONDS=1800`) | Expired rows remain until next issuance or admin cleanup; queries filter on `exp > now` | N/A — attempts have no TTL semantic |
@@ -79,12 +82,13 @@ Keeping them separate prevents a design conflict that would otherwise make the d
 
 ### Why record-first
 
-The audit row is inserted **before** token creation, not after. Two reasons:
+The audit row is inserted **before** the user lookup (and before token creation on the known-user branch), not after. Three reasons:
 
-1. **Consistency under failure.** If the rate-limit check passes but token issuance fails (DB transient error), the next request — moments later — must still see the previous attempt and apply rate-limiting. Recording first guarantees this.
-2. **Conceptual correctness.** "Attempt" means "user tried to trigger a reset," not "we succeeded." A user who triggers 5 requests that all fail mid-issuance has still used the system 5 times in the rate-limit's eyes.
+1. **Enumeration safety.** Recording before the user lookup keeps the unknown-email and known-user paths observationally identical up to the point the rate-limit could fire. See [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths) for the bug this prevents.
+2. **Consistency under failure.** If the rate-limit check passes but token issuance fails (DB transient error), the next request — moments later — must still see the previous attempt and apply rate-limiting. Recording first guarantees this.
+3. **Conceptual correctness.** "Attempt" means "user tried to trigger a reset," not "we succeeded." A user who triggers 5 requests that all fail mid-issuance has still used the system 5 times in the rate-limit's eyes.
 
-The cost is that a transient DB error during issuance burns one of the user's 5 daily attempts — slightly user-hostile but the right default for a security mechanism.
+The cost is that a transient DB error during issuance burns one of the email's 5 daily attempts — slightly user-hostile but the right default for a security mechanism.
 
 ## Security Decisions
 
@@ -94,8 +98,9 @@ Every decision below was made deliberately to defeat a specific class of attack.
 
 | Mechanism | Defends Against |
 |---|---|
-| `POST /password-reset/request` always returns 200 regardless of email existence | Status-code-based user enumeration |
+| `POST /password-reset/request` always returns 200 regardless of email existence | Status-code-based user enumeration on the first request |
 | Constant-time padding when email not found (matches success-path latency) | Timing-based user enumeration (latency oracle) |
+| **Rate limit fires uniformly on both paths via email-hash key, checked BEFORE user lookup** — see [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths) | Status-code-based user enumeration via 200/429 split on subsequent requests (PR #311 review catch) |
 | `GET /password-reset/validate` returns only `first_name` + `last_name` on success | PII over-exposure if a token is ever guessed/leaked |
 | Collapsed `400 invalid_or_expired_token` (no distinction between unknown / expired / wrong-purpose) | Status-code-based token-state oracle |
 
@@ -119,14 +124,39 @@ The `magic_link_tokens.purpose` column (enum `Setup` | `PasswordReset`) ensures 
 
 Existing tokens in the table at migration time are backfilled to `Setup`. The column is `NOT NULL` with no default — every new insertion must explicitly declare its purpose, preventing accidental defaulting.
 
+### Enumeration Safety on Both Paths
+
+A response-code split between the unknown-email and known-user paths is itself an enumeration oracle — even if the *first* response is identical (always 200), any subsequent state-dependent behavior that differs between the two paths leaks existence.
+
+**The bug this prevents (PR #311 review catch):** An earlier version of `request_password_reset` ran the rate-limit check *after* the user lookup, only on the known-user path. The 2nd request from an attacker within 60 seconds:
+
+| Email | 1st response | 2nd response (within 60s) |
+|---|---|---|
+| Unknown to the system | 200 | **200** (no rate limit was checked) |
+| Known to the system | 200 | **429** (rate-limit fired on the prior recorded attempt) |
+
+The 2nd response was 100% deterministically distinguishable, defeating the always-200 guarantee on the 1st response.
+
+**The fix.** Three structural changes that together make the response observationally identical on both paths:
+
+1. **Rate-limit by email-hash, not user_id.** `hash_email(email)` normalizes (lowercase + trim) and SHA-256-hashes the address. This becomes the rate-limit key, independent of whether a user record exists. (Capitalization variants of the same address share a rate-limit bucket — without normalization, an attacker could enumerate via `Foo@example.com` vs `foo@example.com`.)
+
+2. **Check rate limit BEFORE the user lookup.** The order in `request_password_reset` is now: `hash_email → enforce_rate_limit → record_attempt → find_by_email → (branch by user existence)`. Any rate-limit rejection fires identically before the user lookup runs.
+
+3. **Record attempts for unknown emails too.** The audit row is inserted on every request that passes the rate-limit check, regardless of whether the email matches a user. This keeps both paths observationally indistinguishable in their DB side effects up to step 3.
+
+**Trade-off accepted.** An attacker probing many unknown emails grows the `password_reset_attempts` table faster than if we only recorded known users. Bounded by the rate limit itself (5 attempts/email/24h), the worst-case growth is 5 × N_probed_emails per day. The sweep job ([Ops Maintenance](#ops-maintenance) below) handles long-term retention. A legitimate user whose email was previously probed by an attacker can still reset their password after the attacker's rate-limit budget for that email expires — bounded 24-hour DOS, same as the standard rate-limit trade-off.
+
+**Hash properties.** Plain SHA-256 of the normalized email (no pepper). The hash provides modest defense-in-depth — a DB leak doesn't expose plaintext emails directly — but is not reversibility-resistant: an attacker with a candidate email list can determine which ones have attempted resets. Adding a server-side pepper would harden this; deferred unless we accumulate sensitive forensic patterns in the table.
+
 ### Rate-Limit Audit Separate from Token State
 
 The per-email rate limit (1/60s, 5/24h) is enforced by **counting rows in a dedicated `password_reset_attempts` audit table**, NOT by counting rows in `magic_link_tokens`. The two tables serve fundamentally different roles:
 
-| Concern | Table | Cardinality semantics |
-|---|---|---|
-| What's the current redeemable token? | `magic_link_tokens` (with `purpose=PasswordReset`) | **State table**: at most one live row per `(user_id, purpose)`. `create_magic_link` runs `delete_all_for_user` before insert. |
-| How many requests has this user made recently? | `password_reset_attempts` | **Audit table**: append-only. One row per request. Pruned by an out-of-band ops sweep, never by request-path code. |
+| Concern | Table | Key | Cardinality semantics |
+|---|---|---|---|
+| What's the current redeemable token? | `magic_link_tokens` (with `purpose=PasswordReset`) | `user_id` (FK to users) | **State table**: at most one live row per `(user_id, purpose)`. `create_magic_link` runs `delete_all_for_user` before insert. |
+| How many requests have been made for this email recently? | `password_reset_attempts` | `email_hash` (SHA-256 of normalized email; no FK) | **Audit table**: append-only. One row per request — recorded for both known and unknown emails. Pruned by an out-of-band ops sweep, never by request-path code. |
 
 **Why this matters.** An earlier design conflated these two roles by counting rows in `magic_link_tokens` for the daily-cap check. That made the cap **mathematically unreachable**: because the state-table semantics required deleting the prior row on every issuance, the count returned 0 or 1, never ≥ 5. An attacker honoring only the 60-second min-interval could emit ~1,416 reset emails per day instead of the intended 5. The bug was caught in PR #311 review.
 
@@ -141,8 +171,8 @@ The per-email rate limit (1/60s, 5/24h) is enforced by **counting rows in a dedi
 
 **Trade-offs:**
 
-- The attempts table grows unbounded without intervention. Mitigated by the `sweep_old_attempts(db, retention_days)` ops function (see [Ops Maintenance](#ops-maintenance) below). At the rate-limit cap (5/user/day) the maximum growth is ~1,825 rows/year/user — negligible for any realistic user base.
-- An "attempt" is recorded *before* token issuance succeeds. A transient DB error during issuance burns one of the user's 5 daily attempts. This is the right default for a security mechanism (better to over-count attempts than under-count), and is documented inline in `request_password_reset`.
+- The attempts table grows unbounded without intervention. Mitigated by the `sweep_old_attempts(db, retention_days)` ops function (see [Ops Maintenance](#ops-maintenance) below). At the rate-limit cap (5/email/day) the maximum growth per email is ~1,825 rows/year — negligible for any realistic user base, even allowing for attacker probes of unrelated emails.
+- An "attempt" is recorded *before* token issuance succeeds (and before the user lookup). A transient DB error during issuance burns one of the email's 5 daily attempts. This is the right default for a security mechanism (better to over-count attempts than under-count), and is documented inline in `request_password_reset`.
 
 **Design principle.** Any time a single table appears to serve both as a "current state" projection and an "audit log" of past events, the seam between those two semantics is bug-prone. Split them. This same pattern applies to future similar features (e.g. if we add rate-limited login retries or 2FA challenges).
 
@@ -185,7 +215,9 @@ The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /us
 |---|---|
 | Mallory submits Alice's email to `/password-reset/request` to take over her account | Reset link is delivered to Alice's inbox, not Mallory. Mallory has no path to the token. Alice's current password is unchanged. |
 | Mallory floods Alice's inbox with reset emails | Per-email rate limit caps issuance at 1/60s, 5/24h → `429`. Enforced via the `password_reset_attempts` audit table — see [Rate-Limit Audit Separate from Token State](#rate-limit-audit-separate-from-token-state) for the design rationale and the bug this separation prevents. |
-| Mallory probes the request endpoint to map which emails have accounts | Always-200 response + constant-time padding eliminate both status and timing oracles. |
+| Mallory probes the request endpoint **once** per email to map which emails have accounts | Always-200 response + constant-time padding eliminate both status and timing oracles on the first request. |
+| Mallory probes the request endpoint **twice in quick succession** with the same email — looking for a 200/429 split to leak existence | Rate-limit fires uniformly on both paths via email-hash key checked before user lookup — both unknown emails and known users get 429 on the 2nd request inside the min-interval window. See [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths). |
+| Mallory probes with capitalization or whitespace variants (`Alice@x.com` vs `alice@x.com`) to bypass per-email rate limit | Email is normalized (lowercase + trim) before hashing, so all variants share a single rate-limit bucket. |
 | Mallory brute-forces `/password-reset/complete` with random tokens | 256-bit entropy + 30-minute TTL make guessing computationally infeasible. |
 | Mallory reuses a stolen setup-email token at `/password-reset/complete` | Purpose-scoped lookup rejects tokens with `purpose ≠ PasswordReset`. |
 | Mallory tries to replay a previously-consumed reset link | Token is deleted atomically with the password update; subsequent attempts return `400 invalid_or_expired_token`. |
