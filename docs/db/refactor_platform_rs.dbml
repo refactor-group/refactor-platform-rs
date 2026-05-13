@@ -32,7 +32,7 @@ Table refactor_platform.users {
   first_name varchar
   last_name varchar
   display_name varchar [note: 'If a user wants to go by something other than first & last names']
-  password varchar
+  password varchar [note: 'Nullable — users created via magic link may have no password']
   timezone varchar(50) [not null, default: 'UTC', note: 'User timezone for displaying dates/times in their local timezone']
   github_username varchar // Specifically GH for now, can generalize later
   github_profile_url varchar
@@ -43,7 +43,7 @@ Table refactor_platform.users {
 Table refactor_platform.user_roles {
   id uuid [primary key, unique, not null, default: `gen_random_uuid()`]
   role refactor_platform.role [not null]
-  organization_id uuid [note: 'The organization joined to the user']
+  organization_id uuid [note: 'The organization joined to the user. NULL for global (super_admin) roles.']
   user_id uuid [not null, note: 'The user joined to the organization']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
@@ -203,6 +203,69 @@ Table refactor_platform.authorized_sessions {
   "expiry_date" timestamptz [not null]
 }
 
+// Records one Recall.ai bot deployment per coaching session attempt.
+// Multiple rows may exist per session (retries after failure).
+Table refactor_platform.meeting_recordings {
+  id uuid [primary key, not null, default: `gen_random_uuid()`]
+  coaching_session_id uuid [not null, note: 'The coaching session this recording belongs to']
+  bot_id varchar(255) [not null, note: 'Recall.ai bot ID']
+  status refactor_platform.meeting_recording_status [not null, default: 'pending']
+  video_url text
+  audio_url text
+  duration_seconds integer
+  started_at timestamptz
+  ended_at timestamptz
+  error_message text
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (coaching_session_id, created_at) [name: "idx_meeting_recordings_coaching_session_id", note: "DESC on created_at for latest-first ordering"]
+    bot_id [name: "idx_meeting_recordings_bot_id"]
+  }
+}
+
+// Stores Recall.ai async transcript metadata. Full content lives in transcript_segments.
+Table refactor_platform.transcriptions {
+  id uuid [primary key, not null, default: `gen_random_uuid()`]
+  coaching_session_id uuid [not null, note: 'The coaching session this transcription belongs to']
+  meeting_recording_id uuid [unique, not null, note: 'One transcription per recording — enforces idempotency for concurrent webhook delivery']
+  external_id varchar(255) [unique, not null, note: 'Recall.ai async transcript job ID']
+  recall_recording_id varchar(255) [note: 'Recall.ai recording UUID used for transcript API calls']
+  status refactor_platform.transcription_status [not null, default: 'queued']
+  language_code varchar(20)
+  speaker_count smallint
+  word_count integer
+  duration_seconds integer
+  confidence double [note: 'double precision']
+  error_message text
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    coaching_session_id [name: "idx_transcriptions_coaching_session_id"]
+    meeting_recording_id [unique, name: "idx_transcriptions_meeting_recording_id"]
+    external_id [unique, name: "idx_transcriptions_external_id"]
+  }
+}
+
+// Immutable speaker-diarized utterances. Write-once — no updated_at.
+Table refactor_platform.transcript_segments {
+  id uuid [primary key, not null, default: `gen_random_uuid()`]
+  transcription_id uuid [not null, note: 'The transcription this segment belongs to']
+  speaker_label varchar(255) [not null, note: 'Speaker name or numeric ID from Recall.ai']
+  text text [not null]
+  start_ms integer [not null, note: 'Segment start time in milliseconds from recording start']
+  end_ms integer [not null, note: 'Segment end time in milliseconds from recording start']
+  confidence double [note: 'double precision']
+  sentiment varchar(20) [note: 'VARCHAR (not enum) to avoid PostgreSQL enum ownership friction']
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (transcription_id, start_ms) [name: "idx_transcript_segments_transcription_start", note: "ASC on start_ms for ordered conversation fetch"]
+  }
+}
+
 enum refactor_platform.status {
   not_started
   in_progress
@@ -222,16 +285,38 @@ enum refactor_platform.provider {
   zoom
 }
 
+enum refactor_platform.meeting_recording_status {
+  pending
+  joining
+  waiting_room
+  in_meeting
+  recording
+  processing
+  completed
+  failed
+}
+
+enum refactor_platform.transcription_status {
+  queued
+  processing
+  completed
+  failed
+}
+
 // coaching_relationships relationships
 Ref: refactor_platform.coaching_relationships.organization_id > refactor_platform.organizations.id
 Ref: refactor_platform.coaching_relationships.coachee_id > refactor_platform.users.id
 Ref: refactor_platform.coaching_relationships.coach_id > refactor_platform.users.id
 
-// coaching_sessions relationships
-Ref: refactor_platform.coaching_sessions.coaching_relationship_id > refactor_platform.coaching_relationships.id
+// user_roles relationships
+Ref: refactor_platform.user_roles.organization_id > refactor_platform.organizations.id
+Ref: refactor_platform.user_roles.user_id > refactor_platform.users.id
 
 // oauth_connections relationships
 Ref: refactor_platform.oauth_connections.user_id > refactor_platform.users.id
+
+// coaching_sessions relationships
+Ref: refactor_platform.coaching_sessions.coaching_relationship_id > refactor_platform.coaching_relationships.id
 
 // goals relationships
 Ref: refactor_platform.goals.coaching_relationship_id > refactor_platform.coaching_relationships.id
@@ -260,6 +345,12 @@ Ref: refactor_platform.actions_users.user_id > refactor_platform.users.id
 // magic_link_tokens relationships
 Ref: refactor_platform.magic_link_tokens.user_id > refactor_platform.users.id [delete: cascade]
 
-//user_roles relationships
-Ref: refactor_platform.user_roles.organization_id > refactor_platform.organizations.id
-Ref: refactor_platform.user_roles.user_id > refactor_platform.users.id
+// meeting_recordings relationships
+Ref: refactor_platform.meeting_recordings.coaching_session_id > refactor_platform.coaching_sessions.id [delete: cascade]
+
+// transcriptions relationships
+Ref: refactor_platform.transcriptions.coaching_session_id > refactor_platform.coaching_sessions.id [delete: cascade]
+Ref: refactor_platform.transcriptions.meeting_recording_id > refactor_platform.meeting_recordings.id [delete: cascade]
+
+// transcript_segments relationships
+Ref: refactor_platform.transcript_segments.transcription_id > refactor_platform.transcriptions.id [delete: cascade]
