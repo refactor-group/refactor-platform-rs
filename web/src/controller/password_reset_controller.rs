@@ -19,6 +19,7 @@ use axum::{
     Json,
 };
 use domain::password_reset as PasswordResetApi;
+use log::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -58,6 +59,9 @@ pub(crate) async fn request(
     State(app_state): State<AppState>,
     Json(params): Json<PasswordResetRequestParams>,
 ) -> Result<impl IntoResponse, Error> {
+    warn!("[password-reset] /request endpoint hit");
+    debug!("[password-reset] /request raw email: {}", params.email);
+
     PasswordResetApi::request_password_reset(
         app_state.db_conn_ref(),
         &params.email,
@@ -94,6 +98,8 @@ pub(crate) async fn validate(
     State(app_state): State<AppState>,
     Query(params): Query<ValidateParams>,
 ) -> Result<impl IntoResponse, Error> {
+    warn!("[password-reset] /validate endpoint hit");
+
     let user =
         PasswordResetApi::validate_reset_token(app_state.db_conn_ref(), &params.token).await?;
 
@@ -126,6 +132,8 @@ pub(crate) async fn complete(
     State(app_state): State<AppState>,
     Json(params): Json<PasswordResetCompleteParams>,
 ) -> Result<impl IntoResponse, Error> {
+    warn!("[password-reset] /complete endpoint hit");
+
     let updated_user =
         PasswordResetApi::complete_password_reset(app_state.db_conn_ref(), params).await?;
 

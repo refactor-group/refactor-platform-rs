@@ -58,9 +58,11 @@ pub async fn request_password_reset(
 
     let Some(user) = user else {
         // Constant-time padding: do NOT distinguish "no such user" from
-        // the success path via response latency. We also avoid logging the
-        // raw email at INFO since it's PII; debug-only.
-        debug!("Password reset requested for email with no matching user");
+        // the success path via response latency. The WARN is a security
+        // signal ("someone tried to reset an unknown account") but the
+        // raw email is PII and stays at DEBUG.
+        warn!("[password-reset] reset requested for unknown email (no user match)");
+        debug!("[password-reset] unknown-email value was: {email}");
         sleep(Duration::from_millis(ENUMERATION_PADDING_MS)).await;
         return Ok(());
     };
@@ -80,12 +82,12 @@ pub async fn request_password_reset(
     // the response contract (still 200 to the FE).
     if let Err(e) = crate::emails::send_password_reset_email(config, &user, &raw_token).await {
         warn!(
-            "Failed to send password-reset email to user {}: {e:?}",
+            "[password-reset] failed to send email to user {}: {e:?}",
             user.id
         );
     }
 
-    info!("Password reset link issued for user {}", user.id);
+    warn!("[password-reset] reset link issued for user {}", user.id);
     Ok(())
 }
 
@@ -118,7 +120,7 @@ pub async fn complete_password_reset(
     let raw_token = params.remove("token")?;
 
     if password != confirm_password {
-        warn!("Password confirmation does not match during password reset");
+        warn!("[password-reset] password confirmation mismatch on /complete");
         return Err(Error {
             source: None,
             error_kind: DomainErrorKind::Validation(
@@ -158,7 +160,10 @@ pub async fn complete_password_reset(
         )),
     })?;
 
-    info!("User {} completed password reset", updated_user.id);
+    warn!(
+        "[password-reset] user {} completed password reset (password changed)",
+        updated_user.id
+    );
     Ok(updated_user)
 }
 
@@ -185,7 +190,7 @@ async fn enforce_rate_limit(db: &DatabaseConnection, user_id: crate::Id) -> Resu
         let elapsed = Utc::now() - token.created_at.with_timezone(&Utc);
         if elapsed < ChronoDuration::seconds(RATE_LIMIT_MIN_INTERVAL_SECS) {
             warn!(
-                "Password reset rate-limited (min-interval) for user {}",
+                "[password-reset] rate-limited (min-interval) for user {}",
                 user_id
             );
             return Err(rate_limited_error());
@@ -203,7 +208,7 @@ async fn enforce_rate_limit(db: &DatabaseConnection, user_id: crate::Id) -> Resu
 
     if recent_count >= RATE_LIMIT_DAILY_CAP {
         warn!(
-            "Password reset rate-limited (daily-cap) for user {}",
+            "[password-reset] rate-limited (daily-cap) for user {}",
             user_id
         );
         return Err(rate_limited_error());

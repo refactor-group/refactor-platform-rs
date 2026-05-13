@@ -99,10 +99,27 @@ The `magic_link_tokens.purpose` column (enum `Setup` | `PasswordReset`) ensures 
 
 Existing tokens in the table at migration time are backfilled to `Setup`. The column is `NOT NULL` with no default — every new insertion must explicitly declare its purpose, preventing accidental defaulting.
 
-### Logging Hygiene
+### Logging Hygiene & Security Audit Trail
 
-- Raw email addresses are **never** logged at INFO level — they are PII. Once a user is resolved by email, subsequent log lines reference the `user_id` UUID instead.
-- The raw token is **never** logged at any level. Only the SHA-256 hash (already stored) is loggable, and even that is reserved for ERROR-level audit traces.
+The password-reset code path emits a **WARN-level audit trail** so security/ops operators can grep `[password-reset]` and see every interesting event without enabling DEBUG. PII (raw emails, raw tokens) stays at DEBUG or is never logged.
+
+| Event | Level | Where | Contains |
+|---|---|---|---|
+| Endpoint hit — `/request`, `/validate`, `/complete` | WARN | `web/src/controller/password_reset_controller.rs` | endpoint name only |
+| Raw email value on `/request` | DEBUG | controller | email (PII — only when log filter is at DEBUG) |
+| Reset requested for unknown email | WARN | `domain::password_reset` | no PII (the email itself drops to DEBUG) |
+| Reset link issued for known user | WARN | `domain::password_reset` | `user_id` UUID |
+| Password mismatch on `/complete` | WARN | `domain::password_reset` | no PII |
+| Rate-limit hit (min-interval or daily cap) | WARN | `domain::password_reset` | `user_id` UUID |
+| Email-send failure | WARN | `domain::password_reset` | `user_id` UUID + error |
+| Password successfully reset (password changed) | WARN | `domain::password_reset` | `user_id` UUID |
+| Token validation (underlying) — not found / expired | WARN | `domain::magic_link_token` | purpose discriminator |
+
+**General rules across the path:**
+
+- Raw email addresses are **never** logged at INFO level or above — they are PII. Once a user is resolved by email, subsequent log lines reference the `user_id` UUID instead.
+- The raw token is **never** logged at any level. Only the SHA-256 hash (already stored in the DB) may be logged, and even that is reserved for ERROR-level audit traces if needed.
+- Every WARN message uses the `[password-reset]` prefix so operators can `grep` the entire flow with one search.
 
 ### Authorization Model
 
