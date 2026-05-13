@@ -86,7 +86,7 @@ Every decision below was made deliberately to defeat a specific class of attack.
 | 256 bits of entropy per token (32 random bytes from `rand::thread_rng()`) | Brute-force guessing (search space ≈ 10⁷⁷) |
 | SHA-256 hash stored in DB, never the raw token | DB-leak token harvesting |
 | Single-use: token deleted atomically with password update | Replay after legitimate use |
-| 30-minute TTL (vs 24h for setup tokens) | Bounded exposure if email is intercepted or phished |
+| 30-minute TTL (vs 72h for setup tokens) | Bounded exposure if email is intercepted or phished |
 | Path-segment URL format (`/reset-password/<token>`) | Token leakage via HTTP `Referer` and query-string-aware logs |
 | Per-email DB-based rate limit (1/60s, 5/24h) → `429 password_reset_rate_limited` | Inbox-flooding harassment and brute-force probing |
 
@@ -139,6 +139,7 @@ Each deferral is a deliberate scoping decision, not an oversight.
 | Multi-device session invalidation on successful reset | Current `tower_sessions` store is in-memory — sessions don't survive a backend restart anyway. Will land alongside the future persistent-session-store migration (Redis/Postgres). The FE's existing `SessionCleanupProvider` will handle the 401-on-next-request flow automatically when this ships. |
 | Per-IP rate limiting | v1 ships with per-email DB-based limit only (cheap, no new dependencies). Per-IP throttle deferred to a follow-up — likely `tower_governor` middleware applied globally to authentication endpoints. |
 | Password strength rules (length, complexity) | v1 accepts any non-empty password, matching the existing `/magic-link/complete-setup` behavior. Strength rules will be applied to both setup and reset endpoints together when introduced, to avoid divergent UX. |
+| Periodic sweep of expired tokens | Expired tokens are validated as inert (`validate_token` refuses them) but are not auto-deleted from `magic_link_tokens`. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep (e.g. `DELETE WHERE expires_at < now() - INTERVAL '7 days'`) would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
 
 ## Key Files
 
@@ -158,7 +159,7 @@ Each deferral is a deliberate scoping decision, not an oversight.
 | Variable | Default | Description |
 |---|---|---|
 | `PASSWORD_RESET_EMAIL_TEMPLATE_ID` | *(none — required)* | MailerSend template ID. Template must accept personalization vars `first_name`, `last_name`, `password_reset_url`. |
-| `PASSWORD_RESET_EMAIL_URL_PATH` | `reset-password` | FE route segment. URL becomes `{FRONTEND_BASE_URL}/{this}/<token>`. |
+| `PASSWORD_RESET_EMAIL_URL_PATH` | `/reset-password/{token}` | URL path template. The literal `{token}` placeholder is substituted with the raw token; the FE route is `/reset-password/[token]`. |
 | `PASSWORD_RESET_TOKEN_EXPIRY_SECONDS` | `1800` (30 min) | Token lifetime. Shorter than the 24h `MAGIC_LINK_EXPIRY_SECONDS` because the user is actively at their keyboard when requesting reset. |
 
 ## Cross-References

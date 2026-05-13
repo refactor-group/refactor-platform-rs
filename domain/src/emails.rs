@@ -98,6 +98,19 @@ impl EmailNotification for WelcomeEmail {
     }
 }
 
+struct PasswordResetEmail;
+impl EmailNotification for PasswordResetEmail {
+    fn template_id(config: &Config) -> Option<String> {
+        config.password_reset_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "password reset"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.password_reset_email_url_path().to_owned())
+    }
+}
+
 /// Create a magic link token and send a welcome email to a user.
 ///
 /// Returns an error if token creation or email delivery fails.
@@ -170,6 +183,43 @@ async fn send_welcome_email(
         .build()
         .await?;
     debug!("Email request created for {}", user.email);
+
+    email_config.client.send_email(email_request).await
+}
+
+/// Build and send a password-reset email to a single user.
+///
+/// Called from the password-reset domain flow after a token has been issued.
+/// Note: logs `user.id` rather than `user.email` — raw email addresses are
+/// PII and are not emitted at INFO level on this code path.
+pub(crate) async fn send_password_reset_email(
+    config: &Config,
+    user: &users::Model,
+    raw_token: &str,
+) -> Result<(), Error> {
+    info!("Initiating password-reset email for user {}", user.id);
+
+    let email_config = ResolvedEmailConfig::new::<PasswordResetEmail>(config).await?;
+
+    let password_reset_url = email_config
+        .session_url_builder
+        .as_ref()
+        .map(|b| b.build(TOKEN_PLACEHOLDER, raw_token))
+        .unwrap_or_default();
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from("hello@myrefactor.com")
+        .to_with_name(
+            &user.email,
+            format!("{} {}", user.first_name, user.last_name),
+        )
+        .subject("Reset your Refactor Platform password")
+        .template_id(&email_config.template_id)
+        .add_personalization("first_name", &user.first_name)
+        .add_personalization("last_name", &user.last_name)
+        .add_personalization("password_reset_url", &password_reset_url)
+        .build()
+        .await?;
 
     email_config.client.send_email(email_request).await
 }

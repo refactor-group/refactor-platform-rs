@@ -33,6 +33,14 @@ const DEFAULT_MAGIC_LINK_EMAIL_URL_PATH: &str = "/setup/{token}";
 /// Default expiry duration for magic link tokens (72 hours in seconds).
 const DEFAULT_MAGIC_LINK_EXPIRY_SECONDS: u64 = 259200;
 
+/// Default URL path for password reset page.
+const DEFAULT_PASSWORD_RESET_EMAIL_URL_PATH: &str = "/reset-password/{token}";
+
+/// Default expiry duration for password reset tokens (30 minutes in seconds).
+/// Shorter than the setup-token default because the user is actively at their
+/// keyboard when requesting reset.
+const DEFAULT_PASSWORD_RESET_TOKEN_EXPIRY_SECONDS: u64 = 1800;
+
 /// All config field names registered with Clap, used for value source tracking.
 /// This is the single source of truth for field key names across the Config type.
 const CONFIG_FIELD_KEYS: &[&str] = &[
@@ -59,6 +67,9 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "action_assigned_email_url_path",
     "magic_link_email_url_path",
     "magic_link_expiry_seconds",
+    "password_reset_email_template_id",
+    "password_reset_email_url_path",
+    "password_reset_token_expiry_seconds",
     "interface",
     "port",
     "log_level_filter",
@@ -279,6 +290,17 @@ pub struct Config {
     /// Expiry duration in seconds for magic link tokens (default: 72 hours).
     #[arg(long, env, default_value_t = DEFAULT_MAGIC_LINK_EXPIRY_SECONDS)]
     magic_link_expiry_seconds: u64,
+    /// The MailerSend template ID for password-reset emails.
+    /// Personalization variables: `first_name`, `last_name`, `password_reset_url`.
+    #[arg(long, env)]
+    password_reset_email_template_id: Option<String>,
+    /// URL path template for the password reset page.
+    /// Use `{token}` as a placeholder for the reset token.
+    #[arg(long, env, default_value = DEFAULT_PASSWORD_RESET_EMAIL_URL_PATH)]
+    password_reset_email_url_path: String,
+    /// Expiry duration in seconds for password reset tokens (default: 30 minutes).
+    #[arg(long, env, default_value_t = DEFAULT_PASSWORD_RESET_TOKEN_EXPIRY_SECONDS)]
+    password_reset_token_expiry_seconds: u64,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -565,6 +587,18 @@ impl Config {
         );
         self.debug_field("magic_link_email_url_path", &self.magic_link_email_url_path);
         self.debug_field("magic_link_expiry_seconds", &self.magic_link_expiry_seconds);
+        self.debug_field(
+            "password_reset_email_template_id",
+            &self.password_reset_email_template_id,
+        );
+        self.debug_field(
+            "password_reset_email_url_path",
+            &self.password_reset_email_url_path,
+        );
+        self.debug_field(
+            "password_reset_token_expiry_seconds",
+            &self.password_reset_token_expiry_seconds,
+        );
     }
 
     pub fn api_version(&self) -> &str {
@@ -668,6 +702,26 @@ impl Config {
     /// Returns the expiry duration in seconds for magic link tokens.
     pub fn magic_link_expiry_seconds(&self) -> u64 {
         self.magic_link_expiry_seconds
+    }
+
+    /// Returns the MailerSend template ID for password-reset emails, if configured.
+    pub fn password_reset_email_template_id(&self) -> Option<String> {
+        self.password_reset_email_template_id.clone()
+    }
+
+    /// Returns the URL path template for the password reset page.
+    /// Falls back to the default if the configured value is empty.
+    pub fn password_reset_email_url_path(&self) -> &str {
+        if self.password_reset_email_url_path.is_empty() {
+            DEFAULT_PASSWORD_RESET_EMAIL_URL_PATH
+        } else {
+            &self.password_reset_email_url_path
+        }
+    }
+
+    /// Returns the expiry duration in seconds for password reset tokens.
+    pub fn password_reset_token_expiry_seconds(&self) -> u64 {
+        self.password_reset_token_expiry_seconds
     }
 
     pub fn runtime_env(&self) -> RustEnv {

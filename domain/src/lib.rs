@@ -31,6 +31,7 @@ pub mod note;
 pub mod oauth_connection;
 pub mod oauth_token_storage;
 pub mod organization;
+pub mod password_reset;
 pub mod user;
 
 pub mod gateway;

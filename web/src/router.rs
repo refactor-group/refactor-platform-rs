@@ -13,7 +13,8 @@ use tower_http::services::ServeDir;
 use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
     goal_controller, jwt_controller, magic_link_controller, note_controller, oauth_controller,
-    organization, organization_controller, user, user_controller, user_session_controller,
+    organization, organization_controller, password_reset_controller, user, user_controller,
+    user_session_controller,
 };
 use crate::sse;
 
@@ -80,6 +81,9 @@ use utoipa_rapidoc::RapiDoc;
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
+            password_reset_controller::request,
+            password_reset_controller::validate,
+            password_reset_controller::complete,
             user::password_controller::update_password,
             user::organization_controller::index,
             user::action_controller::index,
@@ -149,6 +153,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_goals_routes(app_state.clone()))
         .merge(user_coaching_relationships_routes(app_state.clone()))
         .merge(magic_link_routes(app_state.clone()))
+        .merge(password_reset_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
@@ -495,6 +500,23 @@ fn magic_link_routes(app_state: AppState) -> Router {
         .route(
             "/magic-link/complete-setup",
             post(magic_link_controller::complete_setup),
+        )
+        .with_state(app_state)
+}
+
+fn password_reset_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/password-reset/request",
+            post(password_reset_controller::request),
+        )
+        .route(
+            "/password-reset/validate",
+            get(password_reset_controller::validate),
+        )
+        .route(
+            "/password-reset/complete",
+            post(password_reset_controller::complete),
         )
         .with_state(app_state)
 }
