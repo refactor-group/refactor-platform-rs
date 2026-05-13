@@ -1,0 +1,168 @@
+# Password Reset Architecture
+
+User-initiated password reset via a single-use, email-delivered magic link. Reuses the magic-link token infrastructure that powers the welcome/setup flow ([authentication_error_flow.md](authentication_error_flow.md), [email_notifications.md](email_notifications.md)), with a new `purpose` column on `magic_link_tokens` to prevent cross-flow token reuse.
+
+## Endpoints
+
+All three are unauthenticated — by design, a user who has forgotten their password cannot authenticate.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/password-reset/request` | Generate token, email reset link. Always 200 (enumeration-safe). |
+| `GET` | `/password-reset/validate?token=<raw>` | Non-destructive validity check for FE state machine. Returns sanitized user (`first_name`, `last_name` only). |
+| `POST` | `/password-reset/complete` | Consume token, set new password. Returns full user. |
+
+Wire format is the source-of-truth `PasswordResetEndpoints` v1 contract on the cross-repo coordinator blackboard.
+
+## End-to-End Flow
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant FE as Frontend
+    participant BE as Backend
+    participant DB as PostgreSQL
+    participant MS as MailerSend
+    participant Inbox as User's Inbox
+
+    User->>FE: Click "Forgot password?"
+    FE->>BE: POST /password-reset/request {email}
+    BE->>DB: find user by email
+    alt user exists
+        BE->>DB: delete prior PasswordReset tokens for user
+        BE->>DB: insert new token (purpose=PasswordReset, sha256_hash, exp=now+30m)
+        BE->>MS: send_email (template, {first_name, password_reset_url})
+        MS-->>Inbox: email with reset link
+    else user not found
+        BE->>BE: constant-time padding (matches success-path duration)
+    end
+    BE-->>FE: 200 {data: null}
+    FE-->>User: "If an account exists, check your inbox"
+
+    User->>Inbox: Click link
+    Inbox->>FE: GET /reset-password/<token>
+    FE->>BE: GET /password-reset/validate?token=<raw>
+    BE->>DB: lookup token_hash, check exp, check purpose=PasswordReset
+    BE-->>FE: 200 {first_name, last_name} OR 400 invalid_or_expired_token
+    FE-->>User: render form OR error state
+
+    User->>FE: Submit new password
+    FE->>BE: POST /password-reset/complete {token, password, confirm_password}
+    BE->>DB: BEGIN
+    BE->>DB: validate_token (re-check exp + purpose)
+    BE->>DB: delete all PasswordReset tokens for user
+    BE->>DB: update users.password = argon2(new_password)
+    BE->>DB: COMMIT
+    BE-->>FE: 200 {user}
+    FE-->>User: redirect to login
+```
+
+## Token Lifecycle
+
+| Stage | Action | What's Stored |
+|---|---|---|
+| Issuance | 32 random bytes → URL-safe base64 → SHA-256 hex digest | DB stores hash only; raw token in email URL path segment |
+| Validation (GET) | Hash incoming raw token, lookup by hash, check `exp > now`, check `purpose = PasswordReset` | No DB mutation |
+| Consumption (POST complete) | Same checks as validation, then `DELETE` all of user's `PasswordReset` tokens + `UPDATE users.password` in one transaction | Token removed; password updated atomically |
+| Expiry | 30 minutes from issuance (`PASSWORD_RESET_TOKEN_EXPIRY_SECONDS=1800`) | Expired tokens remain in DB until next issuance or admin cleanup; queries filter on `exp > now` |
+
+## Security Decisions
+
+Every decision below was made deliberately to defeat a specific class of attack. See [Threat Model](#threat-model) for the scenarios these mitigations defend against.
+
+### Enumeration Safety
+
+| Mechanism | Defends Against |
+|---|---|
+| `POST /password-reset/request` always returns 200 regardless of email existence | Status-code-based user enumeration |
+| Constant-time padding when email not found (matches success-path latency) | Timing-based user enumeration (latency oracle) |
+| `GET /password-reset/validate` returns only `first_name` + `last_name` on success | PII over-exposure if a token is ever guessed/leaked |
+| Collapsed `400 invalid_or_expired_token` (no distinction between unknown / expired / wrong-purpose) | Status-code-based token-state oracle |
+
+### Token Strength & Protection
+
+| Mechanism | Defends Against |
+|---|---|
+| 256 bits of entropy per token (32 random bytes from `rand::thread_rng()`) | Brute-force guessing (search space ≈ 10⁷⁷) |
+| SHA-256 hash stored in DB, never the raw token | DB-leak token harvesting |
+| Single-use: token deleted atomically with password update | Replay after legitimate use |
+| 30-minute TTL (vs 24h for setup tokens) | Bounded exposure if email is intercepted or phished |
+| Path-segment URL format (`/reset-password/<token>`) | Token leakage via HTTP `Referer` and query-string-aware logs |
+| Per-email DB-based rate limit (1/60s, 5/24h) → `429 password_reset_rate_limited` | Inbox-flooding harassment and brute-force probing |
+
+### Purpose Separation
+
+The `magic_link_tokens.purpose` column (enum `Setup` | `PasswordReset`) ensures token usage is scoped to its intended flow:
+
+- `find_by_token_hash` filters on `purpose = ?` so a leaked Setup token cannot be redeemed at `/password-reset/complete`, and vice versa.
+- `delete_all_for_user` is purpose-scoped — issuing a reset token does NOT invalidate a pending Setup token. The two flows operate on disjoint token sets for the same user.
+
+Existing tokens in the table at migration time are backfilled to `Setup`. The column is `NOT NULL` with no default — every new insertion must explicitly declare its purpose, preventing accidental defaulting.
+
+### Logging Hygiene
+
+- Raw email addresses are **never** logged at INFO level — they are PII. Once a user is resolved by email, subsequent log lines reference the `user_id` UUID instead.
+- The raw token is **never** logged at any level. Only the SHA-256 hash (already stored) is loggable, and even that is reserved for ERROR-level audit traces.
+
+### Authorization Model
+
+| Endpoint | Authorization Signal |
+|---|---|
+| `POST /password-reset/request` | None — by design. Submitting any email is harmless because the token never goes to the requester. |
+| `GET /password-reset/validate` | Possession of a valid `PasswordReset` token. |
+| `POST /password-reset/complete` | Possession of a valid `PasswordReset` token. |
+| `PUT /users/:id/password` (pre-existing, distinct endpoint) | `authenticated_user.id == user_id` ([protect/users/passwords.rs:21](../../web/src/protect/users/passwords.rs#L21)) |
+
+The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /users/:id/password` model — they are an additive credential-recovery channel, not a replacement.
+
+## Threat Model
+
+| Scenario | Mitigation |
+|---|---|
+| Mallory submits Alice's email to `/password-reset/request` to take over her account | Reset link is delivered to Alice's inbox, not Mallory. Mallory has no path to the token. Alice's current password is unchanged. |
+| Mallory floods Alice's inbox with reset emails | Per-email rate limit caps issuance at 1/60s, 5/24h → `429`. |
+| Mallory probes the request endpoint to map which emails have accounts | Always-200 response + constant-time padding eliminate both status and timing oracles. |
+| Mallory brute-forces `/password-reset/complete` with random tokens | 256-bit entropy + 30-minute TTL make guessing computationally infeasible. |
+| Mallory reuses a stolen setup-email token at `/password-reset/complete` | Purpose-scoped lookup rejects tokens with `purpose ≠ PasswordReset`. |
+| Mallory tries to replay a previously-consumed reset link | Token is deleted atomically with the password update; subsequent attempts return `400 invalid_or_expired_token`. |
+| Mallory intercepts the email in transit | TLS protects SMTP transit. Out-of-scope at the application layer. |
+| Mallory has compromised Alice's email account | Out of scope: at this point Mallory controls account recovery for every service Alice uses. |
+| Authenticated user A tries to reset user B's password via the existing change-password endpoint | `protect::users::passwords::update_password` middleware enforces `authenticated_user.id == user_id`. Pre-existing, unchanged. |
+| Token leaks via HTTP `Referer` when the FE reset page loads a third-party resource | Path-segment format prevents query-string-style leakage. FE additionally sets `Referrer-Policy: same-origin` on token-bearing pages (tracked separately on the coordinator blackboard). |
+
+## Out of Scope for v1
+
+Each deferral is a deliberate scoping decision, not an oversight.
+
+| Item | Reason for Deferral |
+|---|---|
+| Multi-device session invalidation on successful reset | Current `tower_sessions` store is in-memory — sessions don't survive a backend restart anyway. Will land alongside the future persistent-session-store migration (Redis/Postgres). The FE's existing `SessionCleanupProvider` will handle the 401-on-next-request flow automatically when this ships. |
+| Per-IP rate limiting | v1 ships with per-email DB-based limit only (cheap, no new dependencies). Per-IP throttle deferred to a follow-up — likely `tower_governor` middleware applied globally to authentication endpoints. |
+| Password strength rules (length, complexity) | v1 accepts any non-empty password, matching the existing `/magic-link/complete-setup` behavior. Strength rules will be applied to both setup and reset endpoints together when introduced, to avoid divergent UX. |
+
+## Key Files
+
+| File | Role |
+|---|---|
+| `migration/src/m<date>_add_purpose_to_magic_link_tokens.rs` | Adds `purpose` column, backfills existing rows |
+| `entity/src/magic_link_tokens.rs` | `TokenPurpose` enum + `purpose` field |
+| `entity_api/src/magic_link_token.rs` | Purpose-scoped `find_by_token_hash` and `delete_all_for_user` |
+| `domain/src/password_reset.rs` | `request_password_reset()`, `complete_password_reset()`, rate-limit check, constant-time padding |
+| `domain/src/emails.rs` | `notify_password_reset()` + private `send_password_reset_email()` following the [two-tier pattern](email_notifications.md#two-tier-pattern) |
+| `web/src/controller/password_reset_controller.rs` | Three handlers (request / validate / complete) |
+| `web/src/router.rs` | Route registration + `ApiDoc::paths(...)` registration |
+| `service/src/config.rs` | `password_reset_email_template_id`, `password_reset_email_url_path`, `password_reset_token_expiry_seconds` |
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PASSWORD_RESET_EMAIL_TEMPLATE_ID` | *(none — required)* | MailerSend template ID. Template must accept personalization vars `first_name`, `last_name`, `password_reset_url`. |
+| `PASSWORD_RESET_EMAIL_URL_PATH` | `reset-password` | FE route segment. URL becomes `{FRONTEND_BASE_URL}/{this}/<token>`. |
+| `PASSWORD_RESET_TOKEN_EXPIRY_SECONDS` | `1800` (30 min) | Token lifetime. Shorter than the 24h `MAGIC_LINK_EXPIRY_SECONDS` because the user is actively at their keyboard when requesting reset. |
+
+## Cross-References
+
+- **Wire contract:** `PasswordResetEndpoints` v1 on the coordinator blackboard (single source of truth for request/response shapes; this doc cross-references but does not duplicate it).
+- **Related architecture:** [email_notifications.md](email_notifications.md) (two-tier email pattern), [authentication_error_flow.md](authentication_error_flow.md) (login error propagation — same `password_auth` crate and error chain).
+- **Frontend coordination:** `referrer_policy_token_pages` question on the coordinator blackboard (FE-side `Referrer-Policy` audit for `/setup/[token]` and `/reset-password/[token]` pages).

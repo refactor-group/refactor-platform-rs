@@ -6,6 +6,7 @@ use axum::{
     Json,
 };
 use domain::magic_link_token::{self as MagicLinkTokenApi};
+use domain::token_purpose::TokenPurpose;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -35,7 +36,12 @@ pub(crate) async fn validate(
     State(app_state): State<AppState>,
     Query(params): Query<ValidateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let user = MagicLinkTokenApi::validate_token(app_state.db_conn_ref(), &params.token).await?;
+    let user = MagicLinkTokenApi::validate_token(
+        app_state.db_conn_ref(),
+        &params.token,
+        TokenPurpose::Setup,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
@@ -97,6 +103,7 @@ mod tests {
             token_hash: "mocked_hash".to_string(),
             expires_at: (Utc::now() + Duration::hours(24)).into(),
             created_at: Utc::now().into(),
+            purpose: domain::token_purpose::TokenPurpose::Setup,
         }
     }
 

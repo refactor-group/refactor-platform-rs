@@ -106,7 +106,7 @@ pub async fn create_and_send_welcome_email(
     config: &Config,
     user: &users::Model,
 ) -> Result<(), Error> {
-    let raw_token = crate::magic_link_token::create_magic_link(db, user.id, config).await?;
+    let raw_token = crate::magic_link_token::create_setup_link(db, user.id, config).await?;
     send_welcome_email(config, user, &raw_token).await
 }
 
@@ -119,7 +119,7 @@ pub async fn notify_welcome_email(
     config: &Config,
     user: &users::Model,
 ) {
-    match crate::magic_link_token::create_magic_link(db, user.id, config).await {
+    match crate::magic_link_token::create_setup_link(db, user.id, config).await {
         Ok(raw_token) => {
             if let Err(e) = send_welcome_email(config, user, &raw_token).await {
                 warn!("Failed to send welcome email to {}: {e:?}", user.email);
