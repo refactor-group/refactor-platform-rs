@@ -100,6 +100,8 @@ pub async fn request_password_reset(
     db: Arc<DatabaseConnection>,
     email: &str,
     config: &Config,
+    client_ip: Option<String>,
+    user_agent: Option<String>,
 ) -> Result<(), Error> {
     let handler_start = Instant::now();
 
@@ -144,7 +146,14 @@ pub async fn request_password_reset(
     let email_for_bg = email.to_string();
     let config_for_bg = config.clone();
     tokio::spawn(async move {
-        process_reset_in_background(db_for_bg, email_for_bg, config_for_bg).await;
+        process_reset_in_background(
+            db_for_bg,
+            email_for_bg,
+            config_for_bg,
+            client_ip,
+            user_agent,
+        )
+        .await;
     });
 
     // === PAD TO TARGET ===
@@ -165,7 +174,26 @@ pub async fn request_password_reset(
 ///   no further action. The user can request a fresh reset.
 /// - **Email-send failure**: logged at WARN; the token still exists and
 ///   will expire naturally. The user can request a fresh reset.
-async fn process_reset_in_background(db: Arc<DatabaseConnection>, email: String, config: Config) {
+///
+/// `client_ip` and `user_agent` are best-effort correlation handles
+/// captured from the originating HTTP request. They flow into the WARN
+/// lines so operators can group attempts by source (e.g. the same IP
+/// probing repeatedly on different emails).
+async fn process_reset_in_background(
+    db: Arc<DatabaseConnection>,
+    email: String,
+    config: Config,
+    client_ip: Option<String>,
+    user_agent: Option<String>,
+) {
+    // Pre-format the request-source suffix once. Absent fields render as
+    // `-` (logfmt convention) so each line has a consistent shape.
+    let source = format!(
+        "client_ip={} user_agent=\"{}\"",
+        client_ip.as_deref().unwrap_or("-"),
+        user_agent.as_deref().unwrap_or("-")
+    );
+
     let user = match entity_api::user::find_by_email(&*db, &email).await {
         Ok(Some(u)) => u,
         Ok(None) => {
@@ -175,13 +203,13 @@ async fn process_reset_in_background(db: Arc<DatabaseConnection>, email: String,
             // any log level ever exposing the plaintext email.
             warn!(
                 "[password-reset] reset requested for unknown email \
-                 (no user match) email_hash_prefix={}",
+                 (no user match) email_hash_prefix={} {source}",
                 &hash_email(&email)[..16]
             );
             return;
         }
         Err(e) => {
-            warn!("[password-reset] background user lookup failed: {e:?}");
+            warn!("[password-reset] background user lookup failed: {e:?} {source}");
             return;
         }
     };
@@ -198,7 +226,7 @@ async fn process_reset_in_background(db: Arc<DatabaseConnection>, email: String,
         Ok(t) => t,
         Err(e) => {
             warn!(
-                "[password-reset] background token creation failed for user {}: {e:?}",
+                "[password-reset] background token creation failed for user {}: {e:?} {source}",
                 user.id
             );
             return;
@@ -207,9 +235,13 @@ async fn process_reset_in_background(db: Arc<DatabaseConnection>, email: String,
 
     if let Err(e) = crate::emails::send_password_reset_email(&config, &user, &raw_token).await {
         warn!(
-            "[password-reset] failed to send email to user {}: {e:?}",
+            "[password-reset] failed to send email to user {}: {e:?} {source}",
             user.id
         );
+        // Match the early-return shape every other failure branch uses,
+        // so the trailing "reset link issued" log unambiguously means
+        // "the user actually received the email."
+        return;
     }
 
     warn!("[password-reset] reset link issued for user {}", user.id);
@@ -502,7 +534,8 @@ mod tests {
             .into_connection();
 
         let config = Config::default();
-        let result = request_password_reset(Arc::new(db), "nobody@example.com", &config).await;
+        let result =
+            request_password_reset(Arc::new(db), "nobody@example.com", &config, None, None).await;
 
         assert!(
             result.is_ok(),
@@ -625,7 +658,7 @@ mod tests {
             .append_query_results(vec![vec![recent_attempt]])
             .into_connection();
 
-        let err = request_password_reset(Arc::new(db), email, &Config::default())
+        let err = request_password_reset(Arc::new(db), email, &Config::default(), None, None)
             .await
             .expect_err("expected PasswordResetRateLimited");
 
@@ -666,7 +699,7 @@ mod tests {
             // (find_by_email never runs — short-circuited by rate limit)
             .into_connection();
 
-        let err = request_password_reset(Arc::new(db), email, &Config::default())
+        let err = request_password_reset(Arc::new(db), email, &Config::default(), None, None)
             .await
             .expect_err("expected PasswordResetRateLimited on unknown-email path");
 
@@ -708,7 +741,7 @@ mod tests {
             .append_query_results(vec![attempts_24h])
             .into_connection();
 
-        let err = request_password_reset(Arc::new(db), email, &Config::default())
+        let err = request_password_reset(Arc::new(db), email, &Config::default(), None, None)
             .await
             .expect_err("expected PasswordResetRateLimited at daily cap");
 
@@ -826,8 +859,14 @@ mod tests {
             .into_connection();
 
         let start = std::time::Instant::now();
-        let result =
-            request_password_reset(Arc::new(db), "anyone@example.com", &Config::default()).await;
+        let result = request_password_reset(
+            Arc::new(db),
+            "anyone@example.com",
+            &Config::default(),
+            None,
+            None,
+        )
+        .await;
         let elapsed = start.elapsed();
 
         assert!(result.is_ok(), "expected Ok response; got {result:?}");

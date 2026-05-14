@@ -4,7 +4,9 @@
 //! model. Three unauthenticated endpoints:
 //!
 //! - `POST /password-reset/request` — always returns 200 (enumeration-safe).
-//! - `GET  /password-reset/validate?token=<raw>` — non-destructive validity check.
+//! - `POST /password-reset/validate` — non-destructive validity check; token
+//!   in the JSON body (contract v1.1; query-string transport was rejected to
+//!   keep tokens out of access logs and browser history).
 //! - `POST /password-reset/complete` — consume the token and set the new password.
 
 use crate::{
@@ -15,11 +17,67 @@ use crate::{
     },
     AppState, Error,
 };
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use domain::password_reset as PasswordResetApi;
 use log::*;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use utoipa::ToSchema;
+
+/// Maximum number of characters logged from the `User-Agent` header.
+///
+/// UAs can be arbitrarily long (some bots send 500+ chars); truncating keeps
+/// log lines bounded and prevents a probing client from inflating log volume.
+const USER_AGENT_LOG_MAX_CHARS: usize = 200;
+
+/// Best-effort extraction of the client's IP and User-Agent for logging.
+///
+/// IP precedence (matches the trust model documented in
+/// `web/src/middleware/throttle.rs`):
+/// 1. `X-Forwarded-For` (first hop) — set by our nginx front-end.
+/// 2. `X-Real-IP` — also set by nginx; used if XFF is absent.
+/// 3. TCP peer address from `ConnectInfo` — accurate only when no proxy is in
+///    front of us (e.g. local dev).
+///
+/// Both values are **for logging only**. Spoofable without a trusted proxy;
+/// never use them for authorization or rate-limit decisions.
+fn extract_client_metadata(
+    connect_info: SocketAddr,
+    headers: &HeaderMap,
+) -> (Option<String>, Option<String>) {
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| Some(connect_info.ip().to_string()));
+
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            // Truncate at char boundary, strip quote chars to keep log
+            // lines unambiguously parseable.
+            let truncated: String = s.chars().take(USER_AGENT_LOG_MAX_CHARS).collect();
+            truncated.replace(['"', '\''], "")
+        })
+        .filter(|s| !s.is_empty());
+
+    (ip, user_agent)
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct ValidateParams {
@@ -55,6 +113,8 @@ pub(crate) struct ValidateResponse {
 )]
 pub(crate) async fn request(
     State(app_state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(params): Json<PasswordResetRequestParams>,
 ) -> Result<impl IntoResponse, Error> {
     warn!("[password-reset] /request endpoint hit");
@@ -70,10 +130,16 @@ pub(crate) async fn request(
     // than "by log level." The hash-prefix gives operators correlation
     // capability without plaintext exposure.
 
+    // Extract client IP + UA *before* spawning the background task. The
+    // task can't access request extractors once the handler returns.
+    let (client_ip, user_agent) = extract_client_metadata(addr, &headers);
+
     PasswordResetApi::request_password_reset(
         std::sync::Arc::clone(&app_state.database_connection),
         &params.email,
         &app_state.config,
+        client_ip,
+        user_agent,
     )
     .await?;
 
