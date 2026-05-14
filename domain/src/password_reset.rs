@@ -109,8 +109,29 @@ pub async fn request_password_reset(
     // identical regardless of whether the email maps to a real user.
 
     let email_hash = hash_email(email);
-    enforce_rate_limit(&db, &email_hash).await?;
-    entity_api::password_reset_attempt::record(&*db, &email_hash).await?;
+
+    // Wrap rate-limit check + attempt-record in a transaction with a
+    // PostgreSQL advisory lock keyed on email_hash. Without this lock,
+    // two concurrent requests for the same email could both pass the
+    // rate-limit check (each reading a snapshot showing no recent
+    // attempts) before either inserts an attempt row, then both fire
+    // emails. The lock serializes per-email_hash; different emails
+    // proceed in parallel. See `entity_api::password_reset_attempt::lock_email_hash`.
+    let txn = db.begin().await.map_err(|e| Error {
+        source: Some(Box::new(e)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
+    })?;
+    entity_api::password_reset_attempt::lock_email_hash(&txn, &email_hash).await?;
+    enforce_rate_limit(&txn, &email_hash).await?;
+    entity_api::password_reset_attempt::record(&txn, &email_hash).await?;
+    txn.commit().await.map_err(|e| Error {
+        source: Some(Box::new(e)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
+    })?;
 
     // === BACKGROUND CONTINUATION ===
     // Spawn everything path-distinguishing (user lookup, token issuance,
@@ -309,7 +330,10 @@ pub async fn complete_password_reset(
 /// Returns `PasswordResetRateLimited` on either breach (mapped to HTTP 429
 /// by the web layer). The same `[password-reset] rate-limited` WARN line
 /// fires regardless of whether the email matched a user.
-async fn enforce_rate_limit(db: &DatabaseConnection, email_hash: &str) -> Result<(), Error> {
+async fn enforce_rate_limit(
+    db: &impl sea_orm::ConnectionTrait,
+    email_hash: &str,
+) -> Result<(), Error> {
     let most_recent = entity_api::password_reset_attempt::find_most_recent(db, email_hash).await?;
 
     if let Some(attempt) = most_recent {
@@ -451,17 +475,22 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // 1. find_most_recent → None (no prior attempts for this email)
+            // 1. lock_email_hash (SELECT pg_advisory_xact_lock) — exec
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            // 2. find_most_recent → None (no prior attempts for this email)
             .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
-            // 2. count_since (.all().len()) → 0
+            // 3. count_since (.all().len()) → 0
             .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
-            // 3. record (INSERT) — returns the inserted row
+            // 4. record (INSERT) — returns the inserted row
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
             }])
             .append_query_results(vec![vec![attempt_row]])
-            // 4. find_by_email (find_with_related) → no user
+            // 5. find_by_email (find_with_related) → no user
             .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>(vec![vec![]])
             .into_connection();
 
@@ -574,12 +603,18 @@ mod tests {
     /// short-circuits the function before it gets there.
     #[tokio::test]
     async fn request_password_reset_returns_429_on_min_interval() {
+        use sea_orm::MockExecResult;
         let email = "alice@example.com";
         let email_hash = hash_email(email);
         let recent_attempt = test_attempt(&email_hash, ChronoDuration::seconds(10));
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // find_most_recent → 10s-old attempt; short-circuits before user lookup
+            // 1. lock_email_hash (advisory lock SELECT — exec)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            // 2. find_most_recent → 10s-old attempt; short-circuits before user lookup
             .append_query_results(vec![vec![recent_attempt]])
             .into_connection();
 
@@ -608,12 +643,18 @@ mod tests {
     /// the email has no matching user.
     #[tokio::test]
     async fn request_password_reset_rate_limits_unknown_email_path_too() {
+        use sea_orm::MockExecResult;
         let email = "nobody@example.com";
         let email_hash = hash_email(email);
         let recent_attempt = test_attempt(&email_hash, ChronoDuration::seconds(10));
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // find_most_recent → 10s-old attempt (recorded by attacker's first probe)
+            // 1. lock_email_hash (advisory lock SELECT — exec)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            // 2. find_most_recent → 10s-old attempt (recorded by attacker's first probe)
             .append_query_results(vec![vec![recent_attempt]])
             // (find_by_email never runs — short-circuited by rate limit)
             .into_connection();
@@ -647,10 +688,16 @@ mod tests {
             .map(|h| test_attempt(&email_hash, ChronoDuration::hours(h)))
             .collect();
 
+        use sea_orm::MockExecResult;
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // 1. find_most_recent → 5min ago (past min-interval)
+            // 1. lock_email_hash (advisory lock SELECT — exec)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            // 2. find_most_recent → 5min ago (past min-interval)
             .append_query_results(vec![vec![most_recent]])
-            // 2. count_since (.all().len()) → 5 rows in window
+            // 3. count_since (.all().len()) → 5 rows in window
             .append_query_results(vec![attempts_24h])
             .into_connection();
 
@@ -757,7 +804,11 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // Sync path: rate-limit (None) → count_since (0) → record (insert)
+            // Sync path: lock → rate-limit (None) → count_since (0) → record (insert)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
             .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
             .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
             .append_exec_results(vec![MockExecResult {

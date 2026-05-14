@@ -2,7 +2,40 @@ use super::error::Error;
 
 use chrono::Utc;
 use entity::password_reset_attempts::{ActiveModel, Column, Entity, Model};
-use sea_orm::{entity::prelude::*, ConnectionTrait, QueryOrder, Set};
+use sea_orm::{entity::prelude::*, ConnectionTrait, DbBackend, QueryOrder, Set, Statement};
+
+/// Acquire a PostgreSQL transaction-scoped advisory lock keyed on the
+/// SHA-256 email hash. Concurrent transactions touching the same email
+/// serialize on this lock; different emails proceed in parallel.
+///
+/// **Must be called inside a transaction.** The lock is released
+/// automatically when the enclosing transaction commits or rolls back.
+///
+/// Used to close the TOCTOU race between the rate-limit check and the
+/// attempt-record write: without the lock, two concurrent requests with
+/// the same `email_hash` could both pass the rate-limit check (each
+/// reads a snapshot showing no recent attempts) before either has
+/// written its attempt row, then both insert and both fire emails.
+///
+/// PostgreSQL-specific. Uses `pg_advisory_xact_lock(bigint)`; the
+/// `hashtext($1)::bigint` cast hashes our 64-char hex email-hash down
+/// to the int64 the lock function expects. Collision probability on
+/// 64 bits across two unrelated emails is negligible, and a collision
+/// would only cause unnecessary serialization, not a correctness bug.
+///
+/// `tower_governor` / SeaORM don't abstract advisory locks — this is
+/// a raw `SELECT` passed through SeaORM's parameterized `Statement`
+/// API, matching the project's pattern for other PG-specific calls
+/// (see migrations).
+pub async fn lock_email_hash(txn: &impl ConnectionTrait, email_hash: &str) -> Result<(), Error> {
+    let stmt = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+        [email_hash.into()],
+    );
+    txn.execute(stmt).await?;
+    Ok(())
+}
 
 /// Append an attempt row keyed by the SHA-256 hex digest of the normalized
 /// email. This table is the source of truth for rate-limiting; it is

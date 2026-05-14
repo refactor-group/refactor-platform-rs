@@ -221,6 +221,34 @@ The per-email rate limit (1/60s, 5/24h) is enforced by **counting rows in a dedi
 
 **Design principle.** Any time a single table appears to serve both as a "current state" projection and an "audit log" of past events, the seam between those two semantics is bug-prone. Split them. This same pattern applies to future similar features (e.g. if we add rate-limited login retries or 2FA challenges).
 
+### TOCTOU-Free Rate-Limit Check via Advisory Lock
+
+The rate-limit check (read `find_most_recent` + `count_since`) and the attempt-record write (INSERT into `password_reset_attempts`) run inside a **single transaction** that holds a PostgreSQL **advisory lock keyed on the email hash**. Without this serialization, two concurrent requests for the same email could both pass the rate-limit check (each reading a snapshot with no prior recent attempts) before either has written its attempt row, then both insert and both fire emails — a "two-burst" inbox flood every 60 seconds.
+
+**Lock pattern.** `entity_api::password_reset_attempt::lock_email_hash(&txn, &email_hash)` issues `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`. The lock:
+
+- Is held for the lifetime of the transaction (auto-released on commit or rollback).
+- Serializes concurrent requests for the **same** `email_hash` — they queue behind each other one at a time.
+- Does NOT serialize requests for **different** `email_hash` values — `hashtext()` distributes hashes across the 64-bit lock-key space, so different emails take different lock IDs and proceed in parallel.
+
+A `hashtext()` collision (two unrelated email_hashes hashing to the same int64) would cause those two emails' requests to serialize unnecessarily — a minor performance impact, not a correctness bug. The 64-bit space makes such collisions astronomically rare.
+
+**Why advisory lock, not `SELECT … FOR UPDATE` or SERIALIZABLE.** There's no "row" to lock at rate-limit-check time — the rate-limit query reads from a set of rows (possibly empty) and there's nothing to take a row lock on. SERIALIZABLE isolation would work, but its retry-on-conflict semantics would require us to wrap call sites in retry loops; the advisory lock is more surgical. PostgreSQL-specific, documented in `entity_api::password_reset_attempt::lock_email_hash`.
+
+**Operation order inside the transaction:**
+
+```
+db.begin()
+  → lock_email_hash(email_hash)          [SELECT pg_advisory_xact_lock]
+  → enforce_rate_limit(email_hash)       [find_most_recent, count_since]
+  → record_attempt(email_hash)           [INSERT]
+db.commit()
+```
+
+The lock is held continuously across all four operations. A second concurrent request for the same email blocks at `lock_email_hash` until the first transaction commits — by then, the second one's `find_most_recent` will see the first's insert and rate-limit correctly.
+
+**Cost.** One extra DB roundtrip per request (the lock SELECT). Sub-millisecond on the connection-pooled PG that backs production. Worth it.
+
 ### Session Invalidation on Password Change
 
 When a user resets (or initially sets) their password, **all of their existing sessions are invalidated automatically on the next request**. The mechanism is `axum_login`'s built-in session-auth-hash check, not an active session-store sweep.
