@@ -136,6 +136,11 @@ pub async fn complete_setup(
         });
     }
 
+    // Server-side policy enforcement — independent of any FE validation.
+    // Same policy as `password_reset::complete_password_reset` so setup
+    // and reset flows can't diverge on what's an acceptable password.
+    crate::password_policy::validate_password(&password)?;
+
     params.insert(
         "password".to_string(),
         Some(Value::String(Some(Box::new(generate_hash(password))))),
@@ -348,7 +353,11 @@ mod tests {
             let db =
                 mock_db_for_successful_setup(&token_model, &user, &updated_user).into_connection();
 
-            let params = setup_params("my_password", "my_password", "raw_token");
+            let params = setup_params(
+                "my_secure_password_2024",
+                "my_secure_password_2024",
+                "raw_token",
+            );
             let result = complete_setup(&db, params).await;
 
             let returned_user = result.unwrap();
@@ -392,12 +401,20 @@ mod tests {
                 .into_connection();
 
             // First call succeeds
-            let params = setup_params("my_password", "my_password", "raw_token");
+            let params = setup_params(
+                "my_secure_password_2024",
+                "my_secure_password_2024",
+                "raw_token",
+            );
             let result = complete_setup(&db, params).await;
             assert!(result.is_ok());
 
             // Second call with the same token fails
-            let params = setup_params("my_password", "my_password", "raw_token");
+            let params = setup_params(
+                "my_secure_password_2024",
+                "my_secure_password_2024",
+                "raw_token",
+            );
             let result = complete_setup(&db, params).await;
 
             let err = result.unwrap_err();

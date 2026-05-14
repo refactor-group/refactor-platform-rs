@@ -235,6 +235,10 @@ pub async fn complete_password_reset(
         });
     }
 
+    // Server-side policy enforcement — independent of any FE validation.
+    // See `domain::password_policy` for the rules.
+    crate::password_policy::validate_password(&password)?;
+
     params.insert(
         "password".to_string(),
         Some(Value::String(Some(Box::new(generate_hash(password))))),
@@ -781,5 +785,88 @@ mod tests {
             HANDLER_TARGET_DURATION_MS <= 500,
             "HANDLER_TARGET_DURATION_MS > 500 makes every request user-perceptibly slow"
         );
+    }
+
+    /// Server-side password policy must fire from `complete_password_reset`,
+    /// independently of any FE validation. Empty password → 422 Validation,
+    /// even if the FE bug or malicious client lets one through.
+    #[tokio::test]
+    async fn complete_password_reset_rejects_empty_password() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let mut params = entity_api::mutate::UpdateMap::new();
+        params.insert(
+            "password".into(),
+            Some(Value::String(Some(Box::new("".into())))),
+        );
+        params.insert(
+            "confirm_password".into(),
+            Some(Value::String(Some(Box::new("".into())))),
+        );
+        params.insert(
+            "token".into(),
+            Some(Value::String(Some(Box::new("any_token".into())))),
+        );
+
+        struct P(entity_api::mutate::UpdateMap);
+        impl entity_api::mutate::IntoUpdateMap for P {
+            fn into_update_map(self) -> entity_api::mutate::UpdateMap {
+                self.0
+            }
+        }
+
+        let err = complete_password_reset(&db, P(params))
+            .await
+            .expect_err("empty password must be rejected before token validation");
+
+        match err.error_kind {
+            DomainErrorKind::Validation(msg) => {
+                assert!(
+                    msg.contains("empty") || msg.contains("whitespace"),
+                    "expected empty/whitespace message, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// And the policy must reject too-short passwords too, not just empty.
+    #[tokio::test]
+    async fn complete_password_reset_rejects_too_short_password() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let mut params = entity_api::mutate::UpdateMap::new();
+        // 8 chars — passes confirm-match but fails min-length policy.
+        params.insert(
+            "password".into(),
+            Some(Value::String(Some(Box::new("short123".into())))),
+        );
+        params.insert(
+            "confirm_password".into(),
+            Some(Value::String(Some(Box::new("short123".into())))),
+        );
+        params.insert(
+            "token".into(),
+            Some(Value::String(Some(Box::new("any_token".into())))),
+        );
+
+        struct P(entity_api::mutate::UpdateMap);
+        impl entity_api::mutate::IntoUpdateMap for P {
+            fn into_update_map(self) -> entity_api::mutate::UpdateMap {
+                self.0
+            }
+        }
+
+        let err = complete_password_reset(&db, P(params))
+            .await
+            .expect_err("8-char password must be rejected by min-length policy");
+
+        match err.error_kind {
+            DomainErrorKind::Validation(msg) => {
+                assert!(
+                    msg.contains("12"),
+                    "error message must name the minimum length: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
     }
 }
