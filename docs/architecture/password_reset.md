@@ -221,6 +221,18 @@ The per-email rate limit (1/60s, 5/24h) is enforced by **counting rows in a dedi
 
 **Design principle.** Any time a single table appears to serve both as a "current state" projection and an "audit log" of past events, the seam between those two semantics is bug-prone. Split them. This same pattern applies to future similar features (e.g. if we add rate-limited login retries or 2FA challenges).
 
+### Input Validation at the HTTP Boundary
+
+Length and shape validation runs **before** any handler logic — the cheapest DoS amplifier on an unauthenticated endpoint is a pathologically large input field (e.g. a 10 MB email would still trigger SHA-256 hashing + DB query). These checks cut those attack vectors before any expensive work runs.
+
+| Field | Limit | Source | Failure response |
+|---|---|---|---|
+| `email` (POST /request) | Non-empty, length ≤ 254 octets, contains `@` | RFC 5321 caps deliverable email addresses at 254 octets in practice | `400 Bad Request` |
+| `token` (GET /validate, POST /complete) | Length == 43 | Tokens we issue are exactly 32 random bytes encoded as URL-safe base64 without padding = always 43 chars; any other length is impossible for a real token | `400 Bad Request` |
+| `password` (POST /complete, POST /magic-link/complete-setup) | 12 ≤ length ≤ 128 (after `trim()`) | See [`domain::password_policy`](../../domain/src/password_policy.rs) and the `password_policy` decision on the coordinator blackboard | `422 validation_error` |
+
+Validators live at the web boundary in [`web::params::validation`](../../web/src/params/validation.rs); the password policy lives in the domain layer because it's a business rule, not an HTTP shape concern. Both layers enforce independently of any FE validation.
+
 ### TOCTOU-Free Rate-Limit Check via Advisory Lock
 
 The rate-limit check (read `find_most_recent` + `count_since`) and the attempt-record write (INSERT into `password_reset_attempts`) run inside a **single transaction** that holds a PostgreSQL **advisory lock keyed on the email hash**. Without this serialization, two concurrent requests for the same email could both pass the rate-limit check (each reading a snapshot with no prior recent attempts) before either has written its attempt row, then both insert and both fire emails — a "two-burst" inbox flood every 60 seconds.
@@ -302,7 +314,7 @@ The password-reset code path emits a **WARN-level audit trail** so security/ops 
 
 **General rules across the path:**
 
-- Raw email addresses are **never** logged at INFO level or above — they are PII. Once a user is resolved by email, subsequent log lines reference the `user_id` UUID instead.
+- Raw email addresses are **never logged at any level**. Even DEBUG is unsafe: ops teams enable DEBUG during incidents, log aggregators may retain DEBUG longer than WARN, and access boundaries are coarser than "by log level." When we need correlation, we log the first 16 hex chars of `hash_email(email)` as an `email_hash_prefix=` field — operators can match the same email across log lines without ever seeing the plaintext.
 - The raw token is **never** logged at any level. Only the SHA-256 hash (already stored in the DB) may be logged, and even that is reserved for ERROR-level audit traces if needed.
 - Every WARN message uses the `[password-reset]` prefix so operators can `grep` the entire flow with one search.
 

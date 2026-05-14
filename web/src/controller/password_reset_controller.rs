@@ -9,7 +9,10 @@
 
 use crate::{
     controller::ApiResponse,
-    params::user::{PasswordResetCompleteParams, PasswordResetRequestParams},
+    params::{
+        user::{PasswordResetCompleteParams, PasswordResetRequestParams},
+        validation::{validate_email_shape, validate_token_length},
+    },
     AppState, Error,
 };
 use axum::{
@@ -60,7 +63,17 @@ pub(crate) async fn request(
     Json(params): Json<PasswordResetRequestParams>,
 ) -> Result<impl IntoResponse, Error> {
     warn!("[password-reset] /request endpoint hit");
-    debug!("[password-reset] /request raw email: {}", params.email);
+
+    // Reject malformed/oversized email at the HTTP boundary before any
+    // expensive work (SHA-256 hash, DB query). Returns 400. See
+    // `crate::params::validation::validate_email_shape`.
+    validate_email_shape(&params.email)?;
+
+    // NEVER log the raw email at any level. Even DEBUG is too risky
+    // because ops teams enable DEBUG during incidents, log aggregators
+    // may retain DEBUG longer than WARN, and access controls are coarser
+    // than "by log level." The hash-prefix gives operators correlation
+    // capability without plaintext exposure.
 
     PasswordResetApi::request_password_reset(
         std::sync::Arc::clone(&app_state.database_connection),
@@ -100,6 +113,10 @@ pub(crate) async fn validate(
 ) -> Result<impl IntoResponse, Error> {
     warn!("[password-reset] /validate endpoint hit");
 
+    // Reject wrong-length tokens at the HTTP boundary before paying for
+    // SHA-256 + DB lookup. Tokens we issue are always 43 chars.
+    validate_token_length(&params.token)?;
+
     let user =
         PasswordResetApi::validate_reset_token(app_state.db_conn_ref(), &params.token).await?;
 
@@ -133,6 +150,10 @@ pub(crate) async fn complete(
     Json(params): Json<PasswordResetCompleteParams>,
 ) -> Result<impl IntoResponse, Error> {
     warn!("[password-reset] /complete endpoint hit");
+
+    // Reject wrong-length tokens at the HTTP boundary (cheap before the
+    // DB-bound complete flow runs).
+    validate_token_length(&params.token)?;
 
     let updated_user =
         PasswordResetApi::complete_password_reset(app_state.db_conn_ref(), params).await?;

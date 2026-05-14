@@ -169,8 +169,15 @@ async fn process_reset_in_background(db: Arc<DatabaseConnection>, email: String,
     let user = match entity_api::user::find_by_email(&*db, &email).await {
         Ok(Some(u)) => u,
         Ok(None) => {
-            warn!("[password-reset] reset requested for unknown email (no user match)");
-            debug!("[password-reset] unknown-email value was: {email}");
+            // Log a hash-prefix correlation handle, NEVER the raw email.
+            // Operators investigating "the same unknown email is being
+            // probed repeatedly" can match by the 16-char prefix without
+            // any log level ever exposing the plaintext email.
+            warn!(
+                "[password-reset] reset requested for unknown email \
+                 (no user match) email_hash_prefix={}",
+                &hash_email(&email)[..16]
+            );
             return;
         }
         Err(e) => {
