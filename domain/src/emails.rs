@@ -640,7 +640,7 @@ mod tests {
             .match_header("content-type", "application/json")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": "hello@myrefactor.com",
-                "to": ["John Doe <john.doe@example.com>"],
+                "to": ["\"John Doe\" <john.doe@example.com>"],
                 "subject": "Welcome to Refactor Platform",
                 "template": {
                     "id": "template_123",
@@ -771,7 +771,7 @@ mod tests {
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": "hello@myrefactor.com",
-                "to": ["Jane Smith <jane.smith@test.org>"],
+                "to": ["\"Jane Smith\" <jane.smith@test.org>"],
                 "subject": "Welcome to Refactor Platform",
                 "template": {
                     "id": "template_123",
@@ -817,7 +817,7 @@ mod tests {
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": "hello@myrefactor.com",
-                "to": ["Test-First Test-Last <test.user@example.com>"],
+                "to": ["\"Test-First Test-Last\" <test.user@example.com>"],
                 "subject": "Welcome to Refactor Platform",
                 "template": {
                     "id": "template_123",
@@ -857,7 +857,7 @@ mod tests {
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": "hello@myrefactor.com",
-                "to": ["Jane Doe <jane@example.com>"],
+                "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "New coaching session scheduled for Wednesday, March 4, 2026",
                 "template": {
                     "id": "session_template_456",
@@ -917,7 +917,7 @@ mod tests {
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": "hello@myrefactor.com",
-                "to": ["Jane Doe <jane@example.com>"],
+                "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "You've been assigned a new action",
                 "template": {
                     "id": "action_template_789",
@@ -968,7 +968,7 @@ mod tests {
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": "hello@myrefactor.com",
-                "to": ["Jane Doe <jane@example.com>"],
+                "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "You've been assigned a new action",
                 "template": {
                     "id": "action_template_789",

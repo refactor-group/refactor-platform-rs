@@ -1,10 +1,12 @@
-use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use std::collections::HashMap;
+use std::fmt::Display;
+
 use email_address::EmailAddress;
 use log::*;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
-use std::collections::HashMap;
-use std::fmt::Display;
+
+use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 
 /// Path appended to the configured base URL when sending emails.
 const SEND_EMAIL_PATH: &str = "/emails";
@@ -61,6 +63,17 @@ pub struct EmailRecipient {
     pub name: Option<String>,
 }
 
+/// Format a recipient as an RFC 5322 mailbox string.
+///
+/// The display name is wrapped in a quoted-string and its `\` and `"` are
+/// backslash-escaped. Names come from user-supplied first/last name fields and
+/// may contain "specials" (comma, quote, angle brackets, etc.); quoting
+/// unconditionally is always valid and avoids brittle specials-detection.
+fn format_mailbox(name: &str, email: &str) -> String {
+    let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\" <{email}>")
+}
+
 impl Serialize for EmailRecipient {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -68,7 +81,7 @@ impl Serialize for EmailRecipient {
     {
         match &self.name {
             Some(name) if !name.is_empty() => {
-                serializer.serialize_str(&format!("{name} <{}>", self.email))
+                serializer.serialize_str(&format_mailbox(name, &self.email))
             }
             _ => serializer.serialize_str(&self.email),
         }
@@ -103,7 +116,6 @@ pub struct SendEmailRequestBuilder {
 
 /// Response from Resend's `POST /emails` endpoint.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct SendEmailResponse {
     pub id: Option<String>,
 }
@@ -352,9 +364,26 @@ mod tests {
             .unwrap();
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("Test Recipient <recipient@example.com>"));
+        // The mailbox string `"Test Recipient" <recipient@example.com>` is itself
+        // a JSON string value, so its quotes are JSON-escaped to `\"`.
+        assert!(json.contains(r#"\"Test Recipient\" <recipient@example.com>"#));
         assert!(json.contains("\"template\""));
         assert!(json.contains("\"welcome-email\""));
+    }
+
+    #[test]
+    fn test_format_mailbox_quotes_and_escapes_specials() {
+        // A comma would split into two malformed mailboxes if left unquoted.
+        assert_eq!(
+            format_mailbox("Smith, Jr.", "jr@example.com"),
+            r#""Smith, Jr." <jr@example.com>"#
+        );
+        // Literal backslash and quote must be backslash-escaped inside the
+        // quoted-string. Input name is: He said "hi"\
+        assert_eq!(
+            format_mailbox(r#"He said "hi"\"#, "x@example.com"),
+            r#""He said \"hi\"\\" <x@example.com>"#
+        );
     }
 
     #[tokio::test]
@@ -517,10 +546,5 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_send_email_path_constant() {
-        assert_eq!(SEND_EMAIL_PATH, "/emails");
     }
 }
