@@ -221,6 +221,21 @@ The per-email rate limit (1/60s, 5/24h) is enforced by **counting rows in a dedi
 
 **Design principle.** Any time a single table appears to serve both as a "current state" projection and an "audit log" of past events, the seam between those two semantics is bug-prone. Split them. This same pattern applies to future similar features (e.g. if we add rate-limited login retries or 2FA challenges).
 
+### Password Policy
+
+Server-side password validation enforced in `domain::password_policy::validate_password`, applied at both `POST /password-reset/complete` and `POST /magic-link/complete-setup` (the two endpoints that set a user's password). Independent of any FE validation — defense in depth.
+
+| Rule | Value | Source / rationale |
+|---|---|---|
+| Non-empty after `trim()` | required | A literal `""` would otherwise argon2-hash and commit. Catches accidental whitespace-only submissions and the bug an earlier review caught. |
+| Minimum length | **12 characters** (Unicode scalar values, not bytes) | NIST 800-63B requires ≥8; 12 is the modern industry baseline. Raises offline-brute-force cost while remaining typeable. |
+| Maximum length | **128 characters** | Prevents argon2 hashing DoS on pathologically long inputs. Well above any realistic password-manager output. |
+| Character-class complexity (uppercase / digit / symbol) | **NOT enforced** | NIST 800-63B explicitly *recommends against* these — they push users toward predictable patterns (`Password1!`) that reduce real-world entropy. Length is the load-bearing dimension. |
+
+Constants `MIN_PASSWORD_LENGTH` and `MAX_PASSWORD_LENGTH` are public in [`domain/src/password_policy.rs`](../../domain/src/password_policy.rs) so the FE coordination doc (`password_policy` decision on the coordinator blackboard) can reference them. If the policy changes, those consts move and a new version of the blackboard decision will be posted.
+
+Frontend should mirror the policy for instant user feedback. Server enforcement is the security boundary; client enforcement is the UX redundancy.
+
 ### `/validate` is Non-Destructive — Trade-off Acknowledged
 
 The `GET /password-reset/validate` endpoint **does not consume the token**. A successful validate returns the user's sanitized profile (first_name, last_name) and leaves the token in the DB, valid for further calls until it expires or is consumed by `/complete`.
@@ -317,16 +332,15 @@ Since our `session_auth_hash()` returns the password hash bytes:
 
 ### Logging Hygiene & Security Audit Trail
 
-The password-reset code path emits a **WARN-level audit trail** so security/ops operators can grep `[password-reset]` and see every interesting event without enabling DEBUG. PII (raw emails, raw tokens) stays at DEBUG or is never logged.
+The password-reset code path emits a **WARN-level audit trail** so security/ops operators can grep `[password-reset]` and see every interesting event without enabling DEBUG. **Raw emails and raw tokens are never logged at any level** — when correlation is needed, we log a hash-prefix.
 
 | Event | Level | Where | Contains |
 |---|---|---|---|
 | Endpoint hit — `/request`, `/validate`, `/complete` | WARN | `web/src/controller/password_reset_controller.rs` | endpoint name only |
-| Raw email value on `/request` | DEBUG | controller | email (PII — only when log filter is at DEBUG) |
-| Reset requested for unknown email | WARN | `domain::password_reset` | no PII (the email itself drops to DEBUG) |
+| Reset requested for unknown email | WARN | `domain::password_reset` | `email_hash_prefix` (first 16 hex chars of SHA-256 of normalized email) — gives operators a correlation handle without exposing plaintext |
 | Reset link issued for known user | WARN | `domain::password_reset` | `user_id` UUID |
 | Password mismatch on `/complete` | WARN | `domain::password_reset` | no PII |
-| Rate-limit hit (min-interval or daily cap) | WARN | `domain::password_reset` | `user_id` UUID |
+| Rate-limit hit (min-interval or daily cap) | WARN | `domain::password_reset` | no PII (rate-limit fires before user is known) |
 | Email-send failure | WARN | `domain::password_reset` | `user_id` UUID + error |
 | Password successfully reset (password changed) | WARN | `domain::password_reset` | `user_id` UUID |
 | Token validation (underlying) — not found / expired | WARN | `domain::magic_link_token` | purpose discriminator |
@@ -402,7 +416,6 @@ Each deferral is a deliberate scoping decision, not an oversight.
 | Item | Reason for Deferral |
 |---|---|
 | **Per-IP rate limiting at the application layer is shipped in v1** (was originally deferred) | See [`throttling.md`](throttling.md) for the design. What remains out of scope: per-AS / per-network-owner throttling and reputation-based blocking — those defend distributed-botnet attacks and belong at the CDN/WAF edge, not the application layer. Add when we ever sit behind Cloudflare or similar. |
-| Password strength rules (length, complexity) | v1 accepts any non-empty password, matching the existing `/magic-link/complete-setup` behavior. Strength rules will be applied to both setup and reset endpoints together when introduced, to avoid divergent UX. |
 | Periodic sweep of expired tokens | Expired tokens in `magic_link_tokens` are validated as inert (`validate_token` refuses them) but are not auto-deleted. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
 | Automatic scheduled sweep of `password_reset_attempts` | v1 ships the `sweep_old_attempts(db, retention_days)` function but **does not** invoke it on a schedule. Ops are expected to run it as a nightly cron / external job (see [Ops Maintenance](#ops-maintenance) below). Bringing this in-process would couple retention policy to deployment cadence and complicate alerting on missed sweeps. |
 
@@ -430,8 +443,11 @@ journalctl --since '24 hours ago' | grep '\[password-reset\] reset requested for
 # Operational health: email-send failures
 journalctl --since '6 hours ago' | grep '\[password-reset\] failed to send email'
 
-# Forensic: which email values hit /request? (requires DEBUG log level)
-journalctl --since '15 minutes ago' | grep '\[password-reset\] unknown-email value was:'
+# Forensic: which unknown-email hashes are being probed? Raw emails are
+# never logged — correlate by the email_hash_prefix= field instead.
+# Same prefix across multiple lines = same email being probed.
+journalctl --since '15 minutes ago' | grep '\[password-reset\] reset requested for unknown email' \
+  | grep -oE 'email_hash_prefix=[0-9a-f]+' | sort | uniq -c | sort -rn
 ```
 
 ### Grafana Panel Setup (Loki + LogQL)
