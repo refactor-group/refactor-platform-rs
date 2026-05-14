@@ -108,8 +108,7 @@ mod tests {
             .append_query_results(vec![vec![model.clone()]])
             .into_connection();
 
-        let result =
-            find_by_transcription_and_session(&db, transcription_id, session_id).await?;
+        let result = find_by_transcription_and_session(&db, transcription_id, session_id).await?;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].transcription_id, transcription_id);
         assert_eq!(result[0].start_ms, 1000);
@@ -125,8 +124,7 @@ mod tests {
             .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
             .into_connection();
 
-        let result =
-            find_by_transcription_and_session(&db, transcription_id, Id::new_v4()).await?;
+        let result = find_by_transcription_and_session(&db, transcription_id, Id::new_v4()).await?;
         assert!(result.is_empty());
         Ok(())
     }
@@ -165,8 +163,7 @@ mod tests {
             .append_query_results(vec![vec![seg1.clone(), seg2.clone()]])
             .into_connection();
 
-        let result =
-            find_by_transcription_and_session(&db, transcription_id, session_id).await?;
+        let result = find_by_transcription_and_session(&db, transcription_id, session_id).await?;
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].start_ms, 500);
         assert_eq!(result[1].start_ms, 3000);

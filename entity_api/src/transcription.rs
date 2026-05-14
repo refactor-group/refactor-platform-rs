@@ -5,7 +5,7 @@ use log::debug;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    ConnectionTrait, DatabaseConnection, DbBackend, Order, QueryOrder, Statement, TryIntoModel,
+    DatabaseConnection, Order, QueryOrder, TryIntoModel,
 };
 
 /// Creates a new transcription record
@@ -53,16 +53,17 @@ pub async fn find_by_coaching_session(
 /// to `Processing`. Returns `true` if the claim succeeded (only one concurrent caller
 /// will win), `false` if the transcription was already claimed or completed.
 pub async fn try_claim_for_processing(db: &DatabaseConnection, id: Id) -> Result<bool, Error> {
-    let result = db
-        .execute(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE refactor_platform.transcriptions \
-             SET status = 'processing', updated_at = NOW() \
-             WHERE id = $1 AND status = 'queued'",
-            [id.into()],
-        ))
+    let result = Entity::update_many()
+        .col_expr(Column::Status, Expr::value(TranscriptionStatus::Processing))
+        .col_expr(
+            Column::UpdatedAt,
+            Expr::value(chrono::Utc::now().fixed_offset()),
+        )
+        .filter(Column::Id.eq(id))
+        .filter(Column::Status.eq(TranscriptionStatus::Queued))
+        .exec(db)
         .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(result.rows_affected > 0)
 }
 
 /// Finds a transcription by its primary key
@@ -125,7 +126,7 @@ pub async fn update_status(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
     fn test_model() -> Model {
         let now = chrono::Utc::now();
@@ -260,5 +261,33 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn try_claim_for_processing_returns_true_when_rows_affected() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let result = try_claim_for_processing(&db, Id::new_v4()).await?;
+        assert!(result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn try_claim_for_processing_returns_false_when_no_rows_affected() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            .into_connection();
+
+        let result = try_claim_for_processing(&db, Id::new_v4()).await?;
+        assert!(!result);
+        Ok(())
     }
 }

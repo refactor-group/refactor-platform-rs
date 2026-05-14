@@ -5,7 +5,7 @@ use log::debug;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    ConnectionTrait, DatabaseConnection, DbBackend, Order, QueryOrder, Statement, TryIntoModel,
+    DatabaseConnection, Order, QueryOrder, TryIntoModel,
 };
 
 /// Creates a new meeting recording record
@@ -60,16 +60,24 @@ pub async fn find_by_bot_id(db: &DatabaseConnection, bot_id: &str) -> Result<Opt
 /// transition succeeded — the caller won the race and should proceed with transcription.
 /// Returns `false` if the recording was already terminal and the caller should skip.
 pub async fn try_claim_completed(db: &DatabaseConnection, id: Id) -> Result<bool, Error> {
-    let result = db
-        .execute(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE refactor_platform.meeting_recordings \
-             SET status = 'completed', updated_at = NOW() \
-             WHERE id = $1 AND status NOT IN ('completed', 'failed', 'cancelled')",
-            [id.into()],
-        ))
+    let result = Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(MeetingRecordingStatus::Completed),
+        )
+        .col_expr(
+            Column::UpdatedAt,
+            Expr::value(chrono::Utc::now().fixed_offset()),
+        )
+        .filter(Column::Id.eq(id))
+        .filter(Column::Status.is_not_in([
+            MeetingRecordingStatus::Completed,
+            MeetingRecordingStatus::Failed,
+            MeetingRecordingStatus::Cancelled,
+        ]))
+        .exec(db)
         .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(result.rows_affected > 0)
 }
 
 /// Updates recording status and optional artifact fields.
@@ -118,7 +126,7 @@ pub async fn update_status(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
     fn test_model() -> Model {
         let now = chrono::Utc::now();
@@ -253,5 +261,33 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn try_claim_completed_returns_true_when_rows_affected() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let result = try_claim_completed(&db, Id::new_v4()).await?;
+        assert!(result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn try_claim_completed_returns_false_when_no_rows_affected() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            .into_connection();
+
+        let result = try_claim_completed(&db, Id::new_v4()).await?;
+        assert!(!result);
+        Ok(())
     }
 }

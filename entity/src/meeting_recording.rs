@@ -52,6 +52,8 @@ pub struct Model {
     pub coaching_session_id: Id,
     pub bot_id: String,
     pub status: MeetingRecordingStatus,
+    /// Internal only — pre-signed video download URL from Recall.ai. Never sent to clients.
+    #[serde(skip_serializing)]
     pub video_url: Option<String>,
     /// Internal only — pre-signed audio download URL from Recall.ai. Never sent to clients.
     #[serde(skip_serializing)]
