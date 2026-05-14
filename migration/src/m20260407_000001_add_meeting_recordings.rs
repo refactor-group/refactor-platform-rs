@@ -70,10 +70,29 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Prevents concurrent requests from creating two active bots for the same session.
+        // Terminal statuses (completed, failed, cancelled) are excluded so retry recordings
+        // are allowed after a previous attempt finishes.
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_meeting_recordings_active_per_session \
+                 ON refactor_platform.meeting_recordings(coaching_session_id) \
+                 WHERE status NOT IN ('completed', 'failed', 'cancelled')",
+            )
+            .await?;
+
         Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "DROP INDEX IF EXISTS refactor_platform.idx_meeting_recordings_active_per_session",
+            )
+            .await?;
+
         manager
             .get_connection()
             .execute_unprepared("DROP TABLE IF EXISTS refactor_platform.meeting_recordings")
