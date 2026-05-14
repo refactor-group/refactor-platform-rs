@@ -121,6 +121,14 @@ Each call to `into_layer()` builds a fresh in-process governor — state is per-
 
 Future maintainers: if you remove nginx or change the proxy layout, the `Throttle` interface's documentation contract is broken. Read the trust assumption in [`throttle.rs`](../../web/src/middleware/throttle.rs) and update both code and docs together.
 
+### Required axum wiring: `into_make_service_with_connect_info`
+
+For step 3 of the chain (peer address fallback) to work, the axum server must be built with `into_make_service_with_connect_info::<SocketAddr>()` instead of plain `into_make_service()`. That call injects `ConnectInfo<SocketAddr>` into every request's extensions, which is what `SmartIpKeyExtractor`'s peer-addr fallback reads.
+
+Without this, **every throttled endpoint returns `500 "Unable To Extract Key!"` in local dev** (no proxy headers, no `ConnectInfo` either → all four fallback steps fail). This was caught during FE end-to-end testing of PR #311; see `password_reset_500_unable_to_extract_key` on the coordinator blackboard.
+
+The wiring lives in [`web::lib::init_server`](../../web/src/lib.rs); the inline comment there names this dependency so a future contributor who tries to "simplify" back to `into_make_service()` sees the consequence.
+
 ## Current applications
 
 | Endpoint group | Policy | Layer attached |

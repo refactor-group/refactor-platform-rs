@@ -210,7 +210,15 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         router::define_routes(app_state)
             .layer(cors_layer)
             .layer(auth_layer)
-            .into_make_service(),
+            // `into_make_service_with_connect_info` (not just `into_make_service`)
+            // injects `ConnectInfo<SocketAddr>` into every request's extensions.
+            // Required by `tower_governor`'s `SmartIpKeyExtractor`: when none of
+            // `X-Forwarded-For` / `X-Real-IP` / `Forwarded` is set (i.e. local dev
+            // without a proxy in front), the extractor falls back to the peer
+            // SocketAddr from `ConnectInfo`. Without this, every `/password-reset/*`
+            // request returns `500 "Unable To Extract Key!"` from the throttle
+            // middleware before any route handler runs. See `web::middleware::throttle`.
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
     .unwrap();
