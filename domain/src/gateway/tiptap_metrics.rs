@@ -26,20 +26,16 @@ use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind}
 // foutgun;) admin endpoints need bounded budgets so a dead upstream can't
 // hold an Axum worker. `connect_timeout` covers DNS+TCP+TLS only; setting it
 // short means we fail fast instead of burning the full 40s on a dead SYN.
-#[allow(dead_code)]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-#[allow(dead_code)]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 // TipTap's documented default; max isn't published. 100 keeps us well clear
 // of the rate limit (100 req / 5s per IP) and within sane payload sizes.
-#[allow(dead_code)]
 const PAGE_SIZE: u32 = 100;
 
 // Safety cap. At 100 docs/page this allows 1M docs before we bail. If we
 // ever hit this in practice something is wrong upstream - log + return what
 // we have rather than OOM the worker.
-#[allow(dead_code)]
 const MAX_PAGES: u32 = 10_000;
 
 // -----------------------------------------------------------------------------
@@ -66,7 +62,6 @@ impl Client {
     //
     // `async fn` matches sibling gateway signatures even though nothing here
     // awaits - keep the API stable if a future impl needs to.
-    #[allow(dead_code)]
     pub(crate) async fn new(config: &Config) -> Result<Self, Error> {
         // `?` propogates `domain::Error` unchanged - types match exactly.
         let client = build_client(config).await?;
@@ -139,7 +134,6 @@ impl Client {
     /// Private helper - the public surface is `list_all_documents`. Same
     /// error-mapping pattern as `fetch_statistics`: HTTP and deserialize
     /// failures both become `External::Network`.
-    #[allow(dead_code)]
     async fn fetch_documents_page(&self, skip: u32, take: u32) -> Result<DocumentsPage, Error> {
         let url = format!("{}/api/documents", self.base_url);
 
@@ -185,7 +179,6 @@ impl Client {
     /// inserted at offset N mid-walk can be missed or double-counted
     /// Acceptable for admin observability (eventual consistency is fine)
     /// a stricture consumer would snapshot a timestamp and filter results
-    #[allow(dead_code)]
     pub(crate) async fn list_all_documents(&self) -> Result<Vec<Document>, Error> {
         let mut all: Vec<Document> = Vec::new();
         let mut skip: u32 = 0;
@@ -235,9 +228,9 @@ impl Client {
 /// Global TipTap statistics returned by `GET /api/statistics`.
 /// One-shot summary, no pagination. Unsurfaced fields are silently ignored.
 // `Deserialize` only — never sent on the wire. `Debug` for logs, `Clone` for cheap copy.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub(crate) struct Statistics {
     // `u64` not `usize`: wire counts must be platform-independent.
     pub(crate) total_documents: u64,
@@ -257,9 +250,9 @@ pub(crate) struct Statistics {
 /// the identifier, equal to coaching_session UUID via
 /// `coaching_sessions.collab_document_name`). Other fields are best-effort —
 /// verify against a live response on first deploy.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub(crate) struct Document {
     // Join column for Sessions 5/6. Keep `String` (not `Uuid`) — TipTap treats
     // it as opaque; we should too until we explicitly parse for DB queries.
@@ -277,7 +270,6 @@ pub(crate) struct Document {
 
 // Paginated listing wrapper. TipTap returns a JSON array at the top level; if
 // first probe reveals a wrapper (e.g. `{ "data": [...] }`), upgrade to a struct.
-#[allow(dead_code)]
 pub(crate) type DocumentsPage = Vec<Document>;
 
 /// Build a reqwest::Client with TipTap auth headers and bounded timeouts.
@@ -286,7 +278,6 @@ pub(crate) type DocumentsPage = Vec<Document>;
 //
 // Free function (not method): lets tests exercise it without constructing
 // a `Client` first.
-#[allow(dead_code)]
 async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
     let headers = build_auth_headers(config).await?;
 
@@ -308,7 +299,6 @@ async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
 /// IMPORTANT: TipTap auth is the Raw secret value - NOT `Bearer <secret>`.
 /// Matches `tiptap.rs::build_auth_headers()`. Do NOT copy mailersend's
 /// Bearer pattern blindly
-#[allow(dead_code)]
 async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
     // Same missing-config shape as Client::new, different field.
     let auth_key = config.tiptap_auth_key().ok_or_else(|| {
