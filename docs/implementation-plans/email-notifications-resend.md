@@ -6,7 +6,7 @@ Two GitHub issues request email notifications for key platform events:
 - **refactor-platform-fe#170** - Email when a coaching session is scheduled (both coach and coachee)
 - **refactor-platform-fe#251** - Email when an action is created/assigned to a user
 
-The backend already had a working Mailersend integration for welcome emails (`notify_welcome_email` in `domain/src/emails.rs`). The two new email functions follow the same `MailerSendClient` + `SendEmailRequestBuilder` flow, with an added `EmailNotification` trait to avoid leaking config concerns into controllers.
+The backend already had a working Resend integration for welcome emails (`notify_welcome_email` in `domain/src/emails.rs`). The two new email functions follow the same `gateway::resend::Client` + `SendEmailRequestBuilder` flow, with an added `EmailNotification` trait to avoid leaking config concerns into controllers.
 
 Notification settings (on/off toggle per user) are deferred to a follow-up issue (refactor-platform-fe#301) since the Settings page doesn't exist yet.
 
@@ -61,7 +61,7 @@ flowchart TD
     end
 
     subgraph gateway["Gateway Layer"]
-        MS["MailerSendClient\ntokio::spawn — fire-and-forget"]
+        MS["gateway::resend::Client\ntokio::spawn — fire-and-forget"]
     end
 
     CC -->|"best-effort"| NS
@@ -88,7 +88,7 @@ flowchart TD
 
 **Tier 2: `send_*` email construction functions (private, called by `notify_*`)**
 - Pure email senders — take all data as parameters, no DB access
-- Handle MailerSend client creation, template ID resolution (via `EmailNotification` trait), personalization building
+- Handle Resend client creation, template ID resolution (via `EmailNotification` trait), template variables building
 - Fire emails via `tokio::spawn()` (fire-and-forget)
 
 This pattern matches the domain-level orchestration used elsewhere in the codebase:
@@ -123,8 +123,8 @@ Controller (create handler)
   → domain::emails::notify_*() (orchestration — looks up related data via entity_api)
     → domain::emails::send_*() (private — constructs and fires the email)
       → EmailNotification trait (resolves template ID + base URL from Config)
-      → MailerSendClient + SendEmailRequestBuilder
-        → tokio::spawn() → Mailersend API (fire-and-forget)
+      → gateway::resend::Client + SendEmailRequestBuilder
+        → tokio::spawn() → Resend API (fire-and-forget)
 ```
 
 All email sending is best-effort: failures are logged with `warn!()` and never block the main operation.
@@ -158,7 +158,7 @@ All email sending is best-effort: failures are logged with `warn!()` and never b
 - Added `EmailNotification` trait with default `resolve_template_id()` and `resolve_base_url()` methods
 - Added `SessionScheduled` and `ActionAssigned` trait implementations
 - Added `format_session_date_time(date, timezone)` helper — formats a UTC `NaiveDateTime` in the recipient's timezone (falls back to UTC on invalid timezone)
-- Added `send_session_email_to_recipient()` — private, sends to one person with role-aware personalization
+- Added `send_session_email_to_recipient()` — private, sends to one person with role-aware template variables
 - Added `send_session_scheduled_email()` — private, sends to both coach and coachee
 - Added `send_action_assigned_email()` — private, sends to all assignees
 - Added `notify_session_scheduled(db, config, &session)` — public orchestration entry point for controllers
@@ -172,7 +172,7 @@ All email sending is best-effort: failures are logged with `warn!()` and never b
 
 ---
 
-## Mailersend Templates
+## Resend Templates
 
 ### Template A: Coaching Session Scheduled
 
@@ -247,8 +247,8 @@ This action is associated with your goal: {{overarching_goal}}
 ## Environment Variables Required
 
 ```bash
-SESSION_SCHEDULED_EMAIL_TEMPLATE_ID=<template-id-from-mailersend>
-ACTION_ASSIGNED_EMAIL_TEMPLATE_ID=<template-id-from-mailersend>
+SESSION_SCHEDULED_EMAIL_TEMPLATE_ID=<template-id-from-resend>
+ACTION_ASSIGNED_EMAIL_TEMPLATE_ID=<template-id-from-resend>
 FRONTEND_BASE_URL=https://app.myrefactor.com  # no trailing slash
 
 # Optional — URL path templates (have sensible defaults, override only if frontend routing changes)
@@ -256,13 +256,13 @@ SESSION_SCHEDULED_EMAIL_URL_PATH=/coaching-sessions/{session_id}
 ACTION_ASSIGNED_EMAIL_URL_PATH=/coaching-sessions/{session_id}?tab=actions
 ```
 
-These are in addition to the existing `MAILERSEND_API_KEY` and `WELCOME_EMAIL_TEMPLATE_ID`.
+These are in addition to the existing `RESEND_API_KEY` and `WELCOME_EMAIL_TEMPLATE_ID`.
 
 ---
 
 ## TODO
 
-- [ ] Create Mailersend templates in dashboard and set env vars
+- [ ] Create Resend templates in dashboard and set env vars
 - [ ] Add tests for the new email functions (session scheduled, action assigned)
 - [x] Wire action assigned email into the `update` handler when `assignee_ids` changes (currently only on `create`)
 - [x] Bring welcome email into the `notify_*` naming pattern for consistency

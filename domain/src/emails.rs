@@ -8,7 +8,7 @@ use crate::{
     actions, coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
-    gateway::mailersend::{MailerSendClient, SendEmailRequestBuilder},
+    gateway::resend::{Client as ResendClient, SendEmailRequestBuilder},
     organization, organizations, user, users, Id,
 };
 
@@ -154,7 +154,7 @@ async fn send_welcome_email(
         .map(|b| b.build(TOKEN_PLACEHOLDER, magic_link_token))
         .unwrap_or_default();
 
-    debug!("Preparing personalization data for {}", user.email);
+    debug!("Preparing template variables for {}", user.email);
 
     let email_request = SendEmailRequestBuilder::new()
         .from("hello@myrefactor.com")
@@ -164,9 +164,9 @@ async fn send_welcome_email(
         )
         .subject("Welcome to Refactor Platform")
         .template_id(&email_config.template_id)
-        .add_personalization("first_name", &user.first_name)
-        .add_personalization("last_name", &user.last_name)
-        .add_personalization("magic_link_url", &magic_link_url)
+        .add_variable("first_name", &user.first_name)
+        .add_variable("last_name", &user.last_name)
+        .add_variable("magic_link_url", &magic_link_url)
         .build()
         .await?;
     debug!("Email request created for {}", user.email);
@@ -211,23 +211,23 @@ impl SessionUrlBuilder {
     }
 }
 
-/// Pre-resolved MailerSend configuration, created once per notification
+/// Pre-resolved Resend configuration, created once per notification
 /// so that config errors propagate before per-recipient sends begin.
 struct ResolvedEmailConfig {
-    client: MailerSendClient,
+    client: ResendClient,
     template_id: String,
     /// `None` for notification types that don't include app links (e.g. welcome emails).
     session_url_builder: Option<SessionUrlBuilder>,
 }
 
 impl ResolvedEmailConfig {
-    /// Resolve all MailerSend configuration for the given notification type.
+    /// Resolve all Resend configuration for the given notification type.
     ///
     /// Creates the HTTP client and resolves the template ID via the
     /// `EmailNotification` trait. URL support is derived from the trait:
     /// if `url_path_template` returns `Some`, the base URL is also resolved.
     async fn new<N: EmailNotification>(config: &Config) -> Result<Self, Error> {
-        let client = MailerSendClient::new(config).await?;
+        let client = ResendClient::new(config).await?;
         let template_id = N::resolve_template_id(config)?;
 
         let session_url_builder = match N::url_path_template(config) {
@@ -284,14 +284,14 @@ async fn send_session_email_to_recipient(
         )
         .subject(format!("New coaching session scheduled for {session_date}"))
         .template_id(&email_config.template_id)
-        .add_personalization("first_name", &recipient.first_name)
-        .add_personalization("other_user_first_name", &other_user.first_name)
-        .add_personalization("other_user_last_name", &other_user.last_name)
-        .add_personalization("other_user_role", other_user_role)
-        .add_personalization("organization_name", &organization.name)
-        .add_personalization("session_date", &session_date)
-        .add_personalization("session_time", &session_time)
-        .add_personalization("session_url", &session_url)
+        .add_variable("first_name", &recipient.first_name)
+        .add_variable("other_user_first_name", &other_user.first_name)
+        .add_variable("other_user_last_name", &other_user.last_name)
+        .add_variable("other_user_role", other_user_role)
+        .add_variable("organization_name", &organization.name)
+        .add_variable("session_date", &session_date)
+        .add_variable("session_time", &session_time)
+        .add_variable("session_url", &session_url)
         .build()
         .await?;
 
@@ -351,7 +351,7 @@ async fn send_session_scheduled_email(
 }
 
 /// Context for an action-assigned email, bundling the action-specific data
-/// that the email needs for personalization.
+/// that the email needs for template variables.
 struct ActionEmailContext<'a> {
     action_body: &'a str,
     due_by: Option<DateTime<FixedOffset>>,
@@ -393,14 +393,14 @@ async fn send_action_assigned_email(
             )
             .subject("You've been assigned a new action")
             .template_id(&email_config.template_id)
-            .add_personalization("first_name", &assignee.first_name)
-            .add_personalization("action_body", ctx.action_body)
-            .add_personalization("due_date", &due_date_str)
-            .add_personalization("assigner_first_name", &assigner.first_name)
-            .add_personalization("assigner_last_name", &assigner.last_name)
-            .add_personalization("organization_name", &ctx.organization.name)
-            .add_personalization("goal", ctx.goal)
-            .add_personalization("session_url", &session_url)
+            .add_variable("first_name", &assignee.first_name)
+            .add_variable("action_body", ctx.action_body)
+            .add_variable("due_date", &due_date_str)
+            .add_variable("assigner_first_name", &assigner.first_name)
+            .add_variable("assigner_last_name", &assigner.last_name)
+            .add_variable("organization_name", &ctx.organization.name)
+            .add_variable("goal", ctx.goal)
+            .add_variable("session_url", &session_url)
             .build()
             .await;
 
@@ -609,22 +609,22 @@ mod tests {
     fn create_config_with_mock(server_url: &str) -> Config {
         Config::from_args([
             "test",
-            "--mailersend-api-key=test_api_key_123",
+            "--resend-api-key=test_api_key_123",
             "--welcome-email-template-id=template_123",
             "--frontend-base-url=https://app.example.com",
-            &format!("--mailersend-base-url={server_url}/v1"),
+            &format!("--resend-base-url={server_url}"),
         ])
     }
 
     fn create_full_config_with_mock(server_url: &str) -> Config {
         Config::from_args([
             "test",
-            "--mailersend-api-key=test_api_key_123",
+            "--resend-api-key=test_api_key_123",
             "--welcome-email-template-id=template_123",
             "--session-scheduled-email-template-id=session_template_456",
             "--action-assigned-email-template-id=action_template_789",
             "--frontend-base-url=https://app.example.com",
-            &format!("--mailersend-base-url={server_url}/v1"),
+            &format!("--resend-base-url={server_url}"),
         ])
     }
 
@@ -635,31 +635,25 @@ mod tests {
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_header("authorization", "Bearer test_api_key_123")
             .match_header("content-type", "application/json")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": {
-                    "email": "hello@myrefactor.com",
-                    "name": null
-                },
-                "to": [{
-                    "email": "john.doe@example.com",
-                    "name": "John Doe"
-                }],
+                "from": "hello@myrefactor.com",
+                "to": ["John Doe <john.doe@example.com>"],
                 "subject": "Welcome to Refactor Platform",
-                "template_id": "template_123",
-                "personalization": [{
-                    "email": "john.doe@example.com",
-                    "data": {
+                "template": {
+                    "id": "template_123",
+                    "variables": {
                         "first_name": "John",
                         "last_name": "Doe",
                         "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
-                }]
+                }
             })))
-            .with_status(202)
-            .with_header("x-message-id", "msg_123456789")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"email_msg_123456789"}"#)
             .expect(1)
             .create_async()
             .await;
@@ -671,10 +665,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_welcome_email_missing_api_key() {
         let config = Config::from_args(["test", "--welcome-email-template-id=template_123"]);
-        assert!(
-            config.mailersend_api_key().is_none(),
-            "API key should be None"
-        );
+        assert!(config.resend_api_key().is_none(), "API key should be None");
 
         let user = create_test_user();
 
@@ -691,9 +682,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_welcome_email_missing_template_id() {
-        let config = Config::from_args(["test", "--mailersend-api-key=test_api_key_123"]);
+        let config = Config::from_args(["test", "--resend-api-key=test_api_key_123"]);
         assert!(
-            config.mailersend_api_key().is_some(),
+            config.resend_api_key().is_some(),
             "API key should be present"
         );
         assert!(
@@ -721,14 +712,14 @@ mod tests {
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .with_status(400)
             .with_body(r#"{"message": "Invalid request"}"#)
             .expect(1)
             .create_async()
             .await;
 
-        // HTTP 400 from MailerSend should propagate as an error
+        // HTTP 400 from Resend should propagate as an error
         let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
         assert!(result.is_err());
     }
@@ -741,8 +732,8 @@ mod tests {
 
         // Verify that a slightly delayed response still succeeds
         let _mock = server
-            .mock("POST", "/v1/email")
-            .with_status(202)
+            .mock("POST", "/emails")
+            .with_status(200)
             .with_chunked_body(|w| {
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 w.write_all(b"{}")
@@ -777,28 +768,22 @@ mod tests {
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": {
-                    "email": "hello@myrefactor.com",
-                    "name": null
-                },
-                "to": [{
-                    "email": "jane.smith@test.org",
-                    "name": "Jane Smith"
-                }],
+                "from": "hello@myrefactor.com",
+                "to": ["Jane Smith <jane.smith@test.org>"],
                 "subject": "Welcome to Refactor Platform",
-                "template_id": "template_123",
-                "personalization": [{
-                    "email": "jane.smith@test.org",
-                    "data": {
+                "template": {
+                    "id": "template_123",
+                    "variables": {
                         "first_name": "Jane",
                         "last_name": "Smith",
                         "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
-                }]
+                }
             })))
-            .with_status(202)
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
@@ -808,7 +793,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_welcome_email_validates_personalization() {
+    async fn test_send_welcome_email_validates_variables() {
         let mut server = setup_test_server().await;
         let user = users::Model {
             id: Id::new_v4(),
@@ -829,28 +814,22 @@ mod tests {
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": {
-                    "email": "hello@myrefactor.com",
-                    "name": null
-                },
-                "to": [{
-                    "email": "test.user@example.com",
-                    "name": "Test-First Test-Last"
-                }],
+                "from": "hello@myrefactor.com",
+                "to": ["Test-First Test-Last <test.user@example.com>"],
                 "subject": "Welcome to Refactor Platform",
-                "template_id": "template_123",
-                "personalization": [{
-                    "email": "test.user@example.com",
-                    "data": {
+                "template": {
+                    "id": "template_123",
+                    "variables": {
                         "first_name": "Test-First",
                         "last_name": "Test-Last",
                         "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
-                }]
+                }
             })))
-            .with_status(202)
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
@@ -862,7 +841,7 @@ mod tests {
     // ── Session Scheduled Email Tests ──────────────────────────────────
 
     #[tokio::test]
-    async fn test_send_session_scheduled_email_personalization() {
+    async fn test_send_session_scheduled_email_variables() {
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
@@ -873,17 +852,16 @@ mod tests {
 
         let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
 
-        // First email goes to coachee — verify role-aware personalization
+        // First email goes to coachee — verify role-aware variables
         let _mock_coachee = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": { "email": "hello@myrefactor.com", "name": null },
-                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "from": "hello@myrefactor.com",
+                "to": ["Jane Doe <jane@example.com>"],
                 "subject": "New coaching session scheduled for Wednesday, March 4, 2026",
-                "template_id": "session_template_456",
-                "personalization": [{
-                    "email": "jane@example.com",
-                    "data": {
+                "template": {
+                    "id": "session_template_456",
+                    "variables": {
                         "first_name": "Jane",
                         "other_user_first_name": "Alex",
                         "other_user_last_name": "Smith",
@@ -893,17 +871,19 @@ mod tests {
                         "session_time": "3:00 PM",
                         "session_url": session_url,
                     }
-                }]
+                }
             })))
-            .with_status(202)
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
 
         // Second email goes to coach
         let _mock_coach = server
-            .mock("POST", "/v1/email")
-            .with_status(202)
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
@@ -934,15 +914,14 @@ mod tests {
             .fixed_offset();
 
         let _mock = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": { "email": "hello@myrefactor.com", "name": null },
-                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "from": "hello@myrefactor.com",
+                "to": ["Jane Doe <jane@example.com>"],
                 "subject": "You've been assigned a new action",
-                "template_id": "action_template_789",
-                "personalization": [{
-                    "email": "jane@example.com",
-                    "data": {
+                "template": {
+                    "id": "action_template_789",
+                    "variables": {
                         "first_name": "Jane",
                         "action_body": "Read chapters 3-5 of Radical Candor",
                         "due_date": "Saturday, March 7, 2026",
@@ -952,9 +931,10 @@ mod tests {
                         "goal": "Improve communication",
                         "session_url": session_url,
                     }
-                }]
+                }
             })))
-            .with_status(202)
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
@@ -985,15 +965,14 @@ mod tests {
             format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
 
         let _mock = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": { "email": "hello@myrefactor.com", "name": null },
-                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "from": "hello@myrefactor.com",
+                "to": ["Jane Doe <jane@example.com>"],
                 "subject": "You've been assigned a new action",
-                "template_id": "action_template_789",
-                "personalization": [{
-                    "email": "jane@example.com",
-                    "data": {
+                "template": {
+                    "id": "action_template_789",
+                    "variables": {
                         "first_name": "Jane",
                         "action_body": "Follow up with team",
                         "due_date": "No due date set",
@@ -1003,9 +982,10 @@ mod tests {
                         "goal": "",
                         "session_url": session_url,
                     }
-                }]
+                }
             })))
-            .with_status(202)
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
@@ -1034,8 +1014,8 @@ mod tests {
         let org = create_test_organization();
 
         let _mock = server
-            .mock("POST", "/v1/email")
-            .with_status(202)
+            .mock("POST", "/emails")
+            .with_status(200)
             .expect(2)
             .create_async()
             .await;
@@ -1058,8 +1038,8 @@ mod tests {
         let server = setup_test_server().await;
         let config = Config::from_args([
             "test",
-            "--mailersend-api-key=test_api_key_123",
-            &format!("--mailersend-base-url={}/v1", server.url()),
+            "--resend-api-key=test_api_key_123",
+            &format!("--resend-base-url={}", server.url()),
             "--frontend-base-url=https://app.example.com",
         ]);
 
@@ -1098,7 +1078,7 @@ mod tests {
 
         // Expect exactly zero calls — no assignees means no emails
         let _mock = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .expect(0)
             .create_async()
             .await;
@@ -1118,14 +1098,14 @@ mod tests {
     // ── build_session_url Unit Tests ────────────────────────────────────
 
     /// Helper to construct a `ResolvedEmailConfig` with an optional
-    /// `SessionUrlBuilder`, without needing a real MailerSend client.
+    /// `SessionUrlBuilder`, without needing a real Resend client.
     async fn create_test_email_config(
         server_url: &str,
         url_builder: Option<SessionUrlBuilder>,
     ) -> ResolvedEmailConfig {
         let config = create_config_with_mock(server_url);
         ResolvedEmailConfig {
-            client: MailerSendClient::new(&config).await.unwrap(),
+            client: ResendClient::new(&config).await.unwrap(),
             template_id: "test_template".to_string(),
             session_url_builder: url_builder,
         }

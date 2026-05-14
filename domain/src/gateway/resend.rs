@@ -1,10 +1,13 @@
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use email_address::EmailAddress;
 use log::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 use std::collections::HashMap;
 use std::fmt::Display;
+
+/// Path appended to the configured base URL when sending emails.
+const SEND_EMAIL_PATH: &str = "/emails";
 
 /// Template ID with validation
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -36,73 +39,93 @@ impl From<TemplateId> for String {
 impl Serialize for TemplateId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         self.0.serialize(serializer)
     }
 }
 
-/// MailerSend API client for sending transactional emails
-pub struct MailerSendClient {
+/// Resend API client for sending transactional emails
+pub struct Client {
     client: reqwest::Client,
     base_url: String,
 }
 
-/// Email recipient with name and email address
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+/// Email recipient with optional display name.
+///
+/// Resend accepts recipients as RFC 5322 mailbox strings (`Name <email>` or just `email`),
+/// so this serializes to a single string regardless of whether a name is set.
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct EmailRecipient {
     pub email: String,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Personalization {
-    pub email: String,
-    pub data: HashMap<String, String>,
+impl Serialize for EmailRecipient {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match &self.name {
+            Some(name) if !name.is_empty() => {
+                serializer.serialize_str(&format!("{name} <{}>", self.email))
+            }
+            _ => serializer.serialize_str(&self.email),
+        }
+    }
 }
 
-/// Request payload for sending an email via MailerSend
+/// Reference to a published Resend template plus the variables to interpolate.
+#[derive(Debug, Serialize, Eq, PartialEq)]
+pub struct TemplateRef {
+    pub id: TemplateId,
+    pub variables: HashMap<String, String>,
+}
+
+/// Request payload for sending an email via Resend.
 #[derive(Debug, Serialize, Eq, PartialEq)]
 pub struct SendEmailRequest {
     pub from: EmailRecipient,
     pub to: Vec<EmailRecipient>,
     pub subject: String,
-    pub template_id: Option<TemplateId>,
-    pub personalization: Vec<Personalization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<TemplateRef>,
 }
 
 /// Builder for constructing SendEmailRequest with fluent API
-///
-/// This builder provides multiple methods for constructing email requests.
-/// All methods are part of the public API and may be used by consumers of this library.
 pub struct SendEmailRequestBuilder {
     from: Option<EmailRecipient>,
     to: Vec<EmailRecipient>,
     subject: Option<String>,
     template_id: Option<String>,
-    personalization: HashMap<String, String>,
+    variables: HashMap<String, String>,
 }
 
-/// Response from MailerSend API
+/// Response from Resend's `POST /emails` endpoint.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct SendEmailResponse {
-    pub message_id: Option<String>,
+    pub id: Option<String>,
+}
+
+impl Default for SendEmailRequestBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SendEmailRequestBuilder {
-    /// Create a new builder with the required template ID
     pub fn new() -> Self {
         SendEmailRequestBuilder {
             from: None,
             to: Vec::new(),
             subject: None,
             template_id: None,
-            personalization: HashMap::new(),
+            variables: HashMap::new(),
         }
     }
 
-    /// Set the sender email address
+    /// Set the sender email address.
     pub fn from(mut self, email: impl Into<String>) -> Self {
         self.from = Some(EmailRecipient {
             email: email.into(),
@@ -111,7 +134,7 @@ impl SendEmailRequestBuilder {
         self
     }
 
-    /// Add a recipient with name  
+    /// Add a recipient with display name.
     #[allow(clippy::wrong_self_convention)] // Builder pattern convention
     pub fn to_with_name(mut self, email: impl Into<String>, name: impl Into<String>) -> Self {
         self.to.push(EmailRecipient {
@@ -121,27 +144,26 @@ impl SendEmailRequestBuilder {
         self
     }
 
-    /// Set the email subject
+    /// Set the email subject.
     pub fn subject(mut self, subject: impl Into<String>) -> Self {
         self.subject = Some(subject.into());
         self
     }
 
-    /// Set the template ID
+    /// Set the Resend template ID (or published alias).
     pub fn template_id(mut self, template_id: impl Into<String>) -> Self {
         self.template_id = Some(template_id.into());
         self
     }
 
-    /// Add a personalization variable
-    pub fn add_personalization(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.personalization.insert(key.into(), value.into());
+    /// Add a template variable for interpolation by Resend.
+    pub fn add_variable(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.variables.insert(key.into(), value.into());
         self
     }
 
-    /// Build the SendEmailRequest with validation
+    /// Build the SendEmailRequest with validation.
     pub async fn build(self) -> Result<SendEmailRequest, Error> {
-        // Validate from field
         let from = self.from.ok_or_else(|| Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
@@ -150,7 +172,6 @@ impl SendEmailRequestBuilder {
         })?;
         SendEmailRequest::validate_email(&from.email)?;
 
-        // Validate recipients
         if self.to.is_empty() {
             return Err(Error {
                 source: None,
@@ -164,7 +185,6 @@ impl SendEmailRequestBuilder {
             SendEmailRequest::validate_email(&recipient.email)?;
         }
 
-        // Validate subject
         let subject = self.subject.ok_or_else(|| Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
@@ -172,38 +192,24 @@ impl SendEmailRequestBuilder {
             )),
         })?;
 
-        // Template ID is already validated when set
-        let template_id = if let Some(id) = self.template_id {
-            Some(TemplateId::new(id)?)
-        } else {
-            None
-        };
-
-        // Create personalization for each recipient if data exists
-        let personalization = if !self.personalization.is_empty() {
-            self.to
-                .iter()
-                .map(|recipient| Personalization {
-                    email: recipient.email.clone(),
-                    data: self.personalization.clone(),
-                })
-                .collect()
-        } else {
-            vec![]
+        let template = match self.template_id {
+            Some(id) => Some(TemplateRef {
+                id: TemplateId::new(id)?,
+                variables: self.variables,
+            }),
+            None => None,
         };
 
         Ok(SendEmailRequest {
             from,
             to: self.to,
             subject,
-            template_id,
-            personalization,
+            template,
         })
     }
 }
 
 impl SendEmailRequest {
-    /// Validate email address and return error if invalid
     fn validate_email<E>(email: E) -> Result<(), Error>
     where
         E: AsRef<str> + Display,
@@ -221,21 +227,17 @@ impl SendEmailRequest {
     }
 }
 
-impl MailerSendClient {
-    /// Create a new MailerSend client with authentication
+impl Client {
+    /// Create a new Resend client with authentication headers preconfigured.
     pub async fn new(config: &Config) -> Result<Self, Error> {
         let client = build_client(config).await?;
-        let base_url = config.mailersend_base_url().to_string();
-
+        let base_url = config.resend_base_url().to_string();
         Ok(Self { client, base_url })
     }
 
-    /// Send an email using the MailerSend API.
-    ///
-    /// Errors are returned to the caller so they can be handled by the
-    /// best-effort pattern in the domain email functions.
+    /// Send an email via Resend's `POST /emails` endpoint.
     pub async fn send_email(&self, request: SendEmailRequest) -> Result<(), Error> {
-        let url = format!("{}/email", self.base_url);
+        let url = format!("{}{SEND_EMAIL_PATH}", self.base_url);
         let to_emails: Vec<String> = request.to.iter().map(|r| r.email.clone()).collect();
 
         info!(
@@ -261,13 +263,14 @@ impl MailerSendClient {
 
         let status = response.status();
         if status.is_success() {
-            let message_id = response
-                .headers()
-                .get("x-message-id")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-
-            info!("Email sent successfully to {to_emails:?}, message_id: {message_id:?}");
+            let parsed: SendEmailResponse = response
+                .json()
+                .await
+                .unwrap_or(SendEmailResponse { id: None });
+            info!(
+                "Email sent successfully to {to_emails:?}, id: {:?}",
+                parsed.id
+            );
             Ok(())
         } else {
             let error_text = response.text().await.unwrap_or_default();
@@ -280,7 +283,7 @@ impl MailerSendClient {
     }
 }
 
-/// Build HTTP client with MailerSend authentication
+/// Build HTTP client with Resend authentication headers preconfigured.
 async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
     let headers = build_auth_headers(config).await?;
 
@@ -290,10 +293,10 @@ async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
         .build()?)
 }
 
-/// Build authentication headers for MailerSend API
+/// Build authentication headers for the Resend API.
 async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
-    let api_key = config.mailersend_api_key().ok_or_else(|| {
-        warn!("Failed to get MailerSend API key from config");
+    let api_key = config.resend_api_key().ok_or_else(|| {
+        warn!("Failed to get Resend API key from config");
         Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
@@ -328,14 +331,11 @@ mod tests {
     use service::config::Config;
 
     #[tokio::test]
-    async fn test_mailersend_client_creation_fails_without_api_key() {
+    async fn test_client_creation_fails_without_api_key() {
         let config = Config::default();
-        assert!(
-            config.mailersend_api_key().is_none(),
-            "API key should be None"
-        );
+        assert!(config.resend_api_key().is_none(), "API key should be None");
 
-        let result = MailerSendClient::new(&config).await;
+        let result = Client::new(&config).await;
         assert!(result.is_err());
     }
 
@@ -345,46 +345,65 @@ mod tests {
             .from("sender@example.com")
             .to_with_name("recipient@example.com", "Test Recipient")
             .subject("Test Subject")
-            .add_personalization("name", "Test User")
+            .template_id("welcome-email")
+            .add_variable("name", "Test User")
             .build()
             .await
             .unwrap();
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("recipient@example.com"));
+        assert!(json.contains("Test Recipient <recipient@example.com>"));
+        assert!(json.contains("\"template\""));
+        assert!(json.contains("\"welcome-email\""));
     }
 
     #[tokio::test]
-    async fn test_send_email_request_with_personalization() {
+    async fn test_send_email_request_with_variables() {
         let request = SendEmailRequestBuilder::new()
             .from("sender@example.com")
             .to_with_name("john.doe@example.com", "John Doe")
             .to_with_name("jane.smith@example.com", "Jane Smith")
             .subject("Test Subject")
-            .add_personalization("first_name", "John")
-            .add_personalization("last_name", "Doe")
-            .add_personalization("company", "Acme Corp")
+            .template_id("multi-recipient-template")
+            .add_variable("first_name", "John")
+            .add_variable("last_name", "Doe")
+            .add_variable("company", "Acme Corp")
             .build()
             .await
             .unwrap();
 
-        // Verify personalization for both recipients
-        assert_eq!(request.personalization.len(), 2);
-        assert_eq!(request.personalization[0].email, "john.doe@example.com");
-        assert_eq!(request.personalization[1].email, "jane.smith@example.com");
+        assert_eq!(request.to.len(), 2);
+        let template = request.template.as_ref().expect("template should be set");
+        assert_eq!(template.id.as_str(), "multi-recipient-template");
         assert_eq!(
-            request.personalization[0].data.get("first_name"),
+            template.variables.get("first_name"),
             Some(&"John".to_string())
         );
         assert_eq!(
-            request.personalization[0].data.get("last_name"),
+            template.variables.get("last_name"),
             Some(&"Doe".to_string())
         );
         assert_eq!(
-            request.personalization[0].data.get("company"),
+            template.variables.get("company"),
             Some(&"Acme Corp".to_string())
         );
-        assert_eq!(request.to.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_send_email_recipient_without_name_serializes_as_bare_email() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "")
+            .subject("Test Subject")
+            .template_id("t")
+            .build()
+            .await
+            .unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+        // Empty name → bare email, not `" <recipient@example.com>"`
+        assert!(json.contains("\"to\":[\"recipient@example.com\"]"));
+        assert!(json.contains("\"from\":\"sender@example.com\""));
     }
 
     #[tokio::test]
@@ -392,6 +411,7 @@ mod tests {
         let result = SendEmailRequestBuilder::new()
             .from("sender@example.com")
             .subject("Test Subject")
+            .template_id("t")
             .build()
             .await;
 
@@ -400,7 +420,6 @@ mod tests {
 
     #[test]
     fn test_email_validation() {
-        // Test invalid email formats
         let invalid_emails = vec![
             "",
             "invalid-email",
@@ -412,12 +431,10 @@ mod tests {
         for email in invalid_emails {
             assert!(
                 SendEmailRequest::validate_email(email).is_err(),
-                "Email '{}' should be invalid",
-                email
+                "Email '{email}' should be invalid"
             );
         }
 
-        // Test valid emails
         assert!(SendEmailRequest::validate_email("test@example.com").is_ok());
         assert!(SendEmailRequest::validate_email("user.name@domain.co.uk").is_ok());
     }
@@ -429,6 +446,7 @@ mod tests {
             .to_with_name("first@example.com", "First User")
             .to_with_name("second@example.com", "Second User")
             .subject("Multi Recipient")
+            .template_id("t")
             .build()
             .await
             .unwrap();
@@ -448,7 +466,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(format!("{:?}", err).contains("Sender email is required"));
+        assert!(format!("{err:?}").contains("Sender email is required"));
     }
 
     #[tokio::test]
@@ -461,7 +479,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(format!("{:?}", err).contains("At least one recipient is required"));
+        assert!(format!("{err:?}").contains("At least one recipient is required"));
     }
 
     #[tokio::test]
@@ -474,7 +492,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(format!("{:?}", err).contains("Subject is required"));
+        assert!(format!("{err:?}").contains("Subject is required"));
     }
 
     #[tokio::test]
@@ -499,5 +517,10 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_send_email_path_constant() {
+        assert_eq!(SEND_EMAIL_PATH, "/emails");
     }
 }

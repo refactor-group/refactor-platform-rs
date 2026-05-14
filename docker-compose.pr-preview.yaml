@@ -109,11 +109,11 @@ services:
       TIPTAP_JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
 
       # Email notifications
-      # MAILERSEND_BASE_URL and the *_EMAIL_URL_PATH templates are deliberately
+      # RESEND_BASE_URL and the *_EMAIL_URL_PATH templates are deliberately
       # NOT set here — Clap's #[arg(env)] default_value in service/src/config.rs
       # is the source of truth. Setting them again here would either duplicate
       # the value (drift hazard) or silently override the correct in-code default.
-      MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
+      RESEND_API_KEY: ${RESEND_API_KEY}
       WELCOME_EMAIL_TEMPLATE_ID: ${WELCOME_EMAIL_TEMPLATE_ID}
       SESSION_SCHEDULED_EMAIL_TEMPLATE_ID: ${SESSION_SCHEDULED_EMAIL_TEMPLATE_ID}
       ACTION_ASSIGNED_EMAIL_TEMPLATE_ID: ${ACTION_ASSIGNED_EMAIL_TEMPLATE_ID}
