@@ -16,7 +16,8 @@ use crate::error::{webhook_error, Error, WebhookErrorKind};
 
 type HmacSha256 = Hmac<Sha256>;
 
-const MAX_TIMESTAMP_AGE_SECS: i64 = 300; // 5 minutes
+const MAX_TIMESTAMP_AGE_SECS: i64 = 300; // 5 minutes past — replay protection
+const MAX_TIMESTAMP_FUTURE_SECS: i64 = 60; // 1 minute future — clock skew tolerance
 const SVIX_SECRET_PREFIX: &str = "whsec_";
 
 /// Svix webhook validator for Recall.ai events.
@@ -88,7 +89,8 @@ impl crate::webhook::Validator for Validator {
                 )
             })?;
 
-        // Replay protection: reject timestamps older than 5 minutes
+        // Replay protection: reject timestamps older than 5 minutes or more than 1 minute
+        // in the future. Asymmetric bounds prevent future-dating from widening the replay window.
         let timestamp: i64 = svix_timestamp.parse().map_err(|_| {
             webhook_error(
                 WebhookErrorKind::InvalidPayload,
@@ -96,11 +98,12 @@ impl crate::webhook::Validator for Validator {
             )
         })?;
         let now = chrono::Utc::now().timestamp();
-        if (now - timestamp).abs() > MAX_TIMESTAMP_AGE_SECS {
+        let age = now - timestamp; // positive = past, negative = future
+        if !(-MAX_TIMESTAMP_FUTURE_SECS..=MAX_TIMESTAMP_AGE_SECS).contains(&age) {
             return Err(webhook_error(
                 WebhookErrorKind::TimestampExpired,
                 &format!(
-                    "svix-timestamp {} is outside the 5-minute window (now={})",
+                    "svix-timestamp {} is outside the allowed window (now={})",
                     timestamp, now
                 ),
             ));
@@ -119,8 +122,12 @@ impl crate::webhook::Validator for Validator {
         let expected = mac.finalize().into_bytes();
 
         // Verify against each `v1,<base64-sig>` in the space-delimited header
+        // Only process v1 entries; skip unknown versions (e.g. v2) rather than
+        // attempting to decode them with the wrong algorithm.
         for entry in svix_signature.split_whitespace() {
-            let b64_sig = entry.strip_prefix("v1,").unwrap_or(entry);
+            let Some(b64_sig) = entry.strip_prefix("v1,") else {
+                continue;
+            };
             if let Ok(sig_bytes) = BASE64.decode(b64_sig) {
                 if constant_time_eq(&expected, &sig_bytes) {
                     return Ok(true);
@@ -234,5 +241,56 @@ mod tests {
     fn invalid_secret_prefix_returns_error() {
         let result = Validator::new("recall_ai".to_string(), "invalid_secret");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn multi_entry_signature_header_accepts_valid_second_entry() {
+        let (key, validator) = make_secret_and_validator();
+        let body = b"{\"event\":\"bot.done\"}";
+        let svix_id = "msg_multi";
+        let timestamp = chrono::Utc::now().timestamp();
+        let valid_sig = sign(&key, svix_id, timestamp, body);
+
+        let mut headers = HashMap::new();
+        headers.insert("svix-id".to_string(), svix_id.to_string());
+        headers.insert("svix-timestamp".to_string(), timestamp.to_string());
+        // First entry is bogus; second entry is the correct signature.
+        headers.insert(
+            "svix-signature".to_string(),
+            format!("v1,invalidbase64garbage {}", valid_sig),
+        );
+
+        assert!(validator.validate(&headers, body).unwrap());
+    }
+
+    #[test]
+    fn webhook_alias_headers_validate_correctly() {
+        let (key, validator) = make_secret_and_validator();
+        let body = b"{\"event\":\"recording.done\"}";
+        let svix_id = "wh_alias_test";
+        let timestamp = chrono::Utc::now().timestamp();
+        let sig = sign(&key, svix_id, timestamp, body);
+
+        let mut headers = HashMap::new();
+        headers.insert("webhook-id".to_string(), svix_id.to_string());
+        headers.insert("webhook-timestamp".to_string(), timestamp.to_string());
+        headers.insert("webhook-signature".to_string(), sig);
+
+        assert!(validator.validate(&headers, body).unwrap());
+    }
+
+    #[test]
+    fn unknown_version_prefix_is_skipped_and_falls_through_to_false() {
+        let (_, validator) = make_secret_and_validator();
+        let body = b"test";
+        let timestamp = chrono::Utc::now().timestamp();
+
+        let mut headers = HashMap::new();
+        headers.insert("svix-id".to_string(), "msg_v2".to_string());
+        headers.insert("svix-timestamp".to_string(), timestamp.to_string());
+        // Only a v2 entry — the validator must skip it and return false, not error.
+        headers.insert("svix-signature".to_string(), "v2,somesig".to_string());
+
+        assert!(!validator.validate(&headers, body).unwrap());
     }
 }

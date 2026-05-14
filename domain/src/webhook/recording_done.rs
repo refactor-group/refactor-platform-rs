@@ -3,13 +3,13 @@ use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus};
 use entity::Id;
 use events::{DomainEvent, EventPublisher};
 use log::*;
+use meeting_ai::traits::transcription as transcription_trait;
 use sea_orm::DatabaseConnection;
-use service::config::Config;
 use std::sync::Arc;
 
 pub async fn handle(
     db: Arc<DatabaseConnection>,
-    config: Config,
+    transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
     event_publisher: EventPublisher,
     bot_id: &str,
     recall_recording_id: &str,
@@ -31,11 +31,21 @@ pub async fn handle(
         }
     };
 
+    // Reject if the session in bot metadata doesn't match what we stored — prevents
+    // a tampered payload from triggering events or transcription under a different session.
+    if recording.coaching_session_id != coaching_session_id {
+        warn!(
+            "recording.done: coaching_session_id mismatch for bot_id={} — \
+             metadata claims {} but recording belongs to {} — rejecting",
+            bot_id, coaching_session_id, recording.coaching_session_id
+        );
+        return Ok(());
+    }
+
     // Atomically claim this recording as Completed. Returns false if the recording is
     // already terminal (Completed, Failed, or Cancelled — including the user-cancelled
-    // case). This replaces both the cancelled-status check and the transcription
-    // existence check, and prevents concurrent recording.done webhooks from both
-    // reaching create_async_transcript (double billing).
+    // case). This prevents concurrent recording.done webhooks from both reaching
+    // create_transcription (double billing).
     if !recording_api::try_claim_completed(&db, recording.id).await? {
         debug!(
             "recording.done: recording {} already terminal ({:?}) — skipping",
@@ -62,7 +72,14 @@ pub async fn handle(
     let recall_recording_id = recall_recording_id.to_string();
 
     tokio::spawn(async move {
-        match crate::transcription::start(&db, &config, &recording, &recall_recording_id).await {
+        match crate::transcription::start(
+            &db,
+            transcription_provider.as_deref(),
+            &recording,
+            &recall_recording_id,
+        )
+        .await
+        {
             Ok(_) => {
                 match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await
                 {
@@ -117,4 +134,82 @@ pub async fn handle(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use super::*;
+    use entity::meeting_recording::{MeetingRecordingStatus, Model as RecordingModel};
+    use entity::Id;
+    use events::EventPublisher;
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+    use std::sync::Arc;
+
+    fn recording_for_session(session_id: Id) -> RecordingModel {
+        let now = chrono::Utc::now();
+        RecordingModel {
+            id: Id::new_v4(),
+            coaching_session_id: session_id,
+            bot_id: "bot-rd-test".to_string(),
+            status: MeetingRecordingStatus::Processing,
+            video_url: None,
+            audio_url: None,
+            duration_seconds: None,
+            started_at: None,
+            ended_at: None,
+            error_message: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn recording_done_skips_when_try_claim_completed_returns_false() {
+        let session_id = Id::new_v4();
+        let recording = recording_for_session(session_id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                // find_by_bot_id
+                .append_query_results(vec![vec![recording]])
+                // try_claim_completed — 0 rows affected means already terminal
+                .append_exec_results(vec![MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                }])
+                .into_connection(),
+        );
+
+        let publisher = EventPublisher::new();
+        let result = handle(
+            Arc::clone(&db),
+            None,
+            publisher,
+            "bot-rd-test",
+            "rec-123",
+            Some(session_id),
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn recording_done_skips_when_coaching_session_id_is_none() {
+        let db = Arc::new(MockDatabase::new(DatabaseBackend::Postgres).into_connection());
+
+        let publisher = EventPublisher::new();
+        let result = handle(
+            Arc::clone(&db),
+            None,
+            publisher,
+            "bot-any",
+            "rec-any",
+            None, // missing session_id — handler logs and returns Ok
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
 }

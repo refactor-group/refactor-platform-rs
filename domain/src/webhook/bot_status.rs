@@ -52,3 +52,88 @@ pub async fn handle(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use super::*;
+    use entity::meeting_recording::Model;
+    use entity::Id;
+    use events::EventPublisher;
+    use sea_orm::{DatabaseBackend, MockDatabase};
+
+    fn recording_with_status(status: MeetingRecordingStatus) -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: Id::new_v4(),
+            coaching_session_id: Id::new_v4(),
+            bot_id: "bot-skip-test".to_string(),
+            status,
+            video_url: None,
+            audio_url: None,
+            duration_seconds: None,
+            started_at: None,
+            ended_at: None,
+            error_message: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn bot_status_skips_completed_recording() {
+        let recording = recording_with_status(MeetingRecordingStatus::Completed);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![recording]])
+            .into_connection();
+
+        let publisher = EventPublisher::new();
+        let result = handle(
+            &db,
+            &publisher,
+            "bot-skip-test",
+            MeetingRecordingStatus::Joining,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn bot_status_skips_failed_recording() {
+        let recording = recording_with_status(MeetingRecordingStatus::Failed);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![recording]])
+            .into_connection();
+
+        let publisher = EventPublisher::new();
+        let result = handle(
+            &db,
+            &publisher,
+            "bot-skip-test",
+            MeetingRecordingStatus::Recording,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn bot_status_skips_cancelled_recording() {
+        let recording = recording_with_status(MeetingRecordingStatus::Cancelled);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![recording]])
+            .into_connection();
+
+        let publisher = EventPublisher::new();
+        let result = handle(
+            &db,
+            &publisher,
+            "bot-skip-test",
+            MeetingRecordingStatus::InMeeting,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+}
