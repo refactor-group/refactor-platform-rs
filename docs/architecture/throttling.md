@@ -15,6 +15,32 @@ For a public unauthenticated endpoint like password-reset, both are required. Pe
 
 A common mistake — which a PR #311 review caught — is to treat the two as comparable defenses ("we have one rate limit"). They aren't. If you can list your rate-limit keys and an attacker can change all of them per request at line rate, you have no effective rate limit on that endpoint.
 
+## Request Flow
+
+How a single request traverses the throttle on its way to the handler:
+
+```mermaid
+flowchart LR
+    Client[Client] --> Nginx["nginx<br/>(sets X-Forwarded-For)"]
+    Nginx --> Router["axum Router<br/>web::router"]
+    Router --> Throttle["PerIpThrottle layer<br/>web::middleware::throttle"]
+    Throttle -->|over quota| Reject["429<br/>Too Many Requests"]
+    Throttle -->|under quota| Handler["Handler<br/>e.g. password_reset_controller"]
+
+    Throttle -.consults.-> Bucket[("In-process<br/>token bucket<br/>(governor)")]
+
+    classDef ours fill:#d4e8ff,stroke:#2c5aa0
+    classDef external fill:#f0f0f0,stroke:#888
+    class Throttle,Router,Handler ours
+    class Nginx,Client,Bucket external
+```
+
+Three things to notice:
+
+1. **The throttle sits between the Router and the handler** — it never runs the handler if the request is over quota, so a 429 from the throttle never touches business logic or hits the DB.
+2. **The token bucket is in-process** — `PerIpThrottle` holds an `Arc<GovernorConfig>` whose internal `RateLimiter` lives in memory for the process lifetime. Sharing state across instances is the future-work item ([Out-of-scope: Horizontal scaling](#horizontal-scaling)).
+3. **The key (which IP this is) comes from `X-Forwarded-For`** — set by nginx. The whole defense rests on that header being trustworthy, which is the trust assumption below.
+
 ## Module structure
 
 ```

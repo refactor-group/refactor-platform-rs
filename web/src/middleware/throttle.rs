@@ -111,3 +111,172 @@ impl Throttle for PerIpThrottle {
         GovernorLayer { config }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Mocked-load tests for the per-IP throttle.
+    //!
+    //! These test our *wiring* of `tower_governor` (key-extractor choice,
+    //! burst size, layer attachment) rather than the library's internals.
+    //! Each test fires a rapid sequence of requests against a minimal
+    //! Router with the throttle layer attached and asserts the
+    //! 200/429 split matches the configured policy.
+    //!
+    //! All tests use `X-Forwarded-For` to simulate per-client IPs because
+    //! `SmartIpKeyExtractor` prefers that header. `oneshot` doesn't carry
+    //! a real peer address, so without the header the extractor would
+    //! fail or fall back unpredictably.
+
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        response::IntoResponse,
+        routing::get,
+        Router,
+    };
+    use tower::ServiceExt;
+
+    /// Test handler that always returns 200 OK. Lets us isolate throttle
+    /// behavior from any business-logic response codes.
+    async fn ok_handler() -> impl IntoResponse {
+        (StatusCode::OK, "ok")
+    }
+
+    /// Build a Router with the AUTH_ENDPOINT throttle attached to a
+    /// trivial /test handler. Each call to this function produces a Router
+    /// with its own underlying rate limiter (state is per-layer).
+    fn test_app() -> Router {
+        Router::new()
+            .route("/test", get(ok_handler))
+            .layer(PerIpThrottle::new(ThrottlePolicy::AUTH_ENDPOINT).into_layer())
+    }
+
+    /// Build a request with a specific simulated client IP via
+    /// `X-Forwarded-For` (which `SmartIpKeyExtractor` picks up).
+    fn req_from_ip(ip: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("X-Forwarded-For", ip)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// Burst behavior: the first `burst` requests from one IP must succeed
+    /// (200), and excess requests in the same window must be throttled
+    /// (429). This is the load-bearing "rate limit actually fires" test.
+    #[tokio::test]
+    async fn per_ip_throttle_allows_burst_then_429s() {
+        let app = test_app();
+        let burst = ThrottlePolicy::AUTH_ENDPOINT.burst as usize;
+        let total = burst + 3;
+
+        let mut statuses = Vec::with_capacity(total);
+        for _ in 0..total {
+            let res = app
+                .clone()
+                .oneshot(req_from_ip("203.0.113.1"))
+                .await
+                .unwrap();
+            statuses.push(res.status());
+        }
+
+        let ok_count = statuses.iter().filter(|s| s.is_success()).count();
+        let throttled_count = statuses
+            .iter()
+            .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+            .count();
+
+        assert_eq!(
+            ok_count, burst,
+            "expected exactly {burst} OK responses (one full burst); got statuses: {statuses:?}"
+        );
+        assert_eq!(
+            throttled_count,
+            total - burst,
+            "expected {} throttled responses; got statuses: {statuses:?}",
+            total - burst
+        );
+        // Sanity: the OKs come first, the 429s come after.
+        for (i, status) in statuses.iter().enumerate() {
+            if i < burst {
+                assert_eq!(*status, StatusCode::OK, "request {i} should be 200");
+            } else {
+                assert_eq!(
+                    *status,
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "request {i} should be 429"
+                );
+            }
+        }
+    }
+
+    /// Per-IP isolation: exhausting IP-A's bucket must NOT affect IP-B.
+    /// This proves the `SmartIpKeyExtractor` is actually keying per-IP
+    /// (not globally collapsing to a single bucket). A misconfiguration
+    /// where, say, the wrong extractor returned a constant key would
+    /// fail this test.
+    #[tokio::test]
+    async fn per_ip_throttle_isolates_per_ip() {
+        let app = test_app();
+        let burst = ThrottlePolicy::AUTH_ENDPOINT.burst as usize;
+
+        // Exhaust IP-A's bucket.
+        for i in 0..burst {
+            let res = app
+                .clone()
+                .oneshot(req_from_ip("203.0.113.10"))
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::OK,
+                "IP-A request {i} should be 200"
+            );
+        }
+
+        // IP-A should now be throttled.
+        let res = app
+            .clone()
+            .oneshot(req_from_ip("203.0.113.10"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "IP-A should be throttled after burst exhausted"
+        );
+
+        // IP-B must have its own untouched bucket.
+        let res = app
+            .clone()
+            .oneshot(req_from_ip("203.0.113.20"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "IP-B must have its own bucket — exhausting IP-A must not throttle IP-B"
+        );
+    }
+
+    /// Sanity check on the AUTH_ENDPOINT policy constants. If someone
+    /// "tunes" these to looser values without thinking about the threat
+    /// model, this test fails loudly.
+    #[test]
+    fn auth_endpoint_policy_constants_are_strict_enough() {
+        // 10/min sustained or stricter. period_secs >= 6 means at most
+        // 1 token per 6 seconds = 10/min.
+        assert!(
+            ThrottlePolicy::AUTH_ENDPOINT.period_secs >= 6,
+            "AUTH_ENDPOINT must replenish no faster than 10/min — loosening this is a policy change that needs threat-model review"
+        );
+        // Burst <= 20. A larger burst would let an attacker fire many
+        // rapid probes before the throttle engages.
+        assert!(
+            ThrottlePolicy::AUTH_ENDPOINT.burst <= 20,
+            "AUTH_ENDPOINT burst > 20 lets attackers spray a large initial volume before throttling kicks in"
+        );
+    }
+}
