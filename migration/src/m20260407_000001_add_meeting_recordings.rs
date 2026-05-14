@@ -65,7 +65,7 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(
-                "CREATE INDEX IF NOT EXISTS idx_meeting_recordings_bot_id \
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_meeting_recordings_bot_id \
                  ON refactor_platform.meeting_recordings(bot_id)",
             )
             .await?;
