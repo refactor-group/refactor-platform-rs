@@ -221,6 +221,25 @@ The per-email rate limit (1/60s, 5/24h) is enforced by **counting rows in a dedi
 
 **Design principle.** Any time a single table appears to serve both as a "current state" projection and an "audit log" of past events, the seam between those two semantics is bug-prone. Split them. This same pattern applies to future similar features (e.g. if we add rate-limited login retries or 2FA challenges).
 
+### `/validate` is Non-Destructive — Trade-off Acknowledged
+
+The `GET /password-reset/validate` endpoint **does not consume the token**. A successful validate returns the user's sanitized profile (first_name, last_name) and leaves the token in the DB, valid for further calls until it expires or is consumed by `/complete`.
+
+**Why non-destructive.** The FE state machine needs to validate the token before the user submits the form — otherwise it can't render a personalized "Hi Alice, set your new password" page. A user might take 30 seconds or 5 minutes between clicking the email link (validate fires) and submitting the form (complete fires). Consuming the token on first validate would force a tight time window between those two events that breaks realistic user flows.
+
+**The trade-off this creates.** An attacker who obtains a leaked but live token (browser history, shared device, accidental forward) can call `/validate` repeatedly to extract first/last name without consuming the token. The legitimate user, meanwhile, can still complete their reset via `/complete` because the token stays valid.
+
+**Why we accept this.** The bounded-harm analysis:
+
+| Threat | Bounded by |
+|---|---|
+| Attacker extracts first/last name | First/last name is not high-secrecy PII — LinkedIn, the org's coachee list, and the user's email signature already expose it for most users |
+| Attacker uses the token to complete the reset themselves | Single-use enforcement on `/complete` — once anyone completes, all tokens for the user are deleted. The user discovers via "I clicked my reset link and got an error" and re-requests. |
+| Attacker keeps the token live indefinitely | 30-minute TTL bounds the exposure window |
+| Attacker spams `/validate` to enumerate / load-test the DB | Per-IP throttle (~10 req/min) + wrong-length-token rejection at 400 cut the DoS surface |
+
+**A consume-on-first-validate-window design** (e.g. delete the token 60s after first validate) was considered and deferred. It would tighten the leaked-token threat at the cost of a hard FE UX cliff. Revisit if the threat model changes (e.g. if first/last name becomes more sensitive in some org context).
+
 ### Input Validation at the HTTP Boundary
 
 Length and shape validation runs **before** any handler logic — the cheapest DoS amplifier on an unauthenticated endpoint is a pathologically large input field (e.g. a 10 MB email would still trigger SHA-256 hashing + DB query). These checks cut those attack vectors before any expensive work runs.
@@ -373,6 +392,8 @@ The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /us
 | Authenticated user A tries to reset user B's password via the existing change-password endpoint | `protect::users::passwords::update_password` middleware enforces `authenticated_user.id == user_id`. Pre-existing, unchanged. |
 | Token leaks via HTTP `Referer` when the FE reset page loads a third-party resource | Path-segment format prevents query-string-style leakage. FE additionally sets `Referrer-Policy: same-origin` on token-bearing pages (tracked separately on the coordinator blackboard). |
 | Mallory holds a stolen session cookie for Alice's account; Alice resets her password to lock him out | After the reset, `users.password` holds a new argon2 hash. On Mallory's next authenticated request, `axum_login` recomputes `session_auth_hash()` against the current user record (new password bytes), compares to the session-stored hash (old password bytes), sees a mismatch, and returns 401. See [Session Invalidation on Password Change](#session-invalidation-on-password-change). |
+| Mallory spams `/password-reset/validate` with random tokens hoping to extract user data, DoS the DB, or amplify a future log-leak attack | Per-IP throttle on the `password-reset` route group applies to `/validate` identically to `/request` and `/complete` — `AUTH_ENDPOINT` policy (~10 req/min per IP, burst 10). With 256-bit token entropy, brute-force is computationally infeasible regardless; the throttle defends DB load. Wrong-length tokens are rejected with 400 at the HTTP boundary before any DB work — see [Input Validation at the HTTP Boundary](#input-validation-at-the-http-boundary). |
+| Mallory obtains a leaked but live token (browser history, shared device, email forward) and calls `/validate` repeatedly to extract Alice's first/last name | `/validate` is intentionally non-destructive — consuming the token on validate would force the FE to call `/complete` within a tight window of `/validate`, breaking realistic UX (a user might take >60s between clicking the email link and submitting the form). The exposure is bounded: (1) tokens TTL out in 30 minutes; (2) first/last name is not high-secrecy PII (LinkedIn, org coachee lists, email signatures already expose it); (3) the more consequential threat (Mallory actually completing the reset) is mitigated by single-use enforcement on `/complete`, the 30-min TTL, and email-delivery to the rightful owner. See "non-destructive validate" note in the [Hard Signal-Ceiling](#hard-signal-ceiling-on-response-timing) section. |
 
 ## Out of Scope for v1
 
