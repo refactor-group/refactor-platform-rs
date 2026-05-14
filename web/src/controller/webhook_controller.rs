@@ -1,10 +1,12 @@
 //! Webhook handler for Recall.ai events.
 //!
-//! Response code semantics for Svix retry logic:
-//! - 200 OK: event received and processed (or idempotent skip)
-//! - 400 Bad Request: payload is malformed; Svix will not retry
-//! - 401 Unauthorized: signature invalid; Svix will not retry
-//! - 500 Internal Server Error: DB or infrastructure failure; Svix will retry
+//! Recall.ai retries delivery on any non-2xx response, so permanent errors
+//! (malformed payload, unrecognised event type) are acknowledged with 200 to
+//! suppress retries. Transient failures return 500 so Recall.ai will retry.
+//!
+//! - 200 OK: event processed, idempotent skip, or unrecoverable parse/validation error
+//! - 401 Unauthorized: Svix signature invalid (handled by extractor; Svix will not retry)
+//! - 500 Internal Server Error: transient DB or infrastructure failure; Recall.ai will retry
 
 use crate::extractors::svix_signature::SvixSignature;
 use crate::AppState;
@@ -29,16 +31,16 @@ pub async fn recall_ai(
     let raw: WebhookEvent = match serde_json::from_slice(&body) {
         Ok(e) => e,
         Err(e) => {
-            warn!("Failed to deserialize Recall.ai webhook body: {:?}", e);
-            return StatusCode::BAD_REQUEST.into_response();
+            warn!("Recall.ai webhook: malformed body (permanent, not retrying): {:?}", e);
+            return StatusCode::OK.into_response();
         }
     };
 
     let event = match domain::webhook::Event::parse(&raw.event, raw.data) {
         Ok(e) => e,
         Err(e) => {
-            warn!("Recall.ai webhook: invalid payload: {:?}", e);
-            return StatusCode::BAD_REQUEST.into_response();
+            warn!("Recall.ai webhook: unrecognised event type (permanent, not retrying): {:?}", e);
+            return StatusCode::OK.into_response();
         }
     };
 
