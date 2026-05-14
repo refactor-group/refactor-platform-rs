@@ -609,7 +609,16 @@ mod tests {
         let (client, request) = client_and_request(&server.url()).await;
         let result = client.send_email(request).await;
 
-        assert!(result.is_err());
+        // The response body must be folded into the error, not discarded —
+        // it's the only diagnostic the caller gets for a rejected send.
+        let err = result.unwrap_err();
+        match err.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Other(text)) => assert!(
+                text.contains("validation failed"),
+                "response body not propagated into error, got: {text}"
+            ),
+            other => panic!("expected Internal(Other), got: {other:?}"),
+        }
     }
 
     #[tokio::test]

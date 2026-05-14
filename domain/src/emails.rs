@@ -719,9 +719,17 @@ mod tests {
             .create_async()
             .await;
 
-        // HTTP 400 from Resend should propagate as an error
+        // HTTP 400 from Resend should propagate as an error that carries the
+        // response body — that body is the caller's only diagnostic.
         let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Other(text)) => assert!(
+                text.contains("Invalid request"),
+                "response body not propagated into error, got: {text}"
+            ),
+            other => panic!("expected Internal(Other), got: {other:?}"),
+        }
     }
 
     #[tokio::test]
