@@ -96,6 +96,23 @@ impl PerIpThrottle {
     }
 }
 
+// Compile-time policy bounds check. If someone "tunes" AUTH_ENDPOINT
+// to looser values without thinking about the threat model, the BUILD
+// fails — strictly stronger than a runtime test, which only fires if
+// tests are actually run. The error messages show up at compile time.
+const _AUTH_ENDPOINT_BOUNDS_CHECK: () = {
+    assert!(
+        ThrottlePolicy::AUTH_ENDPOINT.period_secs >= 6,
+        "AUTH_ENDPOINT must replenish no faster than 10/min (period_secs >= 6) — \
+         loosening this is a policy change that needs threat-model review"
+    );
+    assert!(
+        ThrottlePolicy::AUTH_ENDPOINT.burst <= 20,
+        "AUTH_ENDPOINT burst > 20 lets attackers spray a large initial volume \
+         before throttling kicks in"
+    );
+};
+
 impl Throttle for PerIpThrottle {
     type Layer = GovernorLayer<SmartIpKeyExtractor, NoOpMiddleware<governor::clock::QuantaInstant>>;
 
@@ -261,22 +278,7 @@ mod tests {
         );
     }
 
-    /// Sanity check on the AUTH_ENDPOINT policy constants. If someone
-    /// "tunes" these to looser values without thinking about the threat
-    /// model, this test fails loudly.
-    #[test]
-    fn auth_endpoint_policy_constants_are_strict_enough() {
-        // 10/min sustained or stricter. period_secs >= 6 means at most
-        // 1 token per 6 seconds = 10/min.
-        assert!(
-            ThrottlePolicy::AUTH_ENDPOINT.period_secs >= 6,
-            "AUTH_ENDPOINT must replenish no faster than 10/min — loosening this is a policy change that needs threat-model review"
-        );
-        // Burst <= 20. A larger burst would let an attacker fire many
-        // rapid probes before the throttle engages.
-        assert!(
-            ThrottlePolicy::AUTH_ENDPOINT.burst <= 20,
-            "AUTH_ENDPOINT burst > 20 lets attackers spray a large initial volume before throttling kicks in"
-        );
-    }
+    // Sanity check on AUTH_ENDPOINT policy bounds is now a compile-time
+    // const assertion above (see `_AUTH_ENDPOINT_BOUNDS_CHECK`). Stronger
+    // than a runtime test — the build fails if someone loosens the policy.
 }

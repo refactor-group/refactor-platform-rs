@@ -20,6 +20,22 @@ use crate::users;
 use entity_api::user::generate_hash;
 use service::config::Config;
 
+// Compile-time policy bounds check on HANDLER_TARGET_DURATION_MS.
+// Loosening below 100 may not mask DB-jitter variance; raising above
+// 500 turns every request into a user-perceptible lag. Build fails
+// loudly if someone "tunes" the value without thinking.
+const _HANDLER_TARGET_DURATION_BOUNDS_CHECK: () = {
+    assert!(
+        HANDLER_TARGET_DURATION_MS >= 100,
+        "HANDLER_TARGET_DURATION_MS < 100 may not mask DB-jitter variance — \
+         changing this requires threat-model review"
+    );
+    assert!(
+        HANDLER_TARGET_DURATION_MS <= 500,
+        "HANDLER_TARGET_DURATION_MS > 500 makes every request user-perceptibly slow"
+    );
+};
+
 /// Target total wall-clock duration for the `request_password_reset` handler.
 ///
 /// Both the unknown-email and known-user paths sleep to reach this target
@@ -772,20 +788,9 @@ mod tests {
     /// The target padding constant must stay in the "imperceptible-to-user
     /// but generous-over-DB-jitter" range. Loosening below 100ms risks not
     /// masking real DB-jitter variance; raising above ~500ms turns every
-    /// password-reset request into a user-perceptible lag. Fails loudly
-    /// if someone "tunes" the value without thinking.
-    #[test]
-    fn handler_target_duration_within_reasonable_bounds() {
-        assert!(
-            HANDLER_TARGET_DURATION_MS >= 100,
-            "HANDLER_TARGET_DURATION_MS < 100 may not mask DB-jitter variance — \
-             changing this requires threat-model review"
-        );
-        assert!(
-            HANDLER_TARGET_DURATION_MS <= 500,
-            "HANDLER_TARGET_DURATION_MS > 500 makes every request user-perceptibly slow"
-        );
-    }
+    // HANDLER_TARGET_DURATION_MS bounds are guarded at compile time —
+    // see the const assertion at module scope (`_HANDLER_TARGET_DURATION_BOUNDS_CHECK`).
+    // Build fails if someone loosens the value.
 
     /// Server-side password policy must fire from `complete_password_reset`,
     /// independently of any FE validation. Empty password → 422 Validation,

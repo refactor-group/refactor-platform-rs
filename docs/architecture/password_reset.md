@@ -221,6 +221,41 @@ The per-email rate limit (1/60s, 5/24h) is enforced by **counting rows in a dedi
 
 **Design principle.** Any time a single table appears to serve both as a "current state" projection and an "audit log" of past events, the seam between those two semantics is bug-prone. Split them. This same pattern applies to future similar features (e.g. if we add rate-limited login retries or 2FA challenges).
 
+### Session Invalidation on Password Change
+
+When a user resets (or initially sets) their password, **all of their existing sessions are invalidated automatically on the next request**. The mechanism is `axum_login`'s built-in session-auth-hash check, not an active session-store sweep.
+
+[entity/src/users.rs:76-89](../../entity/src/users.rs#L76-L89):
+
+```rust
+impl AuthUser for Model {
+    type Id = crate::Id;
+    fn id(&self) -> Self::Id { self.id }
+    fn session_auth_hash(&self) -> &[u8] {
+        self.password
+            .as_deref()
+            .map(|p| p.as_bytes())
+            .unwrap_or_else(|| self.id.as_bytes())
+    }
+}
+```
+
+`axum_login` captures `session_auth_hash()` at login time and stores it in the session. On every subsequent authenticated request, it re-fetches the user from the DB (by session-stored user_id), recomputes `session_auth_hash()` against the *current* user record, and compares to the stored hash. **Mismatch → session is treated as expired → 401.**
+
+Since our `session_auth_hash()` returns the password hash bytes:
+
+| Event | Effect on `session_auth_hash()` | Effect on existing sessions |
+|---|---|---|
+| Password reset via `/password-reset/complete` | Old `argon2(old_pw)` → new `argon2(new_pw)`, different bytes | All existing sessions invalidated on next request |
+| Initial password set via `/magic-link/complete-setup` | `id_as_bytes` → `argon2(new_pw)`, different bytes | All existing sessions invalidated (in practice no real sessions exist yet for a brand-new user) |
+| Any other user update (email, name, etc.) | Password bytes unchanged | Sessions unaffected — by design, profile edits don't sign the user out |
+
+**The primary use case for password reset works.** "I think my account is compromised; reset and lock the attacker out." After the reset, the attacker's session hash no longer matches the user's current hash, and their next authenticated request returns 401. The FE's `SessionCleanupProvider` handles the 401 by clearing client-side state and redirecting to login.
+
+**Behavior across deploys.** The session store is `tower_sessions` (currently in-memory for our deploys). On a backend restart, all sessions are dropped anyway. *Between* restarts (potentially weeks during normal uptime), the `session_auth_hash` mismatch is what protects compromised accounts — not the restart cadence.
+
+**Why this is safer than active session iteration.** An active "iterate the session store, find sessions belonging to user X, delete them" mechanism is what some auth systems implement, and it works — but it requires the session store to support that operation, doesn't generalize cleanly across storage backends, and has subtle race conditions (a request issued mid-iteration might survive). The `session_auth_hash` approach is checked on *every authenticated request* against the *current user record*, so it's both backend-agnostic and atomic.
+
 ### Logging Hygiene & Security Audit Trail
 
 The password-reset code path emits a **WARN-level audit trail** so security/ops operators can grep `[password-reset]` and see every interesting event without enabling DEBUG. PII (raw emails, raw tokens) stays at DEBUG or is never logged.
@@ -297,6 +332,7 @@ The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /us
 | Mallory has compromised Alice's email account | Out of scope: at this point Mallory controls account recovery for every service Alice uses. |
 | Authenticated user A tries to reset user B's password via the existing change-password endpoint | `protect::users::passwords::update_password` middleware enforces `authenticated_user.id == user_id`. Pre-existing, unchanged. |
 | Token leaks via HTTP `Referer` when the FE reset page loads a third-party resource | Path-segment format prevents query-string-style leakage. FE additionally sets `Referrer-Policy: same-origin` on token-bearing pages (tracked separately on the coordinator blackboard). |
+| Mallory holds a stolen session cookie for Alice's account; Alice resets her password to lock him out | After the reset, `users.password` holds a new argon2 hash. On Mallory's next authenticated request, `axum_login` recomputes `session_auth_hash()` against the current user record (new password bytes), compares to the session-stored hash (old password bytes), sees a mismatch, and returns 401. See [Session Invalidation on Password Change](#session-invalidation-on-password-change). |
 
 ## Out of Scope for v1
 
@@ -304,7 +340,6 @@ Each deferral is a deliberate scoping decision, not an oversight.
 
 | Item | Reason for Deferral |
 |---|---|
-| Multi-device session invalidation on successful reset | Current `tower_sessions` store is in-memory — sessions don't survive a backend restart anyway. Will land alongside the future persistent-session-store migration (Redis/Postgres). The FE's existing `SessionCleanupProvider` will handle the 401-on-next-request flow automatically when this ships. |
 | **Per-IP rate limiting at the application layer is shipped in v1** (was originally deferred) | See [`throttling.md`](throttling.md) for the design. What remains out of scope: per-AS / per-network-owner throttling and reputation-based blocking — those defend distributed-botnet attacks and belong at the CDN/WAF edge, not the application layer. Add when we ever sit behind Cloudflare or similar. |
 | Password strength rules (length, complexity) | v1 accepts any non-empty password, matching the existing `/magic-link/complete-setup` behavior. Strength rules will be applied to both setup and reset endpoints together when introduced, to avoid divergent UX. |
 | Periodic sweep of expired tokens | Expired tokens in `magic_link_tokens` are validated as inert (`validate_token` refuses them) but are not auto-deleted. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
