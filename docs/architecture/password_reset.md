@@ -417,7 +417,6 @@ Each deferral is a deliberate scoping decision, not an oversight.
 |---|---|
 | **Per-IP rate limiting at the application layer is shipped in v1** (was originally deferred) | See [`throttling.md`](throttling.md) for the design. What remains out of scope: per-AS / per-network-owner throttling and reputation-based blocking — those defend distributed-botnet attacks and belong at the CDN/WAF edge, not the application layer. Add when we ever sit behind Cloudflare or similar. |
 | Periodic sweep of expired tokens | Expired tokens in `magic_link_tokens` are validated as inert (`validate_token` refuses them) but are not auto-deleted. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
-| Automatic scheduled sweep of `password_reset_attempts` | v1 ships the `sweep_old_attempts(db, retention_days)` function but **does not** invoke it on a schedule. Ops are expected to run it as a nightly cron / external job (see [Ops Maintenance](#ops-maintenance) below). Bringing this in-process would couple retention policy to deployment cadence and complicate alerting on missed sweeps. |
 
 ## Monitoring & Operational Visibility
 
@@ -497,29 +496,30 @@ Both signals (log + counter) can coexist; the counter would just become the prim
 
 ### Sweeping the `password_reset_attempts` audit table
 
-The audit table is append-only and is not pruned automatically. Two retention horizons matter:
+**The sweep runs in-process, daily, with 30-day retention** — no external cron / ops setup required. At server startup, `init_server` in [`web/src/lib.rs`](../../web/src/lib.rs) spawns a `tokio` task that loops forever, calling `domain::password_reset::sweep_old_attempts(db, 30)` once every 24 hours.
 
-| Horizon | Why |
+This mirrors the existing session-deletion pattern: `tower_sessions::PostgresStore::continuously_delete_expired(60s)` is spawned in the same function for the `authorized_sessions` table. Putting password-reset attempt pruning on the same lifecycle keeps the operational model consistent — one mental model, one place to look in code, one log stream.
+
+| Retention horizon | Status |
 |---|---|
-| 24 hours | **Hard lower bound.** The daily-cap rate-limit check looks back 24 hours; deleting rows younger than this would silently corrupt rate-limit state. The Rust function rejects `retention_days < 1` with a `Validation` error. |
-| 30 days | **Recommended.** Long enough for security forensics (a user reports "someone kept trying to reset my password last week"); short enough to keep the table small. Adjust upward if you have compliance requirements. |
+| 24 hours (**hard lower bound**) | The daily-cap rate-limit check looks back 24 hours; pruning younger rows would corrupt rate-limit state. `sweep_old_attempts` rejects `retention_days < 1` with a `Validation` error before any DELETE runs. |
+| 30 days (**default, in-process**) | Configured in `web/src/lib.rs` as `RETENTION_DAYS = 30`. Long enough for security forensics (a user reports "someone kept trying to reset my password last week"); short enough to keep the table small. |
 
-#### Invocation options
+### Per-iteration behavior
 
-**Option A — Rust function (preferred when a scheduled job is in place):**
+Each daily wake-up:
 
-```rust
-use sea_orm::Database;
+1. Sleep 24 hours
+2. Call `sweep_old_attempts(&db, 30)`
+3. If `deleted > 0` → log at INFO with the count (`[password-reset-sweep] removed N attempt record(s) older than 30d`)
+4. If `Err` → log at WARN, do **not** exit the loop (transient DB failures shouldn't take down the sweep for the lifetime of the process)
+5. Repeat
 
-// Inside an ops binary, cron handler, or admin endpoint:
-let db = Database::connect(env!("DATABASE_URL")).await?;
-let deleted = domain::password_reset::sweep_old_attempts(&db, 30).await?;
-log::info!("nightly sweep removed {deleted} old password-reset attempts");
-```
+A "missed sweep" alert: if no `[password-reset-sweep]` line appears in logs for >2 days, the spawn died or the process is stuck. Page on-call.
 
-Logs an INFO-level message with the count when non-zero so the job's effect is visible in normal log queries.
+### Ad-hoc invocation (for incident response)
 
-**Option B — ad-hoc psql (for incident response or before scheduled jobs exist):**
+The Rust function and the equivalent SQL stay available for manual use — e.g. shrinking the table immediately after a load test, or running with a tighter retention temporarily.
 
 ```sql
 -- Dry-run: how many rows would be removed?
@@ -531,17 +531,19 @@ DELETE FROM refactor_platform.password_reset_attempts
 WHERE attempted_at < NOW() - INTERVAL '30 days';
 ```
 
-Both options are safe to run concurrently with live request traffic — PostgreSQL MVCC ensures an INSERT with `attempted_at = NOW()` is outside the `< cutoff` predicate.
+Both are safe to run concurrently with live request traffic — PostgreSQL MVCC ensures an INSERT with `attempted_at = NOW()` is outside the `< cutoff` predicate, and the in-process daily sweep tolerates concurrent deletes.
 
-### Suggested scheduled cadence
+### Why in-process rather than external cron
 
-| Cadence | Why |
-|---|---|
-| Daily, off-peak (e.g. 03:00 UTC) | At ≤5 attempts/user/day, daily sweeps keep the working set bounded without competing with peak traffic. |
-| Weekly | Acceptable if traffic is low and table growth is minimal. |
-| Hourly | Overkill — wastes write amplification on the WAL. |
+| Trade-off | In-process spawn (chosen) | External cron |
+|---|---|---|
+| Ops setup | None — automatic on every deploy | Requires cron config, separate auth/access to DB |
+| Operational model consistency | Matches existing session-deletion task in the same file | Splits maintenance across two systems |
+| Sweep runs after every deploy automatically | ✓ | Manual config to start |
+| Multi-instance coordination | Each instance sweeps independently — DELETE is idempotent so duplication is fine at our scale | Single dedicated host avoids duplication |
+| Failure visibility | App logs (same stream as everything else) | Separate cron log stream |
 
-Pair the scheduled run with a monitoring alert: if `sweep_old_attempts` hasn't logged a success message in >2 days, page on-call. Without that, a silently-failing cron leaves the table to grow unbounded.
+At single-instance scale (current deploy), in-process wins on every axis except multi-instance coordination — and we don't have multiple instances yet. Revisit if/when we scale horizontally; switching to external cron at that point is a 10-line change to `init_server`.
 
 ## Key Files
 
