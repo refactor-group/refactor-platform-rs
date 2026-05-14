@@ -521,7 +521,7 @@ fn password_reset_routes(app_state: AppState) -> Router {
         )
         .route(
             "/password-reset/validate",
-            get(password_reset_controller::validate),
+            post(password_reset_controller::validate),
         )
         .route(
             "/password-reset/complete",

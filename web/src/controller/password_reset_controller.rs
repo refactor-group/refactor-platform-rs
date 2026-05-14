@@ -15,18 +15,13 @@ use crate::{
     },
     AppState, Error,
 };
-use axum::{
-    extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use domain::password_reset as PasswordResetApi;
 use log::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct ValidateParams {
     pub token: String,
 }
@@ -88,19 +83,24 @@ pub(crate) async fn request(
     )))
 }
 
-/// GET /password-reset/validate
+/// POST /password-reset/validate
 ///
 /// Validate a password-reset token without consuming it. Returns sanitized
 /// user data (first/last name only) so the FE can render a personalized
 /// form. Maps any underlying validation failure to the collapsed
 /// `400 invalid_or_expired_token` response — the FE cannot distinguish
 /// "never existed" from "expired" from "wrong purpose."
+///
+/// **Token is in the JSON body, NOT a URL query parameter** (contract v1.1
+/// change from v1). Query-string tokens land in access logs, browser
+/// history, and reverse-proxy logs — body-transport keeps them off all
+/// those channels. See `PasswordResetEndpoints` v1.1 contract on the
+/// coordinator blackboard and the FE-raised question
+/// `password_reset_validate_token_transport`.
 #[utoipa::path(
-    get,
+    post,
     path = "/password-reset/validate",
-    params(
-        ("token" = String, Query, description = "Password reset token from the email"),
-    ),
+    request_body = ValidateParams,
     responses(
         (status = 200, description = "Token valid; returns sanitized user data", body = ValidateResponse),
         (status = 400, description = "Token invalid, expired, or wrong purpose"),
@@ -109,7 +109,7 @@ pub(crate) async fn request(
 )]
 pub(crate) async fn validate(
     State(app_state): State<AppState>,
-    Query(params): Query<ValidateParams>,
+    Json(params): Json<ValidateParams>,
 ) -> Result<impl IntoResponse, Error> {
     warn!("[password-reset] /validate endpoint hit");
 

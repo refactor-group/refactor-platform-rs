@@ -9,7 +9,7 @@ All three are unauthenticated — by design, a user who has forgotten their pass
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/password-reset/request` | Generate token, email reset link. Always 200 (enumeration-safe). |
-| `GET` | `/password-reset/validate?token=<raw>` | Non-destructive validity check for FE state machine. Returns sanitized user (`first_name`, `last_name` only). |
+| `POST` | `/password-reset/validate` (token in JSON body) | Non-destructive validity check for FE state machine. Returns sanitized user (`first_name`, `last_name` only). |
 | `POST` | `/password-reset/complete` | Consume token, set new password. Returns full user. |
 
 Wire format is the source-of-truth `PasswordResetEndpoints` v1 contract on the cross-repo coordinator blackboard.
@@ -49,7 +49,7 @@ sequenceDiagram
 
     User->>Inbox: Click link
     Inbox->>FE: GET /reset-password/<token>
-    FE->>BE: GET /password-reset/validate?token=<raw>
+    FE->>BE: POST /password-reset/validate {token}
     BE->>DB: lookup token_hash, check exp, check purpose=PasswordReset
     BE-->>FE: 200 {first_name, last_name} OR 400 invalid_or_expired_token
     FE-->>User: render form OR error state
@@ -109,7 +109,7 @@ Every decision below was made deliberately to defeat a specific class of attack.
 | `POST /password-reset/request` always returns 200 regardless of email existence | Status-code-based user enumeration on the first request |
 | **Hard signal-ceiling on response timing**: all path-distinguishing work runs in a background `tokio::spawn`, then the sync path pads to a fixed target (150 ms). Sync ops key on `email_hash`, never on the user record. See [Hard Signal-Ceiling on Response Timing](#hard-signal-ceiling-on-response-timing). | Timing-based user enumeration via response-latency oracle — including the previously-undetected MailerSend-dominated bimodal distribution (PR #311 review catch). |
 | **Rate limit fires uniformly on both paths via email-hash key, checked BEFORE user lookup** — see [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths) | Status-code-based user enumeration via 200/429 split on subsequent requests (PR #311 review catch) |
-| `GET /password-reset/validate` returns only `first_name` + `last_name` on success | PII over-exposure if a token is ever guessed/leaked |
+| `POST /password-reset/validate` returns only `first_name` + `last_name` on success | PII over-exposure if a token is ever guessed/leaked |
 | Collapsed `400 invalid_or_expired_token` (no distinction between unknown / expired / wrong-purpose) | Status-code-based token-state oracle |
 
 ### Token Strength & Protection
@@ -238,7 +238,7 @@ Frontend should mirror the policy for instant user feedback. Server enforcement 
 
 ### `/validate` is Non-Destructive — Trade-off Acknowledged
 
-The `GET /password-reset/validate` endpoint **does not consume the token**. A successful validate returns the user's sanitized profile (first_name, last_name) and leaves the token in the DB, valid for further calls until it expires or is consumed by `/complete`.
+The `POST /password-reset/validate` endpoint **does not consume the token**. A successful validate returns the user's sanitized profile (first_name, last_name) and leaves the token in the DB, valid for further calls until it expires or is consumed by `/complete`.
 
 **Why non-destructive.** The FE state machine needs to validate the token before the user submits the form — otherwise it can't render a personalized "Hi Alice, set your new password" page. A user might take 30 seconds or 5 minutes between clicking the email link (validate fires) and submitting the form (complete fires). Consuming the token on first validate would force a tight time window between those two events that breaks realistic user flows.
 
@@ -255,6 +255,24 @@ The `GET /password-reset/validate` endpoint **does not consume the token**. A su
 
 **A consume-on-first-validate-window design** (e.g. delete the token 60s after first validate) was considered and deferred. It would tighten the leaked-token threat at the cost of a hard FE UX cliff. Revisit if the threat model changes (e.g. if first/last name becomes more sensitive in some org context).
 
+### Token Transport: Body, Not Query String
+
+All three password-reset endpoints (`/request`, `/validate`, `/complete`) accept their sensitive payload (email or token) in the **JSON request body**, never in URL query parameters.
+
+**Why this matters.** Query-string values land in places body values don't:
+
+- Web-server access logs (axum/tower-http `TraceLayer`, nginx, Caddy default config)
+- Reverse-proxy / CDN access logs (any ingress between the client and us)
+- Browser `window.history` and DevTools network panel
+- Error-reporting and APM integrations that capture request URLs
+- HTTP `Referer` headers when a token-bearing page links anywhere else
+
+Token-in-body bypasses every one of those channels in a single change. This applies in **both directions of the token's travel**: the email link uses a path segment (not query string), and the FE→BE validation call uses a body (not query string). Same principle, both edges.
+
+**This is the difference between `PasswordResetEndpoints` v1 and v1.1.** The v1 contract specified `GET /password-reset/validate?token=<raw>` — that was wrong. v1.1 corrects this to `POST /password-reset/validate` with `{ "token": "..." }` in the body. The FE caught this during PR review of their client implementation (see `password_reset_validate_token_transport` on the coordinator blackboard).
+
+**Why POST is the right verb here despite "validate" being read-like.** REST purity would lean toward GET-with-header for non-mutating reads, but: (a) `/request` and `/complete` already use POST in the same endpoint group — staying consistent across the three endpoints is a UX win for FE devs; (b) `Authorization: Bearer <token>` is the alternative header transport but is unusual for a non-account-bound short-lived token; (c) the cost of "wrong verb for the semantic" is small, the cost of leaking tokens to log streams is real.
+
 ### Input Validation at the HTTP Boundary
 
 Length and shape validation runs **before** any handler logic — the cheapest DoS amplifier on an unauthenticated endpoint is a pathologically large input field (e.g. a 10 MB email would still trigger SHA-256 hashing + DB query). These checks cut those attack vectors before any expensive work runs.
@@ -262,7 +280,7 @@ Length and shape validation runs **before** any handler logic — the cheapest D
 | Field | Limit | Source | Failure response |
 |---|---|---|---|
 | `email` (POST /request) | Non-empty, length ≤ 254 octets, contains `@` | RFC 5321 caps deliverable email addresses at 254 octets in practice | `400 Bad Request` |
-| `token` (GET /validate, POST /complete) | Length == 43 | Tokens we issue are exactly 32 random bytes encoded as URL-safe base64 without padding = always 43 chars; any other length is impossible for a real token | `400 Bad Request` |
+| `token` (POST /validate body, POST /complete body) | Length == 43 | Tokens we issue are exactly 32 random bytes encoded as URL-safe base64 without padding = always 43 chars; any other length is impossible for a real token | `400 Bad Request` |
 | `password` (POST /complete, POST /magic-link/complete-setup) | 12 ≤ length ≤ 128 (after `trim()`) | See [`domain::password_policy`](../../domain/src/password_policy.rs) and the `password_policy` decision on the coordinator blackboard | `422 validation_error` |
 
 Validators live at the web boundary in [`web::params::validation`](../../web/src/params/validation.rs); the password policy lives in the domain layer because it's a business rule, not an HTTP shape concern. Both layers enforce independently of any FE validation.
@@ -380,7 +398,7 @@ Both are 429; the body differs. The FE should handle 429 generically (show "you'
 | Endpoint | Authorization Signal |
 |---|---|
 | `POST /password-reset/request` | None — by design. Submitting any email is harmless because the token never goes to the requester. |
-| `GET /password-reset/validate` | Possession of a valid `PasswordReset` token. |
+| `POST /password-reset/validate` | Possession of a valid `PasswordReset` token (transmitted in JSON body). |
 | `POST /password-reset/complete` | Possession of a valid `PasswordReset` token. |
 | `PUT /users/:id/password` (pre-existing, distinct endpoint) | `authenticated_user.id == user_id` ([protect/users/passwords.rs:21](../../web/src/protect/users/passwords.rs#L21)) |
 
@@ -393,7 +411,7 @@ The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /us
 | Mallory submits Alice's email to `/password-reset/request` to take over her account | Reset link is delivered to Alice's inbox, not Mallory. Mallory has no path to the token. Alice's current password is unchanged. |
 | Mallory floods Alice's inbox with reset emails (one email, many requests) | Per-email rate limit caps issuance at 1/60s, 5/24h → `429`. Enforced via the `password_reset_attempts` audit table — see [Rate-Limit Audit Separate from Token State](#rate-limit-audit-separate-from-token-state) for the design rationale and the bug this separation prevents. |
 | Mallory mass-scans `/password-reset/request` with millions of emails to enumerate the user base or burn MailerSend cost | Per-IP throttle on the endpoint group (`AUTH_ENDPOINT` policy: ~10 req/min, burst 10) limits one attacker to a few hundred attempts per day, far below useful enumeration rate. See [Layered Rate Limiting: Per-IP and Per-Email](#layered-rate-limiting-per-ip-and-per-email). |
-| Mallory spams `/password-reset/validate?token=…` with random tokens to brute-force or strain the DB | Per-IP throttle applies to `/validate` and `/complete` the same way it does to `/request` — single attacker can't issue more than 10 req/min against the endpoint group. (256-bit token entropy means even an unlimited attacker couldn't guess; the throttle defends DB load.) |
+| Mallory spams `POST /password-reset/validate` with random tokens (in body) to brute-force or strain the DB | Per-IP throttle applies to `/validate` and `/complete` the same way it does to `/request` — single attacker can't issue more than 10 req/min against the endpoint group. (256-bit token entropy means even an unlimited attacker couldn't guess; the throttle defends DB load.) |
 | Mallory probes the request endpoint **once** per email to map which emails have accounts | Always-200 response + hard signal-ceiling on response timing (sync path is identical across branches; path-distinguishing work runs in a background task). See [Hard Signal-Ceiling on Response Timing](#hard-signal-ceiling-on-response-timing). |
 | Mallory times responses against known and unknown emails looking for a bimodal distribution from the MailerSend HTTPS round-trip | MailerSend send runs in a background `tokio::spawn` after the response is sent. Known-path response timing no longer depends on email-provider latency. |
 | Mallory probes the request endpoint **twice in quick succession** with the same email — looking for a 200/429 split to leak existence | Rate-limit fires uniformly on both paths via email-hash key checked before user lookup — both unknown emails and known users get 429 on the 2nd request inside the min-interval window. See [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths). |
