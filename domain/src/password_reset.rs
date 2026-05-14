@@ -1,16 +1,17 @@
 //! User-initiated password reset flow.
 //!
 //! Reuses the magic-link token infrastructure (with `purpose = PasswordReset`)
-//! plus a per-email rate limit and a constant-time padding step on the
-//! email-not-found path. See `docs/architecture/password_reset.md` for the
-//! full design and threat model.
+//! plus a per-email rate limit and a hard signal-ceiling padding strategy
+//! on the response timing. See `docs/architecture/password_reset.md` for
+//! the full design and threat model.
 
 use chrono::{Duration as ChronoDuration, Utc};
 use entity_api::mutate;
 use log::*;
 use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait, Value};
 use sha2::{Digest, Sha256};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
@@ -19,14 +20,18 @@ use crate::users;
 use entity_api::user::generate_hash;
 use service::config::Config;
 
-/// Padding applied to the email-not-found code path to defeat timing-based
-/// user enumeration. Defends against an attacker measuring response latency
-/// to distinguish "user exists" (slower — DB writes + email enqueue) from
-/// "user doesn't exist" (faster — single DB read).
+/// Target total wall-clock duration for the `request_password_reset` handler.
 ///
-/// 75 ms is enough to mask the typical 5–20 ms difference between paths
-/// while staying well below user-perceivable response time.
-const ENUMERATION_PADDING_MS: u64 = 75;
+/// Both the unknown-email and known-user paths sleep to reach this target
+/// before returning, making the response time deterministic-modulo-DB-jitter.
+/// Combined with moving all path-distinguishing work to a background task
+/// (see [`process_reset_in_background`]), this gives a **hard signal-ceiling**:
+/// timing variance carries no information about which path was taken.
+///
+/// 150 ms safely overshoots the typical sync-path duration (rate-limit
+/// lookup + record-attempt insert, ~15–40 ms in production) while staying
+/// well below user-perceptible latency.
+const HANDLER_TARGET_DURATION_MS: u64 = 150;
 
 /// Per-email rate-limit window for "no more than one request per N seconds".
 const RATE_LIMIT_MIN_INTERVAL_SECS: i64 = 60;
@@ -41,75 +46,122 @@ const RATE_LIMIT_DAILY_CAP: u64 = 5;
 ///   (enumeration-safe; the web layer maps this to HTTP 200).
 /// - Returns `Err(PasswordResetRateLimited)` when the per-email rate limit
 ///   is exceeded (web layer maps to HTTP 429). This response is identical
-///   whether the email maps to a real user or not — see "Enumeration
-///   Safety on Both Paths" in the architecture doc.
-/// - Returns `Err(...)` for genuine internal failures (DB, config) — the
-///   web layer maps those to 5xx.
+///   whether the email maps to a real user or not.
+/// - Returns `Err(...)` for genuine internal failures on the **sync path**
+///   only (rate-limit query, attempt-record write). Background work
+///   failures are logged but never surface to the caller.
 ///
-/// Email sending is best-effort: a downstream MailerSend failure is logged
-/// but does not propagate to the caller (preserves the 200 contract).
+/// ## Hard signal-ceiling: how this defeats timing-based enumeration
 ///
-/// ## Operation order (critical for enumeration safety)
+/// All path-distinguishing work — user lookup, token issuance, email send
+/// — is moved to a background task ([`process_reset_in_background`]). The
+/// only synchronous DB work the response timing depends on is the rate-
+/// limit check and attempt-record insert, both of which key on the
+/// **email hash** and never read the user record. They take identical
+/// time regardless of whether the email maps to a real user.
 ///
-/// Rate-limit + attempt-record happen **before** the user lookup. This is
-/// what makes the response observationally identical between the two paths
-/// — any state-dependent behavior (like rate-limit rejection) that fires
-/// on one path but not the other would itself be an enumeration oracle.
-/// The previous design failed this by running rate-limit only on the
-/// known-user path; the second request from an attacker would return 429
-/// for known users vs 200 for unknown emails, leaking existence.
+/// After the sync work, the handler pads to [`HANDLER_TARGET_DURATION_MS`]
+/// (150 ms) before returning. The result: response timing is
+/// deterministic-modulo-DB-jitter, and whatever jitter exists is
+/// identical across both branches — so it carries no enumeration signal.
+///
+/// This is stronger than padding the slow path alone: even a perfect pad
+/// on the known-user branch cannot fully mask the MailerSend HTTPS round-
+/// trip (100–500 ms with high variance) on the known path, which would
+/// otherwise dominate response timing. Moving the email send (and the
+/// other path-distinguishing operations) off the response path eliminates
+/// the bimodal distribution at its source.
+///
+/// ## API semantic change vs a purely synchronous design
+///
+/// "200 OK" means "we accepted your reset request" — not "we processed
+/// it." Token issuance and email send happen after the response returns.
+/// For password reset this is acceptable because email send was already
+/// best-effort (a synchronous design also returns 200 even if the email
+/// fails to enqueue) and the wire contract is committed to
+/// enumeration-safe always-200 anyway.
 pub async fn request_password_reset(
-    db: &DatabaseConnection,
+    db: Arc<DatabaseConnection>,
     email: &str,
     config: &Config,
 ) -> Result<(), Error> {
-    // 1. Compute the rate-limit key BEFORE any DB lookup. The hash is
-    //    derived from the normalized email so case variants of the same
-    //    address share rate-limit budget.
+    let handler_start = Instant::now();
+
+    // === SYNCHRONOUS CRITICAL PATH ===
+    // These operations must complete before the response. They all key
+    // on `email_hash`, NEVER on the user record, so their timing is
+    // identical regardless of whether the email maps to a real user.
+
     let email_hash = hash_email(email);
+    enforce_rate_limit(&db, &email_hash).await?;
+    entity_api::password_reset_attempt::record(&*db, &email_hash).await?;
 
-    // 2. Enforce rate limit on the email hash. Fires uniformly whether or
-    //    not the email maps to a real user — this is the property that
-    //    closes the 200/429 enumeration oracle.
-    enforce_rate_limit(db, &email_hash).await?;
+    // === BACKGROUND CONTINUATION ===
+    // Spawn everything path-distinguishing (user lookup, token issuance,
+    // email send) into a tokio task. Response timing no longer depends
+    // on whether the email matches a user.
+    //
+    // Cloning the `Arc<DatabaseConnection>` is cheap — it bumps the
+    // refcount on the shared connection pool, not the pool itself.
+    let db_for_bg = Arc::clone(&db);
+    let email_for_bg = email.to_string();
+    let config_for_bg = config.clone();
+    tokio::spawn(async move {
+        process_reset_in_background(db_for_bg, email_for_bg, config_for_bg).await;
+    });
 
-    // 3. Record the attempt BEFORE the user lookup (and before token
-    //    issuance below). Rationale: an "attempt" is "user tried to
-    //    trigger a reset" — whether the email matches a user or not, and
-    //    whether token issuance subsequently succeeds, is our problem.
-    //    Recording first also closes the race where two concurrent
-    //    requests both pass the rate-limit check before either has
-    //    incremented the audit count.
-    entity_api::password_reset_attempt::record(db, &email_hash).await?;
+    // === PAD TO TARGET ===
+    // Both paths return at approximately HANDLER_TARGET_DURATION_MS.
+    // DB-jitter variance affects both paths equally (the sync ops above
+    // are path-identical), so timing carries no enumeration signal.
+    pad_handler_duration(handler_start).await;
+    Ok(())
+}
 
-    // 4. NOW look up the user. Up to this point the unknown-email and
-    //    known-user paths have done identical work and produced identical
-    //    side effects (one row in `password_reset_attempts`).
-    let user = entity_api::user::find_by_email(db, email).await?;
-
-    let Some(user) = user else {
-        // Constant-time padding: do NOT distinguish "no such user" from
-        // the success path via response latency. The WARN is a security
-        // signal ("someone tried to reset an unknown account") but the
-        // raw email is PII and stays at DEBUG.
-        warn!("[password-reset] reset requested for unknown email (no user match)");
-        debug!("[password-reset] unknown-email value was: {email}");
-        sleep(Duration::from_millis(ENUMERATION_PADDING_MS)).await;
-        return Ok(());
+/// Path-distinguishing work for a password-reset request, run as a
+/// background `tokio::spawn` after the handler has already responded.
+///
+/// All errors are logged at WARN and discarded — by the time this runs,
+/// the client has already received `200 OK`. Failure modes:
+/// - **Unknown email**: logged at WARN; no further action.
+/// - **DB error during user lookup or token issuance**: logged at WARN;
+///   no further action. The user can request a fresh reset.
+/// - **Email-send failure**: logged at WARN; the token still exists and
+///   will expire naturally. The user can request a fresh reset.
+async fn process_reset_in_background(db: Arc<DatabaseConnection>, email: String, config: Config) {
+    let user = match entity_api::user::find_by_email(&*db, &email).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            warn!("[password-reset] reset requested for unknown email (no user match)");
+            debug!("[password-reset] unknown-email value was: {email}");
+            return;
+        }
+        Err(e) => {
+            warn!("[password-reset] background user lookup failed: {e:?}");
+            return;
+        }
     };
 
     let expiry_seconds = config.password_reset_token_expiry_seconds() as i64;
-    let raw_token = crate::magic_link_token::create_magic_link(
-        db,
+    let raw_token = match crate::magic_link_token::create_magic_link(
+        &db,
         user.id,
         expiry_seconds,
         TokenPurpose::PasswordReset,
     )
-    .await?;
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(
+                "[password-reset] background token creation failed for user {}: {e:?}",
+                user.id
+            );
+            return;
+        }
+    };
 
-    // Email delivery is best-effort. Failure is logged but does not change
-    // the response contract (still 200 to the FE).
-    if let Err(e) = crate::emails::send_password_reset_email(config, &user, &raw_token).await {
+    if let Err(e) = crate::emails::send_password_reset_email(&config, &user, &raw_token).await {
         warn!(
             "[password-reset] failed to send email to user {}: {e:?}",
             user.id
@@ -117,7 +169,19 @@ pub async fn request_password_reset(
     }
 
     warn!("[password-reset] reset link issued for user {}", user.id);
-    Ok(())
+}
+
+/// Sleep enough to ensure the handler took at least
+/// `HANDLER_TARGET_DURATION_MS` wall-clock time. No-op if the sync work
+/// already exceeded the target (which happens only under pathological
+/// DB latency; the overshoot affects both paths equally so it carries
+/// no enumeration signal).
+async fn pad_handler_duration(start: Instant) {
+    let target = Duration::from_millis(HANDLER_TARGET_DURATION_MS);
+    let elapsed = start.elapsed();
+    if elapsed < target {
+        sleep(target - elapsed).await;
+    }
 }
 
 /// Normalize an email (lowercase + trim) and return its SHA-256 hex digest.
@@ -382,7 +446,7 @@ mod tests {
             .into_connection();
 
         let config = Config::default();
-        let result = request_password_reset(&db, "nobody@example.com", &config).await;
+        let result = request_password_reset(Arc::new(db), "nobody@example.com", &config).await;
 
         assert!(
             result.is_ok(),
@@ -499,7 +563,7 @@ mod tests {
             .append_query_results(vec![vec![recent_attempt]])
             .into_connection();
 
-        let err = request_password_reset(&db, email, &Config::default())
+        let err = request_password_reset(Arc::new(db), email, &Config::default())
             .await
             .expect_err("expected PasswordResetRateLimited");
 
@@ -534,7 +598,7 @@ mod tests {
             // (find_by_email never runs — short-circuited by rate limit)
             .into_connection();
 
-        let err = request_password_reset(&db, email, &Config::default())
+        let err = request_password_reset(Arc::new(db), email, &Config::default())
             .await
             .expect_err("expected PasswordResetRateLimited on unknown-email path");
 
@@ -570,7 +634,7 @@ mod tests {
             .append_query_results(vec![attempts_24h])
             .into_connection();
 
-        let err = request_password_reset(&db, email, &Config::default())
+        let err = request_password_reset(Arc::new(db), email, &Config::default())
             .await
             .expect_err("expected PasswordResetRateLimited at daily cap");
 
@@ -649,5 +713,73 @@ mod tests {
             .expect("sweep with valid retention must succeed");
 
         assert_eq!(count, 42, "sweep must return rows_affected from the DELETE");
+    }
+
+    /// Hard signal-ceiling: `request_password_reset` must always take at
+    /// least `HANDLER_TARGET_DURATION_MS` wall-clock time. Combined with
+    /// the spawn-everything-path-distinguishing structural change, this
+    /// guarantees response time carries no information about which branch
+    /// the request followed.
+    ///
+    /// This test proves the *floor* component of the signal-ceiling. The
+    /// *ceiling* (that variance doesn't differ between branches) is a
+    /// structural property of the code — the sync path no longer touches
+    /// the user record — and is verified by reading the implementation,
+    /// not by a single-run timing assertion.
+    #[tokio::test]
+    async fn request_password_reset_pads_response_to_target_duration() {
+        use sea_orm::MockExecResult;
+
+        let attempt_row = password_reset_attempts::Model {
+            id: crate::Id::new_v4(),
+            email_hash: hash_email("anyone@example.com"),
+            attempted_at: Utc::now().into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // Sync path: rate-limit (None) → count_since (0) → record (insert)
+            .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
+            .append_query_results(vec![Vec::<password_reset_attempts::Model>::new()])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![attempt_row]])
+            .into_connection();
+
+        let start = std::time::Instant::now();
+        let result =
+            request_password_reset(Arc::new(db), "anyone@example.com", &Config::default()).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "expected Ok response; got {result:?}");
+
+        // Allow a small margin for clock resolution and tokio sleep precision
+        // (typically <1ms on idle systems, more under heavy CI load).
+        let min_expected = Duration::from_millis(HANDLER_TARGET_DURATION_MS.saturating_sub(10));
+        assert!(
+            elapsed >= min_expected,
+            "handler must pad to at least HANDLER_TARGET_DURATION_MS ({HANDLER_TARGET_DURATION_MS}ms); \
+             took {elapsed:?}, expected ≥ {min_expected:?}. \
+             A failure here means the signal-ceiling defense is degraded."
+        );
+    }
+
+    /// The target padding constant must stay in the "imperceptible-to-user
+    /// but generous-over-DB-jitter" range. Loosening below 100ms risks not
+    /// masking real DB-jitter variance; raising above ~500ms turns every
+    /// password-reset request into a user-perceptible lag. Fails loudly
+    /// if someone "tunes" the value without thinking.
+    #[test]
+    fn handler_target_duration_within_reasonable_bounds() {
+        assert!(
+            HANDLER_TARGET_DURATION_MS >= 100,
+            "HANDLER_TARGET_DURATION_MS < 100 may not mask DB-jitter variance — \
+             changing this requires threat-model review"
+        );
+        assert!(
+            HANDLER_TARGET_DURATION_MS <= 500,
+            "HANDLER_TARGET_DURATION_MS > 500 makes every request user-perceptibly slow"
+        );
     }
 }

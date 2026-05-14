@@ -20,24 +20,32 @@ Wire format is the source-of-truth `PasswordResetEndpoints` v1 contract on the c
 sequenceDiagram
     actor User
     participant FE as Frontend
-    participant BE as Backend
+    participant BE as Backend (handler)
+    participant BG as Backend (spawned task)
     participant DB as PostgreSQL
     participant MS as MailerSend
     participant Inbox as User's Inbox
 
     User->>FE: Click "Forgot password?"
     FE->>BE: POST /password-reset/request {email}
-    BE->>DB: find user by email
-    alt user exists
-        BE->>DB: delete prior PasswordReset tokens for user
-        BE->>DB: insert new token (purpose=PasswordReset, sha256_hash, exp=now+30m)
-        BE->>MS: send_email (template, {first_name, password_reset_url})
-        MS-->>Inbox: email with reset link
-    else user not found
-        BE->>BE: constant-time padding (matches success-path duration)
-    end
+    Note over BE: Sync critical path<br/>(both branches identical)
+    BE->>DB: rate-limit query (by email_hash)
+    BE->>DB: record attempt (by email_hash)
+    BE->>BG: tokio::spawn(process_in_background)
+    BE->>BE: pad to HANDLER_TARGET_DURATION_MS (150ms)
     BE-->>FE: 200 {data: null}
     FE-->>User: "If an account exists, check your inbox"
+
+    Note over BG: Path-distinguishing work<br/>(response already sent)
+    BG->>DB: find user by email
+    alt user exists
+        BG->>DB: delete prior PasswordReset tokens for user
+        BG->>DB: insert new token (purpose=PasswordReset, sha256_hash, exp=now+30m)
+        BG->>MS: send_email (template, {first_name, password_reset_url})
+        MS-->>Inbox: email with reset link
+    else user not found
+        BG->>BG: log WARN; discard
+    end
 
     User->>Inbox: Click link
     Inbox->>FE: GET /reset-password/<token>
@@ -99,7 +107,7 @@ Every decision below was made deliberately to defeat a specific class of attack.
 | Mechanism | Defends Against |
 |---|---|
 | `POST /password-reset/request` always returns 200 regardless of email existence | Status-code-based user enumeration on the first request |
-| Constant-time padding when email not found (matches success-path latency) | Timing-based user enumeration (latency oracle) |
+| **Hard signal-ceiling on response timing**: all path-distinguishing work runs in a background `tokio::spawn`, then the sync path pads to a fixed target (150 ms). Sync ops key on `email_hash`, never on the user record. See [Hard Signal-Ceiling on Response Timing](#hard-signal-ceiling-on-response-timing). | Timing-based user enumeration via response-latency oracle — including the previously-undetected MailerSend-dominated bimodal distribution (PR #311 review catch). |
 | **Rate limit fires uniformly on both paths via email-hash key, checked BEFORE user lookup** — see [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths) | Status-code-based user enumeration via 200/429 split on subsequent requests (PR #311 review catch) |
 | `GET /password-reset/validate` returns only `first_name` + `last_name` on success | PII over-exposure if a token is ever guessed/leaked |
 | Collapsed `400 invalid_or_expired_token` (no distinction between unknown / expired / wrong-purpose) | Status-code-based token-state oracle |
@@ -123,6 +131,43 @@ The `magic_link_tokens.purpose` column (enum `Setup` | `PasswordReset`) ensures 
 - `delete_all_for_user` is purpose-scoped — issuing a reset token does NOT invalidate a pending Setup token. The two flows operate on disjoint token sets for the same user.
 
 Existing tokens in the table at migration time are backfilled to `Setup`. The column is `NOT NULL` with no default — every new insertion must explicitly declare its purpose, preventing accidental defaulting.
+
+### Hard Signal-Ceiling on Response Timing
+
+Response time to `POST /password-reset/request` is bounded to **approximately 150 ms** regardless of whether the email maps to a real user, with any unavoidable variance (DB jitter, scheduler noise) being **identical across both branches**. Timing carries no enumeration signal.
+
+**The bug this prevents (PR #311 review catch).** An earlier design used a 75 ms sleep on the unknown-email branch to "match the success-path duration." That sleep was inadequate by an order of magnitude:
+
+| Branch | Sync work | Time |
+|---|---|---|
+| Unknown email | DB lookup + 75 ms sleep | ~80–150 ms |
+| Known user | DB lookup + DB write × 2 + **synchronous HTTPS POST to MailerSend** | ~300–700 ms+ (HTTPS dominates) |
+
+The MailerSend round-trip alone (100–500 ms typical, can spike to 1–2 s) made the two distributions trivially distinguishable with a handful of `time curl` samples. The "constant-time padding" was decorative.
+
+**The fix: spawn-then-pad.** Two structural changes work together:
+
+1. **Move all path-distinguishing work into a `tokio::spawn` background task.** The user lookup, token issuance, and email send no longer affect response timing. The handler's sync path becomes:
+
+   ```
+   hash_email   →   rate-limit check   →   record attempt   →   spawn background   →   pad to 150ms   →   return
+   ```
+
+   The first three steps key on `email_hash`, never on the user record. Their timing is the same regardless of email-existence.
+
+2. **Pad to a fixed target duration on the sync path.** `Instant::now()` at handler entry; `tokio::sleep(target - elapsed)` before returning. The 150 ms target safely overshoots the typical sync-path duration (~15–40 ms in production) while staying well below user-perceptible latency.
+
+**Why this is a "signal-ceiling," not a literal time-ceiling.** A literal hard time-cap (e.g. "always return at exactly 150 ms regardless of what's happening") isn't achievable with synchronous DB calls: if Postgres has a slow-query spike, the response physically can't return until the sync DB ops complete (without breaking data consistency). What this design achieves instead is **timing variance that doesn't differ between branches**: a slow DB affects both branches equally, so the overshoot from a 2-second DB hiccup tells an attacker nothing about email existence.
+
+**API semantic change vs purely synchronous designs.** "200 OK" now means "we accepted your reset request" rather than "we processed it." Token issuance and email send happen after the response returns. This is acceptable because:
+
+- Email send was already best-effort (the synchronous design also returned 200 even on email-send failure).
+- The wire contract (`PasswordResetEndpoints` v1) is committed to enumeration-safe always-200, which precludes surfacing user-specific errors anyway.
+- The user has no in-protocol way to observe whether the work succeeded (they check their inbox).
+
+**Failure handling on the background task.** All errors are logged at WARN and discarded — by the time the spawn runs, the client has the `200 OK`. Failure modes: unknown email (logged, no further action), DB error during user lookup or token issuance (logged), email-send failure (logged; the token still exists until expiry, the user can request another). The audit-trail WARN log "[password-reset] reset link issued for user X" still fires, just from the spawned task rather than the handler — same observability, slightly delayed.
+
+**Why moving the email send was the load-bearing fix.** A naive defense would just pad to a target that overshoots MailerSend (e.g. 750 ms). But: (a) every legitimate user would then wait 750 ms for the success response, (b) the pad would still need re-tuning if MailerSend ever got slower or faster, and (c) it would still leak DB-variance differences between branches. Moving the variable-cost operations off the response path removes the root cause; padding handles the residual.
 
 ### Enumeration Safety on Both Paths
 
@@ -241,7 +286,8 @@ The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /us
 | Mallory floods Alice's inbox with reset emails (one email, many requests) | Per-email rate limit caps issuance at 1/60s, 5/24h → `429`. Enforced via the `password_reset_attempts` audit table — see [Rate-Limit Audit Separate from Token State](#rate-limit-audit-separate-from-token-state) for the design rationale and the bug this separation prevents. |
 | Mallory mass-scans `/password-reset/request` with millions of emails to enumerate the user base or burn MailerSend cost | Per-IP throttle on the endpoint group (`AUTH_ENDPOINT` policy: ~10 req/min, burst 10) limits one attacker to a few hundred attempts per day, far below useful enumeration rate. See [Layered Rate Limiting: Per-IP and Per-Email](#layered-rate-limiting-per-ip-and-per-email). |
 | Mallory spams `/password-reset/validate?token=…` with random tokens to brute-force or strain the DB | Per-IP throttle applies to `/validate` and `/complete` the same way it does to `/request` — single attacker can't issue more than 10 req/min against the endpoint group. (256-bit token entropy means even an unlimited attacker couldn't guess; the throttle defends DB load.) |
-| Mallory probes the request endpoint **once** per email to map which emails have accounts | Always-200 response + constant-time padding eliminate both status and timing oracles on the first request. |
+| Mallory probes the request endpoint **once** per email to map which emails have accounts | Always-200 response + hard signal-ceiling on response timing (sync path is identical across branches; path-distinguishing work runs in a background task). See [Hard Signal-Ceiling on Response Timing](#hard-signal-ceiling-on-response-timing). |
+| Mallory times responses against known and unknown emails looking for a bimodal distribution from the MailerSend HTTPS round-trip | MailerSend send runs in a background `tokio::spawn` after the response is sent. Known-path response timing no longer depends on email-provider latency. |
 | Mallory probes the request endpoint **twice in quick succession** with the same email — looking for a 200/429 split to leak existence | Rate-limit fires uniformly on both paths via email-hash key checked before user lookup — both unknown emails and known users get 429 on the 2nd request inside the min-interval window. See [Enumeration Safety on Both Paths](#enumeration-safety-on-both-paths). |
 | Mallory probes with capitalization or whitespace variants (`Alice@x.com` vs `alice@x.com`) to bypass per-email rate limit | Email is normalized (lowercase + trim) before hashing, so all variants share a single rate-limit bucket. |
 | Mallory brute-forces `/password-reset/complete` with random tokens | 256-bit entropy + 30-minute TTL make guessing computationally infeasible. |
@@ -396,7 +442,7 @@ Pair the scheduled run with a monitoring alert: if `sweep_old_attempts` hasn't l
 | `entity/src/password_reset_attempts.rs` | Audit-row entity |
 | `entity_api/src/magic_link_token.rs` | Purpose-scoped `find_by_token_hash`, `delete_all_for_user`, `find_by_user_ids` |
 | `entity_api/src/password_reset_attempt.rs` | `record`, `find_most_recent`, `count_since`, `delete_older_than` |
-| `domain/src/password_reset.rs` | `request_password_reset()`, `validate_reset_token()`, `complete_password_reset()`, rate-limit check, constant-time padding, `sweep_old_attempts()` ops function |
+| `domain/src/password_reset.rs` | `request_password_reset()` (sync critical path), `process_reset_in_background()` (spawned), `validate_reset_token()`, `complete_password_reset()`, rate-limit check, `pad_handler_duration()`, `sweep_old_attempts()` ops function |
 | `domain/src/emails.rs` | `send_password_reset_email()` following the [two-tier pattern](email_notifications.md#two-tier-pattern) |
 | `web/src/controller/password_reset_controller.rs` | Three handlers (request / validate / complete) |
 | `web/src/router.rs` | Route registration + `ApiDoc::paths(...)` registration + `PerIpThrottle` layer attached to the `/password-reset/*` route group |

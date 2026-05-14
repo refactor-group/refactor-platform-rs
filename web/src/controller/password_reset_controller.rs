@@ -63,7 +63,7 @@ pub(crate) async fn request(
     debug!("[password-reset] /request raw email: {}", params.email);
 
     PasswordResetApi::request_password_reset(
-        app_state.db_conn_ref(),
+        std::sync::Arc::clone(&app_state.database_connection),
         &params.email,
         &app_state.config,
     )
