@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{
     async_trait,
     extract::{FromRef, FromRequestParts, Path},
@@ -12,6 +14,12 @@ use crate::{
 use domain::coaching_sessions;
 use log::*;
 
+/// Extractor that verifies the authenticated user is a participant (coach or coachee)
+/// in the coaching session identified by `coaching_session_id` in the URL path.
+///
+/// Works for any route containing `:coaching_session_id` regardless of other path params.
+/// On success, yields the coaching session model so the handler can use it without an
+/// additional database query.
 pub(crate) struct CoachingSessionAccess(pub coaching_sessions::Model);
 
 #[async_trait]
@@ -27,16 +35,33 @@ where
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, &state).await?;
 
-        let Path(coaching_session_id) = match Path::<Id>::from_request_parts(parts, &state).await {
-            Ok(path) => path,
-            Err(_e) => {
-                return Err((
+        let Path(path_params) =
+            Path::<HashMap<String, String>>::from_request_parts(parts, &state)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "Invalid path parameters".to_string(),
+                    )
+                })?;
+
+        let coaching_session_id: Id = path_params
+            .get("coaching_session_id")
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Missing coaching_session_id in path".to_string(),
+                )
+            })?
+            .parse()
+            .map_err(|_| {
+                (
                     StatusCode::BAD_REQUEST,
                     "Invalid coaching session id".to_string(),
-                ));
-            }
-        };
-        debug!("GET Coaching Session by ID: {coaching_session_id}");
+                )
+            })?;
+
+        debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
 
         // Get the coaching session
         let (coaching_session, coaching_relationship) =

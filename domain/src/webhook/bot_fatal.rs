@@ -18,6 +18,19 @@ pub async fn handle(
         }
     };
 
+    if matches!(
+        recording.status,
+        MeetingRecordingStatus::Completed
+            | MeetingRecordingStatus::Failed
+            | MeetingRecordingStatus::Cancelled
+    ) {
+        debug!(
+            "bot.fatal: recording {} already terminal ({:?}) — skipping",
+            recording.id, recording.status
+        );
+        return Ok(());
+    }
+
     recording_api::update_status(
         db,
         recording.id,

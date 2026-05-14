@@ -1,14 +1,13 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    coaching_session_access::CoachingSessionAccess, compare_api_version::CompareApiVersion,
 };
 use crate::{AppState, Error};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::transcription as TranscriptionApi;
-use domain::Id;
 use log::*;
 use service::config::ApiVersion;
 
@@ -29,10 +28,10 @@ use service::config::ApiVersion;
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionAccess(session): CoachingSessionAccess,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let coaching_session_id = session.id;
     debug!("GET transcription for session {}", coaching_session_id);
 
     let transcription =

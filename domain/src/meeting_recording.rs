@@ -2,7 +2,7 @@
 
 pub use entity::meeting_recording::{MeetingRecordingStatus, Model};
 pub use entity_api::meeting_recording::{
-    find_by_bot_id, find_latest_by_coaching_session, update_status,
+    find_by_bot_id, find_latest_by_coaching_session, try_claim_completed, update_status,
 };
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};

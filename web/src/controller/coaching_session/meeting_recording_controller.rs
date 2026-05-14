@@ -1,16 +1,15 @@
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    coaching_session_access::CoachingSessionAccess, compare_api_version::CompareApiVersion,
 };
 use crate::{AppState, Error};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::meeting_recording as MeetingRecordingApi;
 use domain::meeting_recording::MeetingRecordingStatus;
-use domain::Id;
 use log::*;
 use serde::Deserialize;
 use service::config::ApiVersion;
@@ -37,10 +36,10 @@ pub struct StartRecordingParams {
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionAccess(session): CoachingSessionAccess,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let coaching_session_id = session.id;
     debug!("GET meeting_recording for session {}", coaching_session_id);
 
     let recording = MeetingRecordingApi::find_latest_by_coaching_session(
@@ -71,11 +70,11 @@ pub async fn read(
 )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionAccess(session): CoachingSessionAccess,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
     Json(params): Json<StartRecordingParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let coaching_session_id = session.id;
     debug!("POST meeting_recording for session {}", coaching_session_id);
 
     if params.meeting_url.trim().is_empty() {
@@ -136,10 +135,10 @@ pub async fn create(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionAccess(session): CoachingSessionAccess,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let coaching_session_id = session.id;
     debug!(
         "DELETE meeting_recording for session {}",
         coaching_session_id

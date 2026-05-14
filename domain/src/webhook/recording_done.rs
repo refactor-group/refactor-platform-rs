@@ -1,6 +1,5 @@
 use crate::error::Error;
 use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus};
-use crate::transcription as transcription_api;
 use entity::Id;
 use events::{DomainEvent, EventPublisher};
 use log::*;
@@ -32,40 +31,18 @@ pub async fn handle(
         }
     };
 
-    // User stopped the bot before the meeting ended — keep Cancelled as the terminal state
-    // and skip transcription; Recall.ai still fires recording.done after the bot leaves.
-    if recording.status == MeetingRecordingStatus::Cancelled {
+    // Atomically claim this recording as Completed. Returns false if the recording is
+    // already terminal (Completed, Failed, or Cancelled — including the user-cancelled
+    // case). This replaces both the cancelled-status check and the transcription
+    // existence check, and prevents concurrent recording.done webhooks from both
+    // reaching create_async_transcript (double billing).
+    if !recording_api::try_claim_completed(&db, recording.id).await? {
         debug!(
-            "recording.done: recording {} was cancelled by user — skipping transcription",
-            recording.id
+            "recording.done: recording {} already terminal ({:?}) — skipping",
+            recording.id, recording.status
         );
         return Ok(());
     }
-
-    // Idempotency: skip if a transcription already exists for this session.
-    if transcription_api::find_by_coaching_session(&db, coaching_session_id)
-        .await?
-        .is_some()
-    {
-        warn!(
-            "recording.done: transcription already exists for session={} — skipping",
-            coaching_session_id
-        );
-        return Ok(());
-    }
-
-    recording_api::update_status(
-        &db,
-        recording.id,
-        MeetingRecordingStatus::Completed,
-        None,
-        None,
-        None,
-        None,
-        Some(chrono::Utc::now().into()),
-        None,
-    )
-    .await?;
 
     match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await {
         Ok(user_ids) => {

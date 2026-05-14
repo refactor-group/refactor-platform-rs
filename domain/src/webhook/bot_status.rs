@@ -20,7 +20,9 @@ pub async fn handle(
 
     if matches!(
         recording.status,
-        MeetingRecordingStatus::Completed | MeetingRecordingStatus::Failed
+        MeetingRecordingStatus::Completed
+            | MeetingRecordingStatus::Failed
+            | MeetingRecordingStatus::Cancelled
     ) {
         debug!(
             "bot status: recording {} already terminal ({:?}) — skipping",

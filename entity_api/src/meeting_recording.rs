@@ -5,7 +5,7 @@ use log::debug;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, Order, QueryOrder, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, DbBackend, Order, QueryOrder, Statement, TryIntoModel,
 };
 
 /// Creates a new meeting recording record
@@ -53,6 +53,23 @@ pub async fn find_by_bot_id(db: &DatabaseConnection, bot_id: &str) -> Result<Opt
         .filter(Column::BotId.eq(bot_id))
         .one(db)
         .await?)
+}
+
+/// Atomically transitions a recording to `Completed`, but only if it is not already
+/// in a terminal state (`completed`, `failed`, or `cancelled`). Returns `true` if the
+/// transition succeeded — the caller won the race and should proceed with transcription.
+/// Returns `false` if the recording was already terminal and the caller should skip.
+pub async fn try_claim_completed(db: &DatabaseConnection, id: Id) -> Result<bool, Error> {
+    let result = db
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE refactor_platform.meeting_recordings \
+             SET status = 'completed', updated_at = NOW() \
+             WHERE id = $1 AND status NOT IN ('completed', 'failed', 'cancelled')",
+            [id.into()],
+        ))
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Updates recording status and optional artifact fields.

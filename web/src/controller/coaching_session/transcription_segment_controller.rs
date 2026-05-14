@@ -1,6 +1,6 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    coaching_session_access::CoachingSessionAccess, compare_api_version::CompareApiVersion,
 };
 use crate::{AppState, Error};
 use axum::extract::{Path, State};
@@ -30,7 +30,7 @@ use service::config::ApiVersion;
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionAccess(session): CoachingSessionAccess,
     State(app_state): State<AppState>,
     Path((_coaching_session_id, transcription_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
@@ -39,9 +39,12 @@ pub async fn index(
         transcription_id
     );
 
-    let segments =
-        TranscriptionSegmentApi::find_by_transcription(app_state.db_conn_ref(), transcription_id)
-            .await?;
+    let segments = TranscriptionSegmentApi::find_by_transcription_and_session(
+        app_state.db_conn_ref(),
+        transcription_id,
+        session.id,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), segments)))
 }

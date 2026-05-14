@@ -2,7 +2,8 @@
 
 pub use entity::transcription::{Model, TranscriptionStatus};
 pub use entity_api::transcription::{
-    find_by_coaching_session, find_by_external_id, try_claim_for_processing, update_status,
+    find_by_coaching_session, find_by_external_id, find_by_id, try_claim_for_processing,
+    update_status,
 };
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind};

@@ -65,6 +65,11 @@ pub async fn try_claim_for_processing(db: &DatabaseConnection, id: Id) -> Result
     Ok(result.rows_affected() > 0)
 }
 
+/// Finds a transcription by its primary key
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
+    Ok(Entity::find_by_id(id).one(db).await?)
+}
+
 /// Finds a transcription by Recall.ai transcript ID — used by webhook handlers
 pub async fn find_by_external_id(
     db: &DatabaseConnection,
