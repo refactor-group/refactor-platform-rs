@@ -24,6 +24,7 @@ pub mod note;
 pub mod oauth_connection;
 pub mod organization;
 pub mod query;
+pub mod tiptap_metrics;
 pub mod user;
 pub mod user_role;
 
