@@ -76,7 +76,11 @@ pub async fn find_by_external_id(
         .await?)
 }
 
-/// Updates transcription status and optional metadata fields
+/// Updates transcription status and optional metadata fields.
+///
+/// Optional fields follow a preserve-or-overwrite pattern: passing `None` keeps the existing
+/// value; passing `Some(x)` overwrites it. Fields cannot be cleared back to `None` via this
+/// function.
 pub async fn update_status(
     db: &DatabaseConnection,
     id: Id,

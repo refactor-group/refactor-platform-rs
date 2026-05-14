@@ -55,7 +55,11 @@ pub async fn find_by_bot_id(db: &DatabaseConnection, bot_id: &str) -> Result<Opt
         .await?)
 }
 
-/// Updates recording status and optional artifact fields
+/// Updates recording status and optional artifact fields.
+///
+/// Optional fields follow a preserve-or-overwrite pattern: passing `None` keeps the existing
+/// value; passing `Some(x)` overwrites it. Fields cannot be cleared back to `None` via this
+/// function.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_status(
     db: &DatabaseConnection,
