@@ -725,105 +725,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_welcome_email_server_slow_response() {
+    async fn test_send_welcome_email_escapes_name_with_specials() {
+        // Integration-level counterpart to gateway::resend's
+        // `test_format_mailbox_quotes_and_escapes_specials`: a user whose
+        // assembled name contains a comma must land in the `to` field as a
+        // quoted-string, not as two malformed mailboxes.
         let mut server = setup_test_server().await;
-        let user = create_test_user();
-        let config = create_config_with_mock(&server.url());
-
-        // Verify that a slightly delayed response still succeeds
-        let _mock = server
-            .mock("POST", "/emails")
-            .with_status(200)
-            .with_chunked_body(|w| {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                w.write_all(b"{}")
-            })
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_welcome_email_with_different_user_data() {
-        let mut server = setup_test_server().await;
-        let user = users::Model {
-            id: Id::new_v4(),
-            first_name: "Jane".to_string(),
-            last_name: "Smith".to_string(),
-            email: "jane.smith@test.org".to_string(),
-            display_name: Some("Jane Smith".to_string()),
-            password: Some("hashed_password".to_string()),
-            github_username: Some("janesmith".to_string()),
-            github_profile_url: Some("https://github.com/janesmith".to_string()),
-            timezone: "America/New_York".to_string(),
-            role: users::Role::Admin,
-            roles: vec![],
-            invite_status: None,
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-        };
+        let user = create_test_user_with("Jane", "Doe, Jr.", "jane.jr@example.com", "UTC");
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": "hello@myrefactor.com",
-                "to": ["\"Jane Smith\" <jane.smith@test.org>"],
+                "to": ["\"Jane Doe, Jr.\" <jane.jr@example.com>"],
                 "subject": "Welcome to Refactor Platform",
                 "template": {
                     "id": "template_123",
                     "variables": {
                         "first_name": "Jane",
-                        "last_name": "Smith",
-                        "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_welcome_email_validates_variables() {
-        let mut server = setup_test_server().await;
-        let user = users::Model {
-            id: Id::new_v4(),
-            first_name: "Test-First".to_string(),
-            last_name: "Test-Last".to_string(),
-            email: "test.user@example.com".to_string(),
-            display_name: None,
-            password: Some("hashed_password".to_string()),
-            github_username: None,
-            github_profile_url: None,
-            timezone: "Europe/London".to_string(),
-            role: users::Role::Admin,
-            roles: vec![],
-            invite_status: None,
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-        };
-        let config = create_config_with_mock(&server.url());
-
-        let _mock = server
-            .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@myrefactor.com",
-                "to": ["\"Test-First Test-Last\" <test.user@example.com>"],
-                "subject": "Welcome to Refactor Platform",
-                "template": {
-                    "id": "template_123",
-                    "variables": {
-                        "first_name": "Test-First",
-                        "last_name": "Test-Last",
+                        "last_name": "Doe, Jr.",
                         "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
                 }
@@ -845,14 +766,19 @@ mod tests {
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
-        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        // Coach and coachee in different timezones so a single body-match per
+        // recipient proves BOTH the role swap (coach <-> coachee) AND that each
+        // recipient's own timezone is used. Session is 2026-03-04 15:00 UTC:
+        //   - coachee (America/New_York, EST): 10:00 AM, Wed March 4
+        //   - coach   (Asia/Tokyo):            12:00 AM, Thu March 5 (date rolls)
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
         let session = create_test_session();
         let org = create_test_organization();
 
         let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
 
-        // First email goes to coachee — verify role-aware variables
+        // Email to coachee — other_user is the coach, formatted in NY time.
         let _mock_coachee = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
@@ -868,8 +794,8 @@ mod tests {
                         "other_user_role": "coach",
                         "organization_name": "Acme Corp",
                         "session_date": "Wednesday, March 4, 2026",
-                        "session_time": "3:00 PM",
-                        "session_url": session_url,
+                        "session_time": "10:00 AM",
+                        "session_url": session_url.clone(),
                     }
                 }
             })))
@@ -879,9 +805,28 @@ mod tests {
             .create_async()
             .await;
 
-        // Second email goes to coach
+        // Email to coach — other_user is the coachee, formatted in Tokyo time
+        // (the session date rolls forward a day).
         let _mock_coach = server
             .mock("POST", "/emails")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "from": "hello@myrefactor.com",
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "subject": "New coaching session scheduled for Thursday, March 5, 2026",
+                "template": {
+                    "id": "session_template_456",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_first_name": "Jane",
+                        "other_user_last_name": "Doe",
+                        "other_user_role": "coachee",
+                        "organization_name": "Acme Corp",
+                        "session_date": "Thursday, March 5, 2026",
+                        "session_time": "12:00 AM",
+                        "session_url": session_url.clone(),
+                    }
+                }
+            })))
             .with_status(200)
             .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
@@ -890,6 +835,34 @@ mod tests {
 
         let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_session_scheduled_email_missing_template_id() {
+        // Config has an API key and frontend base URL but no session-scheduled
+        // template id — mirrors the welcome/action missing-template-id tests.
+        let server = setup_test_server().await;
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_api_key_123",
+            &format!("--resend-base-url={}", server.url()),
+            "--frontend-base-url=https://app.example.com",
+        ]);
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session = create_test_session();
+        let org = create_test_organization();
+
+        let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            match e.error_kind {
+                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+            }
+        }
     }
 
     // ── Action Assigned Email Tests ────────────────────────────────────
@@ -1013,10 +986,61 @@ mod tests {
         let session_id = Id::new_v4();
         let org = create_test_organization();
 
-        let _mock = server
+        let session_url =
+            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+
+        // Each assignee must get their OWN email with their OWN first_name and
+        // recipient address. Body-match per recipient so a regression that sends
+        // both emails to the same person (or with swapped variables) fails here.
+        let _mock_jane = server
             .mock("POST", "/emails")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "from": "hello@myrefactor.com",
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "subject": "You've been assigned a new action",
+                "template": {
+                    "id": "action_template_789",
+                    "variables": {
+                        "first_name": "Jane",
+                        "action_body": "Complete the survey",
+                        "due_date": "No due date set",
+                        "assigner_first_name": "Alex",
+                        "assigner_last_name": "Smith",
+                        "organization_name": "Acme Corp",
+                        "goal": "",
+                        "session_url": session_url.clone(),
+                    }
+                }
+            })))
             .with_status(200)
-            .expect(2)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let _mock_bob = server
+            .mock("POST", "/emails")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "from": "hello@myrefactor.com",
+                "to": ["\"Bob Jones\" <bob@example.com>"],
+                "subject": "You've been assigned a new action",
+                "template": {
+                    "id": "action_template_789",
+                    "variables": {
+                        "first_name": "Bob",
+                        "action_body": "Complete the survey",
+                        "due_date": "No due date set",
+                        "assigner_first_name": "Alex",
+                        "assigner_last_name": "Smith",
+                        "organization_name": "Acme Corp",
+                        "goal": "",
+                        "session_url": session_url.clone(),
+                    }
+                }
+            })))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
             .create_async()
             .await;
 

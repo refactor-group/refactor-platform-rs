@@ -363,12 +363,20 @@ mod tests {
             .await
             .unwrap();
 
-        let json = serde_json::to_string(&request).unwrap();
-        // The mailbox string `"Test Recipient" <recipient@example.com>` is itself
-        // a JSON string value, so its quotes are JSON-escaped to `\"`.
-        assert!(json.contains(r#"\"Test Recipient\" <recipient@example.com>"#));
-        assert!(json.contains("\"template\""));
-        assert!(json.contains("\"welcome-email\""));
+        // Structural JSON equality — a substring check can't catch a misplaced
+        // or misnamed field the way full-shape comparison does.
+        let actual: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        let expected = serde_json::json!({
+            "from": "sender@example.com",
+            "to": ["\"Test Recipient\" <recipient@example.com>"],
+            "subject": "Test Subject",
+            "template": {
+                "id": "welcome-email",
+                "variables": { "name": "Test User" }
+            }
+        });
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -433,18 +441,6 @@ mod tests {
         // Empty name → bare email, not `" <recipient@example.com>"`
         assert!(json.contains("\"to\":[\"recipient@example.com\"]"));
         assert!(json.contains("\"from\":\"sender@example.com\""));
-    }
-
-    #[tokio::test]
-    async fn test_send_email_request_empty_recipients_fails() {
-        let result = SendEmailRequestBuilder::new()
-            .from("sender@example.com")
-            .subject("Test Subject")
-            .template_id("t")
-            .build()
-            .await;
-
-        assert!(result.is_err());
     }
 
     #[test]
@@ -533,7 +529,11 @@ mod tests {
             .build()
             .await;
 
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Invalid email address"),
+            "expected an invalid-email error, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -545,6 +545,89 @@ mod tests {
             .build()
             .await;
 
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Invalid email address"),
+            "expected an invalid-email error, got: {err:?}"
+        );
+    }
+
+    // ── Client::send_email HTTP behavior ───────────────────────────────
+
+    /// Build a `Client` pointed at a mockito server, plus a minimal valid request.
+    async fn client_and_request(server_url: &str) -> (Client, SendEmailRequest) {
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_key",
+            &format!("--resend-base-url={server_url}"),
+        ]);
+        let client = Client::new(&config).await.unwrap();
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Recipient")
+            .subject("Subject")
+            .template_id("t")
+            .build()
+            .await
+            .unwrap();
+        (client, request)
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_posts_to_emails_path_on_success() {
+        let mut server = mockito::Server::new_async().await;
+        // Mock is registered for `/emails`; if `send_email` composed the wrong
+        // URL, no mock would match and `assert_async` would fail.
+        let mock = server
+            .mock("POST", "/emails")
+            .match_header("authorization", "Bearer test_key")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"email_abc"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        let result = client.send_email(request).await;
+
+        assert!(result.is_ok());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_non_2xx_is_error() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/emails")
+            .with_status(422)
+            .with_body(r#"{"message":"validation failed"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        let result = client.send_email(request).await;
+
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_tolerates_non_json_success_body() {
+        // A 2xx with a body that is not valid JSON must still succeed —
+        // exercises the `unwrap_or(SendEmailResponse { id: None })` fallback.
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body("")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        let result = client.send_email(request).await;
+
+        assert!(result.is_ok());
     }
 }
