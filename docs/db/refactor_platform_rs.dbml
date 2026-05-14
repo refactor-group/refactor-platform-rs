@@ -294,6 +294,7 @@ enum refactor_platform.meeting_recording_status {
   processing
   completed
   failed
+  cancelled
 }
 
 enum refactor_platform.transcription_status {

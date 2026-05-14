@@ -11,7 +11,7 @@ impl MigrationTrait for Migration {
             .execute_unprepared(
                 "CREATE TYPE refactor_platform.meeting_recording_status AS ENUM \
                  ('pending', 'joining', 'waiting_room', 'in_meeting', 'recording', \
-                  'processing', 'completed', 'failed')",
+                  'processing', 'completed', 'failed', 'cancelled')",
             )
             .await?;
 

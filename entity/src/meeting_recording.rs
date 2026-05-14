@@ -39,6 +39,8 @@ pub enum MeetingRecordingStatus {
     Completed,
     #[sea_orm(string_value = "failed")]
     Failed,
+    #[sea_orm(string_value = "cancelled")]
+    Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]

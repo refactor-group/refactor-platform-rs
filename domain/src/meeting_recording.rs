@@ -99,7 +99,7 @@ pub async fn stop(
     Ok(recording_api::update_status(
         db,
         recording.id,
-        MeetingRecordingStatus::Processing,
+        MeetingRecordingStatus::Cancelled,
         None,
         None,
         None,

@@ -32,6 +32,16 @@ pub async fn handle(
         }
     };
 
+    // User stopped the bot before the meeting ended — keep Cancelled as the terminal state
+    // and skip transcription; Recall.ai still fires recording.done after the bot leaves.
+    if recording.status == MeetingRecordingStatus::Cancelled {
+        debug!(
+            "recording.done: recording {} was cancelled by user — skipping transcription",
+            recording.id
+        );
+        return Ok(());
+    }
+
     // Idempotency: skip if a transcription already exists for this session.
     if transcription_api::find_by_coaching_session(&db, coaching_session_id)
         .await?

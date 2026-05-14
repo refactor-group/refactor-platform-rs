@@ -91,7 +91,9 @@ pub async fn create(
     {
         let active = !matches!(
             existing.status,
-            MeetingRecordingStatus::Failed | MeetingRecordingStatus::Completed
+            MeetingRecordingStatus::Failed
+                | MeetingRecordingStatus::Completed
+                | MeetingRecordingStatus::Cancelled
         );
         if active {
             warn!(
