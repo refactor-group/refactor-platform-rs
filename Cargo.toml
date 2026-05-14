@@ -12,7 +12,10 @@ members = [".", "entity_api", "entity", "events", "migration", "service", "web",
 default-members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse", "meeting-auth", "meeting-ai"]
 
 [dependencies]
+domain = { path = "domain" }
 events = { path = "events" }
+meeting-ai = { path = "meeting-ai" }
+meeting-auth = { path = "meeting-auth" }
 service = { path = "service" }
 entity_api = { path = "entity_api" }
 web = { path = "web" }

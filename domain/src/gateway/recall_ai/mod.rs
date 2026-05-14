@@ -1,6 +1,7 @@
 //! Recall.ai API client for recording bot management and async transcription.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use meeting_ai::types::{recording as recording_types, transcription as transcription_types};
@@ -8,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 
-/// Recall.ai provider client. Constructed from system-level config at each call site.
+/// Recall.ai provider client. Built once at startup and shared via `AppState`.
+#[derive(Clone)]
 pub struct Provider {
     client: reqwest::Client,
     base_url: String,
@@ -129,6 +131,7 @@ struct BotDetailResponse {
 struct RecallBotStatusChange {
     code: String,
     message: Option<String>,
+    created_at: Option<DateTime<Utc>>,
 }
 
 /// Response from the Recall.ai GET /bot/ endpoint.
@@ -279,13 +282,26 @@ fn bot_detail_to_info(detail: BotDetailResponse) -> recording_types::Info {
         .filter(|c| c.code == "fatal_error")
         .and_then(|c| c.message.clone());
 
+    let status_history = detail
+        .status_changes
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|c| {
+            Some(recording_types::StatusChange {
+                status: recall_status_to_recording_status(&c.code),
+                timestamp: c.created_at?,
+                message: c.message,
+            })
+        })
+        .collect();
+
     recording_types::Info {
         id: detail.id,
         meeting_url: detail.meeting_url.unwrap_or_default(),
         status: current_status,
         artifacts: None,
         error_message,
-        status_history: vec![],
+        status_history,
     }
 }
 
@@ -315,6 +331,8 @@ impl Provider {
         let client = reqwest::Client::builder()
             .use_rustls_tls()
             .default_headers(headers)
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
             .build()?;
 
         let base_url = format!("https://{}.recall.ai/api/v1", region);
@@ -433,7 +451,7 @@ impl Provider {
                 assembly_ai_async: AssemblyAiConfig {
                     speech_models: vec!["universal-2"],
                     language_detection: true,
-                    sentiment_analysis: true,
+                    sentiment_analysis: false,
                 },
             },
             diarization: DiarizationConfig {
@@ -810,5 +828,311 @@ impl transcription_trait::Provider for Provider {
 
     fn provider_id(&self) -> &str {
         "recall_ai"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meeting_ai::types::{recording as recording_types, transcription as transcription_types};
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn word(speaker: &str, text: &str, start: f64, end: f64) -> ParticipantEntry {
+        ParticipantEntry {
+            participant: Participant {
+                id: None,
+                name: Some(speaker.to_string()),
+                is_host: None,
+                platform: None,
+                email: None,
+                extra_data: None,
+            },
+            language_code: None,
+            words: vec![TranscriptWord {
+                text: text.to_string(),
+                start_timestamp: Timestamp {
+                    absolute: None,
+                    relative: Some(start),
+                },
+                end_timestamp: Timestamp {
+                    absolute: None,
+                    relative: Some(end),
+                },
+            }],
+        }
+    }
+
+    fn test_provider(base_url: &str) -> Provider {
+        Provider {
+            client: reqwest::Client::new(),
+            base_url: base_url.to_string(),
+        }
+    }
+
+    // ── recall_status_to_recording_status ─────────────────────────────────────
+
+    #[test]
+    fn recall_status_maps_all_known_codes() {
+        let cases = [
+            ("joining_call", recording_types::Status::Joining),
+            ("waiting_room", recording_types::Status::WaitingRoom),
+            ("in_call_not_recording", recording_types::Status::InMeeting),
+            ("in_call_recording", recording_types::Status::Recording),
+            ("recording_done", recording_types::Status::Processing),
+            ("call_ended", recording_types::Status::Processing),
+            ("done", recording_types::Status::Completed),
+            ("fatal_error", recording_types::Status::Failed),
+            ("unknown_future_code", recording_types::Status::Pending),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                recall_status_to_recording_status(code),
+                expected,
+                "code={}",
+                code
+            );
+        }
+    }
+
+    // ── recall_transcript_status ──────────────────────────────────────────────
+
+    #[test]
+    fn recall_transcript_status_maps_all_known_values() {
+        assert_eq!(
+            recall_transcript_status(Some("processing")),
+            transcription_types::Status::Processing
+        );
+        assert_eq!(
+            recall_transcript_status(Some("complete")),
+            transcription_types::Status::Completed
+        );
+        assert_eq!(
+            recall_transcript_status(Some("completed")),
+            transcription_types::Status::Completed
+        );
+        assert_eq!(
+            recall_transcript_status(Some("failed")),
+            transcription_types::Status::Failed
+        );
+        assert_eq!(
+            recall_transcript_status(None),
+            transcription_types::Status::Queued
+        );
+        assert_eq!(
+            recall_transcript_status(Some("unknown")),
+            transcription_types::Status::Queued
+        );
+    }
+
+    // ── coalesce_entries ──────────────────────────────────────────────────────
+
+    #[test]
+    fn coalesce_entries_empty_input_returns_empty() {
+        assert!(coalesce_entries(vec![]).is_empty());
+    }
+
+    #[test]
+    fn coalesce_entries_single_word_becomes_one_segment() {
+        let entries = vec![word("Alice", "Hello", 0.0, 0.5)];
+        let segments = coalesce_entries(entries);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "Hello");
+        assert_eq!(segments[0].speaker, "Alice");
+        assert_eq!(segments[0].start_ms, 0);
+        assert_eq!(segments[0].end_ms, 500);
+    }
+
+    #[test]
+    fn coalesce_entries_speaker_change_splits_into_two_segments() {
+        let entries = vec![
+            word("Alice", "Hello", 0.0, 0.5),
+            word("Bob", "Goodbye", 1.0, 1.5),
+        ];
+        let segments = coalesce_entries(entries);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].speaker, "Alice");
+        assert_eq!(segments[0].text, "Hello");
+        assert_eq!(segments[1].speaker, "Bob");
+        assert_eq!(segments[1].text, "Goodbye");
+    }
+
+    #[test]
+    fn coalesce_entries_gap_over_threshold_splits_same_speaker() {
+        // Alice speaks at 0-0.5 s, then again at 3.0 s — gap exceeds 1.5 s.
+        let entries = vec![
+            word("Alice", "First", 0.0, 0.5),
+            word("Alice", "Second", 3.0, 3.5),
+        ];
+        let segments = coalesce_entries(entries);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text, "First");
+        assert_eq!(segments[1].text, "Second");
+    }
+
+    #[test]
+    fn coalesce_entries_small_gap_keeps_same_speaker_together() {
+        // Gap is 0.2 s — below the 1.5 s threshold, should merge into one segment.
+        let entries = vec![
+            word("Alice", "One", 0.0, 0.5),
+            word("Alice", "Two", 0.7, 1.2),
+        ];
+        let segments = coalesce_entries(entries);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "One Two");
+    }
+
+    #[test]
+    fn coalesce_entries_unknown_speaker_uses_fallback_label() {
+        let entry = ParticipantEntry {
+            participant: Participant {
+                id: None,
+                name: None,
+                is_host: None,
+                platform: None,
+                email: None,
+                extra_data: None,
+            },
+            language_code: None,
+            words: vec![TranscriptWord {
+                text: "Test".to_string(),
+                start_timestamp: Timestamp {
+                    absolute: None,
+                    relative: Some(0.0),
+                },
+                end_timestamp: Timestamp {
+                    absolute: None,
+                    relative: Some(0.5),
+                },
+            }],
+        };
+        let segments = coalesce_entries(vec![entry]);
+        assert_eq!(segments[0].speaker, "Unknown");
+    }
+
+    // ── HTTP — create_bot ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_bot_returns_ok_on_success() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/bot/")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"bot-test-123"}"#)
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider
+            .create_bot("session-abc", "https://zoom.us/j/123", "Bot")
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().id, "bot-test-123");
+    }
+
+    #[tokio::test]
+    async fn create_bot_returns_err_on_non_2xx() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/bot/")
+            .with_status(422)
+            .with_body("invalid meeting url")
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider.create_bot("session-abc", "bad-url", "Bot").await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err().error_kind,
+            DomainErrorKind::External(ExternalErrorKind::Other(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_bot_returns_err_on_invalid_json_response() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/bot/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("not json")
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider
+            .create_bot("session-abc", "https://zoom.us/j/123", "Bot")
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err().error_kind,
+            DomainErrorKind::External(ExternalErrorKind::Other(_))
+        ));
+    }
+
+    // ── HTTP — get_async_transcript ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_async_transcript_returns_ok_on_success() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/transcript/trans-123/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"trans-123","status":{"code":"complete"},"data":{"download_url":null}}"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider.get_async_transcript("trans-123").await;
+
+        assert!(result.is_ok());
+        let meta = result.unwrap();
+        assert_eq!(meta.id, "trans-123");
+        assert_eq!(meta.status_str(), Some("complete"));
+    }
+
+    #[tokio::test]
+    async fn get_async_transcript_returns_err_on_non_2xx() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/transcript/missing/")
+            .with_status(404)
+            .with_body("not found")
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider.get_async_transcript("missing").await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_async_transcript_returns_err_on_invalid_json() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/transcript/bad-json/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("not json at all")
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider.get_async_transcript("bad-json").await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err().error_kind,
+            DomainErrorKind::External(ExternalErrorKind::Other(_))
+        ));
     }
 }

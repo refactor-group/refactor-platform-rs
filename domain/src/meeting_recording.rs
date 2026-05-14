@@ -6,47 +6,54 @@ pub use entity_api::meeting_recording::{
 };
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
-use crate::gateway::recall_ai;
 use entity::Id;
 use entity_api::meeting_recording as recording_api;
 use log::*;
+use meeting_ai::traits::recording_bot;
+use meeting_ai::types::recording as recording_types;
 use sea_orm::DatabaseConnection;
-use service::config::Config;
+use std::collections::HashMap;
 
-fn recall_ai_provider(config: &Config) -> Result<recall_ai::Provider, Error> {
-    let api_key = config.recall_ai_api_key().ok_or_else(|| {
-        warn!("RECALL_AI_API_KEY not configured");
+/// Creates a recording bot and persists the initial `meeting_recordings` row.
+pub async fn start(
+    db: &DatabaseConnection,
+    provider: Option<&dyn recording_bot::Provider>,
+    session_id: Id,
+    meeting_url: &str,
+) -> Result<Model, Error> {
+    let provider = provider.ok_or_else(|| {
+        warn!("Recording bot provider not configured");
         Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
-    recall_ai::Provider::new(&api_key, config.recall_ai_region())
-}
 
-/// Creates a Recall.ai recording bot and persists the initial `meeting_recordings` row.
-pub async fn start(
-    db: &DatabaseConnection,
-    config: &Config,
-    session_id: Id,
-    meeting_url: &str,
-) -> Result<Model, Error> {
-    let provider = recall_ai_provider(config)?;
+    let mut provider_options = HashMap::new();
+    provider_options.insert("coaching_session_id".to_string(), session_id.to_string());
 
-    let bot = provider
-        .create_bot(&session_id.to_string(), meeting_url, "Refactor Coach")
-        .await?;
+    let config = recording_types::Config {
+        meeting_url: meeting_url.to_string(),
+        bot_name: "Refactor Coach".to_string(),
+        webhook_url: None,
+        record_video: false,
+        record_audio: true,
+        enable_realtime_transcription: false,
+        provider_options,
+    };
+
+    let bot_info = provider.create_bot(config).await.map_err(Error::from)?;
 
     info!(
-        "Recall.ai bot created for session {}: {}",
-        session_id, bot.id
+        "Recording bot {} created for session {}",
+        bot_info.id, session_id
     );
 
     let now = chrono::Utc::now();
     let model = Model {
         id: Id::new_v4(),
         coaching_session_id: session_id,
-        bot_id: bot.id,
+        bot_id: bot_info.id,
         status: MeetingRecordingStatus::Pending,
         video_url: None,
         audio_url: None,
@@ -63,12 +70,11 @@ pub async fn start(
 
 /// Stops the active recording bot for a coaching session.
 ///
-/// Looks up the latest recording for the session, calls `POST /bot/{id}/leave_call/` on
-/// Recall.ai, and updates the recording status to `Processing` while the recording artifact
-/// is uploaded and transcription begins.
+/// Looks up the latest recording for the session, calls `stop_bot` on the provider,
+/// and updates the recording status to `Cancelled`.
 pub async fn stop(
     db: &DatabaseConnection,
-    config: &Config,
+    provider: Option<&dyn recording_bot::Provider>,
     session_id: Id,
 ) -> Result<Model, Error> {
     let recording = recording_api::find_latest_by_coaching_session(db, session_id)
@@ -80,19 +86,25 @@ pub async fn stop(
             )),
         })?;
 
-    let provider = recall_ai_provider(config)?;
+    let provider = provider.ok_or_else(|| {
+        warn!("Recording bot provider not configured");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+        }
+    })?;
 
-    // leave_call is best-effort: if the bot has already left (meeting ended naturally,
-    // Recall.ai timeout, etc.) the call returns a 4xx which we treat as success.
-    if let Err(e) = provider.leave_call(&recording.bot_id).await {
+    // stop_bot is best-effort: if the bot has already left (meeting ended naturally,
+    // provider timeout, etc.) the call returns an error which we treat as success.
+    if let Err(e) = provider.stop_bot(&recording.bot_id).await {
         warn!(
-            "leave_call failed for bot {} — bot may have already left: {}",
+            "stop_bot failed for bot {} — bot may have already left: {}",
             recording.bot_id, e
         );
     }
 
     info!(
-        "Removed Recall.ai bot {} from call for session {}",
+        "Removed bot {} from call for session {}",
         recording.bot_id, session_id
     );
 

@@ -31,7 +31,10 @@ pub async fn recall_ai(
     let raw: WebhookEvent = match serde_json::from_slice(&body) {
         Ok(e) => e,
         Err(e) => {
-            warn!("Recall.ai webhook: malformed body (permanent, not retrying): {:?}", e);
+            warn!(
+                "Recall.ai webhook: malformed body (permanent, not retrying): {:?}",
+                e
+            );
             return StatusCode::OK.into_response();
         }
     };
@@ -39,14 +42,17 @@ pub async fn recall_ai(
     let event = match domain::webhook::Event::parse(&raw.event, raw.data) {
         Ok(e) => e,
         Err(e) => {
-            warn!("Recall.ai webhook: unrecognised event type (permanent, not retrying): {:?}", e);
+            warn!(
+                "Recall.ai webhook: unrecognised event type (permanent, not retrying): {:?}",
+                e
+            );
             return StatusCode::OK.into_response();
         }
     };
 
     match domain::webhook::dispatch(
         &app_state.database_connection,
-        &app_state.config,
+        app_state.transcription_provider.clone(),
         &app_state.event_publisher,
         event,
     )

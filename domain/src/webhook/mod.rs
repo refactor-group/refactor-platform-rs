@@ -11,9 +11,9 @@ use crate::meeting_recording::MeetingRecordingStatus;
 use entity::Id;
 use events::EventPublisher;
 use log::debug;
+use meeting_ai::traits::transcription as transcription_trait;
 use sea_orm::DatabaseConnection;
 use serde::Deserialize;
-use service::config::Config;
 use std::sync::Arc;
 
 // ── Private parsing structs ───────────────────────────────────────────────────
@@ -208,7 +208,7 @@ impl Event {
 
 pub async fn dispatch(
     db: &Arc<DatabaseConnection>,
-    config: &Config,
+    transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
     event_publisher: &EventPublisher,
     event: Event,
 ) -> Result<(), Error> {
@@ -227,7 +227,7 @@ pub async fn dispatch(
         } => {
             recording_done::handle(
                 Arc::clone(db),
-                config.clone(),
+                transcription_provider.clone(),
                 event_publisher.clone(),
                 &bot_id,
                 &recall_recording_id,
@@ -242,7 +242,7 @@ pub async fn dispatch(
         Event::TranscriptDone { transcript_id } => {
             transcript_done::handle(
                 Arc::clone(db),
-                config.clone(),
+                transcription_provider,
                 event_publisher.clone(),
                 &transcript_id,
             )

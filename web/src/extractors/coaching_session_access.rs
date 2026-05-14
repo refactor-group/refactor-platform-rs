@@ -35,15 +35,14 @@ where
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, &state).await?;
 
-        let Path(path_params) =
-            Path::<HashMap<String, String>>::from_request_parts(parts, &state)
-                .await
-                .map_err(|_| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        "Invalid path parameters".to_string(),
-                    )
-                })?;
+        let Path(path_params) = Path::<HashMap<String, String>>::from_request_parts(parts, &state)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Invalid path parameters".to_string(),
+                )
+            })?;
 
         let coaching_session_id: Id = path_params
             .get("coaching_session_id")
@@ -195,6 +194,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         // Set up session layer
@@ -292,6 +293,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         // Set up session layer
@@ -357,6 +360,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         // Set up session layer
@@ -455,6 +460,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         // Set up session layer
