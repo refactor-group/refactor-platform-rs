@@ -66,3 +66,24 @@ pub async fn find_sessions_with_org_by_doc_names(
         .all(db)
         .await?)
 }
+
+/// Dump every non-null collab_document_name from coaching sessions.
+///
+/// Used by domain::tiptap_metrics::abandoned_documents to set diff against
+/// the TipTap document list. Single-column projection - no entity hydration.
+pub async fn all_collab_document_names(db: &impl ConnectionTrait) -> Result<Vec<String>, Error> {
+    // `into_tuple::<Option<String>>()` returns one Option per row for a
+    // single-column select. `flatten()` on Vec<Option<T>> drops the Nones
+    // and unwraps the Somes - defensive even though `is_not_null` should
+    // prevent NULLs from reaching us.
+    Ok(coaching_sessions::Entity::find()
+        .filter(coaching_sessions::Column::CollabDocumentName.is_not_null())
+        .select_only()
+        .column(coaching_sessions::Column::CollabDocumentName)
+        .into_tuple::<Option<String>>()
+        .all(db)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
+}

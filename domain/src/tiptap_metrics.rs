@@ -3,7 +3,7 @@
 //! Domain wrapper over `gateway::tiptap_metrics`. Composes raw gateway
 //! responses into the shapes admin endpoints actually surface
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
@@ -12,6 +12,32 @@ use service::config::Config;
 use crate::error::Error;
 use crate::gateway::tiptap_metrics::{Client, Document};
 use crate::Id;
+
+/// Soft cap on returned abandoned docs. A wall of thousands buries useful
+/// signal; admins get a representative sample plus the true total.
+const ABANDONED_LIMIT: usize = 500;
+
+/// A TipTap document with no matching coaching_session.
+///
+/// `archived` is surfaced because the archived-but-still-billed docs are the
+/// most common kind of leak - admins should see them distince from live ones.
+#[derive(Debug, Clone, Serialize)]
+pub struct AbandonedDoc {
+    pub document_name: String,
+    pub size_bytes: u64,
+    pub archived: bool,
+}
+
+/// Result of an abandoned-docs reconciliation pass.
+///
+/// `total_found` reports the *true* count even when `abandoned` is capped
+/// `truncated` is the explicit flag UIs need to render "Showing N of M".
+#[derive(Debug, Clone, Serialize)]
+pub struct AbandonedReport {
+    pub abandoned: Vec<AbandonedDoc>,
+    pub total_found: u64,
+    pub truncated: bool,
+}
 
 /// Aggregate TipTap-document metrics across all orgs.
 ///
@@ -106,6 +132,65 @@ pub async fn per_org_metrics(
         entity_api::tiptap_metrics::find_sessions_with_org_by_doc_names(db, doc_names).await?;
 
     Ok(aggregate_by_org(&docs, &rows))
+}
+
+/// Find TipTap documents whose parent coaching_session no longer exists.
+/// Snapshot order: TipTap first, DB second. This minimizes false negatives
+/// on session deletes (the case admins care about). The cost is a small
+/// false-positive window for in-flight session creations - interleaving
+/// HTTP and DB writes means a session whose TipTap doc landed before its
+/// DB row may transiently appear here. Admins should verify before any
+/// destructive cleanup; this is an observability signal, not an automation.
+pub async fn abandoned_documents(
+    db: &DatabaseConnection,
+    config: &Config,
+) -> Result<AbandonedReport, Error> {
+    let client = Client::new(config).await?;
+
+    // Snapshot TipTap first - it's the slower source (HTTP, paginated).
+    // Reading it first means any session created during the walk that
+    // *also* finished its TipTap write before TO will be captured below
+    // when we read the DB
+    let tiptap_docs = client.list_all_documents().await?;
+
+    // Snapshot DB second.
+    let session_names = entity_api::tiptap_metrics::all_collab_document_names(db).await?;
+
+    Ok(reconcile_abandoned(&tiptap_docs, &session_names))
+}
+
+/// Pure set-diff: TipTap docs MINUS DB session names = abandoned.
+///
+/// Extracted from the orchestrator so the algorithm is unit-testable
+/// without HTTP or DB
+fn reconcile_abandoned(docs: &[Document], session_names: &[String]) -> AbandonedReport {
+    // `&str` keys borrow from session_names - no cloning. 0(1) lookup
+    let session_set: HashSet<&str> = session_names.iter().map(String::as_str).collect();
+
+    let mut abandoned: Vec<AbandonedDoc> = docs
+        .iter()
+        .filter(|d| !session_set.contains(d.name.as_str()))
+        .map(|d| AbandonedDoc {
+            document_name: d.name.clone(),
+            size_bytes: d.size,
+            archived: d.archived,
+        })
+        .collect();
+
+    // Compute the true Total BEFORE truncating - admins need accurate scale.
+    let total_found = abandoned.len() as u64;
+    let truncated = abandoned.len() > ABANDONED_LIMIT;
+
+    // Sort biggest first, THEN truncate. Truncate-then-sort would give an
+    // arbitrary slice; this way the most impactful leaks are always visible.
+    abandoned.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    abandoned.truncate(ABANDONED_LIMIT);
+
+    AbandonedReport {
+        abandoned,
+        total_found,
+        truncated,
+    }
 }
 
 /// Pure aggregation: combine TipTap sizes with DB org assignments.
@@ -269,5 +354,80 @@ mod tests {
         assert_eq!(result[1].organization_id, org_y);
         assert_eq!(result[1].document_count, 1);
         assert_eq!(result[1].total_bytes, 50);
+    }
+
+    #[test]
+    fn reconcile_abandoned_returns_tiptap_docs_with_no_matching_session() {
+        use crate::gateway::tiptap_metrics::Document;
+
+        let docs = vec![
+            // Mapped to a live session - not abandoned
+            Document {
+                name: "live-a".to_string(),
+                size: 100,
+                archived: false,
+            },
+            // No matching session - abandoned, big.
+            Document {
+                name: "ghost-big".to_string(),
+                size: 9_999,
+                archived: false,
+            },
+            // Mapped - not abandoned.
+            Document {
+                name: "live-b".to_string(),
+                size: 50,
+                archived: false,
+            },
+            // Archived AND orphaned - still abandoned, with archived: true.
+            Document {
+                name: "ghost-archived".to_string(),
+                size: 1_000,
+                archived: true,
+            },
+            // No matching session - abandoned, smallest.
+            Document {
+                name: "ghost-small".to_string(),
+                size: 5,
+                archived: false,
+            },
+        ];
+
+        let session_names = vec!["live-a".to_string(), "live-b".to_string()];
+        let report = reconcile_abandoned(&docs, &session_names);
+
+        assert_eq!(report.total_found, 3);
+        assert!(!report.truncated);
+        assert_eq!(report.abandoned.len(), 3);
+
+        // Sort by size desc: ghost-big (9999) > ghost-archived (1000) > ghost-small (5).
+        assert_eq!(report.abandoned[0].document_name, "ghost-big");
+        assert_eq!(report.abandoned[0].size_bytes, 9_999);
+        assert_eq!(report.abandoned[1].document_name, "ghost-archived");
+        assert!(report.abandoned[1].archived);
+        assert_eq!(report.abandoned[2].document_name, "ghost-small");
+    }
+
+    #[test]
+    fn reconcile_abandoned_truncates_and_reports_total() {
+        use crate::gateway::tiptap_metrics::Document;
+
+        // 502 orphand -> truncated to 500, total found = 502
+        let docs: Vec<Document> = (0..502)
+            .map(|i| Document {
+                name: format!("ghost-{i:04}"),
+                // Make sizes distinct so sort order is well-defined.
+                size: (502 - i) as u64,
+                archived: false,
+            })
+            .collect();
+
+        let report = reconcile_abandoned(&docs, &[]);
+
+        assert_eq!(report.total_found, 502);
+        assert!(report.truncated);
+        assert_eq!(report.abandoned.len(), 500);
+        // Biggest survived the truncate.
+        assert_eq!(report.abandoned[0].size_bytes, 502);
     }
 }
