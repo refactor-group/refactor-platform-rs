@@ -14,10 +14,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::{
     coaching_relationship as CoachingRelationshipApi, coaching_session as CoachingSessionApi,
-    coaching_sessions::Model,
-    emails as EmailsApi,
-    error::{DomainErrorKind, Error as DomainError},
-    Id,
+    coaching_sessions::Model, emails as EmailsApi, Id,
 };
 use service::config::ApiVersion;
 
@@ -188,11 +185,7 @@ pub async fn create_recurring(
 
     let db = app_state.db_conn_ref();
 
-    let dates = CoachingSessionApi::expand_recurrence(params.start_at, &params.recurrence)
-        .map_err(|e| DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Validation(e.message()),
-        })?;
+    let dates = CoachingSessionApi::expand_recurrence(params.start_at, &params.recurrence)?;
 
     let relationship =
         CoachingRelationshipApi::find_by_id(db, params.coaching_relationship_id).await?;

@@ -18,6 +18,8 @@
 use chrono::{Datelike, Duration, Months, NaiveDateTime, Weekday};
 use serde::{Deserialize, Serialize};
 
+use crate::error::{DomainErrorKind, Error};
+
 /// Maximum number of occurrences a single recurrence rule may produce.
 const MAX_RECURRING_OCCURRENCES: usize = 365;
 
@@ -69,6 +71,15 @@ pub enum RecurrenceError {
     TooManyOccurrences { count: usize },
     SpanTooLong { days: i64 },
     NoOccurrencesGenerated,
+}
+
+impl From<RecurrenceError> for Error {
+    fn from(err: RecurrenceError) -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Validation(err.message()),
+        }
+    }
 }
 
 impl RecurrenceError {
