@@ -498,9 +498,11 @@ async fn send_recurring_series_email_to_recipient(
             &recipient.email,
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
-        .subject(format!(
-            "{session_count} recurring coaching sessions scheduled"
-        ))
+        .subject(if sessions.len() == 1 {
+            "1 recurring coaching session scheduled".to_string()
+        } else {
+            format!("{session_count} recurring coaching sessions scheduled")
+        })
         .template_id(&email_config.template_id)
         .add_personalization("first_name", &recipient.first_name)
         .add_personalization("other_user_first_name", &other_user.first_name)
@@ -1440,7 +1442,7 @@ mod tests {
         let _mock_coachee = server
             .mock("POST", "/v1/email")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "subject": "1 recurring coaching sessions scheduled",
+                "subject": "1 recurring coaching session scheduled",
                 "personalization": [{
                     "data": {
                         "session_count": "1",
