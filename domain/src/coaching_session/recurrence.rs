@@ -19,10 +19,10 @@ use chrono::{Datelike, Duration, Months, NaiveDateTime, Weekday};
 use serde::{Deserialize, Serialize};
 
 /// Maximum number of occurrences a single recurrence rule may produce.
-pub const MAX_RECURRING_OCCURRENCES: usize = 365;
+const MAX_RECURRING_OCCURRENCES: usize = 365;
 
 /// Maximum calendar span (in days) from the first occurrence to the last.
-pub const MAX_RECURRING_SPAN_DAYS: i64 = 366;
+const MAX_RECURRING_SPAN_DAYS: i64 = 366;
 
 /// How often the rule repeats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,10 +103,7 @@ impl RecurrenceError {
 /// Validate the structural correctness of a [`Recurrence`] rule against the
 /// given `start_at`. Does not enforce the occurrence/span caps — those are
 /// applied in [`expand_recurrence`] after generation.
-pub fn validate_recurrence(
-    start_at: NaiveDateTime,
-    rule: &Recurrence,
-) -> Result<(), RecurrenceError> {
+fn validate_recurrence(start_at: NaiveDateTime, rule: &Recurrence) -> Result<(), RecurrenceError> {
     if rule.interval < 1 {
         return Err(RecurrenceError::InvalidInterval);
     }
@@ -251,7 +248,7 @@ fn generate_weekly_with_weekdays(
     // Safety cap on outer loop iterations to bound worst-case work even when
     // `until` is far in the future and weekday filters mean few hits per week.
     let max_weeks = (gen_cap as i64) + 8;
-    while out.len() < limit && week_offset < max_weeks * week_interval as i64 {
+    while out.len() < limit && week_offset < max_weeks * (week_interval as i64) {
         let week_monday =
             match monday_of_start_week.checked_add_signed(Duration::days(week_offset * 7)) {
                 Some(d) => d,
