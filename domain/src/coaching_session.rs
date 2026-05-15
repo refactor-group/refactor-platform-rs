@@ -158,6 +158,9 @@ pub async fn ensure_hydrated(
         return Ok(session);
     }
 
+    // Read-only lookups on rows; running them on `db` rather than
+    // `&txn` is intentional — the txn is only needed to scope the
+    // advisory lock and the final UPDATE.
     let coaching_relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
