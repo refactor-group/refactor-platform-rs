@@ -178,12 +178,17 @@ pub async fn ensure_hydrated(
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
         }
 
-        coaching_session_goal::link_in_progress_goals_to_session(
+        let linked = coaching_session_goal::link_in_progress_goals_to_session(
             &txn,
             session.coaching_relationship_id,
             session.id,
         )
         .await?;
+
+        debug!(
+            "Linked {linked} in-progress goal(s) to session {}",
+            session.id
+        );
 
         let updated = coaching_session::mark_hydrated(&txn, &session).await?;
         txn.commit().await.map_err(entity_api::error::Error::from)?;
