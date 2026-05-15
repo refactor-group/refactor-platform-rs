@@ -188,17 +188,17 @@ pub async fn create_recurring(
 
     let db = app_state.db_conn_ref();
 
-    let relationship =
-        CoachingRelationshipApi::find_by_id(db, params.coaching_relationship_id).await?;
-    if relationship.coach_id != user.id {
-        return Err(Error::Web(WebErrorKind::Auth));
-    }
-
     let dates = CoachingSessionApi::expand_recurrence(params.start_at, &params.recurrence)
         .map_err(|e| DomainError {
             source: None,
             error_kind: DomainErrorKind::Validation(e.message()),
         })?;
+
+    let relationship =
+        CoachingRelationshipApi::find_by_id(db, params.coaching_relationship_id).await?;
+    if relationship.coach_id != user.id {
+        return Err(Error::Web(WebErrorKind::Auth));
+    }
 
     let sessions =
         CoachingSessionApi::bulk_create_recurring(db, params.coaching_relationship_id, dates)
