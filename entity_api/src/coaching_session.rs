@@ -129,9 +129,9 @@ pub async fn acquire_advisory_lock(
 
 fn advisory_lock_key(session_id: Id) -> i64 {
     let bytes = session_id.as_bytes();
-    let mut upper = [0u8; 8];
-    upper.copy_from_slice(&bytes[..8]);
-    i64::from_be_bytes(upper)
+    let upper = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+    let lower = u64::from_be_bytes(bytes[8..].try_into().unwrap());
+    (upper ^ lower) as i64
 }
 
 /// Persists the resolved deferred fields and stamps `hydrated_at = NOW()`.
