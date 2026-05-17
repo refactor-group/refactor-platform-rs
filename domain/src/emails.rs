@@ -5,11 +5,11 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions,
+    actions, coaching_relationship, coaching_session, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::resend::{Client as ResendClient, SendEmailRequestBuilder},
-    organization, organizations, user, users, Id,
+    goal, organization, organizations, user, users, Id,
 };
 
 /// Trait for email notifications that need common config prerequisites.
@@ -469,29 +469,16 @@ pub async fn notify_session_scheduled(
     }
 }
 
-/// Returns a comma-separated list of in-progress goal titles linked to a coaching session,
-/// or `None` if there are no titles to show.
+/// Returns the title of the goal linked to an action, if any.
 ///
-/// `None` covers both the no-goals case and DB-error case (best-effort: email
-/// delivery is never blocked on goal lookup).
-async fn get_in_progress_goal_titles_for_coaching_session(
-    db: &DatabaseConnection,
-    coaching_session_id: Id,
-) -> Option<String> {
-    let goals = coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
-        db,
-        coaching_session_id,
-    )
-    .await
-    .ok()?;
-
-    let titles: Vec<_> = goals.iter().filter_map(|g| g.title.as_deref()).collect();
-
-    if titles.is_empty() {
-        None
-    } else {
-        Some(titles.join(", "))
-    }
+/// `None` when the action has no `goal_id`, when the linked goal has no title,
+/// or when the lookup fails (best-effort: email delivery is never blocked).
+async fn get_action_goal_title(db: &DatabaseConnection, action: &actions::Model) -> Option<String> {
+    let goal_id = action.goal_id?;
+    goal::find_by_id(db, goal_id)
+        .await
+        .ok()
+        .and_then(|g| g.title)
 }
 
 /// Orchestrate sending action-assigned emails (best-effort).
@@ -512,19 +499,19 @@ pub async fn notify_action_assigned(
         let assignees = user::find_by_ids(db, assignee_ids).await?;
 
         // Look up session → relationship → organization
-        let (session, relationship) =
+        let (_, relationship) =
             coaching_session::find_by_id_with_coaching_relationship(db, action.coaching_session_id)
                 .await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        let goal_text = get_in_progress_goal_titles_for_coaching_session(db, session.id).await;
+        let goal_title = get_action_goal_title(db, action).await;
 
         let ctx = ActionEmailContext {
             action_body: action.body.as_deref().unwrap_or(""),
             due_by: action.due_by,
             session_id: action.coaching_session_id,
             organization: &org,
-            goal: goal_text.as_deref(),
+            goal: goal_title.as_deref(),
         };
 
         send_action_assigned_email(config, &assignees, assigner, &ctx).await
