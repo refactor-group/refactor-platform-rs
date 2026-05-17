@@ -1,6 +1,6 @@
 # Email Notifications Architecture
 
-Transactional emails are sent via [Mailersend](https://www.mailersend.com/) using template-based personalization. The backend handles all email logic — the frontend has no involvement.
+Transactional emails are sent via [Resend](https://resend.com/) using template-based variable interpolation. The backend handles all email logic — the frontend has no involvement.
 
 ## Notification Types
 
@@ -16,7 +16,7 @@ All email logic lives in `domain/src/emails.rs`, organized into two tiers:
 
 **Tier 1 — `notify_*` orchestration (public).** Controllers call these. They look up any additional data needed via `entity_api`, then delegate to a private `send_*` function.
 
-**Tier 2 — `send_*` construction (private).** Pure email senders. They take all data as parameters, build a `SendEmailRequest` with personalization variables, and fire via `MailerSendClient::send_email()`.
+**Tier 2 — `send_*` construction (private).** Pure email senders. They take all data as parameters, build a `SendEmailRequest` with template variables, and fire via `gateway::resend::Client::send_email()`.
 
 ```mermaid
 flowchart TD
@@ -36,7 +36,7 @@ flowchart TD
         EF["users, relationships, orgs, sessions, goals"]
     end
 
-    subgraph gateway["MailerSend Gateway"]
+    subgraph gateway["Resend Gateway"]
         MS["tokio::spawn — fire-and-forget"]
     end
 
@@ -72,7 +72,7 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 
 | Variable | Description |
 |---|---|
-| `MAILERSEND_API_KEY` | API authentication |
+| `RESEND_API_KEY` | API authentication |
 | `WELCOME_EMAIL_TEMPLATE_ID` | Welcome email template |
 | `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` | Session scheduled template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |
@@ -85,5 +85,5 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | File | Role |
 |---|---|
 | `domain/src/emails.rs` | `notify_*` + `send_*` + `EmailNotification` trait |
-| `domain/src/gateway/mailersend.rs` | HTTP client, request builder, fire-and-forget delivery |
+| `domain/src/gateway/resend.rs` | HTTP client, request builder, fire-and-forget delivery |
 | `service/src/config.rs` | Template ID and URL config |

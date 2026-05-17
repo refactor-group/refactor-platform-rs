@@ -18,8 +18,8 @@ const API_VERSIONS: APiVersionList = [DEFAULT_API_VERSION];
 
 static X_VERSION: &str = "x-version";
 
-/// Default MailerSend API base URL used when `MAILERSEND_BASE_URL` is not set or empty.
-pub const DEFAULT_MAILERSEND_BASE_URL: &str = "https://api.mailersend.com/v1";
+/// Default Resend API base URL used when `RESEND_BASE_URL` is not set or empty.
+pub const DEFAULT_RESEND_BASE_URL: &str = "https://api.resend.com";
 
 /// Default URL path for session-scheduled email links.
 const DEFAULT_SESSION_SCHEDULED_EMAIL_URL_PATH: &str = "/coaching-sessions/{session_id}";
@@ -49,8 +49,8 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "tiptap_auth_key",
     "tiptap_jwt_signing_key",
     "tiptap_app_id",
-    "mailersend_base_url",
-    "mailersend_api_key",
+    "resend_base_url",
+    "resend_api_key",
     "welcome_email_template_id",
     "session_scheduled_email_template_id",
     "action_assigned_email_template_id",
@@ -239,21 +239,21 @@ pub struct Config {
     #[arg(long, env)]
     tiptap_app_id: Option<String>,
 
-    /// The base URL of the MailerSend API.
+    /// The base URL of the Resend API.
     /// Override in tests to point at a mock server.
-    #[arg(long, env, default_value = DEFAULT_MAILERSEND_BASE_URL)]
-    mailersend_base_url: String,
-    /// The API key to use when calling the MailerSend API.
+    #[arg(long, env, default_value = DEFAULT_RESEND_BASE_URL)]
+    resend_base_url: String,
+    /// The API key to use when calling the Resend API.
     #[arg(long, env)]
-    mailersend_api_key: Option<String>,
+    resend_api_key: Option<String>,
 
-    /// The MailerSend template ID for welcome emails.
+    /// The Resend template ID for welcome emails.
     #[arg(long, env)]
     welcome_email_template_id: Option<String>,
-    /// The MailerSend template ID for session-scheduled emails.
+    /// The Resend template ID for session-scheduled emails.
     #[arg(long, env)]
     session_scheduled_email_template_id: Option<String>,
-    /// The MailerSend template ID for action-assigned emails.
+    /// The Resend template ID for action-assigned emails.
     #[arg(long, env)]
     action_assigned_email_template_id: Option<String>,
     /// The base URL of the frontend application (e.g. https://app.myrefactor.com).
@@ -544,7 +544,7 @@ impl Config {
             &self.backend_session_expiry_seconds,
         );
         self.debug_field("tiptap_app_id", &self.tiptap_app_id);
-        self.debug_field("mailersend_base_url", &self.mailersend_base_url);
+        self.debug_field("resend_base_url", &self.resend_base_url);
         self.debug_field("welcome_email_template_id", &self.welcome_email_template_id);
         self.debug_field(
             "session_scheduled_email_template_id",
@@ -600,32 +600,32 @@ impl Config {
         self.tiptap_app_id.clone()
     }
 
-    /// Returns the MailerSend API base URL.
+    /// Returns the Resend API base URL.
     /// Falls back to the default if the configured value is empty.
-    pub fn mailersend_base_url(&self) -> &str {
-        if self.mailersend_base_url.is_empty() {
-            DEFAULT_MAILERSEND_BASE_URL
+    pub fn resend_base_url(&self) -> &str {
+        if self.resend_base_url.is_empty() {
+            DEFAULT_RESEND_BASE_URL
         } else {
-            &self.mailersend_base_url
+            &self.resend_base_url
         }
     }
 
-    /// Returns the MailerSend API key, if configured.
-    pub fn mailersend_api_key(&self) -> Option<String> {
-        self.mailersend_api_key.clone()
+    /// Returns the Resend API key, if configured.
+    pub fn resend_api_key(&self) -> Option<String> {
+        self.resend_api_key.clone()
     }
 
-    /// Returns the MailerSend template ID for welcome emails, if configured.
+    /// Returns the Resend template ID for welcome emails, if configured.
     pub fn welcome_email_template_id(&self) -> Option<String> {
         self.welcome_email_template_id.clone()
     }
 
-    /// Returns the MailerSend template ID for session-scheduled emails, if configured.
+    /// Returns the Resend template ID for session-scheduled emails, if configured.
     pub fn session_scheduled_email_template_id(&self) -> Option<String> {
         self.session_scheduled_email_template_id.clone()
     }
 
-    /// Returns the MailerSend template ID for action-assigned emails, if configured.
+    /// Returns the Resend template ID for action-assigned emails, if configured.
     pub fn action_assigned_email_template_id(&self) -> Option<String> {
         self.action_assigned_email_template_id.clone()
     }
@@ -866,26 +866,26 @@ mod tests {
     #[test]
     #[serial]
     fn env_var_populates_field_when_no_flag() {
-        let _guard = EnvGuard::set("MAILERSEND_API_KEY", "from_env");
+        let _guard = EnvGuard::set("RESEND_API_KEY", "from_env");
         let config = Config::from_args(["test_binary"]);
-        assert_eq!(config.mailersend_api_key(), Some("from_env".to_string()));
+        assert_eq!(config.resend_api_key(), Some("from_env".to_string()));
     }
 
     #[test]
     #[serial]
     fn cli_flag_overrides_env_var() {
-        let _guard = EnvGuard::set("MAILERSEND_API_KEY", "from_env");
-        let config = Config::from_args(["test_binary", "--mailersend-api-key", "from_cli"]);
-        assert_eq!(config.mailersend_api_key(), Some("from_cli".to_string()));
+        let _guard = EnvGuard::set("RESEND_API_KEY", "from_env");
+        let config = Config::from_args(["test_binary", "--resend-api-key", "from_cli"]);
+        assert_eq!(config.resend_api_key(), Some("from_cli".to_string()));
     }
 
     #[test]
     #[serial]
     fn value_source_records_env_for_env_sourced_field() {
-        let _guard = EnvGuard::set("MAILERSEND_API_KEY", "from_env");
+        let _guard = EnvGuard::set("RESEND_API_KEY", "from_env");
         let config = Config::from_args(["test_binary"]);
         assert_eq!(
-            config.value_sources.get("mailersend_api_key"),
+            config.value_sources.get("resend_api_key"),
             Some(&ValueSource::EnvVariable),
         );
     }
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     #[serial]
     fn default_constructor_does_not_load_env_file() {
-        let _key_guard = EnvGuard::unset("MAILERSEND_API_KEY");
+        let _key_guard = EnvGuard::unset("RESEND_API_KEY");
 
         let temp_dir = std::env::temp_dir().join(format!(
             "refactor-config-default-test-{}",
@@ -909,7 +909,7 @@ mod tests {
         fs::create_dir_all(&temp_dir).unwrap();
         fs::write(
             temp_dir.join(".env"),
-            "MAILERSEND_API_KEY=should_not_be_loaded\n",
+            "RESEND_API_KEY=should_not_be_loaded\n",
         )
         .unwrap();
 
@@ -923,12 +923,12 @@ mod tests {
         fs::remove_dir_all(&temp_dir).ok();
 
         assert!(
-            config.mailersend_api_key().is_none(),
+            config.resend_api_key().is_none(),
             "Config::default() must not load .env (got {:?})",
-            config.mailersend_api_key()
+            config.resend_api_key()
         );
         assert!(
-            std::env::var("MAILERSEND_API_KEY").is_err(),
+            std::env::var("RESEND_API_KEY").is_err(),
             "Config::default() must not write .env values into the process env",
         );
     }

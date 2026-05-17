@@ -135,7 +135,7 @@ This means:
 - RPi5 SSH connection details
 - Database credentials
 - TipTap API keys
-- MailerSend API keys
+- Resend API keys
 - Frontend build configuration
 
 ### Workflow Files

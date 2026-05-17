@@ -65,7 +65,7 @@ pub async fn index(
 pub(crate) async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(_authenticated_user): AuthenticatedUser,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
     OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
     Json(user_model): Json<users::Model>,
 ) -> Result<impl IntoResponse, Error> {
@@ -74,7 +74,13 @@ pub(crate) async fn create(
             .await?;
     info!("User created: {user:?}");
 
-    EmailsAPI::notify_welcome_email(app_state.db_conn_ref(), &app_state.config, &user).await;
+    EmailsAPI::notify_welcome_email(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        &user,
+        &authenticated_user,
+    )
+    .await;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
@@ -103,7 +109,7 @@ pub(crate) async fn create(
 pub(crate) async fn resend_invite(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(_authenticated_user): AuthenticatedUser,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
     OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
     Path((_org_id, user_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
@@ -119,8 +125,13 @@ pub(crate) async fn resend_invite(
         .into());
     }
 
-    EmailsAPI::create_and_send_welcome_email(app_state.db_conn_ref(), &app_state.config, &user)
-        .await?;
+    EmailsAPI::create_and_send_welcome_email(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        &user,
+        &authenticated_user,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
