@@ -96,11 +96,17 @@ pub struct TemplateRef {
 }
 
 /// Request payload for sending an email via Resend.
+///
+/// `subject` is optional because Resend allows the subject to be authored on
+/// the template itself. When omitted from the payload, Resend uses the
+/// template's default subject. When provided, the payload value overrides the
+/// template default (per Resend's "payload wins over template defaults" rule).
 #[derive(Debug, Serialize, Eq, PartialEq)]
 pub struct SendEmailRequest {
     pub from: EmailRecipient,
     pub to: Vec<EmailRecipient>,
-    pub subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template: Option<TemplateRef>,
 }
@@ -109,7 +115,6 @@ pub struct SendEmailRequest {
 pub struct SendEmailRequestBuilder {
     from: Option<EmailRecipient>,
     to: Vec<EmailRecipient>,
-    subject: Option<String>,
     template_id: Option<String>,
     variables: HashMap<String, String>,
 }
@@ -131,7 +136,6 @@ impl SendEmailRequestBuilder {
         SendEmailRequestBuilder {
             from: None,
             to: Vec::new(),
-            subject: None,
             template_id: None,
             variables: HashMap::new(),
         }
@@ -153,12 +157,6 @@ impl SendEmailRequestBuilder {
             email: email.into(),
             name: Some(name.into()),
         });
-        self
-    }
-
-    /// Set the email subject.
-    pub fn subject(mut self, subject: impl Into<String>) -> Self {
-        self.subject = Some(subject.into());
         self
     }
 
@@ -197,13 +195,6 @@ impl SendEmailRequestBuilder {
             SendEmailRequest::validate_email(&recipient.email)?;
         }
 
-        let subject = self.subject.ok_or_else(|| Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Subject is required".to_string(),
-            )),
-        })?;
-
         let template = match self.template_id {
             Some(id) => Some(TemplateRef {
                 id: TemplateId::new(id)?,
@@ -215,7 +206,7 @@ impl SendEmailRequestBuilder {
         Ok(SendEmailRequest {
             from,
             to: self.to,
-            subject,
+            subject: None,
             template,
         })
     }
@@ -356,7 +347,6 @@ mod tests {
         let request = SendEmailRequestBuilder::new()
             .from("sender@example.com")
             .to_with_name("recipient@example.com", "Test Recipient")
-            .subject("Test Subject")
             .template_id("welcome-email")
             .add_variable("name", "Test User")
             .build()
@@ -370,7 +360,6 @@ mod tests {
         let expected = serde_json::json!({
             "from": "sender@example.com",
             "to": ["\"Test Recipient\" <recipient@example.com>"],
-            "subject": "Test Subject",
             "template": {
                 "id": "welcome-email",
                 "variables": { "name": "Test User" }
@@ -400,7 +389,6 @@ mod tests {
             .from("sender@example.com")
             .to_with_name("john.doe@example.com", "John Doe")
             .to_with_name("jane.smith@example.com", "Jane Smith")
-            .subject("Test Subject")
             .template_id("multi-recipient-template")
             .add_variable("first_name", "John")
             .add_variable("last_name", "Doe")
@@ -431,7 +419,6 @@ mod tests {
         let request = SendEmailRequestBuilder::new()
             .from("sender@example.com")
             .to_with_name("recipient@example.com", "")
-            .subject("Test Subject")
             .template_id("t")
             .build()
             .await
@@ -470,7 +457,6 @@ mod tests {
             .from("sender@example.com")
             .to_with_name("first@example.com", "First User")
             .to_with_name("second@example.com", "Second User")
-            .subject("Multi Recipient")
             .template_id("t")
             .build()
             .await
@@ -485,7 +471,6 @@ mod tests {
     async fn test_builder_missing_from_fails() {
         let result = SendEmailRequestBuilder::new()
             .to_with_name("recipient@example.com", "Test User")
-            .subject("Test")
             .build()
             .await;
 
@@ -498,7 +483,6 @@ mod tests {
     async fn test_builder_missing_recipients_fails() {
         let result = SendEmailRequestBuilder::new()
             .from("sender@example.com")
-            .subject("Test")
             .build()
             .await;
 
@@ -508,16 +492,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_builder_missing_subject_fails() {
-        let result = SendEmailRequestBuilder::new()
+    async fn test_builder_omits_subject_when_not_set() {
+        let request = SendEmailRequestBuilder::new()
             .from("sender@example.com")
             .to_with_name("recipient@example.com", "Test User")
+            .template_id("t")
             .build()
-            .await;
+            .await
+            .unwrap();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(format!("{err:?}").contains("Subject is required"));
+        assert_eq!(request.subject, None);
+
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert!(
+            json.get("subject").is_none(),
+            "subject must be omitted from JSON when not set, got: {json}"
+        );
     }
 
     #[tokio::test]
@@ -525,7 +516,6 @@ mod tests {
         let result = SendEmailRequestBuilder::new()
             .from("invalid-email")
             .to_with_name("recipient@example.com", "Test User")
-            .subject("Test")
             .build()
             .await;
 
@@ -541,7 +531,6 @@ mod tests {
         let result = SendEmailRequestBuilder::new()
             .from("sender@example.com")
             .to_with_name("", "Test User")
-            .subject("Test")
             .build()
             .await;
 
@@ -565,7 +554,6 @@ mod tests {
         let request = SendEmailRequestBuilder::new()
             .from("sender@example.com")
             .to_with_name("recipient@example.com", "Recipient")
-            .subject("Subject")
             .template_id("t")
             .build()
             .await

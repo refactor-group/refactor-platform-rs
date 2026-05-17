@@ -174,7 +174,6 @@ async fn send_welcome_email(
             &user.email,
             format!("{} {}", user.first_name, user.last_name),
         )
-        .subject("Welcome to Refactor Platform")
         .template_id(&email_config.template_id)
         .add_variable("first_name", &user.first_name)
         .add_variable("last_name", &user.last_name)
@@ -301,7 +300,6 @@ async fn send_session_email_to_recipient(
             &recipient.email,
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
-        .subject(format!("New coaching session scheduled for {session_date}"))
         .template_id(&email_config.template_id)
         .add_variable("first_name", &recipient.first_name)
         .add_variable("other_user_first_name", &other_user.first_name)
@@ -410,7 +408,6 @@ async fn send_action_assigned_email(
                 &assignee.email,
                 format!("{} {}", assignee.first_name, assignee.last_name),
             )
-            .subject("You've been assigned a new action")
             .template_id(&email_config.template_id)
             .add_variable("first_name", &assignee.first_name)
             .add_variable("action_body", ctx.action_body)
@@ -661,7 +658,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"John Doe\" <john.doe@example.com>"],
-                "subject": "Welcome to Refactor Platform",
                 "template": {
                     "id": "template_123",
                     "variables": {
@@ -773,7 +769,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe, Jr.\" <jane.jr@example.com>"],
-                "subject": "Welcome to Refactor Platform",
                 "template": {
                     "id": "template_123",
                     "variables": {
@@ -820,7 +815,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
-                "subject": "New coaching session scheduled for Wednesday, March 4, 2026",
                 "template": {
                     "id": "session_template_456",
                     "variables": {
@@ -848,7 +842,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Alex Smith\" <alex@example.com>"],
-                "subject": "New coaching session scheduled for Thursday, March 5, 2026",
                 "template": {
                     "id": "session_template_456",
                     "variables": {
@@ -927,7 +920,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
-                "subject": "You've been assigned a new action",
                 "template": {
                     "id": "action_template_789",
                     "variables": {
@@ -978,7 +970,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
-                "subject": "You've been assigned a new action",
                 "template": {
                     "id": "action_template_789",
                     "variables": {
@@ -1033,7 +1024,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
-                "subject": "You've been assigned a new action",
                 "template": {
                     "id": "action_template_789",
                     "variables": {
@@ -1059,7 +1049,6 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Bob Jones\" <bob@example.com>"],
-                "subject": "You've been assigned a new action",
                 "template": {
                     "id": "action_template_789",
                     "variables": {
