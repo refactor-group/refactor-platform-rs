@@ -374,7 +374,7 @@ struct ActionEmailContext<'a> {
     due_by: Option<DateTime<FixedOffset>>,
     session_id: Id,
     organization: &'a organizations::Model,
-    goal: &'a str,
+    goal: Option<&'a str>,
 }
 
 /// Send action-assigned notification emails to all assignees.
@@ -415,7 +415,7 @@ async fn send_action_assigned_email(
             .add_variable("assigner_first_name", &assigner.first_name)
             .add_variable("assigner_last_name", &assigner.last_name)
             .add_variable("organization_name", &ctx.organization.name)
-            .add_variable("goal", ctx.goal)
+            .add_optional_variable("goal", ctx.goal)
             .add_variable("session_url", &session_url)
             .build()
             .await;
@@ -469,29 +469,28 @@ pub async fn notify_session_scheduled(
     }
 }
 
-/// Returns a comma-separated list of in-progress goal titles linked to a coaching session.
+/// Returns a comma-separated list of in-progress goal titles linked to a coaching session,
+/// or `None` if there are no titles to show.
 ///
-/// This is best-effort: any DB error returns an empty string so email delivery is never blocked.
+/// `None` covers both the no-goals case and DB-error case (best-effort: email
+/// delivery is never blocked on goal lookup).
 async fn get_in_progress_goal_titles_for_coaching_session(
     db: &DatabaseConnection,
     coaching_session_id: Id,
-) -> String {
-    let goals = match coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+) -> Option<String> {
+    let goals = coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
         db,
         coaching_session_id,
     )
     .await
-    {
-        Ok(goals) => goals,
-        Err(_) => return String::new(),
-    };
+    .ok()?;
 
     let titles: Vec<_> = goals.iter().filter_map(|g| g.title.as_deref()).collect();
 
     if titles.is_empty() {
-        String::new()
+        None
     } else {
-        titles.join(", ")
+        Some(titles.join(", "))
     }
 }
 
@@ -525,7 +524,7 @@ pub async fn notify_action_assigned(
             due_by: action.due_by,
             session_id: action.coaching_session_id,
             organization: &org,
-            goal: &goal_text,
+            goal: goal_text.as_deref(),
         };
 
         send_action_assigned_email(config, &assignees, assigner, &ctx).await
@@ -945,7 +944,7 @@ mod tests {
             due_by: Some(due_by),
             session_id,
             organization: &org,
-            goal: "Improve communication",
+            goal: Some("Improve communication"),
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -979,7 +978,6 @@ mod tests {
                         "assigner_first_name": "Alex",
                         "assigner_last_name": "Smith",
                         "organization_name": "Acme Corp",
-                        "goal": "",
                         "session_url": session_url,
                     }
                 }
@@ -995,7 +993,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: None,
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -1033,7 +1031,6 @@ mod tests {
                         "assigner_first_name": "Alex",
                         "assigner_last_name": "Smith",
                         "organization_name": "Acme Corp",
-                        "goal": "",
                         "session_url": session_url.clone(),
                     }
                 }
@@ -1058,7 +1055,6 @@ mod tests {
                         "assigner_first_name": "Alex",
                         "assigner_last_name": "Smith",
                         "organization_name": "Acme Corp",
-                        "goal": "",
                         "session_url": session_url.clone(),
                     }
                 }
@@ -1074,7 +1070,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: None,
         };
 
         let result =
@@ -1102,7 +1098,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: None,
         };
 
         let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
@@ -1137,7 +1133,7 @@ mod tests {
             due_by: None,
             session_id,
             organization: &org,
-            goal: "",
+            goal: None,
         };
 
         let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;

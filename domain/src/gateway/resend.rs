@@ -172,6 +172,17 @@ impl SendEmailRequestBuilder {
         self
     }
 
+    /// Add a template variable only when `value` is `Some`.
+    ///
+    /// `None` omits the key from the payload so Resend's template
+    /// `fallback_value` can fire — sending an empty string would defeat it.
+    pub fn add_optional_variable(mut self, key: impl Into<String>, value: Option<&str>) -> Self {
+        if let Some(v) = value {
+            self.variables.insert(key.into(), v.to_string());
+        }
+        self
+    }
+
     /// Build the SendEmailRequest with validation.
     pub async fn build(self) -> Result<SendEmailRequest, Error> {
         let from = self.from.ok_or_else(|| Error {
