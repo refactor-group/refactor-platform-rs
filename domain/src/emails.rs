@@ -100,17 +100,25 @@ impl EmailNotification for WelcomeEmail {
 
 /// Create a magic link token and send a welcome email to a user.
 ///
+/// `inviter` is the user who triggered the invite (typically the coach or
+/// org admin); their name is interpolated into the email body so the
+/// recipient sees who added them.
+///
 /// Returns an error if token creation or email delivery fails.
 pub async fn create_and_send_welcome_email(
     db: &sea_orm::DatabaseConnection,
     config: &Config,
     user: &users::Model,
+    inviter: &users::Model,
 ) -> Result<(), Error> {
     let raw_token = crate::magic_link_token::create_magic_link(db, user.id, config).await?;
-    send_welcome_email(config, user, &raw_token).await
+    send_welcome_email(config, user, inviter, &raw_token).await
 }
 
 /// Create a magic link token and send a best-effort welcome email to a newly created user.
+///
+/// `inviter` is the user who triggered the invite (typically the coach or
+/// org admin); their name is interpolated into the email body.
 ///
 /// Both token creation and email delivery are best-effort — errors are logged
 /// internally and never propagate to the caller.
@@ -118,10 +126,11 @@ pub async fn notify_welcome_email(
     db: &sea_orm::DatabaseConnection,
     config: &Config,
     user: &users::Model,
+    inviter: &users::Model,
 ) {
     match crate::magic_link_token::create_magic_link(db, user.id, config).await {
         Ok(raw_token) => {
-            if let Err(e) = send_welcome_email(config, user, &raw_token).await {
+            if let Err(e) = send_welcome_email(config, user, inviter, &raw_token).await {
                 warn!("Failed to send welcome email to {}: {e:?}", user.email);
             }
         }
@@ -138,6 +147,7 @@ pub async fn notify_welcome_email(
 async fn send_welcome_email(
     config: &Config,
     user: &users::Model,
+    inviter: &users::Model,
     magic_link_token: &str,
 ) -> Result<(), Error> {
     info!(
@@ -154,10 +164,12 @@ async fn send_welcome_email(
         .map(|b| b.build(TOKEN_PLACEHOLDER, magic_link_token))
         .unwrap_or_default();
 
+    let coach_full_name = format!("{} {}", inviter.first_name, inviter.last_name);
+
     debug!("Preparing template variables for {}", user.email);
 
     let email_request = SendEmailRequestBuilder::new()
-        .from("hello@mail.myrefactor.com")
+        .from(FROM_ADDRESS)
         .to_with_name(
             &user.email,
             format!("{} {}", user.first_name, user.last_name),
@@ -166,6 +178,8 @@ async fn send_welcome_email(
         .template_id(&email_config.template_id)
         .add_variable("first_name", &user.first_name)
         .add_variable("last_name", &user.last_name)
+        .add_variable("coach_first_name", &inviter.first_name)
+        .add_variable("coach_full_name", &coach_full_name)
         .add_variable("magic_link_url", &magic_link_url)
         .build()
         .await?;
@@ -197,6 +211,11 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
 
 const TOKEN_PLACEHOLDER: &str = "{token}";
 const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
+
+/// The `From:` address used for every transactional email sent through this module.
+/// Kept on the `mail.` subdomain so production DMARC/SPF/DKIM records for the
+/// `myrefactor.com` apex aren't affected by Resend's sending infrastructure.
+const FROM_ADDRESS: &str = "hello@mail.myrefactor.com";
 
 /// Groups the base URL and path template for building session links in emails.
 struct SessionUrlBuilder {
@@ -277,7 +296,7 @@ async fn send_session_email_to_recipient(
     let session_url = email_config.build_session_url(&session.id)?;
 
     let email_request = SendEmailRequestBuilder::new()
-        .from("hello@mail.myrefactor.com")
+        .from(FROM_ADDRESS)
         .to_with_name(
             &recipient.email,
             format!("{} {}", recipient.first_name, recipient.last_name),
@@ -386,7 +405,7 @@ async fn send_action_assigned_email(
         };
 
         let email_request = SendEmailRequestBuilder::new()
-            .from("hello@mail.myrefactor.com")
+            .from(FROM_ADDRESS)
             .to_with_name(
                 &assignee.email,
                 format!("{} {}", assignee.first_name, assignee.last_name),
@@ -632,6 +651,7 @@ mod tests {
     async fn test_send_welcome_email_success() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
+        let inviter = create_test_user_with("Sarah", "Coach", "sarah.coach@example.com", "UTC");
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
@@ -639,7 +659,7 @@ mod tests {
             .match_header("authorization", "Bearer test_api_key_123")
             .match_header("content-type", "application/json")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"John Doe\" <john.doe@example.com>"],
                 "subject": "Welcome to Refactor Platform",
                 "template": {
@@ -647,6 +667,8 @@ mod tests {
                     "variables": {
                         "first_name": "John",
                         "last_name": "Doe",
+                        "coach_first_name": "Sarah",
+                        "coach_full_name": "Sarah Coach",
                         "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
                 }
@@ -658,7 +680,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
+        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
         assert!(result.is_ok());
     }
 
@@ -668,8 +690,9 @@ mod tests {
         assert!(config.resend_api_key().is_none(), "API key should be None");
 
         let user = create_test_user();
+        let inviter = create_test_user();
 
-        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
+        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -693,8 +716,9 @@ mod tests {
         );
 
         let user = create_test_user();
+        let inviter = create_test_user();
 
-        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
+        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -709,6 +733,7 @@ mod tests {
     async fn test_send_welcome_email_http_error() {
         let mut server = setup_test_server().await;
         let user = create_test_user();
+        let inviter = create_test_user();
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
@@ -721,7 +746,7 @@ mod tests {
 
         // HTTP 400 from Resend should propagate as an error that carries the
         // response body — that body is the caller's only diagnostic.
-        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
+        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
         let err = result.unwrap_err();
         match err.error_kind {
             DomainErrorKind::Internal(InternalErrorKind::Other(text)) => assert!(
@@ -740,12 +765,13 @@ mod tests {
         // quoted-string, not as two malformed mailboxes.
         let mut server = setup_test_server().await;
         let user = create_test_user_with("Jane", "Doe, Jr.", "jane.jr@example.com", "UTC");
+        let inviter = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
         let config = create_config_with_mock(&server.url());
 
         let _mock = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe, Jr.\" <jane.jr@example.com>"],
                 "subject": "Welcome to Refactor Platform",
                 "template": {
@@ -753,6 +779,8 @@ mod tests {
                     "variables": {
                         "first_name": "Jane",
                         "last_name": "Doe, Jr.",
+                        "coach_first_name": "Alex",
+                        "coach_full_name": "Alex Smith",
                         "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                     }
                 }
@@ -763,7 +791,7 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_welcome_email(&config, &user, "test-magic-link-token").await;
+        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
         assert!(result.is_ok());
     }
 
@@ -790,7 +818,7 @@ mod tests {
         let _mock_coachee = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "New coaching session scheduled for Wednesday, March 4, 2026",
                 "template": {
@@ -818,7 +846,7 @@ mod tests {
         let _mock_coach = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"Alex Smith\" <alex@example.com>"],
                 "subject": "New coaching session scheduled for Thursday, March 5, 2026",
                 "template": {
@@ -897,7 +925,7 @@ mod tests {
         let _mock = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "You've been assigned a new action",
                 "template": {
@@ -948,7 +976,7 @@ mod tests {
         let _mock = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "You've been assigned a new action",
                 "template": {
@@ -1003,7 +1031,7 @@ mod tests {
         let _mock_jane = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "You've been assigned a new action",
                 "template": {
@@ -1029,7 +1057,7 @@ mod tests {
         let _mock_bob = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": "hello@mail.myrefactor.com",
+                "from": FROM_ADDRESS,
                 "to": ["\"Bob Jones\" <bob@example.com>"],
                 "subject": "You've been assigned a new action",
                 "template": {
