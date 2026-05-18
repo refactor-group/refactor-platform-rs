@@ -1481,8 +1481,8 @@ mod tests {
         let server = setup_test_server().await;
         let config = Config::from_args([
             "test",
-            "--mailersend-api-key=test_api_key_123",
-            &format!("--mailersend-base-url={}/v1", server.url()),
+            "--resend-api-key=test_api_key_123",
+            &format!("--resend-base-url={}", server.url()),
             "--frontend-base-url=https://app.example.com",
         ]);
 
