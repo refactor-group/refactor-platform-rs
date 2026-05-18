@@ -62,7 +62,7 @@ PLATFORM="linux/arm64/v8"                    # Or linux/amd64
 # ==============================
 #   Email Service Configuration
 # ==============================
-MAILERSEND_API_KEY=""                        # MailerSend API key for sending emails
+RESEND_API_KEY=""                            # Resend API key for sending emails
 WELCOME_EMAIL_TEMPLATE_ID=""                 # Template ID for welcome emails
 
 # ==============================

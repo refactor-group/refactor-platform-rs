@@ -62,27 +62,27 @@ To run the backend directly outside of a container:
 The first example will start the backend with log level DEBUG and attempt to connect to a Postgres DB server on the same machine with user `refactor` and password `password` on port `5432` and selecting the database named `refactor_platform`.
 
 ```bash
-cargo run --  --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID> --mailersend-api-key=<MAILERSEND_API_KEY> --welcome-email-template-id=<MAILERSEND_TEMPLATE_ID>
+cargo run --  --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID> --resend-api-key=<RESEND_API_KEY> --welcome-email-template-id=<RESEND_TEMPLATE_ID>
 ```
 
 To run with a custom Postgresql connection string:
 
 ```bash
-cargo run -- -d postgres://refactor:my_password@localhost:5432/refactor_platform --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID> --mailersend-api-key=<MAILERSEND_API_KEY> --welcome-email-template-id=<MAILERSEND_TEMPLATE_ID>
+cargo run -- -d postgres://refactor:my_password@localhost:5432/refactor_platform --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID> --resend-api-key=<RESEND_API_KEY> --welcome-email-template-id=<RESEND_TEMPLATE_ID>
 ```
 
 To run with an additional list of allowed cross-site network origins:
 
 ```bash
-cargo run -- --allowed-origins="http://192.168.1.2:3000,https://192.168.1.2:3000" --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID> --mailersend-api-key=<MAILERSEND_API_KEY> --welcome-email-template-id=<MAILERSEND_TEMPLATE_ID>
+cargo run -- --allowed-origins="http://192.168.1.2:3000,https://192.168.1.2:3000" --tiptap-url https://<TIPTAP_APP_ID>.collab.tiptap.cloud --tiptap-auth-key=<TIPTAP_API_SECRET> --tiptap-jwt-signing-key=<TIPTAP_CLOUD_APP_SECRET> --tiptap-app-id=<TIPTAP_APP_ID> --resend-api-key=<RESEND_API_KEY> --welcome-email-template-id=<RESEND_TEMPLATE_ID>
 ```
 
 ### Email Configuration
 
-The platform uses MailerSend for transactional emails. To configure email functionality:
+The platform uses Resend for transactional emails. To configure email functionality:
 
 1. **Environment Variables** (for Docker):
-   - `MAILERSEND_API_KEY`: Your MailerSend API key
+   - `RESEND_API_KEY`: Your Resend API key
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
    - `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for session-scheduled notification emails
    - `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for recurring-sessions-scheduled notification emails
@@ -90,7 +90,7 @@ The platform uses MailerSend for transactional emails. To configure email functi
    - `FRONTEND_BASE_URL`: Base URL used to construct links in email notifications (e.g. `https://myrefactor.com`)
 
 2. **Command Line Arguments** (for direct execution):
-   - `--mailersend-api-key`: Your MailerSend API key
+   - `--resend-api-key`: Your Resend API key
    - `--welcome-email-template-id`: The template ID for welcome emails
    - `--session-scheduled-email-template-id`: The template ID for session-scheduled emails
    - `--action-assigned-email-template-id`: The template ID for action-assigned emails
@@ -99,7 +99,7 @@ The platform uses MailerSend for transactional emails. To configure email functi
 Example:
 
 ```bash
-export MAILERSEND_API_KEY="your-api-key"
+export RESEND_API_KEY="your-api-key"
 export WELCOME_EMAIL_TEMPLATE_ID="your-template-id"
 export SESSION_SCHEDULED_EMAIL_TEMPLATE_ID="your-template-id"
 export ACTION_ASSIGNED_EMAIL_TEMPLATE_ID="your-template-id"

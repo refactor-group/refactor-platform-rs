@@ -284,7 +284,7 @@ systemctl restart refactor-platform.service
 - **Tailscale:** OAuth client credentials
 - **Database:** User, password, SSL certificate
 - **Container Registry:** GHCR credentials
-- **External Services:** TipTap, MailerSend API keys
+- **External Services:** TipTap, Resend API keys
 
 **VPN Access:**
 - **Tailscale VPN** provides secure access to production server
