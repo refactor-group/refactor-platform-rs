@@ -115,6 +115,7 @@ pub struct SendEmailRequest {
 pub struct SendEmailRequestBuilder {
     from: Option<EmailRecipient>,
     to: Vec<EmailRecipient>,
+    subject: Option<String>,
     template_id: Option<String>,
     variables: HashMap<String, String>,
 }
@@ -136,6 +137,7 @@ impl SendEmailRequestBuilder {
         SendEmailRequestBuilder {
             from: None,
             to: Vec::new(),
+            subject: None,
             template_id: None,
             variables: HashMap::new(),
         }
@@ -157,6 +159,16 @@ impl SendEmailRequestBuilder {
             email: email.into(),
             name: Some(name.into()),
         });
+        self
+    }
+
+    /// Override the subject line for this send.
+    ///
+    /// When not called, the payload omits `subject` and Resend uses the
+    /// template's default subject. When called, the payload value takes
+    /// precedence over the template default.
+    pub fn subject(mut self, subject: impl Into<String>) -> Self {
+        self.subject = Some(subject.into());
         self
     }
 
@@ -217,7 +229,7 @@ impl SendEmailRequestBuilder {
         Ok(SendEmailRequest {
             from,
             to: self.to,
-            subject: None,
+            subject: self.subject,
             template,
         })
     }

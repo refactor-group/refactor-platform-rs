@@ -514,6 +514,11 @@ async fn send_recurring_series_email_to_recipient(
             &recipient.email,
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
+        .subject(if sessions.len() == 1 {
+            "1 recurring coaching session scheduled".to_string()
+        } else {
+            format!("{session_count} recurring coaching sessions scheduled")
+        })
         .template_id(&email_config.template_id)
         .add_variable("first_name", &recipient.first_name)
         .add_variable("other_user_first_name", &other_user.first_name)
@@ -1389,17 +1394,17 @@ mod tests {
             sessions[0].id
         );
 
-        // First email goes to coachee — verify full personalization
+        // Email to coachee — other_user is the coach. Body-match per recipient
+        // proves the role swap AND that the dynamic plural subject is set.
         let _mock_coachee = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": { "email": "hello@myrefactor.com", "name": null },
-                "to": [{ "email": "jane@example.com", "name": "Jane Doe" }],
+                "from": FROM_ADDRESS,
+                "to": ["\"Jane Doe\" <jane@example.com>"],
                 "subject": "3 recurring coaching sessions scheduled",
-                "template_id": "recurring_template_xyz",
-                "personalization": [{
-                    "email": "jane@example.com",
-                    "data": {
+                "template": {
+                    "id": "recurring_template_xyz",
+                    "variables": {
                         "first_name": "Jane",
                         "other_user_first_name": "Alex",
                         "other_user_last_name": "Smith",
@@ -1411,17 +1416,19 @@ mod tests {
                         "last_session_date": "Wednesday, March 18, 2026",
                         "session_url": first_session_url,
                     }
-                }]
+                }
             })))
-            .with_status(202)
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
 
-        // Second email goes to coach — only verify it was sent
+        // Email to coach — only verify it was sent.
         let _mock_coach = server
-            .mock("POST", "/v1/email")
-            .with_status(202)
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
@@ -1445,27 +1452,30 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
         )];
 
-        // With a single session, first and last dates must match
+        // With a single session, first and last dates must match AND the
+        // subject must use the singular form ("session", not "sessions").
         let _mock_coachee = server
-            .mock("POST", "/v1/email")
+            .mock("POST", "/emails")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "subject": "1 recurring coaching session scheduled",
-                "personalization": [{
-                    "data": {
+                "template": {
+                    "variables": {
                         "session_count": "1",
                         "first_session_date": "Wednesday, March 4, 2026",
                         "last_session_date": "Wednesday, March 4, 2026",
                     }
-                }]
+                }
             })))
-            .with_status(202)
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
 
         let _mock_coach = server
-            .mock("POST", "/v1/email")
-            .with_status(202)
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
