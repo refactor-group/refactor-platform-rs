@@ -46,6 +46,7 @@ where
 
         let coaching_session_id: Id = path_params
             .get("coaching_session_id")
+            .or_else(|| path_params.get("id"))
             .ok_or_else(|| {
                 (
                     StatusCode::BAD_REQUEST,
