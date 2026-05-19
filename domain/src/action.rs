@@ -8,7 +8,7 @@ pub use entity_api::action::{
     create, create_with_assignees, delete_by_id, find_by_coach_relationships,
     find_by_coaching_relationship, find_by_id, find_by_id_with_assignees, find_by_user, update,
     update_status, update_with_assignees, ActionWithAssignees, AssigneeFilter, AssigneeScope,
-    FindByRelationshipParams, FindByUserParams, Scope,
+    CallerVisibility, FindByRelationshipParams, FindByUserParams, Scope,
 };
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>

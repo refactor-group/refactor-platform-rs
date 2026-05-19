@@ -414,6 +414,52 @@ pub enum AssigneeScope {
     User(Id),
 }
 
+/// Role-aware visibility narrowing applied on top of [`AssigneeFilter`] and
+/// `assignee_user_id` scoping. Coaches see the full relationship action set;
+/// coachees see only actions assigned to themselves or unassigned.
+///
+/// `Unrestricted` is the default so that any callsite building
+/// [`FindByRelationshipParams`] via `..Default::default()` retains the
+/// pre-fix coach-equivalent behavior.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CallerVisibility {
+    /// Full visibility across the relationship (coach caller, or any callsite
+    /// that has already authorized membership and wants the full set).
+    #[default]
+    Unrestricted,
+    /// Coachee caller: limit to actions assigned to this user, plus unassigned.
+    CoacheeSelf { user_id: Id },
+}
+
+impl CallerVisibility {
+    /// Predicate: does this caller's visibility allow an action with the given
+    /// assignees through the filter?
+    pub fn allows(&self, assignee_ids: &[Id]) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::CoacheeSelf { user_id } => {
+                assignee_ids.is_empty() || assignee_ids.contains(user_id)
+            }
+        }
+    }
+
+    /// Determines the visibility for a caller against a specific relationship
+    /// by their role in it. Coach role → `Unrestricted`; coachee role →
+    /// `CoacheeSelf`. Falls back to `Unrestricted` for unrecognized users
+    /// (membership is enforced upstream by `CoachingRelationshipAccess` /
+    /// controllers).
+    pub fn for_relationship(
+        user_id: Id,
+        relationship: &entity::coaching_relationships::Model,
+    ) -> Self {
+        match user_id {
+            id if id == relationship.coach_id => Self::Unrestricted,
+            id if id == relationship.coachee_id => Self::CoacheeSelf { user_id: id },
+            _ => Self::Unrestricted,
+        }
+    }
+}
+
 /// Query parameters for finding actions by coaching relationship.
 ///
 /// A simpler parameter set than `FindByUserParams` — no scope or user context needed
@@ -424,6 +470,8 @@ pub struct FindByRelationshipParams {
     pub assignee_filter: AssigneeFilter,
     /// When set, only include actions assigned to this specific user.
     pub assignee_user_id: Option<Id>,
+    /// Role-aware visibility narrowing. Defaults to `Unrestricted`.
+    pub caller_visibility: CallerVisibility,
     pub sort_column: Option<entity::actions::Column>,
     pub sort_order: Option<Order>,
 }
@@ -483,7 +531,9 @@ pub async fn find_by_coaching_relationship(
                 .as_ref()
                 .is_none_or(|id| assignee_ids.contains(id));
 
-            (passes_filter && passes_scope).then_some(ActionWithAssignees {
+            let passes_visibility = params.caller_visibility.allows(&assignee_ids);
+
+            (passes_filter && passes_scope && passes_visibility).then_some(ActionWithAssignees {
                 action,
                 assignee_ids,
             })
@@ -504,6 +554,13 @@ pub async fn find_by_coaching_relationship(
 /// for each one. Returns a HashMap where every coachee gets a key — even if they
 /// have no matching actions (empty vec).
 ///
+/// `caller_user_id` is the authenticated user invoking the query. It determines
+/// the per-relationship [`CallerVisibility`] (coach role → `Unrestricted`,
+/// coachee role → `CoacheeSelf`), which narrows a coachee's visible set to
+/// self-assigned + unassigned actions on a per-relationship basis. This
+/// matters for mixed-role users who are coach in one relationship and coachee
+/// in another within the same organization.
+///
 /// When `assignee_scope` is provided, it is resolved to a concrete user ID per
 /// relationship (Coach → coach_id, Coachee → coachee_id, User(id) → id) and
 /// set on the params so only actions assigned to that user are included.
@@ -515,6 +572,7 @@ pub async fn find_by_coach_relationships(
     relationships: &[entity::coaching_relationships::Model],
     params: FindByRelationshipParams,
     assignee_scope: Option<AssigneeScope>,
+    caller_user_id: Id,
 ) -> Result<HashMap<Id, Vec<ActionWithAssignees>>, Error> {
     let mut result: HashMap<Id, Vec<ActionWithAssignees>> = HashMap::new();
 
@@ -523,12 +581,15 @@ pub async fn find_by_coach_relationships(
     }
 
     for relationship in relationships {
-        let mut relationship_params = params.clone();
-        relationship_params.assignee_user_id = assignee_scope.as_ref().map(|scope| match scope {
-            AssigneeScope::Coach => relationship.coach_id,
-            AssigneeScope::Coachee => relationship.coachee_id,
-            AssigneeScope::User(id) => *id,
-        });
+        let relationship_params = FindByRelationshipParams {
+            caller_visibility: CallerVisibility::for_relationship(caller_user_id, relationship),
+            assignee_user_id: assignee_scope.as_ref().map(|scope| match scope {
+                AssigneeScope::Coach => relationship.coach_id,
+                AssigneeScope::Coachee => relationship.coachee_id,
+                AssigneeScope::User(id) => *id,
+            }),
+            ..params.clone()
+        };
 
         let actions =
             find_by_coaching_relationship(db, relationship.id, relationship_params).await?;
@@ -1169,6 +1230,7 @@ mod tests {
             status: None,
             assignee_filter: AssigneeFilter::All,
             assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
             sort_column: None,
             sort_order: None,
         };
@@ -1196,6 +1258,7 @@ mod tests {
             status: Some(Status::InProgress),
             assignee_filter: AssigneeFilter::All,
             assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
             sort_column: None,
             sort_order: None,
         };
@@ -1239,6 +1302,7 @@ mod tests {
             status: None,
             assignee_filter: AssigneeFilter::Unassigned,
             assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
             sort_column: None,
             sort_order: None,
         };
@@ -1266,6 +1330,7 @@ mod tests {
             status: None,
             assignee_filter: AssigneeFilter::All,
             assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
             sort_column: None,
             sort_order: None,
         };
@@ -1328,11 +1393,13 @@ mod tests {
             status: None,
             assignee_filter: AssigneeFilter::All,
             assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
             sort_column: None,
             sort_order: None,
         };
 
-        let result = find_by_coach_relationships(&db, &relationships, params, None).await?;
+        let result =
+            find_by_coach_relationships(&db, &relationships, params, None, coach_id).await?;
 
         // All 3 coachees should have keys
         assert_eq!(result.len(), 3, "All coachees should have entries");
@@ -1369,11 +1436,13 @@ mod tests {
             status: None,
             assignee_filter: AssigneeFilter::All,
             assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
             sort_column: None,
             sort_order: None,
         };
 
-        let result = find_by_coach_relationships(&db, &relationships, params, None).await?;
+        let result =
+            find_by_coach_relationships(&db, &relationships, params, None, coach_id).await?;
 
         assert_eq!(result.len(), 2, "Both coachees should have entries");
         assert!(result.get(&coachee_1).unwrap().is_empty());
@@ -1392,13 +1461,322 @@ mod tests {
             status: None,
             assignee_filter: AssigneeFilter::All,
             assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
             sort_column: None,
             sort_order: None,
         };
 
-        let result = find_by_coach_relationships(&db, &[], params, None).await?;
+        let result = find_by_coach_relationships(&db, &[], params, None, Id::new_v4()).await?;
 
         assert!(result.is_empty());
+
+        Ok(())
+    }
+
+    // ─── CallerVisibility tests ───────────────────────────────────────
+
+    #[test]
+    fn caller_visibility_unrestricted_allows_anything() {
+        let vis = CallerVisibility::Unrestricted;
+        assert!(vis.allows(&[]));
+        assert!(vis.allows(&[Id::new_v4()]));
+        assert!(vis.allows(&[Id::new_v4(), Id::new_v4()]));
+    }
+
+    #[test]
+    fn caller_visibility_coachee_self_allows_unassigned() {
+        let vis = CallerVisibility::CoacheeSelf {
+            user_id: Id::new_v4(),
+        };
+        assert!(vis.allows(&[]));
+    }
+
+    #[test]
+    fn caller_visibility_coachee_self_allows_when_self_in_assignees() {
+        let user_id = Id::new_v4();
+        let vis = CallerVisibility::CoacheeSelf { user_id };
+        assert!(vis.allows(&[user_id]));
+        assert!(vis.allows(&[user_id, Id::new_v4()]));
+    }
+
+    #[test]
+    fn caller_visibility_coachee_self_rejects_when_self_not_in_assignees() {
+        let vis = CallerVisibility::CoacheeSelf {
+            user_id: Id::new_v4(),
+        };
+        assert!(!vis.allows(&[Id::new_v4()]));
+        assert!(!vis.allows(&[Id::new_v4(), Id::new_v4()]));
+    }
+
+    #[test]
+    fn caller_visibility_for_relationship_coach_role_is_unrestricted() {
+        let coach_id = Id::new_v4();
+        let rel = create_test_relationship(Id::new_v4(), coach_id, Id::new_v4(), Id::new_v4());
+        assert_eq!(
+            CallerVisibility::for_relationship(coach_id, &rel),
+            CallerVisibility::Unrestricted
+        );
+    }
+
+    #[test]
+    fn caller_visibility_for_relationship_coachee_role_is_coachee_self() {
+        let coachee_id = Id::new_v4();
+        let rel = create_test_relationship(Id::new_v4(), Id::new_v4(), coachee_id, Id::new_v4());
+        assert_eq!(
+            CallerVisibility::for_relationship(coachee_id, &rel),
+            CallerVisibility::CoacheeSelf {
+                user_id: coachee_id
+            }
+        );
+    }
+
+    // ─── Coachee visibility integration tests ─────────────────────────
+
+    /// Coachee caller sees self-assigned + unassigned, never coach-assigned.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_coachee_visibility_filters_coach_actions(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        let coach_action_id = Id::new_v4();
+        let coachee_action_id = Id::new_v4();
+        let unassigned_action_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![
+                create_test_action(coach_action_id, session_id),
+                create_test_action(coachee_action_id, session_id),
+                create_test_action(unassigned_action_id, session_id),
+            ]])
+            .append_query_results(vec![vec![
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: coach_action_id,
+                    user_id: coach_id,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: coachee_action_id,
+                    user_id: coachee_id,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+            ]])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
+            caller_visibility: CallerVisibility::CoacheeSelf {
+                user_id: coachee_id,
+            },
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
+
+        let returned_ids: std::collections::HashSet<Id> =
+            results.iter().map(|a| a.action.id).collect();
+
+        assert_eq!(results.len(), 2);
+        assert!(returned_ids.contains(&coachee_action_id));
+        assert!(returned_ids.contains(&unassigned_action_id));
+        assert!(
+            !returned_ids.contains(&coach_action_id),
+            "Coach-assigned action must never be returned to a coachee"
+        );
+
+        Ok(())
+    }
+
+    /// Coach caller (Unrestricted visibility) sees all three buckets — regression guard.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_coach_visibility_sees_all_three_buckets(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        let coach_action_id = Id::new_v4();
+        let coachee_action_id = Id::new_v4();
+        let unassigned_action_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![
+                create_test_action(coach_action_id, session_id),
+                create_test_action(coachee_action_id, session_id),
+                create_test_action(unassigned_action_id, session_id),
+            ]])
+            .append_query_results(vec![vec![
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: coach_action_id,
+                    user_id: coach_id,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: coachee_action_id,
+                    user_id: coachee_id,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+            ]])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
+            caller_visibility: CallerVisibility::Unrestricted,
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
+
+        assert_eq!(results.len(), 3, "Coach must see all three buckets");
+
+        Ok(())
+    }
+
+    /// Coachee with `assignee_filter=assigned` sees only self-assigned, not unassigned.
+    /// Combines visibility narrowing with the existing assignee_filter.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_coachee_with_assigned_filter_excludes_unassigned(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+
+        let coachee_action_id = Id::new_v4();
+        let unassigned_action_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![
+                create_test_action(coachee_action_id, session_id),
+                create_test_action(unassigned_action_id, session_id),
+            ]])
+            .append_query_results(vec![vec![entity::actions_users::Model {
+                id: Id::new_v4(),
+                action_id: coachee_action_id,
+                user_id: coachee_id,
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::Assigned,
+            assignee_user_id: None,
+            caller_visibility: CallerVisibility::CoacheeSelf {
+                user_id: coachee_id,
+            },
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action.id, coachee_action_id);
+
+        Ok(())
+    }
+
+    /// Mixed-role: caller is coach in one relationship, coachee in another.
+    /// Per-relationship visibility resolution narrows only the coachee-side
+    /// relationship, leaving the coach-side relationship unrestricted.
+    #[tokio::test]
+    async fn find_by_coach_relationships_mixed_role_resolves_per_relationship() -> Result<(), Error>
+    {
+        let user_id = Id::new_v4();
+        let other_coach = Id::new_v4();
+        let other_coachee = Id::new_v4();
+        let org_id = Id::new_v4();
+
+        let rel_as_coach = Id::new_v4();
+        let rel_as_coachee = Id::new_v4();
+
+        let session_a = Id::new_v4();
+        let session_b = Id::new_v4();
+
+        let action_in_a = Id::new_v4();
+        let action_in_b_user_assigned = Id::new_v4();
+        let action_in_b_other_assigned = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let relationships = vec![
+            create_test_relationship(rel_as_coach, user_id, other_coachee, org_id),
+            create_test_relationship(rel_as_coachee, other_coach, user_id, org_id),
+        ];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![create_test_action(action_in_a, session_a)]])
+            .append_query_results(vec![vec![entity::actions_users::Model {
+                id: Id::new_v4(),
+                action_id: action_in_a,
+                user_id: other_coach,
+                created_at: now.into(),
+                updated_at: now.into(),
+            }]])
+            .append_query_results(vec![vec![
+                create_test_action(action_in_b_user_assigned, session_b),
+                create_test_action(action_in_b_other_assigned, session_b),
+            ]])
+            .append_query_results(vec![vec![
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: action_in_b_user_assigned,
+                    user_id,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: action_in_b_other_assigned,
+                    user_id: other_coach,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+            ]])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
+            caller_visibility: CallerVisibility::default(),
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let result =
+            find_by_coach_relationships(&db, &relationships, params, None, user_id).await?;
+
+        let coach_side = result.get(&other_coachee).expect("coach-side entry");
+        assert_eq!(
+            coach_side.len(),
+            1,
+            "Coach side returns all actions unrestricted"
+        );
+
+        let coachee_side = result.get(&user_id).expect("coachee-side entry");
+        assert_eq!(coachee_side.len(), 1);
+        assert_eq!(coachee_side[0].action.id, action_in_b_user_assigned);
 
         Ok(())
     }
