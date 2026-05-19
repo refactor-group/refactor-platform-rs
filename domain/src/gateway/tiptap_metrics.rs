@@ -10,7 +10,7 @@
 // `///` is *outer* (documents the next item).
 
 // Import order: std → external crates → crate::*, blank line between blocks.
-// `log`::*` glob brings warn!/info!/debug!/error! into scope.
+// `log::*` glob brings warn!/info!/debug!/error! into scope.
 use std::time::Duration;
 
 use log::*;
@@ -18,14 +18,13 @@ use serde::Deserialize;
 
 use service::config::Config;
 
-#[allow(unused_imports)]
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 
 // Bounded waits per call. `Duration` is the canonical type at API boundaries
 // never raw `u64` seconds. The sibling `tiptap.rs` sets no timeout (a known
-// foutgun;) admin endpoints need bounded budgets so a dead upstream can't
+// footgun); admin endpoints need bounded budgets so a dead upstream can't
 // hold an Axum worker. `connect_timeout` covers DNS+TCP+TLS only; setting it
-// short means we fail fast instead of burning the full 40s on a dead SYN.
+// short means we fail fast instead of burning the full 30s on a dead SYN.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -44,7 +43,6 @@ const MAX_PAGES: u32 = 10_000;
 
 // `pub(crate)`: visible inside `domain`, hidden from `web/` and `entity_api/`.
 // Gateways are a domain-layer implementation detail (CLAUDE.md rule).
-#[allow(dead_code)]
 pub(crate) struct Client {
     // `reqwest::Client` is internally `Arc<...>`: cloning is a cheap atomic
     // refcount bump that shares one connection pool. One per process; clone freely.
@@ -58,15 +56,15 @@ impl Client {
     /// Construct a TipTap metrics client from app config.
     ///
     /// Returns `InternalErrorKind::Config` if `tiptap_url` or `tiptap_auth_key`
-    /// is missing - operator-visible misconfiguration, not transient failure
+    /// is missing - operator-visible misconfiguration, not transient failure.
     //
     // `async fn` matches sibling gateway signatures even though nothing here
     // awaits - keep the API stable if a future impl needs to.
     pub(crate) async fn new(config: &Config) -> Result<Self, Error> {
-        // `?` propogates `domain::Error` unchanged - types match exactly.
+        // `?` propagates `domain::Error` unchanged - types match exactly.
         let client = build_client(config).await?;
 
-        // `ok_or_else` (not `ok_or`): closure runs only on `None, deferring
+        // `ok_or_else` (not `ok_or`): closure runs only on `None`, deferring
         // the `Error` allocation. Clippy's `or_fun_call` flags the eager form.
         let base_url = config.tiptap_url().ok_or_else(|| {
             // `warn!` captures file:line automatically.
@@ -74,7 +72,7 @@ impl Client {
             Error {
                 // Missing input, not a wrapped downstream failure -> no `source`.
                 source: None,
-                // `Config` variant = "operator forgot TIPTAP_URL"; maps to HTTP 500
+                // `Config` variant = "operator forgot TIPTAP_URL"; maps to HTTP 500.
                 error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
             }
         })?;
@@ -83,54 +81,6 @@ impl Client {
         Ok(Self { client, base_url })
     }
 
-    /// Fetch global TipTap statistics: Get/api/statistics.
-    ///
-    /// One-shot summary; no pagination. Upstream HTTP and deserialize
-    /// failures oboth map to `External::Network` - TipTap drift is an
-    /// external concern, not our bug.
-    #[allow(dead_code)]
-    pub(crate) async fn fetch_statistics(&self) -> Result<Statistics, Error> {
-        // `format!` against the stored base. Hardcoded path - TipTap's
-        // metrics endpoint is well-defined
-        let url = format!("{}/api/statistics", self.base_url);
-
-        // GET with default headers (auth attached in build client).
-        // `map_err` over `?` here because reqwest::Error -> External::Network
-        // is the default `From` impl, but we want to log the URL too.
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            warn!("Failed to fetch TipTap statistics from {url}: {e:?}");
-            Error {
-                source: Some(Box::new(e)),
-                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-            }
-        })?;
-
-        // Check status BEFORE deserializing - an error body won't shape-match
-        // `Statistics`. Reqwest alternative: `response.error_for_status()`.
-        // We follow `tiptap.rs`'s manual style for consistency.
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            warn!("TipTap /api/statistics returned {status}: {body}");
-            return Err(Error {
-                source: None,
-                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-            });
-        }
-
-        // `.json::<T>()` reads body + parses as JSON into `T`. Deserialize
-        // failures = TipTap schema drift = External::Network.
-        response.json::<Statistics>().await.map_err(|e| {
-            warn!("Failed to deserialize TipTap statistics: {e:?}");
-            Error {
-                source: Some(Box::new(e)),
-                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-            }
-        })
-    }
-
-    /// Fetch a single page from `GET /api/documents?skip&take`.
-    ///
     /// Private helper - the public surface is `list_all_documents`. Same
     /// error-mapping pattern as `fetch_statistics`: HTTP and deserialize
     /// failures both become `External::Network`.
@@ -157,7 +107,7 @@ impl Client {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            warn!("TipTap /api/documents/returned {status} at skip={skip}: {body}");
+            warn!("TipTap /api/documents returned {status} at skip={skip}: {body}");
             return Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
@@ -178,7 +128,7 @@ impl Client {
     /// CAVEAT: offset pagination is racy under concurrent writes - a doc
     /// inserted at offset N mid-walk can be missed or double-counted
     /// Acceptable for admin observability (eventual consistency is fine)
-    /// a stricture consumer would snapshot a timestamp and filter results
+    /// a stricter consumer would snapshot a timestamp and filter results
     pub(crate) async fn list_all_documents(&self) -> Result<Vec<Document>, Error> {
         let mut all: Vec<Document> = Vec::new();
         let mut skip: u32 = 0;
@@ -199,7 +149,7 @@ impl Client {
                 return Ok(all);
             }
 
-            // `saturating_add` defends against u32 overflow ( would take 4B+
+            // `saturating_add` defends against u32 overflow (would take 4B+
             // docs to hit, but it's free defensive coding).
             skip = skip.saturating_add(PAGE_SIZE);
         }
@@ -220,29 +170,6 @@ impl Client {
 // Response types
 // -----------------------------------------------------------------------------
 //
-// 1. `#[serde(rename_all = "camelCase")]` maps wire camelCase → snake_case fields.
-// 2. NO `deny_unknown_fields` — TipTap is external; additive changes shouldn't
-//    500 us. `#[serde(default)]` on optional fields parses missing keys as
-//    `Default::default()`.
-
-/// Global TipTap statistics returned by `GET /api/statistics`.
-/// One-shot summary, no pagination. Unsurfaced fields are silently ignored.
-// `Deserialize` only — never sent on the wire. `Debug` for logs, `Clone` for cheap copy.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-pub(crate) struct Statistics {
-    // `u64` not `usize`: wire counts must be platform-independent.
-    pub(crate) total_documents: u64,
-
-    // Missing key → 0. Forward-compatible if TipTap drops this field.
-    #[serde(default)]
-    pub(crate) current_loaded_documents_count: u64,
-
-    // Capture for diagnostic logs; useful when TipTap's schema drifts.
-    #[serde(default)]
-    pub(crate) version: String,
-}
 
 /// A single TipTap document returned by `GET /api/documents`.
 ///
@@ -296,7 +223,7 @@ async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
 
 /// Build the `Authorization` header for TipTap REST
 ///
-/// IMPORTANT: TipTap auth is the Raw secret value - NOT `Bearer <secret>`.
+/// IMPORTANT: TipTap auth is the raw secret value - NOT `Bearer <secret>`.
 /// Matches `tiptap.rs::build_auth_headers()`. Do NOT copy mailersend's
 /// Bearer pattern blindly
 async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
@@ -321,7 +248,7 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
             // `Box::new` erases the concrete type into a trait object; preserves
             // the cause for log dumps via Error::source
             source: Some(Box::new(err)),
-            // `Other` (not `Config`): code/data/ shape problem, distinct triage signal.
+            // `Other` (not `Config`): code/data shape problem, distinct triage signal.
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
                 "Failed to create TipTap auth header value".to_string(),
             )),
@@ -329,7 +256,7 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
     })?;
 
     // Redact this value from `Debug` output - protects against accidental leaks
-    // via dbg!, log lines, or panic backtraces, Free habit
+    // via dbg!, log lines, or panic backtraces. Free habit.
     auth_value.set_sensitive(true);
 
     // Typed constant (not the string "Authorization"): typos become compile
@@ -361,46 +288,6 @@ mod tests {
             "--tiptap-auth-key=test-auth-key",
             &format!("--tiptap-url={tiptap_url}"),
         ])
-    }
-
-    /// Happy path: TipTap returns 200 + well-formed JSON, we get back a
-    /// populated `Statistics`. Exercises auth-header plumbing, URL
-    /// construction, status check, and rename_all deserialization in one shot
-    #[tokio::test]
-    async fn fetch_statistics_happy_path() -> Result<(), Error> {
-        // `Server::new_async` binds a random port. The `_async` variant
-        // is required inside a tokio runtime.
-        let mut server = Server::new_async().await;
-
-        // Register: GET /api/statistics -> 200 + JSON body. The `_mock`
-        // binding owns the registration - dropping it before assertions
-        // would un-register the route. Use `_mock`, Not `_`.
-        let _mock = server
-            .mock("GET", "/api/statistics")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{
-                    "totalDocuments": 42,
-                    "currentLoadedDocumentsCount": 7,
-                    "version": "1.2.3"
-                    }"#,
-            )
-            .create_async()
-            .await;
-
-        // Build a Client pointed at the mock server.
-        let config = test_config(&server.url());
-        let client = Client::new(&config).await?;
-
-        let stats = client.fetch_statistics().await?;
-
-        // Assertions cover shape And the rename_all camelCase mapping
-        assert_eq!(stats.total_documents, 42);
-        assert_eq!(stats.current_loaded_documents_count, 7);
-        assert_eq!(stats.version, "1.2.3");
-
-        Ok(())
     }
 
     /// Build a JSON array of N synthetic documents starting at `start`.
@@ -463,5 +350,62 @@ mod tests {
         assert_eq!(docs[109].name, "doc-109");
 
         Ok(())
+    }
+
+    /// Upstream returns 500 -> domain::Error with External::Network.
+    /// The response BODY is logged for triage but doesn't leak into the
+    /// the error type
+    /// (admins see "TipTap unavailable", not the raw 500 page).
+    #[tokio::test]
+    async fn list_all_documents_maps_5xx_to_external_network() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/documents")
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .with_body("upstream_broke")
+            .create_async()
+            .await;
+
+        let config = test_config(&server.url());
+        let client = Client::new(&config).await.expect("client builds");
+        let err = client.list_all_documents().await.expect_err("expected Err");
+
+        // `matches!` macro for ergonomic enum-pattern assertions.
+        // Without it you'd write a verbose `match` + ` panic!` on the else arm.
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::External(ExternalErrorKind::Network),
+            ),
+            "expected External::Network, got {:?}",
+            err.error_kind,
+        );
+    }
+
+    /// Upstream returns 200 + garbage JSON -> External::Network
+    /// (TipTap schema drift is an upstream concern). Tests the same error
+    /// variant as a 5xx because both are "we can't trust this response."
+    #[tokio::test]
+    async fn list_all_documents_maps_bad_json_to_external_network() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/api/documents")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            // Not a JSON array - list_all_documents will fail to deserialize.
+            .with_body(r#"{ "nope": "this is not a documents page"}"#)
+            .create_async()
+            .await;
+
+        let config = test_config(&server.url());
+        let client = Client::new(&config).await.expect("client builds");
+        let err = client.list_all_documents().await.expect_err("expected Err");
+
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::External(ExternalErrorKind::Network),
+        ));
     }
 }
