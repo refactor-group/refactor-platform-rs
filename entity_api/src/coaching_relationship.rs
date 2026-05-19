@@ -140,6 +140,29 @@ pub async fn find_by_coach_and_organization(
     Ok(relationships)
 }
 
+/// Finds coaching relationships where the given user is a participant
+/// (coach OR coachee), within a specific organization.
+pub async fn find_by_user_and_organization(
+    db: &DatabaseConnection,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<Vec<Model>, Error> {
+    let relationships = coaching_relationships::Entity::find()
+        .filter(
+            Condition::all()
+                .add(
+                    Condition::any()
+                        .add(coaching_relationships::Column::CoachId.eq(user_id))
+                        .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+                )
+                .add(coaching_relationships::Column::OrganizationId.eq(organization_id)),
+        )
+        .all(db)
+        .await?;
+
+    Ok(relationships)
+}
+
 /// Checks if a user is a coach of another user.
 ///
 /// Returns `true` if there exists a coaching relationship where
