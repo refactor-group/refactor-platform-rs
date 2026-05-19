@@ -80,22 +80,26 @@ pub async fn try_claim_completed(db: &DatabaseConnection, id: Id) -> Result<bool
     Ok(result.rows_affected > 0)
 }
 
-/// Updates recording status and optional artifact fields.
+/// Optional artifact fields to set when updating a recording's status.
 ///
-/// Optional fields follow a preserve-or-overwrite pattern: passing `None` keeps the existing
-/// value; passing `Some(x)` overwrites it. Fields cannot be cleared back to `None` via this
-/// function.
-#[allow(clippy::too_many_arguments)]
+/// Fields follow a preserve-or-overwrite pattern: `None` keeps the existing value,
+/// `Some(x)` overwrites it. Fields cannot be cleared back to `None` via this struct.
+#[derive(Default)]
+pub struct RecordingArtifacts {
+    pub video_url: Option<String>,
+    pub audio_url: Option<String>,
+    pub duration_seconds: Option<i32>,
+    pub started_at: Option<DateTimeWithTimeZone>,
+    pub ended_at: Option<DateTimeWithTimeZone>,
+    pub error_message: Option<String>,
+}
+
+/// Updates recording status and optional artifact fields.
 pub async fn update_status(
     db: &DatabaseConnection,
     id: Id,
     status: MeetingRecordingStatus,
-    video_url: Option<String>,
-    audio_url: Option<String>,
-    duration_seconds: Option<i32>,
-    started_at: Option<DateTimeWithTimeZone>,
-    ended_at: Option<DateTimeWithTimeZone>,
-    error_message: Option<String>,
+    artifacts: RecordingArtifacts,
 ) -> Result<Model, Error> {
     let existing = Entity::find_by_id(id).one(db).await?.ok_or(Error {
         source: None,
@@ -109,12 +113,12 @@ pub async fn update_status(
         coaching_session_id: Unchanged(existing.coaching_session_id),
         bot_id: Unchanged(existing.bot_id),
         status: Set(status),
-        video_url: Set(video_url.or(existing.video_url)),
-        audio_url: Set(audio_url.or(existing.audio_url)),
-        duration_seconds: Set(duration_seconds.or(existing.duration_seconds)),
-        started_at: Set(started_at.or(existing.started_at)),
-        ended_at: Set(ended_at.or(existing.ended_at)),
-        error_message: Set(error_message.or(existing.error_message)),
+        video_url: Set(artifacts.video_url.or(existing.video_url)),
+        audio_url: Set(artifacts.audio_url.or(existing.audio_url)),
+        duration_seconds: Set(artifacts.duration_seconds.or(existing.duration_seconds)),
+        started_at: Set(artifacts.started_at.or(existing.started_at)),
+        ended_at: Set(artifacts.ended_at.or(existing.ended_at)),
+        error_message: Set(artifacts.error_message.or(existing.error_message)),
         created_at: Unchanged(existing.created_at),
         updated_at: Set(chrono::Utc::now().into()),
     };
@@ -228,12 +232,7 @@ mod tests {
             &db,
             model.id,
             MeetingRecordingStatus::Recording,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            RecordingArtifacts::default(),
         )
         .await?;
 
@@ -251,12 +250,7 @@ mod tests {
             &db,
             Id::new_v4(),
             MeetingRecordingStatus::Failed,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            RecordingArtifacts::default(),
         )
         .await;
 

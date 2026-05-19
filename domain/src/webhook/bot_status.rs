@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus};
+use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus, RecordingArtifacts};
 use events::{DomainEvent, EventPublisher};
 use log::*;
 use sea_orm::DatabaseConnection;
@@ -31,7 +31,7 @@ pub async fn handle(
         return Ok(());
     }
 
-    recording_api::update_status(db, recording.id, status, None, None, None, None, None, None)
+    recording_api::update_status(db, recording.id, status, RecordingArtifacts::default())
         .await?;
 
     let coaching_session_id = recording.coaching_session_id;

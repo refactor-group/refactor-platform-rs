@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus};
+use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus, RecordingArtifacts};
 use events::{DomainEvent, EventPublisher};
 use log::*;
 use sea_orm::DatabaseConnection;
@@ -35,12 +35,10 @@ pub async fn handle(
         db,
         recording.id,
         MeetingRecordingStatus::Failed,
-        None,
-        None,
-        None,
-        None,
-        None,
-        error_message,
+        RecordingArtifacts {
+            error_message,
+            ..Default::default()
+        },
     )
     .await?;
 

@@ -3,6 +3,7 @@
 pub use entity::meeting_recording::{MeetingRecordingStatus, Model};
 pub use entity_api::meeting_recording::{
     find_by_bot_id, find_latest_by_coaching_session, try_claim_completed, update_status,
+    RecordingArtifacts,
 };
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
@@ -112,12 +113,10 @@ pub async fn stop(
         db,
         recording.id,
         MeetingRecordingStatus::Cancelled,
-        None,
-        None,
-        None,
-        None,
-        Some(chrono::Utc::now().into()),
-        None,
+        RecordingArtifacts {
+            ended_at: Some(chrono::Utc::now().into()),
+            ..Default::default()
+        },
     )
     .await?)
 }

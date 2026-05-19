@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus};
+use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus, RecordingArtifacts};
 use entity::Id;
 use events::{DomainEvent, EventPublisher};
 use log::*;
@@ -106,12 +106,10 @@ pub async fn handle(
                     &db,
                     recording.id,
                     MeetingRecordingStatus::Failed,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(e.to_string()),
+                    RecordingArtifacts {
+                        error_message: Some(e.to_string()),
+                        ..Default::default()
+                    },
                 )
                 .await;
                 match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await
