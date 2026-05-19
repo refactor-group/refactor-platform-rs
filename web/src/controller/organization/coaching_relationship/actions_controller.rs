@@ -55,8 +55,11 @@ fn check_assignee_visibility(
     }
 }
 
-/// GET actions for a coaching relationship. See `BatchCoacheeActions` v5
-/// for visibility rules and the `assignee` strict-contains semantic.
+/// GET actions for a coaching relationship.
+///
+/// Coachees see only actions assigned to themselves or unassigned.
+/// `assignee=X` filters strictly to actions whose assignees contain X
+/// (excludes unassigned); omit it for the broad view.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
@@ -113,8 +116,8 @@ pub async fn read(
 }
 
 /// GET actions across all participant relationships, grouped by coachee
-/// user id. See `BatchCoacheeActions` v5 for visibility rules and the
-/// `assignee` strict-contains semantic.
+/// user id. Visibility narrows per-relationship by the caller's role
+/// (full for coach side, self-or-unassigned for coachee side).
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/actions",

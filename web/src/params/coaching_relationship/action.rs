@@ -82,8 +82,7 @@ pub(crate) struct IndexParams {
     /// PascalCase status: `NotStarted`, `InProgress`, `Completed`, `OnHold`, `WontDo`.
     pub(crate) status: Option<Status>,
     /// Strict-contains scope: `coach`, `coachee`, or a user UUID. Excludes
-    /// unassigned when present. Omit for the broad view (see
-    /// `BatchCoacheeActions` v5).
+    /// unassigned when present. Omit for the broad view.
     pub(crate) assignee: Option<AssigneeScope>,
     /// Defaults to `due_by` when any sort param is provided.
     pub(crate) sort_by: Option<SortField>,
