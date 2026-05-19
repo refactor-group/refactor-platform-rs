@@ -514,11 +514,6 @@ async fn send_recurring_series_email_to_recipient(
             &recipient.email,
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
-        .subject(if sessions.len() == 1 {
-            "1 recurring coaching session scheduled".to_string()
-        } else {
-            format!("{session_count} recurring coaching sessions scheduled")
-        })
         .template_id(&email_config.template_id)
         .add_variable("first_name", &recipient.first_name)
         .add_variable("other_user_first_name", &other_user.first_name)
@@ -1395,13 +1390,12 @@ mod tests {
         );
 
         // Email to coachee — other_user is the coach. Body-match per recipient
-        // proves the role swap AND that the dynamic plural subject is set.
+        // proves the role swap.
         let _mock_coachee = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
-                "subject": "3 recurring coaching sessions scheduled",
                 "template": {
                     "id": "recurring_template_xyz",
                     "variables": {
@@ -1452,12 +1446,10 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
         )];
 
-        // With a single session, first and last dates must match AND the
-        // subject must use the singular form ("session", not "sessions").
+        // With a single session, first and last dates must match.
         let _mock_coachee = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "subject": "1 recurring coaching session scheduled",
                 "template": {
                     "variables": {
                         "session_count": "1",
