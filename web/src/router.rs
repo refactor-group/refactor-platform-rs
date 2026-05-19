@@ -13,7 +13,8 @@ use tower_http::services::ServeDir;
 use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
     goal_controller, jwt_controller, magic_link_controller, note_controller, oauth_controller,
-    organization, organization_controller, user, user_controller, user_session_controller,
+    organization, organization_controller, tiptap_metrics_controller, user, user_controller,
+    user_session_controller,
 };
 use crate::sse;
 
@@ -86,6 +87,9 @@ use utoipa_rapidoc::RapiDoc;
             user::coaching_session_controller::index,
             user::goal_controller::index,
             jwt_controller::generate_collab_token,
+            tiptap_metrics_controller::platform_totals,
+            tiptap_metrics_controller::per_org_metrics,
+            tiptap_metrics_controller::abandoned_documents,
         ),
         components(
             schemas(
@@ -153,6 +157,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
+        .merge(tiptap_metrics_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
         .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
         .fallback_service(static_routes())
@@ -246,6 +251,36 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                     protect::coaching_sessions::delete,
                 )),
         )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// /admin/tiptap/metrics/* - SuperAdmin-only TipTap observability
+///
+/// Layer order (outer -> inner): require_auth (cookie session) ->
+/// admin_only (SuperAdmin role) -> handler. Axum applies layers in reverse
+/// of registration; outermost-registered runs first.
+pub fn tiptap_metrics_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/admin/tiptap/metrics/totals",
+            get(tiptap_metrics_controller::platform_totals),
+        )
+        .route(
+            "/admin/tiptap/metrics/per-org",
+            get(tiptap_metrics_controller::per_org_metrics),
+        )
+        .route(
+            "/admin/tiptap/metrics/abandoned",
+            get(tiptap_metrics_controller::abandoned_documents),
+        )
+        // Per-route authorization: SuperAdmin only.
+        .route_layer(from_fn_with_state(
+            app_state.clone(),
+            protect::tiptap_metrics::admin_only,
+        ))
+        // Outermost: session cookie required. Runs FIRST despite being
+        // registered last (axum layer ordering).
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
