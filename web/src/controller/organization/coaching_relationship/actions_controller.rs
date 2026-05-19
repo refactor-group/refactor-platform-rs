@@ -11,15 +11,23 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{action as ActionApi, coaching_relationship as CoachingRelationshipApi, Id};
+use domain::{
+    action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
+    Id,
+};
 use service::config::ApiVersion;
 
 use log::*;
 
-/// Returns an error response if the caller is not permitted to scope the
-/// returned action set to the requested `assignee`. Coachees may only ask
-/// for their own actions (`assignee=coachee` or `assignee=<self.id>`);
-/// anything else is a 403.
+/// Used by the batch handler to gate the HTTP-layer `assignee` scope check:
+/// coach-anywhere callers bypass it; coachee-only callers go through it.
+fn caller_is_coach_in_any(relationships: &[coaching_relationships::Model], user_id: Id) -> bool {
+    relationships
+        .iter()
+        .any(|relationship| relationship.coach_id == user_id)
+}
+
+/// 403s a coachee caller that scopes `assignee` to anyone other than self.
 fn check_assignee_visibility(
     caller_id: Id,
     caller_visibility: &ActionApi::CallerVisibility,
@@ -47,27 +55,11 @@ fn check_assignee_visibility(
     }
 }
 
-/// GET actions for a specific coaching relationship.
-///
-/// The `CoachingRelationshipAccess` extractor verifies that the authenticated
-/// user is a participant (coach or coachee) in the relationship.
-///
-/// Supports an optional `assignee` query parameter with **strict-contains**
-/// semantics — i.e., the action's assignees must contain the resolved user id.
-/// Unassigned actions are *excluded* whenever `assignee` is present:
-/// - `?assignee=coach` — actions assigned to the coach of this relationship
-/// - `?assignee=coachee` — actions assigned to the coachee of this relationship
-/// - `?assignee={user_id}` — actions assigned to a specific user
-/// - omit the param to get the broad view (no scope filter); the
-///   `caller_visibility` predicate alone narrows the result. **For a coachee
-///   caller wanting their own broad view (self-assigned ∪ unassigned), omit
-///   `assignee` rather than sending `assignee=coachee`** — the strict-contains
-///   semantic would otherwise exclude unassigned actions.
-///
-/// Coachee callers are limited to actions assigned to themselves or
-/// unassigned; the coach's assigned actions are never returned to a coachee.
-/// Requesting `assignee=coach` (or any user other than self) as a coachee
-/// returns 403 with `error: "forbidden_assignee_scope"`.
+/// GET actions for a coaching relationship. Coachees see only self-assigned
+/// or unassigned actions; the coach's actions are never returned to a
+/// coachee. `assignee=X` is strict-contains (excludes unassigned); omit for
+/// the broad view. Coachee scoping to coach/other-user → 403
+/// `forbidden_assignee_scope`. See `BatchCoacheeActions` v5 contract.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
@@ -123,37 +115,12 @@ pub async fn read(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
 
-/// GET actions across all coaching relationships where the authenticated user
-/// is a participant (coach or coachee), grouped by coachee user ID.
-///
-/// Supports an optional `assignee` query parameter with **strict-contains**
-/// semantics — the action's assignees must contain the resolved user id, so
-/// unassigned actions are excluded whenever `assignee` is present. The
-/// resolution is per-relationship (the `coach`/`coachee` role strings resolve
-/// to that specific relationship's `coach_id`/`coachee_id`):
-/// - `?assignee=coach` — actions assigned to the coach in each relationship
-/// - `?assignee=coachee` — actions assigned to the coachee in each relationship
-/// - `?assignee={user_id}` — actions assigned to a specific user (UUID form;
-///   supported for completeness but not invoked by the FE today)
-/// - omit the param to get the broad view (no scope filter); the
-///   `caller_visibility` predicate alone narrows the result.
-///
-/// **FE guidance — when to omit `assignee`:** for the coach's "All" tab and
-/// for any coachee caller's broad view, omit the param. Sending
-/// `assignee=coachee` from a coachee resolves to their own user id and the
-/// strict-contains semantic then excludes unassigned actions — by design, but
-/// usually not what a coachee broad view wants. For coach role-toggle tabs
-/// ("Coach Actions" / "Coachee Actions") that want a strict-scoped slice,
-/// include the param as usual.
-///
-/// Coachee callers are limited to actions assigned to themselves or unassigned
-/// in each relationship; the coach's assigned actions are never returned.
-/// Coachees may only pass `assignee=coachee` or `assignee=<self.id>` —
-/// requesting any other assignee scope returns 403 with
-/// `error: "forbidden_assignee_scope"`. For users who are coach in some
-/// relationships and coachee in others within the same organization,
-/// visibility is determined per-relationship based on the caller's role in
-/// each one.
+/// GET actions across all coaching relationships the caller participates in,
+/// grouped by coachee user id. `assignee=X` resolves per-relationship and is
+/// strict-contains. Mixed-role users get per-relationship visibility (full
+/// for coach side, narrowed for coachee side). Coachee-only callers scoping
+/// to non-self → 403; coach-anywhere callers bypass that guard. See
+/// `BatchCoacheeActions` v5 contract.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/actions",
@@ -197,16 +164,12 @@ pub async fn index(
     // relationships. If the caller is *only* a coachee across the returned
     // relationships, an `assignee=coach` request is forbidden. If they are a
     // coach in at least one relationship, the assignee scope is permitted.
-    let caller_is_coach_anywhere = relationships
-        .iter()
-        .any(|relationship| relationship.coach_id == user.id);
-
-    if !caller_is_coach_anywhere {
+    if !caller_is_coach_in_any(&relationships, user.id) {
         let coachee_visibility = ActionApi::CallerVisibility::CoacheeSelf { user_id: user.id };
         check_assignee_visibility(user.id, &coachee_visibility, assignee_scope.as_ref())?;
     }
 
-    let coachee_actions = ActionApi::find_by_coach_relationships(
+    let coachee_actions = ActionApi::find_by_user_relationships(
         app_state.db_conn_ref(),
         &relationships,
         query_params,
@@ -230,6 +193,68 @@ mod tests {
             Err(Error::Web(WebErrorKind::ForbiddenAssigneeScope)) => {}
             other => panic!("expected ForbiddenAssigneeScope, got: {other:?}"),
         }
+    }
+
+    fn make_relationship(coach_id: Id, coachee_id: Id) -> coaching_relationships::Model {
+        let now = chrono::Utc::now().fixed_offset();
+        coaching_relationships::Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id,
+            slug: "test".to_string(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    // ─── caller_is_coach_in_any tests ─────────────────────────────────
+
+    #[test]
+    fn caller_is_coach_in_any_empty_relationships_is_false() {
+        let user_id = Id::new_v4();
+        assert!(!caller_is_coach_in_any(&[], user_id));
+    }
+
+    #[test]
+    fn caller_is_coach_in_any_only_coachee_is_false() {
+        let user_id = Id::new_v4();
+        let other = Id::new_v4();
+        let rels = vec![
+            make_relationship(other, user_id),
+            make_relationship(other, user_id),
+        ];
+        assert!(!caller_is_coach_in_any(&rels, user_id));
+    }
+
+    #[test]
+    fn caller_is_coach_in_any_coach_in_at_least_one_is_true() {
+        let user_id = Id::new_v4();
+        let other = Id::new_v4();
+        let rels = vec![
+            make_relationship(other, user_id), // coachee here
+            make_relationship(user_id, other), // coach here
+        ];
+        assert!(caller_is_coach_in_any(&rels, user_id));
+    }
+
+    #[test]
+    fn caller_is_coach_in_any_coach_in_all_is_true() {
+        let user_id = Id::new_v4();
+        let rels = vec![
+            make_relationship(user_id, Id::new_v4()),
+            make_relationship(user_id, Id::new_v4()),
+        ];
+        assert!(caller_is_coach_in_any(&rels, user_id));
+    }
+
+    #[test]
+    fn caller_is_coach_in_any_unrelated_user_is_false() {
+        let user_id = Id::new_v4();
+        let other_coach = Id::new_v4();
+        let other_coachee = Id::new_v4();
+        let rels = vec![make_relationship(other_coach, other_coachee)];
+        assert!(!caller_is_coach_in_any(&rels, user_id));
     }
 
     #[test]

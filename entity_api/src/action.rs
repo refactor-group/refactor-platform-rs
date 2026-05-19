@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sea_orm::{
     entity::prelude::*,
@@ -35,7 +35,7 @@ impl ActionWithAssignees {
     /// Returns assignee IDs that are present in the current list
     /// but were not in `previous_ids` — i.e., the newly added assignees.
     pub fn added_assignees(&self, previous_ids: &[Id]) -> Vec<Id> {
-        let previous: std::collections::HashSet<&Id> = previous_ids.iter().collect();
+        let previous: HashSet<&Id> = previous_ids.iter().collect();
         self.assignee_ids
             .iter()
             .filter(|id| !previous.contains(id))
@@ -402,7 +402,7 @@ pub async fn find_by_user(
 /// Identifies the assignee by their role within a coaching relationship,
 /// or by a specific user ID.
 ///
-/// Used with [`find_by_coach_relationships`] to filter actions based on
+/// Used with [`find_by_user_relationships`] to filter actions based on
 /// who they are assigned to relative to each coaching relationship.
 #[derive(Clone, Debug)]
 pub enum AssigneeScope {
@@ -414,26 +414,18 @@ pub enum AssigneeScope {
     User(Id),
 }
 
-/// Role-aware visibility narrowing applied on top of [`AssigneeFilter`] and
-/// `assignee_user_id` scoping. Coaches see the full relationship action set;
-/// coachees see only actions assigned to themselves or unassigned.
-///
-/// `Unrestricted` is the default so that any callsite building
-/// [`FindByRelationshipParams`] via `..Default::default()` retains the
-/// pre-fix coach-equivalent behavior.
+/// Role-aware visibility narrowing layered on top of [`AssigneeFilter`] and
+/// `assignee_user_id` scoping. `Unrestricted` is the default to preserve
+/// pre-fix coach-equivalent behavior for callsites using `..Default::default()`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CallerVisibility {
-    /// Full visibility across the relationship (coach caller, or any callsite
-    /// that has already authorized membership and wants the full set).
     #[default]
     Unrestricted,
-    /// Coachee caller: limit to actions assigned to this user, plus unassigned.
+    /// Limits visibility to actions assigned to `user_id` or unassigned.
     CoacheeSelf { user_id: Id },
 }
 
 impl CallerVisibility {
-    /// Predicate: does this caller's visibility allow an action with the given
-    /// assignees through the filter?
     pub fn allows(&self, assignee_ids: &[Id]) -> bool {
         match self {
             Self::Unrestricted => true,
@@ -443,19 +435,17 @@ impl CallerVisibility {
         }
     }
 
-    /// Determines the visibility for a caller against a specific relationship
-    /// by their role in it. Coach role → `Unrestricted`; coachee role →
-    /// `CoacheeSelf`. Falls back to `Unrestricted` for unrecognized users
-    /// (membership is enforced upstream by `CoachingRelationshipAccess` /
-    /// controllers).
+    /// Coach → `Unrestricted`; everyone else (coachee or unknown caller) →
+    /// fail-closed `CoacheeSelf { user_id }`, which produces an empty set for
+    /// non-participants since their id won't match any assignees.
     pub fn for_relationship(
         user_id: Id,
         relationship: &entity::coaching_relationships::Model,
     ) -> Self {
-        match user_id {
-            id if id == relationship.coach_id => Self::Unrestricted,
-            id if id == relationship.coachee_id => Self::CoacheeSelf { user_id: id },
-            _ => Self::Unrestricted,
+        if user_id == relationship.coach_id {
+            Self::Unrestricted
+        } else {
+            Self::CoacheeSelf { user_id }
         }
     }
 }
@@ -548,26 +538,11 @@ pub async fn find_by_coaching_relationship(
     Ok(filtered_actions)
 }
 
-/// Finds actions across multiple coaching relationships, grouped by coachee user ID.
-///
-/// Iterates over the provided relationships, calling `find_by_coaching_relationship`
-/// for each one. Returns a HashMap where every coachee gets a key — even if they
-/// have no matching actions (empty vec).
-///
-/// `caller_user_id` is the authenticated user invoking the query. It determines
-/// the per-relationship [`CallerVisibility`] (coach role → `Unrestricted`,
-/// coachee role → `CoacheeSelf`), which narrows a coachee's visible set to
-/// self-assigned + unassigned actions on a per-relationship basis. This
-/// matters for mixed-role users who are coach in one relationship and coachee
-/// in another within the same organization.
-///
-/// When `assignee_scope` is provided, it is resolved to a concrete user ID per
-/// relationship (Coach → coach_id, Coachee → coachee_id, User(id) → id) and
-/// set on the params so only actions assigned to that user are included.
-///
-/// The `params` are cloned for each relationship query to apply the same filters
-/// across all relationships.
-pub async fn find_by_coach_relationships(
+/// Actions across the supplied relationships, grouped by coachee user id.
+/// `caller_user_id` determines per-relationship [`CallerVisibility`], so
+/// mixed-role callers (coach in one rel, coachee in another) get correct
+/// narrowing per relationship.
+pub async fn find_by_user_relationships(
     db: &DatabaseConnection,
     relationships: &[entity::coaching_relationships::Model],
     params: FindByRelationshipParams,
@@ -1342,9 +1317,9 @@ mod tests {
         Ok(())
     }
 
-    /// Tests that find_by_coach_relationships groups actions by coachee user ID.
+    /// Tests that find_by_user_relationships groups actions by coachee user ID.
     #[tokio::test]
-    async fn find_by_coach_relationships_groups_by_coachee() -> Result<(), Error> {
+    async fn find_by_user_relationships_groups_by_coachee() -> Result<(), Error> {
         let coach_id = Id::new_v4();
         let org_id = Id::new_v4();
 
@@ -1399,7 +1374,7 @@ mod tests {
         };
 
         let result =
-            find_by_coach_relationships(&db, &relationships, params, None, coach_id).await?;
+            find_by_user_relationships(&db, &relationships, params, None, coach_id).await?;
 
         // All 3 coachees should have keys
         assert_eq!(result.len(), 3, "All coachees should have entries");
@@ -1410,10 +1385,10 @@ mod tests {
         Ok(())
     }
 
-    /// Tests that find_by_coach_relationships includes coachees with no actions
+    /// Tests that find_by_user_relationships includes coachees with no actions
     /// as empty arrays in the result.
     #[tokio::test]
-    async fn find_by_coach_relationships_includes_coachees_with_no_actions() -> Result<(), Error> {
+    async fn find_by_user_relationships_includes_coachees_with_no_actions() -> Result<(), Error> {
         let coach_id = Id::new_v4();
         let org_id = Id::new_v4();
         let coachee_1 = Id::new_v4();
@@ -1442,7 +1417,7 @@ mod tests {
         };
 
         let result =
-            find_by_coach_relationships(&db, &relationships, params, None, coach_id).await?;
+            find_by_user_relationships(&db, &relationships, params, None, coach_id).await?;
 
         assert_eq!(result.len(), 2, "Both coachees should have entries");
         assert!(result.get(&coachee_1).unwrap().is_empty());
@@ -1451,10 +1426,10 @@ mod tests {
         Ok(())
     }
 
-    /// Tests that find_by_coach_relationships returns empty HashMap when no
+    /// Tests that find_by_user_relationships returns empty HashMap when no
     /// relationships are provided.
     #[tokio::test]
-    async fn find_by_coach_relationships_returns_empty_for_no_relationships() -> Result<(), Error> {
+    async fn find_by_user_relationships_returns_empty_for_no_relationships() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
         let params = FindByRelationshipParams {
@@ -1466,7 +1441,7 @@ mod tests {
             sort_order: None,
         };
 
-        let result = find_by_coach_relationships(&db, &[], params, None, Id::new_v4()).await?;
+        let result = find_by_user_relationships(&db, &[], params, None, Id::new_v4()).await?;
 
         assert!(result.is_empty());
 
@@ -1530,6 +1505,76 @@ mod tests {
         );
     }
 
+    /// Fail-closed: unknown caller resolves to `CoacheeSelf`.
+    #[test]
+    fn caller_visibility_for_relationship_unknown_caller_is_fail_closed_coachee_self() {
+        let unknown_id = Id::new_v4();
+        let rel = create_test_relationship(Id::new_v4(), Id::new_v4(), Id::new_v4(), Id::new_v4());
+        assert_eq!(
+            CallerVisibility::for_relationship(unknown_id, &rel),
+            CallerVisibility::CoacheeSelf {
+                user_id: unknown_id
+            }
+        );
+    }
+
+    /// Unknown caller through the full filter chain sees only unassigned.
+    #[tokio::test]
+    async fn find_by_coaching_relationship_unknown_caller_returns_empty() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let coach_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+        let unknown_id = Id::new_v4();
+
+        let coach_action_id = Id::new_v4();
+        let coachee_action_id = Id::new_v4();
+        let unassigned_action_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![
+                create_test_action(coach_action_id, session_id),
+                create_test_action(coachee_action_id, session_id),
+                create_test_action(unassigned_action_id, session_id),
+            ]])
+            .append_query_results(vec![vec![
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: coach_action_id,
+                    user_id: coach_id,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+                entity::actions_users::Model {
+                    id: Id::new_v4(),
+                    action_id: coachee_action_id,
+                    user_id: coachee_id,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                },
+            ]])
+            .into_connection();
+
+        let params = FindByRelationshipParams {
+            status: None,
+            assignee_filter: AssigneeFilter::All,
+            assignee_user_id: None,
+            caller_visibility: CallerVisibility::CoacheeSelf {
+                user_id: unknown_id,
+            },
+            sort_column: None,
+            sort_order: None,
+        };
+
+        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action.id, unassigned_action_id);
+
+        Ok(())
+    }
+
     // ─── Coachee visibility integration tests ─────────────────────────
 
     /// Coachee caller sees self-assigned + unassigned, never coach-assigned.
@@ -1583,8 +1628,7 @@ mod tests {
 
         let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
 
-        let returned_ids: std::collections::HashSet<Id> =
-            results.iter().map(|a| a.action.id).collect();
+        let returned_ids: HashSet<Id> = results.iter().map(|a| a.action.id).collect();
 
         assert_eq!(results.len(), 2);
         assert!(returned_ids.contains(&coachee_action_id));
@@ -1701,7 +1745,7 @@ mod tests {
     /// Per-relationship visibility resolution narrows only the coachee-side
     /// relationship, leaving the coach-side relationship unrestricted.
     #[tokio::test]
-    async fn find_by_coach_relationships_mixed_role_resolves_per_relationship() -> Result<(), Error>
+    async fn find_by_user_relationships_mixed_role_resolves_per_relationship() -> Result<(), Error>
     {
         let user_id = Id::new_v4();
         let other_coach = Id::new_v4();
@@ -1764,8 +1808,7 @@ mod tests {
             sort_order: None,
         };
 
-        let result =
-            find_by_coach_relationships(&db, &relationships, params, None, user_id).await?;
+        let result = find_by_user_relationships(&db, &relationships, params, None, user_id).await?;
 
         let coach_side = result.get(&other_coachee).expect("coach-side entry");
         assert_eq!(

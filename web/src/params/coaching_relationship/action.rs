@@ -73,36 +73,21 @@ pub(crate) enum SortField {
     UpdatedAt,
 }
 
-/// Query parameters shared by coaching relationship action endpoints:
-/// - `GET /organizations/{org_id}/coaching_relationships/{rel_id}/actions`
-/// - `GET /organizations/{org_id}/coaching_relationships/actions`
+/// Shared query parameters for both coaching relationship action endpoints.
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
-    /// Optional: filter by assignment status. `all` (default) returns
-    /// everything visible to the caller; `assigned` returns only actions
-    /// with ≥1 assignee; `unassigned` returns only actions with 0 assignees.
-    /// Orthogonal to `assignee` (which scopes to a specific party).
+    /// `all` (default), `assigned`, or `unassigned`. Orthogonal to `assignee`.
     #[serde(default)]
     pub(crate) assignee_filter: AssigneeFilter,
-    /// Optional: filter by action lifecycle status (PascalCase: `NotStarted`,
-    /// `InProgress`, `Completed`, `OnHold`, `WontDo`).
+    /// PascalCase status: `NotStarted`, `InProgress`, `Completed`, `OnHold`, `WontDo`.
     pub(crate) status: Option<Status>,
-    /// Optional: filter actions by assignee with **strict-contains** semantics
-    /// (the action's assignees must contain the resolved user id; unassigned
-    /// actions are excluded whenever this param is present). Accepts three
-    /// forms: `coach` / `coachee` (case-insensitive role strings that resolve
-    /// per-relationship to the relationship's `coach_id`/`coachee_id`), or a
-    /// UUID string for a specific user. **Omit this param for the broad view**
-    /// — visibility narrowing alone determines what each caller can see, and
-    /// omitting is the correct shape for the coach's "All" tab and for any
-    /// coachee caller's own page. Coachee callers may only pass `coachee` or
-    /// their own UUID; other values return 403 `forbidden_assignee_scope`.
+    /// Strict-contains scope: `coach`, `coachee`, or a user UUID. Excludes
+    /// unassigned when present. Omit for the broad view (see
+    /// `BatchCoacheeActions` v5).
     pub(crate) assignee: Option<AssigneeScope>,
-    /// Optional: field to sort by. Defaults to `due_by` when any sort param
-    /// is provided.
+    /// Defaults to `due_by` when any sort param is provided.
     pub(crate) sort_by: Option<SortField>,
-    /// Optional: sort direction (`asc` / `desc`). Defaults to `asc` when any
-    /// sort param is provided.
+    /// Defaults to `asc` when any sort param is provided.
     pub(crate) sort_order: Option<SortOrder>,
 }
 
