@@ -55,11 +55,8 @@ fn check_assignee_visibility(
     }
 }
 
-/// GET actions for a coaching relationship. Coachees see only self-assigned
-/// or unassigned actions; the coach's actions are never returned to a
-/// coachee. `assignee=X` is strict-contains (excludes unassigned); omit for
-/// the broad view. Coachee scoping to coach/other-user → 403
-/// `forbidden_assignee_scope`. See `BatchCoacheeActions` v5 contract.
+/// GET actions for a coaching relationship. See `BatchCoacheeActions` v5
+/// for visibility rules and the `assignee` strict-contains semantic.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
@@ -71,7 +68,7 @@ fn check_assignee_visibility(
     responses(
         (status = 200, description = "Successfully retrieved actions for the coaching relationship"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — coachee attempted to scope to coach or another user"),
+        (status = 403, description = "Coachee scoped `assignee` to coach or another user"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -115,12 +112,9 @@ pub async fn read(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
 
-/// GET actions across all coaching relationships the caller participates in,
-/// grouped by coachee user id. `assignee=X` resolves per-relationship and is
-/// strict-contains. Mixed-role users get per-relationship visibility (full
-/// for coach side, narrowed for coachee side). Coachee-only callers scoping
-/// to non-self → 403; coach-anywhere callers bypass that guard. See
-/// `BatchCoacheeActions` v5 contract.
+/// GET actions across all participant relationships, grouped by coachee
+/// user id. See `BatchCoacheeActions` v5 for visibility rules and the
+/// `assignee` strict-contains semantic.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/actions",
@@ -131,7 +125,7 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully retrieved batch actions"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — coachee attempted to scope to coach or another user"),
+        (status = 403, description = "Coachee scoped `assignee` to coach or another user"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(

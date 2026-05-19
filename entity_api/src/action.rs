@@ -1641,7 +1641,7 @@ mod tests {
         Ok(())
     }
 
-    /// Coach caller (Unrestricted visibility) sees all three buckets — regression guard.
+    /// Coach caller (Unrestricted visibility) sees all three buckets. Regression guard.
     #[tokio::test]
     async fn find_by_coaching_relationship_coach_visibility_sees_all_three_buckets(
     ) -> Result<(), Error> {
