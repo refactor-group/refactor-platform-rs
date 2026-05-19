@@ -1,12 +1,17 @@
 use crate::{
     controller::{health_check_controller, oauth_callback_controller},
+    mcp::{auth::require_pat_auth, tools::McpToolHandler},
     middleware::auth::require_auth,
     params, protect, AppState,
 };
 use axum::{
-    middleware::{from_fn, from_fn_with_state},
+    middleware::{self, from_fn, from_fn_with_state},
     routing::{delete, get, post, put},
     Router,
+};
+use rmcp::transport::{
+    streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
+    StreamableHttpServerConfig,
 };
 use tower_http::services::ServeDir;
 
@@ -130,6 +135,7 @@ impl Modify for SecurityAddon {
 
 pub fn define_routes(app_state: AppState) -> Router {
     Router::new()
+        .merge(mcp_routes(app_state.clone()))
         .merge(sse_routes(app_state.clone()))
         .merge(action_routes(app_state.clone()))
         .merge(agreement_routes(app_state.clone()))
@@ -148,6 +154,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_coaching_sessions_routes(app_state.clone()))
         .merge(user_goals_routes(app_state.clone()))
         .merge(user_coaching_relationships_routes(app_state.clone()))
+        .merge(user_token_routes(app_state.clone()))
         .merge(magic_link_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
@@ -590,6 +597,60 @@ fn user_coaching_relationships_routes(app_state: AppState) -> Router {
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
+}
+
+fn user_token_routes(app_state: AppState) -> Router {
+    Router::new()
+        .merge(
+            // POST /users/:user_id/tokens
+            Router::new()
+                .route("/users/:user_id/tokens", post(user::pat_controller::create))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::tokens::manage,
+                )),
+        )
+        .merge(
+            // GET /users/:user_id/tokens
+            Router::new()
+                .route("/users/:user_id/tokens", get(user::pat_controller::index))
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::tokens::manage,
+                )),
+        )
+        .merge(
+            // PUT /users/:user_id/tokens/:token_id/deactivate
+            Router::new()
+                .route(
+                    "/users/:user_id/tokens/:token_id/deactivate",
+                    put(user::pat_controller::deactivate),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::users::tokens::manage_with_token_id,
+                )),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn mcp_routes(app_state: AppState) -> Router {
+    let app_state_for_factory = app_state.clone();
+
+    let config = StreamableHttpServerConfig::default()
+        .with_stateful_mode(false)
+        .with_json_response(true);
+
+    let mcp_service = StreamableHttpService::new(
+        move || Ok(McpToolHandler::new(app_state_for_factory.clone())),
+        LocalSessionManager::default().into(),
+        config,
+    );
+
+    Router::new()
+        .nest_service("/mcp", mcp_service)
+        .layer(middleware::from_fn_with_state(app_state, require_pat_auth))
 }
 
 fn sse_routes(app_state: AppState) -> Router {

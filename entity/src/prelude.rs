@@ -4,4 +4,5 @@ pub use super::coaching_relationships::Entity as CoachingRelationships;
 pub use super::magic_link_tokens::Entity as MagicLinkTokens;
 pub use super::oauth_connections::Entity as OauthConnections;
 pub use super::organizations::Entity as Organizations;
+pub use super::personal_access_tokens::Entity as PersonalAccessTokens;
 pub use super::users::Entity as Users;

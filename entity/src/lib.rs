@@ -18,6 +18,8 @@ pub mod magic_link_tokens;
 pub mod notes;
 pub mod oauth_connections;
 pub mod organizations;
+pub mod pat_status;
+pub mod personal_access_tokens;
 pub mod provider;
 pub mod roles;
 pub mod status;
