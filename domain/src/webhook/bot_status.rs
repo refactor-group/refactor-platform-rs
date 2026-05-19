@@ -31,8 +31,7 @@ pub async fn handle(
         return Ok(());
     }
 
-    recording_api::update_status(db, recording.id, status, RecordingArtifacts::default())
-        .await?;
+    recording_api::update_status(db, recording.id, status, RecordingArtifacts::default()).await?;
 
     let coaching_session_id = recording.coaching_session_id;
     match crate::coaching_session::find_participant_ids(db, coaching_session_id).await {
