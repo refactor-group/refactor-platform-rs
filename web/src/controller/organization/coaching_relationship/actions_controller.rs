@@ -92,7 +92,11 @@ pub async fn read(
     );
 
     let assignee_scope = params.assignee_scope();
-    let caller_visibility = ActionApi::CallerVisibility::for_relationship(user.id, &relationship);
+    // `CoachingRelationshipAccess` has already verified membership, so this
+    // `ok_or` should be unreachable. Fail closed to 401 if the invariant is
+    // ever violated rather than silently inheriting a permissive default.
+    let caller_visibility = ActionApi::CallerVisibility::for_relationship(user.id, &relationship)
+        .ok_or(Error::Web(WebErrorKind::Auth))?;
     check_assignee_visibility(user.id, &caller_visibility, assignee_scope.as_ref())?;
 
     let mut query_params = params.into_query_params();

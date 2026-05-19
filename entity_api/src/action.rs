@@ -435,17 +435,21 @@ impl CallerVisibility {
         }
     }
 
-    /// Coach → `Unrestricted`; everyone else (coachee or unknown caller) →
-    /// fail-closed `CoacheeSelf { user_id }`, which produces an empty set for
-    /// non-participants since their id won't match any assignees.
+    /// Resolves the caller's visibility against a specific relationship.
+    /// Coach → `Some(Unrestricted)`, coachee → `Some(CoacheeSelf)`,
+    /// non-participant → `None`. Returning `Option` makes membership an
+    /// explicit precondition: every callsite is forced to handle the
+    /// non-participant case rather than silently inheriting a default.
     pub fn for_relationship(
         user_id: Id,
         relationship: &entity::coaching_relationships::Model,
-    ) -> Self {
+    ) -> Option<Self> {
         if user_id == relationship.coach_id {
-            Self::Unrestricted
+            Some(Self::Unrestricted)
+        } else if user_id == relationship.coachee_id {
+            Some(Self::CoacheeSelf { user_id })
         } else {
-            Self::CoacheeSelf { user_id }
+            None
         }
     }
 }
@@ -556,8 +560,18 @@ pub async fn find_by_user_relationships(
     }
 
     for relationship in relationships {
+        let Some(caller_visibility) =
+            CallerVisibility::for_relationship(caller_user_id, relationship)
+        else {
+            warn!(
+                "find_by_user_relationships: caller {caller_user_id} is not a participant in relationship {}; skipping",
+                relationship.id
+            );
+            continue;
+        };
+
         let relationship_params = FindByRelationshipParams {
-            caller_visibility: CallerVisibility::for_relationship(caller_user_id, relationship),
+            caller_visibility,
             assignee_user_id: assignee_scope.as_ref().map(|scope| match scope {
                 AssigneeScope::Coach => relationship.coach_id,
                 AssigneeScope::Coachee => relationship.coachee_id,
@@ -1489,7 +1503,7 @@ mod tests {
         let rel = create_test_relationship(Id::new_v4(), coach_id, Id::new_v4(), Id::new_v4());
         assert_eq!(
             CallerVisibility::for_relationship(coach_id, &rel),
-            CallerVisibility::Unrestricted
+            Some(CallerVisibility::Unrestricted)
         );
     }
 
@@ -1499,23 +1513,19 @@ mod tests {
         let rel = create_test_relationship(Id::new_v4(), Id::new_v4(), coachee_id, Id::new_v4());
         assert_eq!(
             CallerVisibility::for_relationship(coachee_id, &rel),
-            CallerVisibility::CoacheeSelf {
+            Some(CallerVisibility::CoacheeSelf {
                 user_id: coachee_id
-            }
+            })
         );
     }
 
-    /// Fail-closed: unknown caller resolves to `CoacheeSelf`.
+    /// Non-participant returns `None`, forcing callers to handle the case
+    /// explicitly rather than inheriting a permissive default.
     #[test]
-    fn caller_visibility_for_relationship_unknown_caller_is_fail_closed_coachee_self() {
+    fn caller_visibility_for_relationship_unknown_caller_is_none() {
         let unknown_id = Id::new_v4();
         let rel = create_test_relationship(Id::new_v4(), Id::new_v4(), Id::new_v4(), Id::new_v4());
-        assert_eq!(
-            CallerVisibility::for_relationship(unknown_id, &rel),
-            CallerVisibility::CoacheeSelf {
-                user_id: unknown_id
-            }
-        );
+        assert_eq!(CallerVisibility::for_relationship(unknown_id, &rel), None);
     }
 
     /// Unknown caller through the full filter chain sees only unassigned.
