@@ -25,6 +25,11 @@ pub enum Error {
 pub enum WebErrorKind {
     Input,
     Auth,
+    /// Caller (typically a coachee) attempted to scope `assignee` to a value
+    /// outside their visibility (e.g. `assignee=coach`, or `assignee=<uuid>`
+    /// for any user other than themselves). 403 Forbidden with a specific
+    /// discriminator so the FE can branch deterministically.
+    ForbiddenAssigneeScope,
     Other,
 }
 
@@ -204,6 +209,17 @@ impl Error {
             WebErrorKind::Auth => {
                 warn!("WebErrorKind::Auth: Responding with 401 Unauthorized. Error: {self:?}");
                 (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+            }
+            WebErrorKind::ForbiddenAssigneeScope => {
+                warn!(
+                    "WebErrorKind::ForbiddenAssigneeScope: Responding with 403 Forbidden. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 403,
+                    "error": "forbidden_assignee_scope",
+                    "message": "Caller is not permitted to scope actions to that assignee.",
+                });
+                (StatusCode::FORBIDDEN, Json(body)).into_response()
             }
             WebErrorKind::Other => {
                 warn!(
