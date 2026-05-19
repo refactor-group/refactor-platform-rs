@@ -518,4 +518,214 @@ mod tests {
         let response = app.clone().oneshot(protected_request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    /// Regression test: the base CRUD routes use `:id` (not `:coaching_session_id`).
+    /// The extractor must fall back to the `id` key so GET /coaching_sessions/:id works.
+    #[tokio::test]
+    async fn test_coaching_session_extractor_success_with_id_param() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let now = Utc::now();
+        let test_user = create_test_user();
+
+        let test_role = user_roles::Model {
+            id: Id::new_v4(),
+            role: users::Role::User,
+            organization_id: Some(Id::new_v4()),
+            user_id: test_user.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let test_session = coaching_sessions::Model {
+            id: session_id,
+            coaching_relationship_id: relationship_id,
+            collab_document_name: None,
+            date: chrono::Utc::now().naive_utc(),
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results(vec![vec![(
+                    test_session.clone(),
+                    coaching_relationships::Model {
+                        id: relationship_id,
+                        coach_id: Id::new_v4(),
+                        coachee_id: test_user.id,
+                        organization_id: Id::new_v4(),
+                        slug: "test".to_string(),
+                        created_at: now.into(),
+                        updated_at: now.into(),
+                    },
+                )]])
+                .into_connection(),
+        );
+
+        let app_state = AppState::new(
+            service::AppState::new(Config::default(), &db),
+            Arc::new(sse::Manager::default()),
+            domain::events::EventPublisher::default(),
+            None,
+            None,
+        );
+
+        let session_store = MemoryStore::default();
+        let session_layer = SessionManagerLayer::new(session_store)
+            .with_secure(false)
+            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+            .with_always_save(true);
+
+        let backend = Backend::new(&db);
+        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+        // Route uses `:id` — mirrors the actual GET /coaching_sessions/:id route in router.rs.
+        let app = Router::new()
+            .route(
+                "/login",
+                axum::routing::post(crate::controller::user_session_controller::login),
+            )
+            .merge(
+                Router::new()
+                    .route("/coaching_sessions/:id", get(protected_route))
+                    .route_layer(from_fn(require_auth)),
+            )
+            .layer(auth_layer)
+            .with_state(app_state);
+
+        let login_request = Request::builder()
+            .uri("/login")
+            .method("POST")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("email=test@example.com&password=password123"))
+            .unwrap();
+
+        let login_response = app.clone().oneshot(login_request).await.unwrap();
+        let cookie = login_response
+            .headers()
+            .get("set-cookie")
+            .and_then(|c| c.to_str().ok())
+            .expect("Login should return session cookie");
+
+        let protected_request = Request::builder()
+            .uri(format!("/coaching_sessions/{}", session_id).as_str())
+            .header("cookie", cookie)
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.clone().oneshot(protected_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Nested routes (e.g. /coaching_sessions/:coaching_session_id/meeting_recording) use
+    /// `:coaching_session_id`. Verify the extractor still works on those after the fallback change.
+    #[tokio::test]
+    async fn test_coaching_session_extractor_success_with_nested_route() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let now = Utc::now();
+        let test_user = create_test_user();
+
+        let test_role = user_roles::Model {
+            id: Id::new_v4(),
+            role: users::Role::User,
+            organization_id: Some(Id::new_v4()),
+            user_id: test_user.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let test_session = coaching_sessions::Model {
+            id: session_id,
+            coaching_relationship_id: relationship_id,
+            collab_document_name: None,
+            date: chrono::Utc::now().naive_utc(),
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results(vec![vec![(
+                    test_session.clone(),
+                    coaching_relationships::Model {
+                        id: relationship_id,
+                        coach_id: Id::new_v4(),
+                        coachee_id: test_user.id,
+                        organization_id: Id::new_v4(),
+                        slug: "test".to_string(),
+                        created_at: now.into(),
+                        updated_at: now.into(),
+                    },
+                )]])
+                .into_connection(),
+        );
+
+        let app_state = AppState::new(
+            service::AppState::new(Config::default(), &db),
+            Arc::new(sse::Manager::default()),
+            domain::events::EventPublisher::default(),
+            None,
+            None,
+        );
+
+        let session_store = MemoryStore::default();
+        let session_layer = SessionManagerLayer::new(session_store)
+            .with_secure(false)
+            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+            .with_always_save(true);
+
+        let backend = Backend::new(&db);
+        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+        // Route uses `:coaching_session_id` with an extra segment — mirrors nested routes
+        // like GET /coaching_sessions/:coaching_session_id/meeting_recording.
+        let app = Router::new()
+            .route(
+                "/login",
+                axum::routing::post(crate::controller::user_session_controller::login),
+            )
+            .merge(
+                Router::new()
+                    .route(
+                        "/coaching_sessions/:coaching_session_id/sub_resource",
+                        get(protected_route),
+                    )
+                    .route_layer(from_fn(require_auth)),
+            )
+            .layer(auth_layer)
+            .with_state(app_state);
+
+        let login_request = Request::builder()
+            .uri("/login")
+            .method("POST")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("email=test@example.com&password=password123"))
+            .unwrap();
+
+        let login_response = app.clone().oneshot(login_request).await.unwrap();
+        let cookie = login_response
+            .headers()
+            .get("set-cookie")
+            .and_then(|c| c.to_str().ok())
+            .expect("Login should return session cookie");
+
+        let protected_request = Request::builder()
+            .uri(format!("/coaching_sessions/{}/sub_resource", session_id).as_str())
+            .header("cookie", cookie)
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.clone().oneshot(protected_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
