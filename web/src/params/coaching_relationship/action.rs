@@ -73,21 +73,20 @@ pub(crate) enum SortField {
     UpdatedAt,
 }
 
-/// Query parameters shared by coaching relationship action endpoints:
-/// - `GET /organizations/{org_id}/coaching_relationships/{rel_id}/actions`
-/// - `GET /organizations/{org_id}/coaching_relationships/actions`
+/// Shared query parameters for both coaching relationship action endpoints.
 #[derive(Debug, Deserialize, IntoParams)]
 pub(crate) struct IndexParams {
-    /// Optional: filter by assignee status (all, assigned, unassigned)
+    /// `all` (default), `assigned`, or `unassigned`. Orthogonal to `assignee`.
     #[serde(default)]
     pub(crate) assignee_filter: AssigneeFilter,
-    /// Optional: filter by action status
+    /// PascalCase status: `NotStarted`, `InProgress`, `Completed`, `OnHold`, `WontDo`.
     pub(crate) status: Option<Status>,
-    /// Optional: filter by who actions are assigned to (coach, coachee, or user UUID)
+    /// Strict-contains scope: `coach`, `coachee`, or a user UUID. Excludes
+    /// unassigned when present. Omit for the broad view.
     pub(crate) assignee: Option<AssigneeScope>,
-    /// Optional: field to sort by
+    /// Defaults to `due_by` when any sort param is provided.
     pub(crate) sort_by: Option<SortField>,
-    /// Optional: sort direction
+    /// Defaults to `asc` when any sort param is provided.
     pub(crate) sort_order: Option<SortOrder>,
 }
 
@@ -152,6 +151,7 @@ impl IndexParams {
             status: params.status,
             assignee_filter: params.assignee_filter.into(),
             assignee_user_id: None,
+            caller_visibility: action::CallerVisibility::default(),
             sort_column,
             sort_order,
         }
