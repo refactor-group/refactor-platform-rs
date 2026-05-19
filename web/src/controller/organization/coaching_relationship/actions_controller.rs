@@ -115,9 +115,10 @@ pub async fn read(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
 
-/// GET actions across all participant relationships, grouped by coachee
-/// user id. Visibility narrows per-relationship by the caller's role
-/// (full for coach side, self-or-unassigned for coachee side).
+/// GET actions across all participant relationships, grouped by coachee user id.
+///
+/// Visibility narrows per-relationship by the caller's role (full for coach
+/// side, self-or-unassigned for coachee side).
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/actions",
