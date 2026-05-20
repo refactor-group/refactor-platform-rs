@@ -8,8 +8,8 @@ use entity::{
 };
 use log::debug;
 use sea_orm::{
-    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, QueryOrder, QuerySelect,
-    Set, TryIntoModel,
+    entity::prelude::*, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
+    DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, Statement, TryIntoModel,
 };
 use std::collections::HashMap;
 
@@ -29,6 +29,7 @@ pub async fn create(
         provider: Set(coaching_session_model.provider),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
+        hydrated_at: Set(coaching_session_model.hydrated_at),
         ..Default::default()
     };
 
@@ -38,7 +39,46 @@ pub async fn create(
         .try_into_model()?)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+/// Bulk-insert a recurring series of coaching sessions in a single round-trip.
+/// All lazy fields (`provider`, `collab_document_name`, `meeting_url`,
+/// `hydrated_at`) are NULL; population happens on first read.
+pub async fn bulk_create_recurring(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    dates: Vec<chrono::NaiveDateTime>,
+) -> Result<Vec<Model>, Error> {
+    debug!(
+        "Bulk-creating {} recurring sessions on relationship {}",
+        dates.len(),
+        coaching_relationship_id
+    );
+
+    if dates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let now = chrono::Utc::now();
+    let active_models: Vec<ActiveModel> = dates
+        .into_iter()
+        .map(|date| ActiveModel {
+            coaching_relationship_id: Set(coaching_relationship_id),
+            date: Set(date),
+            collab_document_name: Set(None),
+            meeting_url: Set(None),
+            provider: Set(None),
+            hydrated_at: Set(None),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+            ..Default::default()
+        })
+        .collect();
+
+    Ok(Entity::insert_many(active_models)
+        .exec_with_returning_many(db)
+        .await?)
+}
+
+pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
@@ -67,6 +107,51 @@ pub async fn find_by_id_with_coaching_relationship(
 pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(coaching_session_id).exec(db).await?;
     Ok(())
+}
+
+/// Acquires a transaction-scoped Postgres advisory lock keyed on the session
+/// id. Other callers requesting the same lock block until this transaction
+/// commits or rolls back. Used by the lazy-hydration path to serialize
+/// concurrent first-load requests for the same session.
+pub async fn acquire_advisory_lock(
+    txn: &impl ConnectionTrait,
+    session_id: Id,
+) -> Result<(), Error> {
+    let key = advisory_lock_key(session_id);
+    txn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT pg_advisory_xact_lock($1)",
+        [key.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+fn advisory_lock_key(session_id: Id) -> i64 {
+    let bytes = session_id.as_bytes();
+    let upper = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+    let lower = u64::from_be_bytes(bytes[8..].try_into().unwrap());
+    (upper ^ lower) as i64
+}
+
+/// Persists the resolved deferred fields and stamps `hydrated_at = NOW()`.
+/// Called at the end of the lazy-hydration sequence to commit the row's
+/// hydrated state. `target` carries the desired final values for the lazy
+/// fields; immutable columns are preserved.
+pub async fn mark_hydrated(txn: &impl ConnectionTrait, target: &Model) -> Result<Model, Error> {
+    let now = chrono::Utc::now();
+    let active_model = ActiveModel {
+        id: Unchanged(target.id),
+        coaching_relationship_id: Unchanged(target.coaching_relationship_id),
+        date: Unchanged(target.date),
+        collab_document_name: Set(target.collab_document_name.clone()),
+        meeting_url: Set(target.meeting_url.clone()),
+        provider: Set(target.provider),
+        created_at: Unchanged(target.created_at),
+        updated_at: Set(now.into()),
+        hydrated_at: Set(Some(now.into())),
+    };
+    Ok(active_model.update(txn).await?.try_into_model()?)
 }
 
 pub async fn update_meeting(
@@ -600,6 +685,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -614,6 +700,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bulk_create_recurring_inserts_all_rows_with_lazy_fields_null() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let dates = vec![
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 8)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+        ];
+        let session1 = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            date: dates[0],
+            collab_document_name: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+        let session2 = Model {
+            id: Id::new_v4(),
+            date: dates[1],
+            ..session1.clone()
+        };
+
+        // One round-trip: a single INSERT ... VALUES (...), (...) RETURNING * .
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session1.clone(), session2.clone()]])
+            .into_connection();
+
+        let inserted = bulk_create_recurring(&db, relationship_id, dates).await?;
+        assert_eq!(inserted.len(), 2);
+        assert!(inserted.iter().all(|s| s.provider.is_none()));
+        assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
+        assert!(inserted.iter().all(|s| s.meeting_url.is_none()));
+        assert!(inserted.iter().all(|s| s.hydrated_at.is_none()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bulk_create_recurring_returns_empty_for_no_dates() -> Result<(), Error> {
+        // No mock query expected — the function short-circuits before touching the DB.
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let result = bulk_create_recurring(&db, Id::new_v4(), vec![]).await?;
+        assert!(result.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mark_hydrated_writes_lazy_fields_and_stamps_hydrated_at() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let target = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            collab_document_name: Some("doc-name".to_string()),
+            meeting_url: Some("https://meet.example/x".to_string()),
+            provider: Some(Provider::Zoom),
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+        // Whatever the DB returns from UPDATE ... RETURNING.
+        let after = Model {
+            hydrated_at: Some(now.into()),
+            ..target.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![after.clone()]])
+            .into_connection();
+
+        let result = mark_hydrated(&db, &target).await?;
+        assert_eq!(result.id, target.id);
+        assert_eq!(result.collab_document_name, target.collab_document_name);
+        assert_eq!(result.meeting_url, target.meeting_url);
+        assert_eq!(result.provider, target.provider);
+        assert!(result.hydrated_at.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn find_by_id_returns_a_single_record() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
@@ -624,7 +800,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -646,7 +822,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_sessions"."hydrated_at" AS "A_hydrated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -687,7 +863,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -711,6 +887,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -747,6 +924,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -816,6 +994,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let enriched = EnrichedSession::from_session(session.clone());
@@ -841,6 +1020,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let related = RelatedData::default();
@@ -868,6 +1048,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let related = RelatedData::default();
@@ -947,6 +1128,11 @@ mod tests {
             updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
                 .unwrap()
                 .into(),
+            hydrated_at: Some(
+                chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                    .unwrap()
+                    .into(),
+            ),
         };
 
         // Session 2 (middle): also has a Google Meet URL — this is the one we want
@@ -963,6 +1149,11 @@ mod tests {
             updated_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z")
                 .unwrap()
                 .into(),
+            hydrated_at: Some(
+                chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z")
+                    .unwrap()
+                    .into(),
+            ),
         };
 
         // Session 3 (newest): no meeting URL — coach didn't request one this time
@@ -979,6 +1170,11 @@ mod tests {
             updated_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
                 .unwrap()
                 .into(),
+            hydrated_at: Some(
+                chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
+                    .unwrap()
+                    .into(),
+            ),
         };
 
         // The MockDatabase returns session_2 because our query filters for
@@ -1003,7 +1199,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
                 [
                     relationship_id.into(),
                     "google".into(),
