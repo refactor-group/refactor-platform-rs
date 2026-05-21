@@ -47,6 +47,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_controller::index,
             coaching_session_controller::read,
             coaching_session_controller::create,
+            coaching_session_controller::create_recurring,
             coaching_session_controller::update,
             coaching_session_controller::delete,
             note_controller::create,
@@ -208,6 +209,10 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_sessions",
             post(coaching_session_controller::create),
+        )
+        .route(
+            "/coaching_sessions/recurring",
+            post(coaching_session_controller::create_recurring),
         )
         .merge(
             // Get /coaching_sessions

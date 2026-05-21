@@ -1,3 +1,5 @@
+pub(crate) mod recurrence;
+
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::tiptap::TiptapDocument;
@@ -16,6 +18,7 @@ use service::config::Config;
 pub use entity_api::coaching_session::{
     find_by_id, find_by_user_with_includes, EnrichedSession, IncludeOptions, SessionQueryOptions,
 };
+pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};
 
 /// Wraps the entity_api function to convert `entity_api::Error` into `domain::Error`,
 /// keeping the web layer from depending on entity_api error types directly.
@@ -63,6 +66,7 @@ pub async fn create(
     let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
+    coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
 
     maybe_attach_meeting_url(
         db,
@@ -101,6 +105,100 @@ pub async fn create(
     if result.is_err() {
         if let Err(e) = tiptap.delete(&document_name).await {
             warn!("Failed to clean up Tiptap document '{document_name}' after DB error: {e}");
+        }
+    }
+
+    result
+}
+
+/// Bulk-creates a series of coaching sessions. Provider is intentionally not
+/// captured here — every row's `provider` stays NULL until [`ensure_hydrated`]
+/// fills it in on first read, using the coach's then-current OAuth connection.
+pub async fn bulk_create_recurring(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+    dates: Vec<NaiveDateTime>,
+) -> Result<Vec<Model>, Error> {
+    let truncated = dates
+        .into_iter()
+        .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(coaching_session::bulk_create_recurring(db, coaching_relationship_id, truncated).await?)
+}
+
+/// Runs deferred side-effects (Tiptap doc, meeting URL, in-progress-goal links)
+/// on first read, stamping `hydrated_at` so subsequent reads short-circuit.
+///
+/// Provider is resolved at hydration time from the coach's most-recently-updated
+/// OAuth connection — not at session-create time. For recurring series created
+/// via [`bulk_create_recurring`], this means changing or reconnecting providers
+/// between bulk-create and first read will change which provider the session
+/// uses. This is the intended behavior: recurring sessions defer the choice
+/// until the coach actually opens them.
+pub async fn ensure_hydrated(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: Model,
+) -> Result<Model, Error> {
+    if session.hydrated_at.is_some() {
+        return Ok(session);
+    }
+
+    let session_id = session.id;
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    coaching_session::acquire_advisory_lock(&txn, session_id).await?;
+
+    let mut session = coaching_session::find_by_id(&txn, session_id).await?;
+    if session.hydrated_at.is_some() {
+        txn.commit().await.map_err(entity_api::error::Error::from)?;
+        return Ok(session);
+    }
+
+    // Read-only lookups on rows; running them on `db` rather than
+    // `&txn` is intentional — the txn is only needed to scope the
+    // advisory lock and the final UPDATE.
+    let coaching_relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+
+    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    let tiptap = TiptapDocument::new(config).await?;
+
+    let coach_id = coaching_relationship.coach_id;
+    let result: Result<Model, Error> = async {
+        tiptap.create(&document_name).await?;
+        session.collab_document_name = Some(document_name.clone());
+
+        if let Some(connection) = crate::oauth_connection::find_by_user(db, coach_id).await? {
+            session.provider = Some(connection.provider);
+            maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
+        }
+
+        let linked = coaching_session_goal::link_in_progress_goals_to_session(
+            &txn,
+            session.coaching_relationship_id,
+            session.id,
+        )
+        .await?;
+
+        debug!(
+            "Linked {linked} in-progress goal(s) to session {}",
+            session.id
+        );
+
+        let updated = coaching_session::mark_hydrated(&txn, &session).await?;
+        txn.commit().await.map_err(entity_api::error::Error::from)?;
+        Ok(updated)
+    }
+    .await;
+
+    if result.is_err() {
+        if let Err(e) = tiptap.delete(&document_name).await {
+            warn!(
+                "Failed to clean up Tiptap document '{document_name}' after hydration error: {e}"
+            );
         }
     }
 
@@ -331,6 +429,7 @@ mod tests {
             provider,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         }
     }
 
@@ -407,6 +506,11 @@ mod tests {
             updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
                 .unwrap()
                 .into(),
+            hydrated_at: Some(
+                chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                    .unwrap()
+                    .into(),
+            ),
         };
 
         // The session as the DB would return it after INSERT (with the reused meeting URL)
@@ -479,6 +583,164 @@ mod tests {
         let result = create(&db, &config, session.clone()).await?;
 
         assert!(result.meeting_url.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_hydrated_short_circuits_after_lock_when_row_hydrated_concurrently(
+    ) -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let input = coaching_sessions::Model {
+            hydrated_at: None,
+            ..test_session(Id::new_v4(), None)
+        };
+        let hydrated_row = coaching_sessions::Model {
+            hydrated_at: Some(chrono::Utc::now().into()),
+            ..input.clone()
+        };
+
+        // Sequence under the lock: pg_advisory_xact_lock exec → SELECT
+        // (re-fetch returns the already-hydrated row) → COMMIT. No further
+        // DB calls and no Tiptap traffic.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![hydrated_row.clone()]])
+            .into_connection();
+
+        let result = ensure_hydrated(&db, &config, input.clone()).await?;
+        assert_eq!(result.id, input.id);
+        assert!(result.hydrated_at.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_hydrated_deletes_tiptap_doc_when_post_create_step_fails() {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+
+        let doc_path = mockito::Matcher::Regex(r"^/api/documents/.+".to_string());
+        let _create_mock = server
+            .mock("POST", doc_path.clone())
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        let delete_mock = server
+            .mock("DELETE", doc_path)
+            .with_status(204)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let input = coaching_sessions::Model {
+            hydrated_at: None,
+            ..test_session(relationship.id, None)
+        };
+        let refetched = input.clone();
+
+        // Sequence: advisory_lock exec → re-fetch (not yet hydrated) → relationship
+        // → organization → tiptap POST (200) → oauth_connection::find_by_user
+        // returns an error → cleanup DELETE fires.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![refetched]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org]])
+            .append_query_errors(vec![sea_orm::DbErr::Custom(
+                "simulated oauth lookup failure".to_string(),
+            )])
+            .into_connection();
+
+        let result = ensure_hydrated(&db, &config, input).await;
+        assert!(
+            result.is_err(),
+            "expected ensure_hydrated to surface the error"
+        );
+
+        delete_mock.assert_async().await;
+    }
+
+    /// Already-hydrated input short-circuits before any DB or HTTP call: the
+    /// MockDatabase has no appended results and the function still returns the
+    /// input model unchanged.
+    #[tokio::test]
+    async fn ensure_hydrated_short_circuits_for_already_hydrated_session() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        // Asserts Tiptap is never hit — any HTTP call to mockito server would 404.
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let session = test_session(Id::new_v4(), None);
+        assert!(session.hydrated_at.is_some());
+
+        let result = ensure_hydrated(&db, &config, session.clone()).await?;
+        assert_eq!(result.id, session.id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bulk_create_recurring_inserts_rows_with_all_lazy_fields_null() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let dates = vec![
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 8)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+        ];
+
+        let row_template = coaching_sessions::Model {
+            hydrated_at: None,
+            ..test_session(relationship_id, None)
+        };
+        let row1 = coaching_sessions::Model {
+            id: Id::new_v4(),
+            date: dates[0],
+            ..row_template.clone()
+        };
+        let row2 = coaching_sessions::Model {
+            id: Id::new_v4(),
+            date: dates[1],
+            ..row_template
+        };
+
+        // Query sequence: 1 bulk INSERT...RETURNING. Existence of the
+        // relationship is the caller's (web layer's) responsibility now.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![row1.clone(), row2.clone()]])
+            .into_connection();
+
+        let inserted = bulk_create_recurring(&db, relationship_id, dates).await?;
+        assert_eq!(inserted.len(), 2);
+        assert!(inserted.iter().all(|s| s.provider.is_none()));
+        assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
+        assert!(inserted.iter().all(|s| s.meeting_url.is_none()));
+        assert!(inserted.iter().all(|s| s.hydrated_at.is_none()));
         Ok(())
     }
 }

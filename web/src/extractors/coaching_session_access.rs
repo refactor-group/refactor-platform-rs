@@ -144,6 +144,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let db = Arc::new(
@@ -251,6 +252,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let db = Arc::new(
@@ -413,6 +415,7 @@ mod tests {
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
+            hydrated_at: Some(now.into()),
         };
 
         let db = Arc::new(

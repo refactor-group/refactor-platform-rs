@@ -62,6 +62,7 @@ Encapsulates config resolution so `send_*` functions don't leak config details t
 | Implementor | Env Var |
 |---|---|
 | `SessionScheduled` | `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` |
+| `RecurringSessionsScheduled` | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `ActionAssigned` | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` |
 
 ## Timezone Handling
@@ -75,6 +76,7 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `RESEND_API_KEY` | API authentication |
 | `WELCOME_EMAIL_TEMPLATE_ID` | Welcome email template |
 | `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` | Session scheduled template |
+| `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` | Recurring Sessions scheduled template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |
 | `FRONTEND_BASE_URL` | Base URL for email links (e.g. `https://app.myrefactor.com`) |
 | `SESSION_SCHEDULED_EMAIL_URL_PATH` | URL path template for session links (default: `/coaching-sessions/{session_id}`) |
