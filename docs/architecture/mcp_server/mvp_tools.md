@@ -7,14 +7,16 @@ Ask AI to "What have I been working on with Jane?" ->
 `list_sessions` to learn about recent sessions
 `get_session` to generate a summary of the most recent session, pulling in other resources like goals, notes, and/or agreements as necessary.
 
-## Coach tools
-- `list_coachees` - list coachees associated with a coach.
+## Scope
+MVP requires the calling user (resolved from the PAT) to be a coach or coachee. Admin and SuperAdmin role handling is out of scope for MVP.
 
-## Shared tools for Coach & Coachee
+## Tools
 A Coach can provide a coachee id for shared tools to filter on that coachee.
 
-- `get_coachee` — profile + aggregated stats for a coachee. Optional `include` to get current goals, actions, and notes. defaults to self when no id.
-  - flexibly replaces a lot of index tools like "list_actions" or "list_goals". Filtering was added to support the use case of getting more data about a coachee.
-- `list_sessions` - list sessions. optional date range filter.
-- `list_actions` — list actions. Filters: session id, keyword (searches body), date range, status. Coaches optionally provide a coachee id (defaults to self for coachees).
-- `get_session` — returns structured session data (session + notes + actions + agreements + linked goals) for the client LLM to summarize. No server-side LLM needed. Requires coachee_id for coach users. Optionally accepts session id, defaults to latest.
+| Name | Usage | Coach | Coachee |
+|------|-------|:-----:|:-------:|
+| `list_coachees` | List coachees associated with a coach. | ✅ | |
+| `get_coachee` | Profile + aggregated stats for a coachee. Optional `include` to get current goals, actions, and notes. Defaults to self when no id. Flexibly replaces a lot of index tools like `list_actions` or `list_goals`. Filtering was added to support the use case of getting more data about a coachee. | ✅ | ✅ |
+| `list_sessions` | List sessions. Optional date range filter. | ✅ | ✅ |
+| `list_actions` | List actions. Filters: session id, keyword (searches body), date range, status. Coaches optionally provide a coachee id (defaults to self for coachees). | ✅ | ✅ |
+| `get_session` | Returns structured session data (session + notes + actions + agreements + linked goals) for the client LLM to summarize. No server-side LLM needed. Requires coachee_id for coach users. Optionally accepts session id, defaults to latest. | ✅ | ✅ |
