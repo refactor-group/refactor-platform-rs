@@ -10,6 +10,12 @@ A Rust-based backend that provides a web API for various client applications (e.
 
 The platform itself is useful for professional independent coaches, informal mentors and engineering leaders who work with individual software engineers and/or teams by providing a single application that facilitates and enhances your coaching practice.
 
+## Setup Guide
+
+For full setup instructions — including meeting transcription credentials (encryption key, Google OAuth, Recall.ai) for both local development and production — see **[docs/setup.md](docs/setup.md)**.
+
+---
+
 ## Basic Local DB Setup and Management
 
 ## Running the Database Setup Script
