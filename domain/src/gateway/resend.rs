@@ -89,10 +89,11 @@ impl Serialize for EmailRecipient {
 }
 
 /// Reference to a published Resend template plus the variables to interpolate.
+///
 #[derive(Debug, Serialize, Eq, PartialEq)]
 pub struct TemplateRef {
     pub id: TemplateId,
-    pub variables: HashMap<String, String>,
+    pub variables: HashMap<String, serde_json::Value>,
 }
 
 /// Request payload for sending an email via Resend.
@@ -116,7 +117,7 @@ pub struct SendEmailRequestBuilder {
     from: Option<EmailRecipient>,
     to: Vec<EmailRecipient>,
     template_id: Option<String>,
-    variables: HashMap<String, String>,
+    variables: HashMap<String, serde_json::Value>,
 }
 
 /// Response from Resend's `POST /emails` endpoint.
@@ -167,7 +168,10 @@ impl SendEmailRequestBuilder {
     }
 
     /// Add a template variable for interpolation by Resend.
-    pub fn add_variable(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn add_variable<V>(mut self, key: impl Into<String>, value: V) -> Self
+    where
+        V: Into<serde_json::Value>,
+    {
         self.variables.insert(key.into(), value.into());
         self
     }
@@ -176,9 +180,12 @@ impl SendEmailRequestBuilder {
     ///
     /// `None` omits the key from the payload so Resend's template
     /// `fallback_value` can fire — sending an empty string would defeat it.
-    pub fn add_optional_variable(mut self, key: impl Into<String>, value: Option<&str>) -> Self {
+    pub fn add_optional_variable<V>(mut self, key: impl Into<String>, value: Option<V>) -> Self
+    where
+        V: Into<serde_json::Value>,
+    {
         if let Some(v) = value {
-            self.variables.insert(key.into(), v.to_string());
+            self.variables.insert(key.into(), v.into());
         }
         self
     }
@@ -379,6 +386,22 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[tokio::test]
+    async fn test_numeric_variable_serializes_as_json_number() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Test Recipient")
+            .template_id("t")
+            .add_variable("session_count", 3_u64)
+            .build()
+            .await
+            .unwrap();
+
+        let actual: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(actual["template"]["variables"]["session_count"], 3);
+    }
+
     #[test]
     fn test_format_mailbox_quotes_and_escapes_specials() {
         // A comma would split into two malformed mailboxes if left unquoted.
@@ -413,15 +436,15 @@ mod tests {
         assert_eq!(template.id.as_str(), "multi-recipient-template");
         assert_eq!(
             template.variables.get("first_name"),
-            Some(&"John".to_string())
+            Some(&serde_json::json!("John"))
         );
         assert_eq!(
             template.variables.get("last_name"),
-            Some(&"Doe".to_string())
+            Some(&serde_json::json!("Doe"))
         );
         assert_eq!(
             template.variables.get("company"),
-            Some(&"Acme Corp".to_string())
+            Some(&serde_json::json!("Acme Corp"))
         );
     }
 
