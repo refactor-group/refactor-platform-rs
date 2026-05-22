@@ -51,6 +51,12 @@ pub enum EntityErrorKind {
     },
     CannotLinkCompletedGoal,
     GoalAlreadyLinkedToSession,
+    /// Token missing, expired, or has wrong purpose. Collapsed deliberately
+    /// for password-reset endpoints so attackers can't distinguish these
+    /// three cases via the response.
+    InvalidOrExpiredToken,
+    /// User has exceeded the per-email password-reset request rate limit.
+    PasswordResetRateLimited,
     DbTransaction,
     ServiceUnavailable,
     Other(String),

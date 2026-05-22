@@ -155,6 +155,28 @@ impl Error {
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
+            EntityErrorKind::InvalidOrExpiredToken => {
+                warn!(
+                    "EntityErrorKind::InvalidOrExpiredToken: Responding with 400 Bad Request. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 400,
+                    "error": "invalid_or_expired_token",
+                    "message": "This reset link is invalid or has expired. Please request a new one.",
+                });
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
+            EntityErrorKind::PasswordResetRateLimited => {
+                warn!(
+                    "EntityErrorKind::PasswordResetRateLimited: Responding with 429 Too Many Requests. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 429,
+                    "error": "password_reset_rate_limited",
+                    "message": "Too many password reset requests. Please wait before trying again.",
+                });
+                (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+            }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
                     "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"

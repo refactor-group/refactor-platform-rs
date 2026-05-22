@@ -1,3 +1,4 @@
+pub use crate::token_purpose::TokenPurpose;
 use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ pub struct Model {
     pub expires_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
+    pub purpose: TokenPurpose,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
