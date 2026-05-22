@@ -544,6 +544,7 @@ mod tests {
             date: chrono::Utc::now().naive_utc(),
             meeting_url: None,
             provider: None,
+            hydrated_at: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -647,6 +648,7 @@ mod tests {
             date: chrono::Utc::now().naive_utc(),
             meeting_url: None,
             provider: None,
+            hydrated_at: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
