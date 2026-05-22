@@ -5,6 +5,7 @@ Prefer not deleting through mcp for now, destructively risky.
 1. `list_coachees` — all coachees for this coach
 18. `weekly_digest` — summary across all coachees (generative)
 20. ~~`suggest_goals` — suggest goals based on session history (generative)~~ - requires LLM on the server, post-MVP
+32. ~~`suggest_actions` — suggest actions based on session history (generative)~~ - requires LLM on the server, post-MVP
 
 ## Coachee-Only
 21. ~~`get_my_coach` — coach profile for a relationship~~ - the coachee already knows their coach; low utility
