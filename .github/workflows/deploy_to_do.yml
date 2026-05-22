@@ -190,6 +190,14 @@ jobs:
           # Google Meet API base URL
           GOOGLE_MEET_API_URL=${{ vars.GOOGLE_MEET_API_URL }}
 
+          # -------- Recall.ai Meeting Recording Config
+          # Recall.ai system API key (bot creation + async transcription)
+          RECALL_AI_API_KEY=${{ secrets.RECALL_AI_API_KEY }}
+          # Recall.ai region subdomain (e.g. us-east-1, eu-west-1)
+          RECALL_AI_REGION=${{ vars.RECALL_AI_REGION }}
+          # Recall.ai webhook signing secret (Svix whsec_... format)
+          RECALL_AI_WEBHOOK_SECRET=${{ secrets.RECALL_AI_WEBHOOK_SECRET }}
+
           # -------- Nginx Reverse Proxy Config
           SSL_DHPARAMS_PATH=${{ vars.SSL_DHPARAMS_PATH }}
 
