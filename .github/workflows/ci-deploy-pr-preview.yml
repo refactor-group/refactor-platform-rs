@@ -6,11 +6,14 @@
 # Target: Raspberry Pi 5 (ARM64) via Tailscale SSH
 # Used by: Both refactor-platform-rs and refactor-platform-fe repositories
 #
-# Secrets Strategy:
-# - Environment secrets resolve from the CALLER's repository, not this one.
+# Secrets and vars strategy:
+# - Environment secrets and vars resolve from the CALLER's repository's
+#   pr-preview environment, not this one.
 # - Cross-repo calls (from frontend dispatch) use workflow_call directly.
-# - Common secrets (SSH, GHCR, Postgres) are at org level for redundancy.
-# - TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
+# - Common secrets (SSH, GHCR) are at org level for redundancy.
+# - Names match production (deploy_to_do.yml) so the same identifier means
+#   the same thing across environments. Non-sensitive items live as vars;
+#   credentials live as secrets.
 # =============================================================================
 
 name: CI Deploy PR Preview Environment
@@ -113,72 +116,44 @@ on:
                 description: "Username on RPi5"
                 required: false
 
-            # Database configuration for PR environments
-            PR_PREVIEW_POSTGRES_USER:
+            # Database credentials for PR environments
+            POSTGRES_USER:
                 description: "PostgreSQL username"
                 required: false
-            PR_PREVIEW_POSTGRES_PASSWORD:
+            POSTGRES_PASSWORD:
                 description: "PostgreSQL password"
-                required: false
-            PR_PREVIEW_POSTGRES_DB:
-                description: "PostgreSQL database name"
-                required: false
-            PR_PREVIEW_POSTGRES_SCHEMA:
-                description: "PostgreSQL schema name"
                 required: false
 
             # Third-party service credentials for backend
-            PR_PREVIEW_TIPTAP_APP_ID:
-                description: "TipTap application ID"
-                required: false
-            PR_PREVIEW_TIPTAP_URL:
+            TIPTAP_URL:
                 description: "TipTap service URL"
                 required: false
-            PR_PREVIEW_TIPTAP_AUTH_KEY:
+            TIPTAP_AUTH_KEY:
                 description: "TipTap authentication key"
                 required: false
-            PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY:
+            TIPTAP_JWT_SIGNING_KEY:
                 description: "TipTap JWT signing key"
                 required: false
-            PR_PREVIEW_RESEND_API_KEY:
+            RESEND_API_KEY:
                 description: "Resend API key"
                 required: false
-            PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID:
-                description: "Welcome email template ID"
+
+            # Backend cryptographic and OAuth secrets
+            ENCRYPTION_KEY:
+                description: "Encryption key for OAuth token storage"
                 required: false
 
-            # Recall.ai meeting recording and transcription
-            PR_PREVIEW_RECALL_AI_API_KEY:
+            # Recall.ai meeting recording and transcription (RECALL_AI_REGION is a
+            # non-sensitive var, not a secret).
+            RECALL_AI_API_KEY:
                 description: "Recall.ai API key"
                 required: false
-            PR_PREVIEW_RECALL_AI_REGION:
-                description: "Recall.ai region subdomain (e.g. us-west-2). Defaults to us-west-2."
-                required: false
-            PR_PREVIEW_RECALL_AI_WEBHOOK_SECRET:
+            RECALL_AI_WEBHOOK_SECRET:
                 description: "Recall.ai webhook signing secret (Svix whsec_... format)"
                 required: false
 
-            # Frontend build-time configuration (optional with defaults)
-            PR_PREVIEW_BACKEND_SERVICE_PROTOCOL:
-                description: "Backend service protocol (http/https)"
-                required: false
-            PR_PREVIEW_BACKEND_SERVICE_HOST:
-                description: "Backend service host"
-                required: false
-            PR_PREVIEW_BACKEND_SERVICE_PORT:
-                description: "Backend service port"
-                required: false
-            PR_PREVIEW_BACKEND_SERVICE_API_PATH:
-                description: "Backend API path"
-                required: false
-            PR_PREVIEW_BACKEND_API_VERSION:
-                description: "Backend API version"
-                required: false
-            PR_PREVIEW_FRONTEND_SERVICE_PORT:
-                description: "Frontend service port"
-                required: false
-            PR_PREVIEW_FRONTEND_SERVICE_INTERFACE:
-                description: "Frontend service interface"
+            GOOGLE_CLIENT_SECRET:
+                description: "Google OAuth client secret"
                 required: false
 
             # Cross-repo GHCR authentication for frontend→backend image pushes
@@ -491,11 +466,11 @@ jobs:
             - name: Build application
               run: npm run build
               env:
-                  NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PROTOCOL || 'http' }}
-                  NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_HOST || 'localhost' }}
-                  NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PORT || '4000' }}
-                  NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${{ secrets.PR_PREVIEW_BACKEND_SERVICE_API_PATH || '' }}
-                  NEXT_PUBLIC_BACKEND_API_VERSION: ${{ secrets.PR_PREVIEW_BACKEND_API_VERSION || '1.0.0-beta1' }}
+                  NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL: ${{ vars.BACKEND_SERVICE_PROTOCOL || 'http' }}
+                  NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${{ vars.BACKEND_SERVICE_HOST || 'localhost' }}
+                  NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${{ vars.BACKEND_SERVICE_PORT || '4000' }}
+                  NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${{ vars.BACKEND_SERVICE_API_PATH || '' }}
+                  NEXT_PUBLIC_BACKEND_API_VERSION: ${{ vars.BACKEND_API_VERSION || '1.0.0-beta1' }}
 
             # Run unit tests to validate component functionality
             - name: Run unit tests
@@ -526,7 +501,6 @@ jobs:
         # NOTE: When called cross-repo (from frontend), `environment: pr-preview`
         # resolves from the CALLER's repository, not this one. Ensure all required
         # secrets exist in the caller repo's pr-preview environment or at org level.
-        # TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
         environment: pr-preview
         # Wait for quality checks to pass before building
         needs:
@@ -883,15 +857,15 @@ jobs:
                       pr.branch=${{ steps.resolve.outputs.frontend_branch }}
                       pr.number=${{ steps.resolve.outputs.pr_number }}
                   build-args: |
-                      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ secrets.PR_PREVIEW_BACKEND_SERVICE_PROTOCOL || 'http' }}
+                      NEXT_PUBLIC_BACKEND_SERVICE_PROTOCOL=${{ vars.BACKEND_SERVICE_PROTOCOL || 'http' }}
                       NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ secrets.RPI5_TAILSCALE_NAME || 'neo.rove-barbel.ts.net' }}
                       NEXT_PUBLIC_BACKEND_SERVICE_PORT=80
                       NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=pr-${{ steps.resolve.outputs.pr_number }}/api
-                      NEXT_PUBLIC_BACKEND_API_VERSION=${{ secrets.PR_PREVIEW_BACKEND_API_VERSION || '1.0.0-beta1' }}
-                      NEXT_PUBLIC_TIPTAP_APP_ID=${{ secrets.PR_PREVIEW_TIPTAP_APP_ID }}
+                      NEXT_PUBLIC_BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION || '1.0.0-beta1' }}
+                      NEXT_PUBLIC_TIPTAP_APP_ID=${{ vars.TIPTAP_APP_ID }}
                       NEXT_PUBLIC_BASE_PATH=/pr-${{ steps.resolve.outputs.pr_number }}
-                      FRONTEND_SERVICE_PORT=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_PORT || '3000' }}
-                      FRONTEND_SERVICE_INTERFACE=${{ secrets.PR_PREVIEW_FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
+                      FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT || '3000' }}
+                      FRONTEND_SERVICE_INTERFACE=${{ vars.FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
                       BUILDKIT_INLINE_CACHE=1
                   provenance: true
                   sbom: true
@@ -932,7 +906,6 @@ jobs:
         # NOTE: When called cross-repo (from frontend), `environment: pr-preview`
         # resolves from the CALLER's repository, not this one. Ensure all required
         # secrets exist in the caller repo's pr-preview environment or at org level.
-        # TODO: Move PR_PREVIEW_* secrets to org-level for proper cross-repo access.
         environment: pr-preview
 
         steps:
@@ -1173,10 +1146,10 @@ jobs:
                   PR_BACKEND_CONTAINER_PORT=${{ steps.ports.outputs.backend_container_port }}
                   PR_FRONTEND_PORT=${{ steps.ports.outputs.frontend_port }}
                   PR_FRONTEND_CONTAINER_PORT=${{ steps.ports.outputs.frontend_container_port }}
-                  POSTGRES_USER='${{ secrets.PR_PREVIEW_POSTGRES_USER }}'
-                  POSTGRES_PASSWORD='${{ secrets.PR_PREVIEW_POSTGRES_PASSWORD }}'
-                  POSTGRES_DB='${{ secrets.PR_PREVIEW_POSTGRES_DB }}'
-                  POSTGRES_SCHEMA='${{ secrets.PR_PREVIEW_POSTGRES_SCHEMA }}'
+                  POSTGRES_USER='${{ secrets.POSTGRES_USER }}'
+                  POSTGRES_PASSWORD='${{ secrets.POSTGRES_PASSWORD }}'
+                  POSTGRES_DB='${{ vars.POSTGRES_DB || 'UNUSED' }}'
+                  POSTGRES_SCHEMA='${{ vars.POSTGRES_SCHEMA || 'UNUSED' }}'
                   RUST_ENV=staging
                   RUST_BACKTRACE=1
                   BACKEND_INTERFACE=0.0.0.0
@@ -1189,24 +1162,24 @@ jobs:
                   DB_ACQUIRE_TIMEOUT_SECS=8
                   DB_IDLE_TIMEOUT_SECS=600
                   DB_MAX_LIFETIME_SECS=1800
-                  TIPTAP_AUTH_KEY='${{ secrets.PR_PREVIEW_TIPTAP_AUTH_KEY || 'UNUSED' }}'
-                  TIPTAP_JWT_SIGNING_KEY='${{ secrets.PR_PREVIEW_TIPTAP_JWT_SIGNING_KEY || 'UNUSED' }}'
-                  TIPTAP_APP_ID='${{ secrets.PR_PREVIEW_TIPTAP_APP_ID || 'UNUSED' }}'
-                  TIPTAP_URL='${{ secrets.PR_PREVIEW_TIPTAP_URL || 'UNUSED' }}'
-                  RESEND_API_KEY='${{ secrets.PR_PREVIEW_RESEND_API_KEY || 'UNUSED' }}'
-                  WELCOME_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_WELCOME_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
-                  SESSION_SCHEDULED_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_SESSION_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
-                  RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
-                  ACTION_ASSIGNED_EMAIL_TEMPLATE_ID='${{ secrets.PR_PREVIEW_ACTION_ASSIGNED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  TIPTAP_AUTH_KEY='${{ secrets.TIPTAP_AUTH_KEY || 'UNUSED' }}'
+                  TIPTAP_JWT_SIGNING_KEY='${{ secrets.TIPTAP_JWT_SIGNING_KEY || 'UNUSED' }}'
+                  TIPTAP_APP_ID='${{ vars.TIPTAP_APP_ID || 'UNUSED' }}'
+                  TIPTAP_URL='${{ secrets.TIPTAP_URL || 'UNUSED' }}'
+                  RESEND_API_KEY='${{ secrets.RESEND_API_KEY || 'UNUSED' }}'
+                  WELCOME_EMAIL_TEMPLATE_ID='${{ vars.WELCOME_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  SESSION_SCHEDULED_EMAIL_TEMPLATE_ID='${{ vars.SESSION_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID='${{ vars.RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  ACTION_ASSIGNED_EMAIL_TEMPLATE_ID='${{ vars.ACTION_ASSIGNED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   FRONTEND_BASE_URL=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}
-                  ENCRYPTION_KEY='${{ secrets.PR_PREVIEW_ENCRYPTION_KEY || 'UNUSED' }}'
-                  GOOGLE_CLIENT_ID='${{ secrets.PR_PREVIEW_GOOGLE_CLIENT_ID || 'UNUSED' }}'
-                  GOOGLE_CLIENT_SECRET='${{ secrets.PR_PREVIEW_GOOGLE_CLIENT_SECRET || 'UNUSED' }}'
-                  GOOGLE_REDIRECT_URI='${{ secrets.PR_PREVIEW_GOOGLE_REDIRECT_URI || 'UNUSED' }}'
+                  ENCRYPTION_KEY='${{ secrets.ENCRYPTION_KEY || 'UNUSED' }}'
+                  GOOGLE_CLIENT_ID='${{ vars.GOOGLE_CLIENT_ID || 'UNUSED' }}'
+                  GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET || 'UNUSED' }}'
+                  GOOGLE_REDIRECT_URI='${{ vars.GOOGLE_REDIRECT_URI || 'UNUSED' }}'
                   OAUTH_SUCCESS_REDIRECT_URI=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}/
-                  RECALL_AI_API_KEY='${{ secrets.PR_PREVIEW_RECALL_AI_API_KEY || 'UNUSED' }}'
-                  RECALL_AI_REGION='${{ secrets.PR_PREVIEW_RECALL_AI_REGION || 'us-west-2' }}'
-                  RECALL_AI_WEBHOOK_SECRET='${{ secrets.PR_PREVIEW_RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
+                  RECALL_AI_API_KEY='${{ secrets.RECALL_AI_API_KEY || 'UNUSED' }}'
+                  RECALL_AI_REGION='${{ vars.RECALL_AI_REGION || 'us-west-2' }}'
+                  RECALL_AI_WEBHOOK_SECRET='${{ secrets.RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
                   RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}'
@@ -1215,7 +1188,7 @@ jobs:
                   NEXT_PUBLIC_BACKEND_SERVICE_HOST=${{ secrets.RPI5_TAILSCALE_NAME }}
                   NEXT_PUBLIC_BACKEND_SERVICE_PORT=80
                   NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=pr-${{ needs.build-arm64-image.outputs.pr_number }}/api
-                  NEXT_PUBLIC_BACKEND_API_VERSION=${{ secrets.PR_PREVIEW_BACKEND_API_VERSION || '1.0.0-beta1' }}
+                  NEXT_PUBLIC_BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION || '1.0.0-beta1' }}
                   ENVEOF
 
                   # Transfer deployment configuration to target server
