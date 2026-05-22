@@ -13,6 +13,7 @@
 - Always run `cargo clippy` and `cargo fmt` before committing
 - Always skip adding Claude attribution for commits or PRs (no "Generated with Claude Code" or "Co-Authored-By: Claude" footers)
 - **CRITICAL:** Never place `use` statements inside function bodies. All imports must be at the top of the file. Inline imports hide a module's dependency surface and are rejected in code review.
+- **CRITICAL:** When adding a new env var or secret consumed by the backend, wire it through every passthrough layer or it silently resolves to an empty string at runtime (clap `Option` fields tolerate this until the feature is exercised, then fail). Add it to ALL of: `docker-compose.yaml` and `docker-compose.pr-preview.yaml` backend `environment:` blocks; the production deploy `.env` heredoc in `.github/workflows/deploy_to_do.yml`; and the PR preview heredoc (plus its `secrets:`/inputs declaration) in `.github/workflows/ci-deploy-pr-preview.yml`. Secret values go in the GitHub `production` environment (and `PR_PREVIEW_*` for previews); non-secret values can use deploy-script fallback defaults.
 
 ## Naming Conventions
 

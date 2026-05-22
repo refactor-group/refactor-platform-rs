@@ -137,6 +137,7 @@ services:
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
       OAUTH_SUCCESS_REDIRECT_URI: ${OAUTH_SUCCESS_REDIRECT_URI}
       RECALL_AI_API_KEY: ${RECALL_AI_API_KEY}
+      RECALL_AI_REGION: ${RECALL_AI_REGION}
       RECALL_AI_WEBHOOK_SECRET: ${RECALL_AI_WEBHOOK_SECRET}
     # Expose port to Docker networks only (no host port binding)
     expose:

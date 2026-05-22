@@ -151,6 +151,9 @@ on:
             PR_PREVIEW_RECALL_AI_API_KEY:
                 description: "Recall.ai API key"
                 required: false
+            PR_PREVIEW_RECALL_AI_REGION:
+                description: "Recall.ai region subdomain (e.g. us-west-2). Defaults to us-west-2."
+                required: false
             PR_PREVIEW_RECALL_AI_WEBHOOK_SECRET:
                 description: "Recall.ai webhook signing secret (Svix whsec_... format)"
                 required: false
@@ -1202,6 +1205,7 @@ jobs:
                   GOOGLE_REDIRECT_URI='${{ secrets.PR_PREVIEW_GOOGLE_REDIRECT_URI || 'UNUSED' }}'
                   OAUTH_SUCCESS_REDIRECT_URI=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}/
                   RECALL_AI_API_KEY='${{ secrets.PR_PREVIEW_RECALL_AI_API_KEY || 'UNUSED' }}'
+                  RECALL_AI_REGION='${{ secrets.PR_PREVIEW_RECALL_AI_REGION || 'us-west-2' }}'
                   RECALL_AI_WEBHOOK_SECRET='${{ secrets.PR_PREVIEW_RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
