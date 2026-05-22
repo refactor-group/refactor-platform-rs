@@ -142,6 +142,27 @@ impl From<jsonwebtoken::errors::Error> for Error {
     }
 }
 
+impl From<meeting_ai::Error> for Error {
+    fn from(err: meeting_ai::Error) -> Self {
+        let error_kind = match &err {
+            meeting_ai::Error::Network(_) | meeting_ai::Error::Timeout(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            }
+            meeting_ai::Error::Configuration(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Config)
+            }
+            meeting_ai::Error::NotFound(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            }
+            other => DomainErrorKind::External(ExternalErrorKind::Other(other.to_string())),
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
+        }
+    }
+}
+
 impl From<MeetingAuthError> for Error {
     fn from(err: MeetingAuthError) -> Self {
         let error_kind = match &err.error_kind {

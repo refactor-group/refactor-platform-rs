@@ -3,6 +3,7 @@ pub(crate) mod coaching_relationship_access;
 pub(crate) mod coaching_session_access;
 pub(crate) mod compare_api_version;
 pub(crate) mod organization_member_access;
+pub(crate) mod svix_signature;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]

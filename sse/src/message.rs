@@ -77,6 +77,14 @@ pub enum Event {
     // System events
     #[serde(rename = "force_logout")]
     ForceLogout { reason: String },
+
+    // Meeting recording events (session-scoped)
+    #[serde(rename = "meeting_recording_updated")]
+    MeetingRecordingUpdated { coaching_session_id: String },
+
+    // Transcription events (session-scoped)
+    #[serde(rename = "transcription_updated")]
+    TranscriptionUpdated { coaching_session_id: String },
 }
 
 impl EventType for Event {
@@ -94,6 +102,8 @@ impl EventType for Event {
             Event::CoachingSessionGoalCreated { .. } => "coaching_session_goal_created",
             Event::CoachingSessionGoalDeleted { .. } => "coaching_session_goal_deleted",
             Event::ForceLogout { .. } => "force_logout",
+            Event::MeetingRecordingUpdated { .. } => "meeting_recording_updated",
+            Event::TranscriptionUpdated { .. } => "transcription_updated",
         }
     }
 }

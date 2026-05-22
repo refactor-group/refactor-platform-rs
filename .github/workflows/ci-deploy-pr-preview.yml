@@ -147,6 +147,14 @@ on:
                 description: "Welcome email template ID"
                 required: false
 
+            # Recall.ai meeting recording and transcription
+            PR_PREVIEW_RECALL_AI_API_KEY:
+                description: "Recall.ai API key"
+                required: false
+            PR_PREVIEW_RECALL_AI_WEBHOOK_SECRET:
+                description: "Recall.ai webhook signing secret (Svix whsec_... format)"
+                required: false
+
             # Frontend build-time configuration (optional with defaults)
             PR_PREVIEW_BACKEND_SERVICE_PROTOCOL:
                 description: "Backend service protocol (http/https)"
@@ -1193,6 +1201,8 @@ jobs:
                   GOOGLE_CLIENT_SECRET='${{ secrets.PR_PREVIEW_GOOGLE_CLIENT_SECRET || 'UNUSED' }}'
                   GOOGLE_REDIRECT_URI='${{ secrets.PR_PREVIEW_GOOGLE_REDIRECT_URI || 'UNUSED' }}'
                   OAUTH_SUCCESS_REDIRECT_URI=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}/
+                  RECALL_AI_API_KEY='${{ secrets.PR_PREVIEW_RECALL_AI_API_KEY || 'UNUSED' }}'
+                  RECALL_AI_WEBHOOK_SECRET='${{ secrets.PR_PREVIEW_RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
                   RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}'

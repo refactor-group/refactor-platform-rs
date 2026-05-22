@@ -1,10 +1,7 @@
 //! API key authentication trait and implementation.
 
-use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use secrecy::{ExposeSecret, SecretString};
-
-use crate::error::Error;
 
 /// Known API key providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +39,6 @@ pub enum AuthMethod {
 /// Implementations handle provider-specific authentication patterns like:
 /// - Recall.ai: `Authorization: Token xxx`
 /// - AssemblyAI: `authorization: xxx`
-#[async_trait]
 pub trait Authenticate: Send + Sync {
     /// Get the provider identifier.
     fn provider(&self) -> Provider;
@@ -52,10 +48,6 @@ pub trait Authenticate: Send + Sync {
 
     /// Apply authentication to a request builder.
     fn authenticate(&self, request: RequestBuilder) -> RequestBuilder;
-
-    /// Verify that the credentials are valid by making a test request.
-    /// Returns `true` if credentials are valid, `false` otherwise.
-    async fn verify_credentials(&self) -> Result<bool, Error>;
 }
 
 /// API key authentication implementation.
@@ -114,7 +106,6 @@ impl Auth {
     }
 }
 
-#[async_trait]
 impl Authenticate for Auth {
     fn provider(&self) -> Provider {
         self.provider
@@ -135,13 +126,6 @@ impl Authenticate for Auth {
         };
 
         request.header(&self.header_name, auth_value)
-    }
-
-    async fn verify_credentials(&self) -> Result<bool, Error> {
-        // Provider-specific verification endpoints would be implemented here
-        // For now, return Ok(true) as a placeholder
-        // In production, this would make an actual API call to verify the key
-        Ok(true)
     }
 }
 

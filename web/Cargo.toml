@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 domain = { path = "../domain" }
+meeting-ai = { path = "../meeting-ai" }
 service = { path = "../service" }
 meeting-auth = { path = "../meeting-auth" }
 secrecy = "0.8"
@@ -48,6 +49,9 @@ mock = ["sea-orm/mock"]
 
 [dev-dependencies]
 anyhow = "1.0.89"
+base64 = "0.22"
 chrono = { version = "0.4.38", features = ["serde"] }
+hmac = "0.12"
 password-auth = "1.0.0"
 reqwest = { version = "0.12.12", features = ["json", "cookies"] }
+sha2 = "0.10"

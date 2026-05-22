@@ -208,6 +208,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         // Set up session layer
@@ -292,6 +294,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         // Set up session layer
@@ -378,6 +382,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         // Set up session layer
@@ -461,6 +467,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         );
 
         let session_store = MemoryStore::default();

@@ -12,6 +12,7 @@
 - PR reviews require both files if coding standards referenced
 - Always run `cargo clippy` and `cargo fmt` before committing
 - Always skip adding Claude attribution for commits or PRs (no "Generated with Claude Code" or "Co-Authored-By: Claude" footers)
+- **CRITICAL:** Never place `use` statements inside function bodies. All imports must be at the top of the file. Inline imports hide a module's dependency surface and are rejected in code review.
 
 ## Naming Conventions
 

@@ -28,15 +28,20 @@ pub mod goal;
 pub mod goal_progress;
 pub mod jwt;
 pub mod magic_link_token;
+pub mod meeting_recording;
 pub mod note;
+
 pub mod oauth_connection;
 pub mod oauth_token_storage;
 pub mod organization;
 pub mod password_policy;
 pub mod password_reset;
+pub mod transcript_segment;
+pub mod transcription;
 pub mod user;
 
 pub mod gateway;
+pub mod webhook;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;

@@ -63,7 +63,8 @@ mod tests {
         let service_state = service::AppState::new(config, &db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
-        let app_state = crate::AppState::new(service_state, sse_manager, event_publisher);
+        let app_state =
+            crate::AppState::new(service_state, sse_manager, event_publisher, None, None);
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -95,7 +96,8 @@ mod tests {
         let service_state = service::AppState::new(config, &db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
-        let app_state = crate::AppState::new(service_state, sse_manager, event_publisher);
+        let app_state =
+            crate::AppState::new(service_state, sse_manager, event_publisher, None, None);
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -173,7 +175,8 @@ mod tests {
         let service_state = service::AppState::new(config, &db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
-        let app_state = crate::AppState::new(service_state, sse_manager, event_publisher);
+        let app_state =
+            crate::AppState::new(service_state, sse_manager, event_publisher, None, None);
 
         // Set up session layer
         let session_store = MemoryStore::default();
