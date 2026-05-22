@@ -85,6 +85,7 @@ The platform uses Resend for transactional emails. To configure email functional
    - `RESEND_API_KEY`: Your Resend API key
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
    - `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for session-scheduled notification emails
+   - `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for recurring-sessions-scheduled notification emails
    - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
    - `FRONTEND_BASE_URL`: Base URL used to construct links in email notifications (e.g. `https://myrefactor.com`)
 
@@ -153,9 +154,9 @@ _This Rust-based backend/web API connects to a PostgreSQL database. It uses Dock
   ```bash
   docker-compose down
   ```
-  
+
    **Note**: This will stop all containers, including the database.
-  
+
 - **Rebuild and restart**:
 
   ```bash
@@ -194,7 +195,7 @@ _For additional commands, database utilities, and debugging tips, check the [Con
 
 `src` - contains a main function that initializes logging and calls all sub-services
 
-`testing-tools` - Integration testing utilities 
+`testing-tools` - Integration testing utilities
 
 `web` - API endpoint definition, routing, handling of request/responses, controllers
 

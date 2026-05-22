@@ -5,9 +5,9 @@ use entity_api::{actions, actions_user, query};
 use sea_orm::DatabaseConnection;
 
 pub use entity_api::action::{
-    create, create_with_assignees, delete_by_id, find_by_coach_relationships,
-    find_by_coaching_relationship, find_by_id, find_by_id_with_assignees, find_by_user, update,
-    update_status, update_with_assignees, ActionWithAssignees, AssigneeFilter, AssigneeScope,
+    create, create_with_assignees, delete_by_id, find_by_coaching_relationship, find_by_id,
+    find_by_id_with_assignees, find_by_user, find_by_user_relationships, update, update_status,
+    update_with_assignees, ActionWithAssignees, AssigneeFilter, AssigneeScope, CallerVisibility,
     FindByRelationshipParams, FindByUserParams, Scope,
 };
 

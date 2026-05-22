@@ -1159,6 +1159,7 @@ jobs:
                   RESEND_API_KEY='${{ secrets.RESEND_API_KEY || 'UNUSED' }}'
                   WELCOME_EMAIL_TEMPLATE_ID='${{ vars.WELCOME_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   SESSION_SCHEDULED_EMAIL_TEMPLATE_ID='${{ vars.SESSION_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
+                  RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID='${{ vars.RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   ACTION_ASSIGNED_EMAIL_TEMPLATE_ID='${{ vars.ACTION_ASSIGNED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   FRONTEND_BASE_URL=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}
                   ENCRYPTION_KEY='${{ secrets.ENCRYPTION_KEY || 'UNUSED' }}'

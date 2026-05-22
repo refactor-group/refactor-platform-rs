@@ -13,7 +13,7 @@ use secrecy::{ExposeSecret, SecretString};
 use service::config::Config;
 
 pub use entity_api::oauth_connection::{
-    delete_by_user_and_provider, find_all_by_user, find_by_user_and_provider,
+    delete_by_user_and_provider, find_all_by_user, find_by_user, find_by_user_and_provider,
     get_by_user_and_provider,
 };
 

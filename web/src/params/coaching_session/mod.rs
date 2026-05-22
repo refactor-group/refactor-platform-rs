@@ -1,4 +1,5 @@
 pub(crate) mod goal;
+pub(crate) mod recurring;
 
 use chrono::{NaiveDate, NaiveDateTime};
 use domain::provider::Provider;
