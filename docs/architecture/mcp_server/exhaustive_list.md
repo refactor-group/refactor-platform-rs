@@ -20,7 +20,7 @@ Prefer not deleting through mcp for now, destructively risky.
 28. ~~`list_agreements` — agreements for a session~~ - folds into `get_session` via `include` parameter
 29. `update_goal_status` — change goal status
 30. `update_action_status` — change action status
-31. `get_session` — session recap (generative)
+31. `get_session_recap` — session recap (generative)
 2. `get_coachee` — profile + aggregated stats for one coachee
 3. `list_overdue_actions` — overdue actions for a coachee
 4. `create_session` — schedule a session
