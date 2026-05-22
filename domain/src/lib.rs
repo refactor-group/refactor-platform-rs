@@ -13,7 +13,8 @@ pub use entity_api::{
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions,
     coaching_sessions_goals, goals, jwts, magic_link_tokens, notes, oauth_connections,
-    organizations, provider, query::QuerySort, status, user_roles, users, Id,
+    organizations, password_reset_attempts, provider, query::QuerySort, status, token_purpose,
+    user_roles, users, Id,
 };
 
 pub mod action;
@@ -27,13 +28,20 @@ pub mod goal;
 pub mod goal_progress;
 pub mod jwt;
 pub mod magic_link_token;
+pub mod meeting_recording;
 pub mod note;
+
 pub mod oauth_connection;
 pub mod oauth_token_storage;
 pub mod organization;
+pub mod password_policy;
+pub mod password_reset;
+pub mod transcript_segment;
+pub mod transcription;
 pub mod user;
 
 pub mod gateway;
+pub mod webhook;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;

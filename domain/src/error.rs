@@ -51,6 +51,12 @@ pub enum EntityErrorKind {
     },
     CannotLinkCompletedGoal,
     GoalAlreadyLinkedToSession,
+    /// Token missing, expired, or has wrong purpose. Collapsed deliberately
+    /// for password-reset endpoints so attackers can't distinguish these
+    /// three cases via the response.
+    InvalidOrExpiredToken,
+    /// User has exceeded the per-email password-reset request rate limit.
+    PasswordResetRateLimited,
     DbTransaction,
     ServiceUnavailable,
     Other(String),
@@ -132,6 +138,27 @@ impl From<jsonwebtoken::errors::Error> for Error {
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
                 "JWT encoding related error".to_string(),
             )),
+        }
+    }
+}
+
+impl From<meeting_ai::Error> for Error {
+    fn from(err: meeting_ai::Error) -> Self {
+        let error_kind = match &err {
+            meeting_ai::Error::Network(_) | meeting_ai::Error::Timeout(_) => {
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            }
+            meeting_ai::Error::Configuration(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Config)
+            }
+            meeting_ai::Error::NotFound(_) => {
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+            }
+            other => DomainErrorKind::External(ExternalErrorKind::Other(other.to_string())),
+        };
+        Error {
+            source: Some(Box::new(err)),
+            error_kind,
         }
     }
 }

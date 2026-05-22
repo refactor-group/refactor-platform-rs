@@ -41,7 +41,12 @@ pub async fn find_by_organization_with_invite_status(
     }
 
     let user_ids: Vec<Id> = users.iter().map(|u| u.id).collect();
-    let tokens = entity_api::magic_link_token::find_by_user_ids(db, &user_ids).await?;
+    let tokens = entity_api::magic_link_token::find_by_user_ids(
+        db,
+        &user_ids,
+        crate::token_purpose::TokenPurpose::Setup,
+    )
+    .await?;
 
     let token_map: HashMap<Id, &magic_link_tokens::Model> =
         tokens.iter().map(|t| (t.user_id, t)).collect();

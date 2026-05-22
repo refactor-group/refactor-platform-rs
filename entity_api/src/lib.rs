@@ -5,8 +5,8 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
     coaching_sessions, coaching_sessions_goals, goals, jwts, magic_link_tokens, notes,
-    oauth_connections, organizations, provider, status, user_invite_status, user_roles, users,
-    users::Role, Id,
+    oauth_connections, organizations, password_reset_attempts, provider, status, token_purpose,
+    user_invite_status, user_roles, users, users::Role, Id,
 };
 
 pub mod action;
@@ -19,11 +19,15 @@ pub mod error;
 pub mod goal;
 pub mod goal_progress;
 pub mod magic_link_token;
+pub mod meeting_recording;
 pub mod mutate;
 pub mod note;
 pub mod oauth_connection;
 pub mod organization;
+pub mod password_reset_attempt;
 pub mod query;
+pub mod transcript_segment;
+pub mod transcription;
 pub mod user;
 pub mod user_role;
 
@@ -37,21 +41,21 @@ pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
 pub async fn seed_database(db: &DatabaseConnection) {
     let now = Utc::now();
 
-    let _admin_user: users::ActiveModel = users::ActiveModel {
-        email: Set("admin@refactorcoach.com".to_owned()),
-        first_name: Set("Admin".to_owned()),
-        last_name: Set("User".to_owned()),
-        display_name: Set(Some("Admin User".to_owned())),
-        password: Set(Some(generate_hash("dLxNxnjn&b!2sqkwFbb4s8jX"))),
-        github_username: Set(None),
-        github_profile_url: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    // let _admin_user: users::ActiveModel = users::ActiveModel {
+    //     email: Set("admin@refactorcoach.com".to_owned()),
+    //     first_name: Set("Admin".to_owned()),
+    //     last_name: Set("User".to_owned()),
+    //     display_name: Set(Some("Admin User".to_owned())),
+    //     password: Set(Some(generate_hash("dLxNxnjn&b!2sqkwFbb4s8jX"))),
+    //     github_username: Set(None),
+    //     github_profile_url: Set(None),
+    //     created_at: Set(now.into()),
+    //     updated_at: Set(now.into()),
+    //     ..Default::default()
+    // }
+    // .save(db)
+    // .await
+    // .unwrap();
 
     let jim_hodapp: users::ActiveModel = users::ActiveModel {
         email: Set("james.hodapp@gmail.com".to_owned()),
@@ -77,6 +81,22 @@ pub async fn seed_database(db: &DatabaseConnection) {
         password: Set(Some(generate_hash("password"))),
         github_username: Set(Some("calebbourg".to_owned())),
         github_profile_url: Set(Some("https://github.com/calebbourg".to_owned())),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    let dinah_manley: users::ActiveModel = users::ActiveModel {
+        email: Set("dmanley@hotmail.com".to_owned()),
+        first_name: Set("Dinah".to_owned()),
+        last_name: Set("Manley".to_owned()),
+        display_name: Set(Some("Dinah M.".to_owned())),
+        password: Set(Some(generate_hash("password"))),
+        github_username: Set(None),
+        github_profile_url: Set(None),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -153,6 +173,20 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
+    // In the Acme Corp organization, Caleb is coaching Dinah.
+    let caleb_dinah_coaching_relationship = coaching_relationships::ActiveModel {
+        coach_id: Set(caleb_bourg.id.clone().unwrap()),
+        coachee_id: Set(dinah_manley.id.clone().unwrap()),
+        organization_id: Set(acme_corp.id.clone().unwrap()),
+        slug: Set("caleb-dinah".to_owned()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
     coaching_relationships::ActiveModel {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(other_user.id.clone().unwrap()),
@@ -182,6 +216,31 @@ pub async fn seed_database(db: &DatabaseConnection) {
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(caleb_jim_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local()),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // Caleb coaches Dinah
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(caleb_dinah_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local()),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(caleb_dinah_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local().checked_add_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -256,6 +315,82 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(14)).unwrap()),
         collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // Jim: User in Refactor Coaching and Acme Corp
+    user_roles::ActiveModel {
+        role: Set(Role::User),
+        organization_id: Set(Some(refactor_coaching_id)),
+        user_id: Set(jim_hodapp.id.clone().unwrap()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    user_roles::ActiveModel {
+        role: Set(Role::User),
+        organization_id: Set(Some(acme_corp.id.clone().unwrap())),
+        user_id: Set(jim_hodapp.id.clone().unwrap()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // Caleb: User in Refactor Coaching and Acme Corp
+    user_roles::ActiveModel {
+        role: Set(Role::User),
+        organization_id: Set(Some(refactor_coaching_id)),
+        user_id: Set(caleb_bourg.id.clone().unwrap()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    user_roles::ActiveModel {
+        role: Set(Role::User),
+        organization_id: Set(Some(acme_corp.id.clone().unwrap())),
+        user_id: Set(caleb_bourg.id.clone().unwrap()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // Dinah: User in Acme Corp
+    user_roles::ActiveModel {
+        role: Set(Role::User),
+        organization_id: Set(Some(acme_corp.id.clone().unwrap())),
+        user_id: Set(dinah_manley.id.clone().unwrap()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // Other User: User in Acme Corp
+    user_roles::ActiveModel {
+        role: Set(Role::User),
+        organization_id: Set(Some(acme_corp.id.clone().unwrap())),
+        user_id: Set(other_user.id.clone().unwrap()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()

@@ -40,10 +40,4 @@ pub trait Provider: Send + Sync {
     /// Used for cost tracking, feature-specific logic, and provider selection.
     /// Must be lowercase, alphanumeric with underscores only.
     fn provider_id(&self) -> &str;
-
-    /// Validate API credentials by making a lightweight test request.
-    ///
-    /// Call during user onboarding or settings updates for immediate validation feedback.
-    /// Returns false if credentials invalid, expired, or lack transcription permissions.
-    async fn verify_credentials(&self) -> std::result::Result<bool, Error>;
 }

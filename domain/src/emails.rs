@@ -111,6 +111,19 @@ impl EmailNotification for WelcomeEmail {
     }
 }
 
+struct PasswordResetEmail;
+impl EmailNotification for PasswordResetEmail {
+    fn template_id(config: &Config) -> Option<String> {
+        config.password_reset_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "password reset"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.password_reset_email_url_path().to_owned())
+    }
+}
+
 /// Create a magic link token and send a welcome email to a user.
 ///
 /// `inviter` is the user who triggered the invite (typically the coach or
@@ -124,7 +137,7 @@ pub async fn create_and_send_welcome_email(
     user: &users::Model,
     inviter: &users::Model,
 ) -> Result<(), Error> {
-    let raw_token = crate::magic_link_token::create_magic_link(db, user.id, config).await?;
+    let raw_token = crate::magic_link_token::create_setup_link(db, user.id, config).await?;
     send_welcome_email(config, user, inviter, &raw_token).await
 }
 
@@ -141,7 +154,7 @@ pub async fn notify_welcome_email(
     user: &users::Model,
     inviter: &users::Model,
 ) {
-    match crate::magic_link_token::create_magic_link(db, user.id, config).await {
+    match crate::magic_link_token::create_setup_link(db, user.id, config).await {
         Ok(raw_token) => {
             if let Err(e) = send_welcome_email(config, user, inviter, &raw_token).await {
                 warn!("Failed to send welcome email to {}: {e:?}", user.email);
@@ -196,6 +209,42 @@ async fn send_welcome_email(
         .build()
         .await?;
     debug!("Email request created for {}", user.email);
+
+    email_config.client.send_email(email_request).await
+}
+
+/// Build and send a password-reset email to a single user.
+///
+/// Called from the password-reset domain flow after a token has been issued.
+/// Note: logs `user.id` rather than `user.email` — raw email addresses are
+/// PII and are not emitted at INFO level on this code path.
+pub(crate) async fn send_password_reset_email(
+    config: &Config,
+    user: &users::Model,
+    raw_token: &str,
+) -> Result<(), Error> {
+    info!("Initiating password-reset email for user {}", user.id);
+
+    let email_config = ResolvedEmailConfig::new::<PasswordResetEmail>(config).await?;
+
+    let password_reset_url = email_config
+        .session_url_builder
+        .as_ref()
+        .map(|b| b.build(TOKEN_PLACEHOLDER, raw_token))
+        .unwrap_or_default();
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from(FROM_ADDRESS)
+        .to_with_name(
+            &user.email,
+            format!("{} {}", user.first_name, user.last_name),
+        )
+        .template_id(&email_config.template_id)
+        .add_variable("first_name", &user.first_name)
+        .add_variable("last_name", &user.last_name)
+        .add_variable("password_reset_url", &password_reset_url)
+        .build()
+        .await?;
 
     email_config.client.send_email(email_request).await
 }
@@ -687,6 +736,16 @@ mod tests {
         Server::new_async().await
     }
 
+    /// `Matcher::Json` for a Resend body that guards against a `subject` key —
+    /// Resend templates own the subject line; payload-level subject is a bug.
+    fn expect_resend_body(expected: serde_json::Value) -> mockito::Matcher {
+        assert!(
+            expected.get("subject").is_none(),
+            "test bug: expected body must not include `subject`",
+        );
+        mockito::Matcher::Json(expected)
+    }
+
     fn create_test_user() -> users::Model {
         users::Model {
             id: Id::new_v4(),
@@ -792,7 +851,7 @@ mod tests {
             .mock("POST", "/emails")
             .match_header("authorization", "Bearer test_api_key_123")
             .match_header("content-type", "application/json")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"John Doe\" <john.doe@example.com>"],
                 "template": {
@@ -903,7 +962,7 @@ mod tests {
 
         let _mock = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe, Jr.\" <jane.jr@example.com>"],
                 "template": {
@@ -925,6 +984,67 @@ mod tests {
 
         let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
         assert!(result.is_ok());
+    }
+
+    // ── Password Reset Email Tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_send_password_reset_email_wire_contract() {
+        // Pins the wire contract that the Resend template depends on. The
+        // gateway-level tests already prove the builder/HTTP plumbing works;
+        // this test exists to catch regressions that are unique to *how this
+        // function wires up* the request:
+        //   1. `from` is the `mail.` subdomain — apex would not be verified
+        //      in Resend and prod sends would silently fail.
+        //   2. Variable keys are exactly `first_name`, `last_name`,
+        //      `password_reset_url` — a rename would render to empty strings
+        //      in the recipient's inbox (Resend still returns 200).
+        //   3. The URL substitutes `{token}` (not `{session_id}` like other
+        //      email types) — a copy-paste regression would send a malformed
+        //      reset link.
+        //   4. No `subject` field is present in the JSON payload — main moved
+        //      subjects to be template-owned (commit 172907a); re-adding
+        //      `.subject(...)` here would override the template default.
+        let mut server = setup_test_server().await;
+        let user = create_test_user_with("John", "Doe", "john@example.com", "UTC");
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_api_key_123",
+            "--password-reset-email-template-id=pw_reset_template_test",
+            "--password-reset-email-url-path=/reset-password/{token}",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", server.url()),
+        ]);
+
+        // `Matcher::Json` is structural — any extra field (e.g. an
+        // accidentally-readded `subject`) or missing/renamed variable will
+        // fail the mock match and the test will hang on `expect(1)`.
+        let _mock = server
+            .mock("POST", "/emails")
+            .match_header("authorization", "Bearer test_api_key_123")
+            .match_body(expect_resend_body(serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"John Doe\" <john@example.com>"],
+                "template": {
+                    "id": "pw_reset_template_test",
+                    "variables": {
+                        "first_name": "John",
+                        "last_name": "Doe",
+                        "password_reset_url": "https://app.example.com/reset-password/raw-reset-token-abc"
+                    }
+                }
+            })))
+            .with_status(200)
+            .with_body(r#"{"id":"email_pw_reset"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let result = send_password_reset_email(&config, &user, "raw-reset-token-abc").await;
+        assert!(
+            result.is_ok(),
+            "send_password_reset_email failed: {result:?}"
+        );
     }
 
     // ── Session Scheduled Email Tests ──────────────────────────────────
@@ -949,7 +1069,7 @@ mod tests {
         // Email to coachee — other_user is the coach, formatted in NY time.
         let _mock_coachee = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "template": {
@@ -976,7 +1096,7 @@ mod tests {
         // (the session date rolls forward a day).
         let _mock_coach = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Alex Smith\" <alex@example.com>"],
                 "template": {
@@ -1054,7 +1174,7 @@ mod tests {
 
         let _mock = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "template": {
@@ -1104,7 +1224,7 @@ mod tests {
 
         let _mock = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "template": {
@@ -1157,7 +1277,7 @@ mod tests {
         // both emails to the same person (or with swapped variables) fails here.
         let _mock_jane = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "template": {
@@ -1181,7 +1301,7 @@ mod tests {
 
         let _mock_bob = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Bob Jones\" <bob@example.com>"],
                 "template": {

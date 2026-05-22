@@ -12,6 +12,7 @@ use tower_sessions_sqlx_store::PostgresStore;
 
 pub use self::error::{Error, Result};
 use log::*;
+use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use sea_orm::DatabaseConnection;
 use service::config::{ApiVersion, Config};
 use std::net::SocketAddr;
@@ -39,6 +40,8 @@ pub struct AppState {
     pub sse_manager: Arc<::sse::Manager>,
     pub event_publisher: Arc<domain::events::EventPublisher>,
     pub oauth_state_manager: meeting_auth::oauth::StateManager,
+    pub recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
+    pub transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
 }
 
 impl AppState {
@@ -46,6 +49,8 @@ impl AppState {
         service_state: service::AppState,
         sse_manager: Arc<::sse::Manager>,
         event_publisher: domain::events::EventPublisher,
+        recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
+        transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
     ) -> Self {
         Self {
             database_connection: service_state.database_connection,
@@ -53,6 +58,8 @@ impl AppState {
             sse_manager,
             event_publisher: Arc::new(event_publisher),
             oauth_state_manager: meeting_auth::oauth::StateManager::new(),
+            recording_bot_provider,
+            transcription_provider,
         }
     }
 
@@ -81,6 +88,41 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
             .clone()
             .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
     );
+
+    // Background sweep of the password_reset_attempts audit table.
+    // Mirrors the session-deletion task above: one tokio task spawned at
+    // server start that loops forever, calling `sweep_old_attempts` daily.
+    // Retention is 30 days — the 24-hour daily-cap rate-limit window needs
+    // recent data, the rest is kept for security forensics.
+    //
+    // See `docs/architecture/password_reset.md` and
+    // `domain::password_reset::sweep_old_attempts` for the policy and
+    // why the sweep is in-process rather than an external cron.
+    let password_reset_sweep_task = tokio::task::spawn({
+        let db = Arc::clone(&app_state.database_connection);
+        async move {
+            const SWEEP_INTERVAL: tokio::time::Duration =
+                tokio::time::Duration::from_secs(24 * 60 * 60);
+            const RETENTION_DAYS: i64 = 30;
+            loop {
+                tokio::time::sleep(SWEEP_INTERVAL).await;
+                match domain::password_reset::sweep_old_attempts(&db, RETENTION_DAYS).await {
+                    Ok(deleted) if deleted > 0 => {
+                        log::info!(
+                            "[password-reset-sweep] removed {deleted} attempt record(s) \
+                             older than {RETENTION_DAYS}d"
+                        );
+                    }
+                    Ok(_) => {
+                        // Zero rows — `sweep_old_attempts` already debug-logs.
+                    }
+                    Err(e) => {
+                        log::warn!("[password-reset-sweep] sweep iteration failed: {e:?}");
+                    }
+                }
+            }
+        }
+    });
 
     let session_layer = SessionManagerLayer::new(session_store)
         // Get non-secure cookies for local testing, while production automatically gets secure cookies
@@ -175,12 +217,23 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         router::define_routes(app_state)
             .layer(cors_layer)
             .layer(auth_layer)
-            .into_make_service(),
+            // `into_make_service_with_connect_info` (not just `into_make_service`)
+            // injects `ConnectInfo<SocketAddr>` into every request's extensions.
+            // Required by `tower_governor`'s `SmartIpKeyExtractor`: when none of
+            // `X-Forwarded-For` / `X-Real-IP` / `Forwarded` is set (i.e. local dev
+            // without a proxy in front), the extractor falls back to the peer
+            // SocketAddr from `ConnectInfo`. Without this, every `/password-reset/*`
+            // request returns `500 "Unable To Extract Key!"` from the throttle
+            // middleware before any route handler runs. See `web::middleware::throttle`.
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
     .unwrap();
 
     let _res = deletion_task.await.unwrap();
+    // No `let _res = …` here: the sweep task's future returns `()`,
+    // so binding it would trigger clippy's `let_unit_value` lint.
+    password_reset_sweep_task.await.unwrap();
 
     Ok(())
 }

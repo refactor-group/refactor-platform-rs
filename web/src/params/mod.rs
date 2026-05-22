@@ -19,6 +19,7 @@ pub(crate) mod goal;
 pub(crate) mod jwt;
 pub(crate) mod sort;
 pub(crate) mod user;
+pub(crate) mod validation;
 
 use self::sort::SortOrder;
 

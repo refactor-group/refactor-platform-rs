@@ -1,3 +1,4 @@
+use crate::middleware::throttle::{PerIpThrottle, Throttle, ThrottlePolicy};
 use crate::{
     controller::{health_check_controller, oauth_callback_controller},
     middleware::auth::require_auth,
@@ -13,7 +14,8 @@ use tower_http::services::ServeDir;
 use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
     goal_controller, jwt_controller, magic_link_controller, note_controller, oauth_controller,
-    organization, organization_controller, user, user_controller, user_session_controller,
+    organization, organization_controller, password_reset_controller, user, user_controller,
+    user_session_controller, webhook_controller,
 };
 use crate::sse;
 
@@ -81,6 +83,9 @@ use utoipa_rapidoc::RapiDoc;
             user_controller::update,
             user_session_controller::login,
             user_session_controller::delete,
+            password_reset_controller::request,
+            password_reset_controller::validate,
+            password_reset_controller::complete,
             user::password_controller::update_password,
             user::organization_controller::index,
             user::action_controller::index,
@@ -141,6 +146,12 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(organization_user_routes(app_state.clone()))
         .merge(goal_routes(app_state.clone()))
         .merge(coaching_session_goal_routes(app_state.clone()))
+        .merge(coaching_session_meeting_recording_routes(app_state.clone()))
+        .merge(coaching_session_transcription_routes(app_state.clone()))
+        .merge(coaching_session_transcription_segment_routes(
+            app_state.clone(),
+        ))
+        .merge(webhook_routes(app_state.clone()))
         .merge(user_routes(app_state.clone()))
         .merge(oauth_routes(app_state.clone()))
         .merge(user_password_routes(app_state.clone()))
@@ -150,6 +161,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_goals_routes(app_state.clone()))
         .merge(user_coaching_relationships_routes(app_state.clone()))
         .merge(magic_link_routes(app_state.clone()))
+        .merge(password_reset_routes(app_state.clone()))
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
@@ -504,6 +516,32 @@ fn magic_link_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+fn password_reset_routes(app_state: AppState) -> Router {
+    // Per-IP rate limit applied to ALL password-reset endpoints. Defends
+    // the endpoint surface against mass scanning (an attacker varying
+    // emails or tokens per request) — orthogonal to the per-email DB rate
+    // limit which defends Alice's inbox from targeted flooding. Both
+    // layers are load-bearing.
+    //
+    // See `web::middleware::throttle` for the policy definition and
+    // `docs/architecture/throttling.md` for the design and trust model.
+    Router::new()
+        .route(
+            "/password-reset/request",
+            post(password_reset_controller::request),
+        )
+        .route(
+            "/password-reset/validate",
+            post(password_reset_controller::validate),
+        )
+        .route(
+            "/password-reset/complete",
+            post(password_reset_controller::complete),
+        )
+        .layer(PerIpThrottle::new(ThrottlePolicy::AUTH_ENDPOINT).into_layer())
+        .with_state(app_state)
+}
+
 fn jwt_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
@@ -624,6 +662,44 @@ fn oauth_routes(app_state: AppState) -> Router {
                 get(oauth_callback_controller::callback),
             ),
         )
+        .with_state(app_state)
+}
+
+fn coaching_session_meeting_recording_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/meeting_recording",
+            get(coaching_session::meeting_recording_controller::read)
+                .post(coaching_session::meeting_recording_controller::create)
+                .delete(coaching_session::meeting_recording_controller::delete),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_transcription_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcriptions",
+            get(coaching_session::transcription_controller::read),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_transcription_segment_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id/transcription_segments",
+            get(coaching_session::transcription_segment_controller::index),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn webhook_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route("/webhooks/recall_ai", post(webhook_controller::recall_ai))
         .with_state(app_state)
 }
 

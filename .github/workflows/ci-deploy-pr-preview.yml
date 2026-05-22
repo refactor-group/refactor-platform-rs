@@ -142,6 +142,16 @@ on:
             ENCRYPTION_KEY:
                 description: "Encryption key for OAuth token storage"
                 required: false
+
+            # Recall.ai meeting recording and transcription (RECALL_AI_REGION is a
+            # non-sensitive var, not a secret).
+            RECALL_AI_API_KEY:
+                description: "Recall.ai API key"
+                required: false
+            RECALL_AI_WEBHOOK_SECRET:
+                description: "Recall.ai webhook signing secret (Svix whsec_... format)"
+                required: false
+
             GOOGLE_CLIENT_SECRET:
                 description: "Google OAuth client secret"
                 required: false
@@ -1138,8 +1148,8 @@ jobs:
                   PR_FRONTEND_CONTAINER_PORT=${{ steps.ports.outputs.frontend_container_port }}
                   POSTGRES_USER='${{ secrets.POSTGRES_USER }}'
                   POSTGRES_PASSWORD='${{ secrets.POSTGRES_PASSWORD }}'
-                  POSTGRES_DB='${{ vars.POSTGRES_DB }}'
-                  POSTGRES_SCHEMA='${{ vars.POSTGRES_SCHEMA }}'
+                  POSTGRES_DB='${{ vars.POSTGRES_DB || 'UNUSED' }}'
+                  POSTGRES_SCHEMA='${{ vars.POSTGRES_SCHEMA || 'UNUSED' }}'
                   RUST_ENV=staging
                   RUST_BACKTRACE=1
                   BACKEND_INTERFACE=0.0.0.0
@@ -1167,6 +1177,9 @@ jobs:
                   GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET || 'UNUSED' }}'
                   GOOGLE_REDIRECT_URI='${{ vars.GOOGLE_REDIRECT_URI || 'UNUSED' }}'
                   OAUTH_SUCCESS_REDIRECT_URI=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}/
+                  RECALL_AI_API_KEY='${{ secrets.RECALL_AI_API_KEY || 'UNUSED' }}'
+                  RECALL_AI_REGION='${{ vars.RECALL_AI_REGION || 'us-west-2' }}'
+                  RECALL_AI_WEBHOOK_SECRET='${{ secrets.RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
                   RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}'

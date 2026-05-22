@@ -7,26 +7,31 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, IntoActiveModel, TransactionT
 use sha2::{Digest, Sha256};
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::token_purpose::TokenPurpose;
 use crate::{magic_link_tokens, users, Id};
 use entity_api::user::generate_hash;
 use entity_api::user_invite_status::InviteStatus;
 use service::config::Config;
 
-/// Generate a magic link token for a user.
+/// Generate a magic link token for a user, scoped to the given purpose.
 ///
 /// Returns the raw token string (URL-safe base64) which should be included
 /// in the email URL. Only the SHA-256 hash is stored in the database.
+///
+/// Issues a single live token per (user, purpose) by deleting any prior
+/// tokens of the same purpose for the user before inserting the new one.
+/// Tokens of other purposes for the same user are not affected.
 pub async fn create_magic_link(
     db: &DatabaseConnection,
     user_id: Id,
-    config: &Config,
+    expiry_seconds: i64,
+    purpose: TokenPurpose,
 ) -> Result<String, Error> {
     let mut raw_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw_bytes);
     let raw_token = URL_SAFE_NO_PAD.encode(raw_bytes);
     let token_hash = hash_token(&raw_token);
 
-    let expiry_seconds = config.magic_link_expiry_seconds() as i64;
     let expires_at = Utc::now() + Duration::seconds(expiry_seconds);
 
     let txn = db.begin().await.map_err(|e| Error {
@@ -36,8 +41,9 @@ pub async fn create_magic_link(
         )),
     })?;
 
-    entity_api::magic_link_token::delete_all_for_user(&txn, user_id).await?;
-    entity_api::magic_link_token::create(&txn, user_id, token_hash, expires_at.into()).await?;
+    entity_api::magic_link_token::delete_all_for_user(&txn, user_id, purpose).await?;
+    entity_api::magic_link_token::create(&txn, user_id, token_hash, expires_at.into(), purpose)
+        .await?;
 
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),
@@ -46,24 +52,41 @@ pub async fn create_magic_link(
         )),
     })?;
 
-    info!("Magic link token created for user {user_id}");
+    info!("Magic link token created for user {user_id} (purpose={purpose})");
     Ok(raw_token)
 }
 
-/// Validate a raw magic link token.
+/// Convenience wrapper for the setup/welcome flow.
 ///
-/// Hashes the token, looks it up in the database, checks expiry,
-/// and returns the associated user if valid.
+/// Uses `magic_link_expiry_seconds` from config (24h default) and
+/// `TokenPurpose::Setup`.
+pub async fn create_setup_link(
+    db: &DatabaseConnection,
+    user_id: Id,
+    config: &Config,
+) -> Result<String, Error> {
+    let expiry_seconds = config.magic_link_expiry_seconds() as i64;
+    create_magic_link(db, user_id, expiry_seconds, TokenPurpose::Setup).await
+}
+
+/// Validate a raw magic link token, scoped to the given purpose.
+///
+/// Hashes the token, looks it up in the database (filtered by purpose),
+/// checks expiry, and returns the associated user if valid.
+///
+/// Purpose scoping ensures a Setup token cannot satisfy a PasswordReset
+/// validation and vice versa.
 pub async fn validate_token(
     db: &impl ConnectionTrait,
     raw_token: &str,
+    purpose: TokenPurpose,
 ) -> Result<users::Model, Error> {
     let token_hash = hash_token(raw_token);
 
-    let token_record = entity_api::magic_link_token::find_by_token_hash(db, &token_hash)
+    let token_record = entity_api::magic_link_token::find_by_token_hash(db, &token_hash, purpose)
         .await?
         .ok_or_else(|| {
-            warn!("Magic link token not found");
+            warn!("Magic link token not found (purpose={purpose})");
             Error {
                 source: None,
                 error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
@@ -73,7 +96,10 @@ pub async fn validate_token(
         })?;
 
     if Utc::now() > token_record.expires_at {
-        warn!("Magic link token expired for user {}", token_record.user_id);
+        warn!(
+            "Magic link token expired for user {} (purpose={purpose})",
+            token_record.user_id
+        );
         return Err(Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
@@ -110,6 +136,11 @@ pub async fn complete_setup(
         });
     }
 
+    // Server-side policy enforcement — independent of any FE validation.
+    // Same policy as `password_reset::complete_password_reset` so setup
+    // and reset flows can't diverge on what's an acceptable password.
+    crate::password_policy::validate_password(&password)?;
+
     params.insert(
         "password".to_string(),
         Some(Value::String(Some(Box::new(generate_hash(password))))),
@@ -122,8 +153,8 @@ pub async fn complete_setup(
         )),
     })?;
 
-    let user = validate_token(&txn, &raw_token).await?;
-    entity_api::magic_link_token::delete_all_for_user(&txn, user.id).await?;
+    let user = validate_token(&txn, &raw_token, TokenPurpose::Setup).await?;
+    entity_api::magic_link_token::delete_all_for_user(&txn, user.id, TokenPurpose::Setup).await?;
 
     let active_model = user.into_active_model();
     let updated_user =
@@ -228,6 +259,7 @@ mod tests {
                 token_hash: hash_token("raw_token"),
                 expires_at,
                 created_at: Utc::now().into(),
+                purpose: TokenPurpose::Setup,
             }
         }
 
@@ -259,7 +291,7 @@ mod tests {
                 .append_query_results(vec![vec![token_model]])
                 .into_connection();
 
-            let result = validate_token(&db, "raw_token").await;
+            let result = validate_token(&db, "raw_token", TokenPurpose::Setup).await;
 
             let err = result.unwrap_err();
             assert_eq!(
@@ -276,7 +308,7 @@ mod tests {
                 .append_query_results(vec![Vec::<magic_link_tokens::Model>::new()])
                 .into_connection();
 
-            let result = validate_token(&db, "nonexistent_token").await;
+            let result = validate_token(&db, "nonexistent_token", TokenPurpose::Setup).await;
 
             let err = result.unwrap_err();
             assert_eq!(
@@ -321,7 +353,11 @@ mod tests {
             let db =
                 mock_db_for_successful_setup(&token_model, &user, &updated_user).into_connection();
 
-            let params = setup_params("my_password", "my_password", "raw_token");
+            let params = setup_params(
+                "my_secure_password_2024",
+                "my_secure_password_2024",
+                "raw_token",
+            );
             let result = complete_setup(&db, params).await;
 
             let returned_user = result.unwrap();
@@ -365,12 +401,20 @@ mod tests {
                 .into_connection();
 
             // First call succeeds
-            let params = setup_params("my_password", "my_password", "raw_token");
+            let params = setup_params(
+                "my_secure_password_2024",
+                "my_secure_password_2024",
+                "raw_token",
+            );
             let result = complete_setup(&db, params).await;
             assert!(result.is_ok());
 
             // Second call with the same token fails
-            let params = setup_params("my_password", "my_password", "raw_token");
+            let params = setup_params(
+                "my_secure_password_2024",
+                "my_secure_password_2024",
+                "raw_token",
+            );
             let result = complete_setup(&db, params).await;
 
             let err = result.unwrap_err();
