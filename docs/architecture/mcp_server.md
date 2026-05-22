@@ -39,7 +39,7 @@ Limit one active PAT per user, enforced by a partial unique index: `UNIQUE (user
 | `web` | `mcp/tools/*` | Individual tool methods using `#[tool]` macro |
 | `web` | `router` | MCP service nested via `nest_service("/mcp", service)` in existing `define_routes()` |
 | `web` | `controller/pat_controller` | REST endpoints for PAT management (create, show, deactivate) used by the UI |
-| `web` | `protect/users/tokens` | Authorization middleware for PAT routes: user can only manage own tokens |
+| `web` | `extractors/personal_access_token_access` | Use Axum `FromRequestParts` extractor to authorize PAT routes. See [PR #239](https://github.com/refactor-group/refactor-platform-rs/pull/239). |
 | `migration` | new migration | `personal_access_tokens` table + partial unique index |
 
 ## Dependencies
@@ -57,12 +57,14 @@ Personal Access Token (PAT) as bearer token. PATs will be issued through the UI 
 - New endpionts to create and get a PAT, scoped to current user.
 
 ## Authorization
-Authorization is built off of the existing authorization model.
+Authorization is built off of the existing authorization model, using Axum's [`FromRequestParts`](https://docs.rs/axum/latest/axum/extract/trait.FromRequestParts.html) extractor pattern. See `web/src/extractors/`. Extractors verify access against the authenticated user, returns the resource model, and returns a `(StatusCode, String)` rejection on failure.
 
 - New `mcp` module and submodules for authorization
+- PAT REST endpoints (PAT management) use a dedicated `personal_access_token_access` extractor that verifies the authenticated user owns the PAT in the path. Follows the same `FromRequestParts` pattern.
 - auth submodule for PAT auth middleware. Extract authorization header and authorizes.
-- Utilize existing authorization patterns, like those in `coaching_relationships::is_coach_of`. There is some maintenance burden here if the authorization logic of the API were to change, it would need to be updated for the MCP server too.
+- Utilize existing authorization patterns, like those in `coaching_relationships::is_coach_of`. 
 - The PAT middleware inserts the authenticated `users::Model` into HTTP request extensions. `rmcp` propagates these into `RequestContext.extensions`, making the user available inside tool handlers without storing it on the handler struct. See [rmcp integration — user context propagation](./mcp_server/rmcp_integration.md#user-context-propagation) for details.
+- MCP tools that operate on a specific resource (e.g. a coachee, a session) perform authorization in-line by calling the same domain ownership functions used by the extractors. `rmcp` tool methods cannot be directly composed with Axum extractors, so the authorization logic is reused at the domain layer rather than the extractor layer.
 
 ## Connection Protocols
 - MVP — Stateless Streamable HTTP: `stateful_mode: false` in `StreamableHttpServerConfig`. Every POST is self-contained — no session ID, no persistent handler state. The factory creates a fresh `McpToolHandler` per request. Simpler auth bridging, no stale session cleanup.
@@ -151,7 +153,7 @@ Oauth would require lifecycle management, the mcp server will need to be able to
 
 - **`rmcp` over hand-rolling the MCP protocol.** The official Rust MCP SDK handles JSON-RPC parsing, session management, and tool dispatch. It integrates with Axum via `nest_service` and doesn't own auth. Saves 1-2 days of protocol boilerplate with no loss of control. This should be the first target for proof of concept to ensure the sdk works with the codebase.
 - **Streamable HTTP only.** No stdio — the MCP server is an endpoint inside the existing backend, not a standalone binary. Streamable HTTP is the current MCP spec transport for remote servers.
-- **Reuse existing authorization patterns.** Try to limit maintenance burden by reusing domain-level ownership functions like `coaching_relationship::is_coach_of`.
+- **Reuse existing authorization patterns via extractors and domain functions.** PAT REST endpoints use the `FromRequestParts` extractor pattern established in [PR #239](https://github.com/refactor-group/refactor-platform-rs/pull/239), consistent with the rest of the API. MCP tools cannot use Axum extractors directly (they receive `RequestContext`, not request `Parts`), so they reuse the same domain-level ownership functions (`coaching_relationship::is_coach_of`, etc.) that the extractors wrap. This keeps authorization logic in one place at the domain layer.
 - **No deletes for MVP.** Too destructive for LLM-initiated calls.
 - **PAT-direct as bearer token over access/refresh tokens.** The PAT is sent as `Authorization: Bearer <token>` on every request. No token expiration, no refresh flow, no token endpoint. Simpler for MVP. OAuth will require access/refresh tokens later.
 - **Store only the token hash; support deactivation instead of expiration.** The raw PAT is shown once at creation and never stored. Only the SHA-256 hash is persisted. If a user loses their token, they deactivate the old one and generate a new one. One active PAT per user, enforced by a partial unique index.
