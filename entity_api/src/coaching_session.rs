@@ -9,8 +9,8 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*, sea_query::Expr, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
-    DatabaseConnection, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect, Set, Statement,
-    TryIntoModel,
+    DatabaseConnection, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect, QueryTrait,
+    Select, Set, Statement, TryIntoModel,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -257,7 +257,7 @@ pub async fn find_counts_by_month_for_user(
         [tz_name.to_string()],
     );
 
-    let mut query = Entity::find()
+    let rows = Entity::find()
         .select_only()
         .column_as(month_expr.clone(), "month")
         .column_as(Expr::cust("COUNT(*)::bigint"), "count")
@@ -269,14 +269,14 @@ pub async fn find_counts_by_month_for_user(
                 .eq(user_id)
                 .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
         )
+        .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
+            q.filter(Column::CoachingRelationshipId.eq(rel_id))
+        })
         .group_by(month_expr.clone())
-        .order_by(month_expr, Order::Asc);
-
-    if let Some(rel_id) = coaching_relationship_id {
-        query = query.filter(Column::CoachingRelationshipId.eq(rel_id));
-    }
-
-    let rows = query.into_model::<CountByMonth>().all(db).await?;
+        .order_by(month_expr, Order::Asc)
+        .into_model::<CountByMonth>()
+        .all(db)
+        .await?;
     Ok(rows)
 }
 
