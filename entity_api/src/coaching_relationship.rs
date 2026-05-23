@@ -17,6 +17,7 @@ use sea_orm::{
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
+use utoipa::ToSchema;
 
 pub async fn create(
     db: &impl ConnectionTrait,
@@ -408,7 +409,8 @@ pub async fn find_by_user_id_with_user_names(
 
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids. This should be used as an implementation detail only.
-#[derive(FromQueryResult, Debug, PartialEq, Clone)]
+#[derive(FromQueryResult, Debug, PartialEq, Clone, ToSchema)]
+#[schema(as = domain::coaching_relationship::CoachingRelationshipWithUserNames)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,

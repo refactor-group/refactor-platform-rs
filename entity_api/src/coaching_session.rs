@@ -12,6 +12,7 @@ use sea_orm::{
     DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, Statement, TryIntoModel,
 };
 use std::collections::HashMap;
+use utoipa::ToSchema;
 
 pub async fn create(
     db: &impl ConnectionTrait,
@@ -248,7 +249,8 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
 ///   "organization": { "id": "org-101", ... }    // Only if included
 /// }
 /// ```
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[schema(as = domain::coaching_session::EnrichedSession)]
 pub struct EnrichedSession {
     #[serde(flatten)]
     pub session: Model,

@@ -13,8 +13,9 @@ use domain::meeting_recording::MeetingRecordingStatus;
 use log::*;
 use serde::Deserialize;
 use service::config::ApiVersion;
+use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct StartRecordingParams {
     pub meeting_url: String,
 }
