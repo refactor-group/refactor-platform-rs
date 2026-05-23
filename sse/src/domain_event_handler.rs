@@ -111,6 +111,28 @@ impl EventHandler for SseDomainEventHandler {
 
                 self.send_to_users(sse_event, notify_user_ids);
             }
+
+            DomainEvent::MeetingRecordingUpdated {
+                coaching_session_id,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::MeetingRecordingUpdated {
+                    coaching_session_id: coaching_session_id.to_string(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
+            DomainEvent::TranscriptionUpdated {
+                coaching_session_id,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::TranscriptionUpdated {
+                    coaching_session_id: coaching_session_id.to_string(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
         }
     }
 }

@@ -16,7 +16,8 @@ use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    find_by_id, find_by_user_with_includes, EnrichedSession, IncludeOptions, SessionQueryOptions,
+    find_by_id, find_by_user_with_includes, find_participant_ids, EnrichedSession, IncludeOptions,
+    SessionQueryOptions,
 };
 pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};
 

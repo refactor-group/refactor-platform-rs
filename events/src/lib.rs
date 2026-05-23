@@ -94,6 +94,22 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when a meeting recording status changes (any webhook-driven transition).
+    /// Triggers SSE notifications so participants see the current recording state without polling.
+    MeetingRecordingUpdated {
+        /// The coaching session whose recording changed.
+        coaching_session_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from coaching relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when a transcription status changes (created, completed, or failed).
+    /// Triggers SSE notifications so participants see the current transcription state without polling.
+    TranscriptionUpdated {
+        /// The coaching session whose transcription changed.
+        coaching_session_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from coaching relationship).
+        notify_user_ids: Vec<Id>,
+    },
 }
 
 /// Trait for handling domain events.

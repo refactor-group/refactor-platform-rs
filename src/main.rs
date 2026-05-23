@@ -23,8 +23,11 @@
 //! and/or teams by providing a single application that facilitates and enhances
 //! your coaching practice.
 
+use domain::gateway::recall_ai;
 use events::EventPublisher;
 use log::*;
+use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
+use meeting_auth::webhook::svix::Validator as SvixValidator;
 use service::{config::Config, logging::Logger};
 use std::process;
 use std::sync::Arc;
@@ -50,6 +53,14 @@ async fn main() {
         process::exit(1);
     }
 
+    // Fail fast on a malformed secret rather than returning 401 on the first webhook.
+    if let Some(secret) = config.recall_ai_webhook_secret() {
+        if let Err(e) = SvixValidator::new("recall_ai".to_string(), &secret) {
+            error!("RECALL_AI_WEBHOOK_SECRET is set but invalid: {:?}", e);
+            process::exit(1);
+        }
+    }
+
     // Create service-level state (infrastructure only - no SSE)
     let service_state = service::AppState::new(config, &db_conn);
 
@@ -60,8 +71,40 @@ async fn main() {
     let sse_event_handler = Arc::new(sse::SseDomainEventHandler::new(Arc::clone(&sse_manager)));
     let event_publisher = EventPublisher::new().with_handler(sse_event_handler);
 
+    // Build meeting provider from config. Both bot and transcript traits share the same
+    // underlying client so we build one instance and wrap it in two Arc<dyn Trait>s.
+    let (recording_bot_provider, transcription_provider) =
+        match service_state.config.recall_ai_api_key() {
+            Some(key) => {
+                match recall_ai::Provider::new(&key, service_state.config.recall_ai_region()) {
+                    Ok(p) => {
+                        let bot: Arc<dyn recording_bot::Provider> = Arc::new(p.clone());
+                        let transcript: Arc<dyn transcription_trait::Provider> = Arc::new(p);
+                        (Some(bot), Some(transcript))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to build Recall.ai provider — recording disabled: {:?}",
+                            e
+                        );
+                        (None, None)
+                    }
+                }
+            }
+            None => {
+                info!("RECALL_AI_API_KEY not set — meeting recording and transcription disabled");
+                (None, None)
+            }
+        };
+
     // Create web-level state (adds domain and SSE concerns)
-    let web_state = web::AppState::new(service_state, sse_manager, event_publisher);
+    let web_state = web::AppState::new(
+        service_state,
+        sse_manager,
+        event_publisher,
+        recording_bot_provider,
+        transcription_provider,
+    );
 
     web::init_server(web_state).await.unwrap();
 }

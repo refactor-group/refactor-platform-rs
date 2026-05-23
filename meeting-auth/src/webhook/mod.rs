@@ -1,8 +1,6 @@
 //! Webhook signature validation.
 
-mod hmac;
-
-pub use hmac::Validator as HmacValidator;
+pub mod svix;
 
 use std::collections::HashMap;
 

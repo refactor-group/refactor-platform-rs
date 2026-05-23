@@ -301,6 +301,8 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
+            None,
         )
     }
 
