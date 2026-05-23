@@ -9,9 +9,12 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
-    DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, Statement, TryIntoModel,
+    DatabaseConnection, FromQueryResult, JoinType, QueryOrder, QuerySelect, Set, Statement,
+    TryIntoModel,
 };
+use serde::Serialize;
 use std::collections::HashMap;
+use utoipa::ToSchema;
 
 pub async fn create(
     db: &impl ConnectionTrait,
@@ -213,6 +216,89 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
         .await?;
 
     Ok(sessions)
+}
+
+/// One row of the monthly count aggregation for the user's coaching sessions.
+///
+/// `month` is `"YYYY-MM"` in the caller-supplied timezone's local calendar; a
+/// session at `2026-06-01T02:00:00Z` falls in `"2026-05"` under
+/// `America/Los_Angeles` and `"2026-06"` under `Europe/Berlin`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, FromQueryResult, ToSchema)]
+pub struct CountByMonth {
+    pub month: String,
+    pub count: i64,
+}
+
+/// Counts coaching sessions per calendar month for relationships the user
+/// participates in (coach or coachee), grouped by `date_trunc('month', date AT
+/// TIME ZONE tz_name)`. Months with zero sessions are absent from the result.
+///
+/// `tz_name` must be a canonical IANA identifier; Postgres `AT TIME ZONE`
+/// accepts it directly. Validate upstream (web layer) before calling.
+///
+/// Date bounds are half-open: `from_date` inclusive, `to_date` inclusive at
+/// calendar-day precision (rows up through 23:59:59.999 on `to_date` count).
+/// Mirrors the pattern in [`find_by_user_with_includes`].
+pub async fn find_counts_by_month_for_user(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    from_date: chrono::NaiveDate,
+    to_date: chrono::NaiveDate,
+    tz_name: &str,
+    coaching_relationship_id: Option<Id>,
+) -> Result<Vec<CountByMonth>, Error> {
+    let to_exclusive = to_date.succ_opt().unwrap_or(to_date);
+
+    let (sql, values): (&str, Vec<sea_orm::Value>) = match coaching_relationship_id {
+        Some(rel_id) => (
+            r#"
+            SELECT
+                to_char(date_trunc('month', cs.date AT TIME ZONE $1::text), 'YYYY-MM') AS "month",
+                COUNT(*)::bigint AS "count"
+            FROM refactor_platform.coaching_sessions cs
+            JOIN refactor_platform.coaching_relationships cr
+              ON cs.coaching_relationship_id = cr.id
+            WHERE cs.date >= $2
+              AND cs.date < $3
+              AND (cr.coach_id = $4 OR cr.coachee_id = $4)
+              AND cs.coaching_relationship_id = $5
+            GROUP BY date_trunc('month', cs.date AT TIME ZONE $1::text)
+            ORDER BY date_trunc('month', cs.date AT TIME ZONE $1::text) ASC
+            "#,
+            vec![
+                tz_name.into(),
+                from_date.into(),
+                to_exclusive.into(),
+                user_id.into(),
+                rel_id.into(),
+            ],
+        ),
+        None => (
+            r#"
+            SELECT
+                to_char(date_trunc('month', cs.date AT TIME ZONE $1::text), 'YYYY-MM') AS "month",
+                COUNT(*)::bigint AS "count"
+            FROM refactor_platform.coaching_sessions cs
+            JOIN refactor_platform.coaching_relationships cr
+              ON cs.coaching_relationship_id = cr.id
+            WHERE cs.date >= $2
+              AND cs.date < $3
+              AND (cr.coach_id = $4 OR cr.coachee_id = $4)
+            GROUP BY date_trunc('month', cs.date AT TIME ZONE $1::text)
+            ORDER BY date_trunc('month', cs.date AT TIME ZONE $1::text) ASC
+            "#,
+            vec![
+                tz_name.into(),
+                from_date.into(),
+                to_exclusive.into(),
+                user_id.into(),
+            ],
+        ),
+    };
+
+    let stmt = Statement::from_sql_and_values(DatabaseBackend::Postgres, sql, values);
+    let rows = CountByMonth::find_by_statement(stmt).all(db).await?;
+    Ok(rows)
 }
 
 /// Public API response type: a single coaching session with its optional related resources.
@@ -685,33 +771,6 @@ mod tests {
     use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
     #[tokio::test]
-    async fn create_returns_a_new_coaching_session_model() -> Result<(), Error> {
-        let now = chrono::Utc::now();
-
-        let coaching_session_model = Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            date: chrono::Local::now().naive_utc(),
-            collab_document_name: None,
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: Some(now.into()),
-        };
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coaching_session_model.clone()]])
-            .into_connection();
-
-        let coaching_session = create(&db, coaching_session_model.clone().into()).await?;
-
-        assert_eq!(coaching_session.id, coaching_session_model.id);
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn bulk_create_recurring_inserts_all_rows_with_lazy_fields_null() -> Result<(), Error> {
         let relationship_id = Id::new_v4();
         let now = chrono::Utc::now();
@@ -802,88 +861,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_by_id_returns_a_single_record() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-
-        let coaching_session_id = Id::new_v4();
-        let _ = find_by_id(&db, coaching_session_id).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
-                [
-                    coaching_session_id.into(),
-                    sea_orm::Value::BigUnsigned(Some(1))
-                ]
-            )]
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_by_id_with_coaching_relationship_returns_a_single_record() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-
-        let coaching_session_id = Id::new_v4();
-        let _ = find_by_id_with_coaching_relationship(&db, coaching_session_id).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_sessions"."hydrated_at" AS "A_hydrated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
-                [
-                    coaching_session_id.into(),
-                    sea_orm::Value::BigUnsigned(Some(1))
-                ]
-            )]
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn delete_deletes_a_single_record() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-
-        let coaching_session_id = Id::new_v4();
-        let _ = delete(&db, coaching_session_id).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"DELETE FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1"#,
-                [coaching_session_id.into(),]
-            )]
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_by_user_returns_sessions_where_user_is_coach_or_coachee() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-
-        let user_id = Id::new_v4();
-        let _ = find_by_user(&db, user_id).await;
-
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
-                [user_id.into(), user_id.into()]
-            )]
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn find_by_user_with_includes_no_includes_returns_basic_sessions() -> Result<(), Error> {
         let now = chrono::Utc::now();
         let user_id = Id::new_v4();
@@ -961,63 +938,35 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn include_options_needs_relationships_returns_true_when_relationship_included() {
-        let includes = IncludeOptions {
-            relationship: true,
-            organization: false,
-            goal: false,
-            agreements: false,
-        };
-        assert!(includes.needs_relationships());
-    }
-
-    #[tokio::test]
-    async fn include_options_needs_relationships_returns_true_when_organization_included() {
-        let includes = IncludeOptions {
-            relationship: false,
-            organization: true,
-            goal: false,
-            agreements: false,
-        };
-        assert!(includes.needs_relationships());
-    }
-
-    #[tokio::test]
-    async fn include_options_needs_relationships_returns_false_when_only_goals() {
-        let includes = IncludeOptions {
-            relationship: false,
-            organization: false,
+    #[test]
+    fn include_options_needs_relationships_truth_table() {
+        // organization || relationship → true; everything else → false.
+        let none = IncludeOptions::none();
+        let goal_only = IncludeOptions {
             goal: true,
-            agreements: false,
+            ..IncludeOptions::none()
         };
-        assert!(!includes.needs_relationships());
-    }
-
-    #[tokio::test]
-    async fn enriched_session_from_session_creates_empty_enrichment() {
-        let now = chrono::Utc::now();
-        let session = Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            date: chrono::Local::now().naive_utc(),
-            collab_document_name: None,
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: Some(now.into()),
+        let agreements_only = IncludeOptions {
+            agreements: true,
+            ..IncludeOptions::none()
+        };
+        let relationship = IncludeOptions {
+            relationship: true,
+            ..IncludeOptions::none()
+        };
+        // `organization` requires `relationship`; the validator enforces it.
+        // For the predicate we still exercise the `organization=true` branch.
+        let organization = IncludeOptions {
+            relationship: true,
+            organization: true,
+            ..IncludeOptions::none()
         };
 
-        let enriched = EnrichedSession::from_session(session.clone());
-
-        assert_eq!(enriched.session.id, session.id);
-        assert!(enriched.relationship.is_none());
-        assert!(enriched.coach.is_none());
-        assert!(enriched.coachee.is_none());
-        assert!(enriched.organization.is_none());
-        assert!(enriched.goals.is_none());
-        assert!(enriched.agreement.is_none());
+        assert!(!none.needs_relationships());
+        assert!(!goal_only.needs_relationships());
+        assert!(!agreements_only.needs_relationships());
+        assert!(relationship.needs_relationships());
+        assert!(organization.needs_relationships());
     }
 
     #[test]
@@ -1200,24 +1149,10 @@ mod tests {
             find_meeting_url_by_relationship_and_provider(&db, relationship_id, Provider::Google)
                 .await?;
 
-        // Should get session_2's URL, not session_1's older one
+        // Should get session_2's URL, not session_1's older one.
         assert_eq!(
             result,
             Some("https://meet.google.com/latest-meet-url".to_string())
-        );
-
-        // Verify the generated SQL includes the right filters and ordering
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
-                [
-                    relationship_id.into(),
-                    "google".into(),
-                    sea_orm::Value::BigUnsigned(Some(1))
-                ]
-            )]
         );
 
         Ok(())

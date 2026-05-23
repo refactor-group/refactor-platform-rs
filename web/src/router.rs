@@ -598,6 +598,10 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
                     "/users/:user_id/coaching_sessions",
                     get(user::coaching_session_controller::index),
                 )
+                .route(
+                    "/users/:user_id/coaching_sessions/counts",
+                    get(user::coaching_session_controller::counts),
+                )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
                     protect::users::coaching_sessions::index,

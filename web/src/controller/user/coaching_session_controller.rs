@@ -1,15 +1,22 @@
 use crate::controller::ApiResponse;
+use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::user::coaching_session::{IncludeParam, IndexParams};
+use crate::params::user::coaching_session::{
+    CountsByMonthParams, GroupByParam, IncludeParam, IndexParams,
+};
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use chrono_tz::Tz;
 use domain::{coaching_session as CoachingSessionApi, Id, QuerySort};
+use serde::Serialize;
 use service::config::ApiVersion;
+use std::str::FromStr;
+use utoipa::ToSchema;
 
 use log::*;
 
@@ -88,4 +95,77 @@ pub async fn index(
         StatusCode::OK.into(),
         enriched_sessions,
     )))
+}
+
+/// Wire envelope for the counts endpoint. Flat `{ "counts": [...] }` object
+/// per the agreed contract, intentionally not wrapped in [`ApiResponse`].
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct CountsResponse {
+    pub counts: Vec<CoachingSessionApi::CountByMonth>,
+}
+
+/// GET monthly coaching-session counts for the authenticated user.
+///
+/// Aggregates by local calendar month in the caller-supplied IANA timezone
+/// (`?tz=`). Months with zero sessions are omitted; results are sorted
+/// ascending chronologically.
+#[utoipa::path(
+    get,
+    path = "/users/{user_id}/coaching_sessions/counts",
+    params(
+        ApiVersion,
+        ("user_id" = Id, Path, description = "User ID to retrieve counts for"),
+        ("from_date" = chrono::NaiveDate, Query, description = "Start of the range (inclusive)"),
+        ("to_date" = chrono::NaiveDate, Query, description = "End of the range (inclusive at calendar-day precision)"),
+        ("group_by" = crate::params::user::coaching_session::GroupByParam, Query, description = "Aggregation grouping. v1 accepts only 'month'."),
+        ("tz" = String, Query, description = "IANA timezone identifier (e.g. 'America/Los_Angeles'). Invalid value → 400 invalid_timezone."),
+        ("coaching_relationship_id" = Option<Id>, Query, description = "Narrow to a single coaching relationship.")
+    ),
+    responses(
+        (status = 200, description = "Monthly counts in the requested timezone", body = CountsResponse),
+        (status = 400, description = "Bad request (e.g. invalid timezone, malformed query)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden (cross-user request)"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn counts(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path(user_id): Path<Id>,
+    Query(params): Query<CountsByMonthParams>,
+) -> Result<impl IntoResponse, Error> {
+    let params = params.with_user_id(user_id);
+    debug!(
+        "GET coaching session counts for user {user_id}, params: from={} to={} tz={} relationship={:?}",
+        params.from_date, params.to_date, params.tz, params.coaching_relationship_id
+    );
+
+    // The only v1 grouping; serde already rejects anything else with 400.
+    // The match forces a compile-error if `GroupByParam` ever grows so we
+    // don't silently swallow a new variant.
+    match params.group_by {
+        GroupByParam::Month => (),
+    }
+
+    // Validate the IANA timezone identifier before touching the DB. On failure
+    // surface a structured 400 with `error: "invalid_timezone"` so callers can
+    // branch on the discriminator (see web/src/error.rs).
+    let tz = Tz::from_str(&params.tz)
+        .map_err(|_| Error::Web(WebErrorKind::InvalidTimezone(params.tz.clone())))?;
+
+    let counts = CoachingSessionApi::find_counts_by_month_for_user(
+        app_state.db_conn_ref(),
+        user_id,
+        params.from_date,
+        params.to_date,
+        tz.name(),
+        params.coaching_relationship_id,
+    )
+    .await?;
+
+    debug!("Returning {} monthly count buckets", counts.len());
+    Ok(Json(CountsResponse { counts }))
 }
