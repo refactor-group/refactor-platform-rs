@@ -12,8 +12,9 @@ use sea_orm::{
     DatabaseConnection, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect, QueryTrait,
     Select, Set, Statement, TryIntoModel,
 };
-use serde::Serialize;
 use std::collections::HashMap;
+
+use serde::Serialize;
 use utoipa::ToSchema;
 
 pub async fn create(

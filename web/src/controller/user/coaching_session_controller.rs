@@ -7,18 +7,18 @@ use crate::params::user::coaching_session::{
     CountsByMonthParams, GroupByParam, IncludeParam, IndexParams,
 };
 use crate::{AppState, Error};
+use std::str::FromStr;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono_tz::Tz;
 use domain::{coaching_session as CoachingSessionApi, Id, QuerySort};
+use log::*;
 use serde::Serialize;
 use service::config::ApiVersion;
-use std::str::FromStr;
 use utoipa::ToSchema;
-
-use log::*;
 
 /// GET all coaching sessions for a specific user with optional related data
 #[utoipa::path(
