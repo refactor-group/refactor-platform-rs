@@ -106,6 +106,7 @@ use utoipa_rapidoc::RapiDoc;
             user::action_controller::index,
             user::coaching_relationships_controller::index,
             user::coaching_session_controller::index,
+            user::coaching_session_controller::counts,
             user::goal_controller::index,
             jwt_controller::generate_collab_token,
         ),
@@ -116,6 +117,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::controller::oauth_controller::ConnectionResponse,
                 crate::controller::password_reset_controller::ValidateParams,
                 crate::controller::password_reset_controller::ValidateResponse,
+                crate::controller::user::coaching_session_controller::CountsResponse,
                 crate::params::action::SortField,
                 crate::params::agreement::SortField,
                 crate::params::coaching_relationship::goal_progress::SortField,
@@ -133,19 +135,21 @@ use utoipa_rapidoc::RapiDoc;
                 domain::agreements::Model,
                 domain::coaching_relationship::CoachingRelationshipWithUserNames,
                 domain::coaching_relationships::Model,
+                domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
                 domain::coaching_sessions::Model,
                 domain::coaching_sessions_goals::Model,
                 domain::goals::Model,
+                domain::jwts::Jwt,
                 domain::notes::Model,
                 domain::organizations::Model,
                 domain::provider::Provider,
                 domain::status::Status,
                 domain::user::Credentials,
                 domain::users::Model,
-                domain::jwts::Jwt,
                 params::coaching_session::UpdateParams,
                 params::user::UpdateParams,
+                params::user::coaching_session::GroupByParam,
             )
         ),
         modifiers(&SecurityAddon),
@@ -636,6 +640,10 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
                 .route(
                     "/users/:user_id/coaching_sessions",
                     get(user::coaching_session_controller::index),
+                )
+                .route(
+                    "/users/:user_id/coaching_sessions/counts",
+                    get(user::coaching_session_controller::counts),
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),

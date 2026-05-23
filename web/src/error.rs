@@ -30,6 +30,10 @@ pub enum WebErrorKind {
     /// for any user other than themselves). 403 Forbidden with a specific
     /// discriminator so the FE can branch deterministically.
     ForbiddenAssigneeScope,
+    /// Caller supplied a `tz` query parameter that is not a recognized IANA
+    /// timezone identifier. Payload carries the offending value for
+    /// debuggability.
+    InvalidTimezone(String),
     Conflict,
     Other,
 }
@@ -244,6 +248,17 @@ impl Error {
                 });
                 (StatusCode::FORBIDDEN, Json(body)).into_response()
             }
+            WebErrorKind::InvalidTimezone(value) => {
+                warn!(
+                    "WebErrorKind::InvalidTimezone: Responding with 400 Bad Request. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 400,
+                    "error": "invalid_timezone",
+                    "message": format!("'{value}' is not a recognized IANA timezone identifier."),
+                });
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
             WebErrorKind::Conflict => {
                 warn!("WebErrorKind::Conflict: Responding with 409 Conflict. Error: {self:?}");
                 (StatusCode::CONFLICT, "CONFLICT").into_response()
@@ -274,4 +289,33 @@ where
 /// `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
 pub(crate) fn domain_error_into_response(err: DomainError) -> Response {
     Error::Domain(err).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    // Locks down the wire shape callers parse against. Changing `error` or
+    // dropping `status_code`/`message` here is a breaking change to the
+    // `invalid_timezone` 400 contract.
+    #[tokio::test]
+    async fn invalid_timezone_produces_structured_400_with_discriminator() {
+        let err = Error::Web(WebErrorKind::InvalidTimezone("Not/A/Timezone".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
+
+        assert_eq!(body["status_code"], 400);
+        assert_eq!(body["error"], "invalid_timezone");
+        let message = body["message"].as_str().expect("message field is a string");
+        assert!(
+            message.contains("Not/A/Timezone"),
+            "message should quote the offending value, got: {message}"
+        );
+    }
 }
