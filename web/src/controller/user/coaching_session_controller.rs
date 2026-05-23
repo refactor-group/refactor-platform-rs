@@ -97,8 +97,7 @@ pub async fn index(
     )))
 }
 
-/// Wire envelope for the counts endpoint. Flat `{ "counts": [...] }` object
-/// per the agreed contract, intentionally not wrapped in [`ApiResponse`].
+/// Payload returned under `ApiResponse::data` for the counts endpoint.
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct CountsResponse {
     pub counts: Vec<CoachingSessionApi::CountByMonth>,
@@ -167,5 +166,8 @@ pub async fn counts(
     .await?;
 
     debug!("Returning {} monthly count buckets", counts.len());
-    Ok(Json(CountsResponse { counts }))
+    Ok(Json(ApiResponse::new(
+        StatusCode::OK.into(),
+        CountsResponse { counts },
+    )))
 }
