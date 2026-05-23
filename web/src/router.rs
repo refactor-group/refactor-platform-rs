@@ -90,6 +90,7 @@ use utoipa_rapidoc::RapiDoc;
             user::organization_controller::index,
             user::action_controller::index,
             user::coaching_session_controller::index,
+            user::coaching_session_controller::counts,
             user::goal_controller::index,
             jwt_controller::generate_collab_token,
         ),
@@ -105,8 +106,11 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_sessions_goals::Model,
                 domain::users::Model,
                 domain::user::Credentials,
+                domain::coaching_session::CountByMonth,
                 params::user::UpdateParams,
+                params::user::coaching_session::GroupByParam,
                 params::coaching_session::UpdateParams,
+                crate::controller::user::coaching_session_controller::CountsResponse,
             )
         ),
         modifiers(&SecurityAddon),
@@ -597,6 +601,10 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
                 .route(
                     "/users/:user_id/coaching_sessions",
                     get(user::coaching_session_controller::index),
+                )
+                .route(
+                    "/users/:user_id/coaching_sessions/counts",
+                    get(user::coaching_session_controller::counts),
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),
