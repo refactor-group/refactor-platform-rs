@@ -408,7 +408,7 @@ pub async fn find_by_user_id_with_user_names(
 }
 
 // A convenient combined struct that holds the results of looking up the Users associated
-// with the coach/coachee ids. This should be used as an implementation detail only.
+// with the coach/coachee ids.
 #[derive(FromQueryResult, Debug, PartialEq, Clone, ToSchema)]
 #[schema(as = domain::coaching_relationship::CoachingRelationshipWithUserNames)]
 pub struct CoachingRelationshipWithUserNames {
