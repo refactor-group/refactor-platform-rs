@@ -103,11 +103,12 @@ pub(crate) struct CountsResponse {
     pub counts: Vec<CoachingSessionApi::CountByMonth>,
 }
 
-/// GET monthly coaching-session counts for the authenticated user.
+/// GET monthly coaching-session counts for a specific user.
 ///
 /// Aggregates by local calendar month in the caller-supplied IANA timezone
 /// (`?tz=`). Months with zero sessions are omitted; results are sorted
-/// ascending chronologically.
+/// ascending chronologically. Authentication is required; the protect
+/// middleware further restricts the caller to their own `user_id`.
 #[utoipa::path(
     get,
     path = "/users/{user_id}/coaching_sessions/counts",
