@@ -248,7 +248,11 @@ pub async fn find_counts_by_month_for_user(
     tz_name: &str,
     coaching_relationship_id: Option<Id>,
 ) -> Result<Vec<CountByMonth>, Error> {
-    let to_exclusive = to_date.succ_opt().unwrap_or(to_date);
+    let to_exclusive = to_date.succ_opt().ok_or_else(|| {
+        Error::EntityApi(EntityApiErrorKind::Other(
+            "to_date is out of range".to_string(),
+        ))
+    })?;
 
     // Timezone-shifted month bucket. Postgres accepts canonical IANA names
     // directly via `AT TIME ZONE`; the upstream parse to `chrono_tz::Tz`
