@@ -252,6 +252,13 @@ pub async fn find_counts_by_month_for_user(
     // Timezone-shifted month bucket. Postgres accepts canonical IANA names
     // directly via `AT TIME ZONE`; the upstream parse to `chrono_tz::Tz`
     // guarantees the value here is valid.
+    //
+    // GROUP BY and ORDER BY reference the SELECT alias `"month"` rather than
+    // cloning the expression. Cloning would allocate a fresh `$N` placeholder
+    // per appearance, and Postgres's grouped-column check compares expression
+    // text before bind substitution -- so `$1::text` in SELECT and `$6::text`
+    // in GROUP BY are treated as different expressions and the query fails
+    // with SQLSTATE 42803. The alias keeps the binding to a single `$1`.
     let month_expr = Expr::cust_with_values(
         r#"to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM')"#,
         [tz_name.to_string()],
@@ -259,7 +266,7 @@ pub async fn find_counts_by_month_for_user(
 
     let rows = Entity::find()
         .select_only()
-        .column_as(month_expr.clone(), "month")
+        .column_as(month_expr, "month")
         .column_as(Expr::cust("COUNT(*)::bigint"), "count")
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
         .filter(Column::Date.gte(from_date))
@@ -272,8 +279,8 @@ pub async fn find_counts_by_month_for_user(
         .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
             q.filter(Column::CoachingRelationshipId.eq(rel_id))
         })
-        .group_by(month_expr.clone())
-        .order_by(month_expr, Order::Asc)
+        .group_by(Expr::cust(r#""month""#))
+        .order_by(Expr::cust(r#""month""#), Order::Asc)
         .into_model::<CountByMonth>()
         .all(db)
         .await?;
@@ -924,6 +931,15 @@ mod tests {
     // Locks down the SeaORM-emitted SQL for the monthly count aggregation.
     // Catches refactoring drift on bind positions, the half-open range
     // conversion (`to_date.succ_opt()`), and the conditional Option branch.
+    //
+    // Note: this asserts the emitted SQL string, not Postgres-acceptance of
+    // it. MockDatabase captures bytes but does not execute. A regression
+    // that re-introduces multiple `cust_with_values` clones (each generating
+    // a fresh `$N` placeholder) would still produce a SQL string that
+    // textually differs from the expected one here -- which trips this
+    // assertion -- but the underlying class of bug (Postgres rejecting
+    // text-mismatched GROUP BY expressions, SQLSTATE 42803) is only
+    // catchable end-to-end against a real database.
     #[tokio::test]
     async fn find_counts_by_month_for_user_emits_expected_sql_without_relationship_filter(
     ) -> Result<(), Error> {
@@ -950,15 +966,13 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM') AS "month", COUNT(*)::bigint AS "count" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."date" >= $2 AND "coaching_sessions"."date" < $3 AND ("coaching_relationships"."coach_id" = $4 OR "coaching_relationships"."coachee_id" = $5) GROUP BY to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $6::text), 'YYYY-MM') ORDER BY to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $7::text), 'YYYY-MM') ASC"#,
+                r#"SELECT to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM') AS "month", COUNT(*)::bigint AS "count" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."date" >= $2 AND "coaching_sessions"."date" < $3 AND ("coaching_relationships"."coach_id" = $4 OR "coaching_relationships"."coachee_id" = $5) GROUP BY "month" ORDER BY "month" ASC"#,
                 [
                     "America/Los_Angeles".into(),
                     from_date.into(),
                     to_exclusive.into(),
                     user_id.into(),
                     user_id.into(),
-                    "America/Los_Angeles".into(),
-                    "America/Los_Angeles".into(),
                 ]
             )]
         );
@@ -993,7 +1007,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM') AS "month", COUNT(*)::bigint AS "count" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."date" >= $2 AND "coaching_sessions"."date" < $3 AND ("coaching_relationships"."coach_id" = $4 OR "coaching_relationships"."coachee_id" = $5) AND "coaching_sessions"."coaching_relationship_id" = $6 GROUP BY to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $7::text), 'YYYY-MM') ORDER BY to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $8::text), 'YYYY-MM') ASC"#,
+                r#"SELECT to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM') AS "month", COUNT(*)::bigint AS "count" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."date" >= $2 AND "coaching_sessions"."date" < $3 AND ("coaching_relationships"."coach_id" = $4 OR "coaching_relationships"."coachee_id" = $5) AND "coaching_sessions"."coaching_relationship_id" = $6 GROUP BY "month" ORDER BY "month" ASC"#,
                 [
                     "Europe/Berlin".into(),
                     from_date.into(),
@@ -1001,8 +1015,6 @@ mod tests {
                     user_id.into(),
                     user_id.into(),
                     rel_id.into(),
-                    "Europe/Berlin".into(),
-                    "Europe/Berlin".into(),
                 ]
             )]
         );
