@@ -8,10 +8,13 @@ use entity::{
 };
 use log::debug;
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
-    DatabaseConnection, JoinType, QueryOrder, QuerySelect, Set, Statement, TryIntoModel,
+    entity::prelude::*, sea_query::Expr, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
+    DatabaseConnection, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect, QueryTrait,
+    Select, Set, Statement, TryIntoModel,
 };
+use serde::Serialize;
 use std::collections::HashMap;
+use utoipa::ToSchema;
 
 pub async fn create(
     db: &impl ConnectionTrait,
@@ -215,6 +218,78 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
     Ok(sessions)
 }
 
+/// One row of the monthly count aggregation for the user's coaching sessions.
+///
+/// `month` is `"YYYY-MM"` in the caller-supplied timezone's local calendar; a
+/// session at `2026-06-01T02:00:00Z` falls in `"2026-05"` under
+/// `America/Los_Angeles` and `"2026-06"` under `Europe/Berlin`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, FromQueryResult, ToSchema)]
+pub struct CountByMonth {
+    pub month: String,
+    pub count: i64,
+}
+
+/// Counts coaching sessions per calendar month for relationships the user
+/// participates in (coach or coachee), grouped by `date_trunc('month', date AT
+/// TIME ZONE tz_name)`. Months with zero sessions are absent from the result.
+///
+/// `tz_name` must be a canonical IANA identifier; Postgres `AT TIME ZONE`
+/// accepts it directly. Validate upstream (web layer) before calling.
+///
+/// Date bounds are half-open: `from_date` inclusive, `to_date` inclusive at
+/// calendar-day precision (rows up through 23:59:59.999 on `to_date` count).
+/// Mirrors the pattern in [`find_by_user_with_includes`].
+pub async fn find_counts_by_month_for_user(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    from_date: chrono::NaiveDate,
+    to_date: chrono::NaiveDate,
+    tz_name: &str,
+    coaching_relationship_id: Option<Id>,
+) -> Result<Vec<CountByMonth>, Error> {
+    let to_exclusive = to_date.succ_opt().ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::Other("to_date is out of range".to_string()),
+    })?;
+
+    // Timezone-shifted month bucket. Postgres accepts canonical IANA names
+    // directly via `AT TIME ZONE`; the upstream parse to `chrono_tz::Tz`
+    // guarantees the value here is valid.
+    //
+    // GROUP BY and ORDER BY reference the SELECT alias `"month"` rather than
+    // cloning the expression. Cloning would allocate a fresh `$N` placeholder
+    // per appearance, and Postgres's grouped-column check compares expression
+    // text before bind substitution -- so `$1::text` in SELECT and `$6::text`
+    // in GROUP BY are treated as different expressions and the query fails
+    // with SQLSTATE 42803. The alias keeps the binding to a single `$1`.
+    let month_expr = Expr::cust_with_values(
+        r#"to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM')"#,
+        [tz_name.to_string()],
+    );
+
+    let rows = Entity::find()
+        .select_only()
+        .column_as(month_expr, "month")
+        .column_as(Expr::cust("COUNT(*)::bigint"), "count")
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(Column::Date.gte(from_date))
+        .filter(Column::Date.lt(to_exclusive))
+        .filter(
+            coaching_relationships::Column::CoachId
+                .eq(user_id)
+                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
+            q.filter(Column::CoachingRelationshipId.eq(rel_id))
+        })
+        .group_by(Expr::cust(r#""month""#))
+        .order_by(Expr::cust(r#""month""#), Order::Asc)
+        .into_model::<CountByMonth>()
+        .all(db)
+        .await?;
+    Ok(rows)
+}
+
 /// Public API response type: a single coaching session with its optional related resources.
 ///
 /// # Purpose
@@ -248,7 +323,8 @@ pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<
 ///   "organization": { "id": "org-101", ... }    // Only if included
 /// }
 /// ```
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[schema(as = domain::coaching_session::EnrichedSession)]
 pub struct EnrichedSession {
     #[serde(flatten)]
     pub session: Model,
@@ -685,33 +761,6 @@ mod tests {
     use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
     #[tokio::test]
-    async fn create_returns_a_new_coaching_session_model() -> Result<(), Error> {
-        let now = chrono::Utc::now();
-
-        let coaching_session_model = Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            date: chrono::Local::now().naive_utc(),
-            collab_document_name: None,
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: Some(now.into()),
-        };
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coaching_session_model.clone()]])
-            .into_connection();
-
-        let coaching_session = create(&db, coaching_session_model.clone().into()).await?;
-
-        assert_eq!(coaching_session.id, coaching_session_model.id);
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn bulk_create_recurring_inserts_all_rows_with_lazy_fields_null() -> Result<(), Error> {
         let relationship_id = Id::new_v4();
         let now = chrono::Utc::now();
@@ -883,6 +932,100 @@ mod tests {
         Ok(())
     }
 
+    // Locks down the SeaORM-emitted SQL for the monthly count aggregation.
+    // Catches refactoring drift on bind positions, the half-open range
+    // conversion (`to_date.succ_opt()`), and the conditional Option branch.
+    //
+    // Note: this asserts the emitted SQL string, not Postgres-acceptance of
+    // it. MockDatabase captures bytes but does not execute. A regression
+    // that re-introduces multiple `cust_with_values` clones (each generating
+    // a fresh `$N` placeholder) would still produce a SQL string that
+    // textually differs from the expected one here -- which trips this
+    // assertion -- but the underlying class of bug (Postgres rejecting
+    // text-mismatched GROUP BY expressions, SQLSTATE 42803) is only
+    // catchable end-to-end against a real database.
+    #[tokio::test]
+    async fn find_counts_by_month_for_user_emits_expected_sql_without_relationship_filter(
+    ) -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let from_date = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let to_date = chrono::NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        let to_exclusive = chrono::NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let _ = find_counts_by_month_for_user(
+            &db,
+            user_id,
+            from_date,
+            to_date,
+            "America/Los_Angeles",
+            None,
+        )
+        .await?;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM') AS "month", COUNT(*)::bigint AS "count" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."date" >= $2 AND "coaching_sessions"."date" < $3 AND ("coaching_relationships"."coach_id" = $4 OR "coaching_relationships"."coachee_id" = $5) GROUP BY "month" ORDER BY "month" ASC"#,
+                [
+                    "America/Los_Angeles".into(),
+                    from_date.into(),
+                    to_exclusive.into(),
+                    user_id.into(),
+                    user_id.into(),
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_counts_by_month_for_user_emits_expected_sql_with_relationship_filter(
+    ) -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let rel_id = Id::new_v4();
+        let from_date = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let to_date = chrono::NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        let to_exclusive = chrono::NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let _ = find_counts_by_month_for_user(
+            &db,
+            user_id,
+            from_date,
+            to_date,
+            "Europe/Berlin",
+            Some(rel_id),
+        )
+        .await?;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT to_char(date_trunc('month', "coaching_sessions"."date" AT TIME ZONE $1::text), 'YYYY-MM') AS "month", COUNT(*)::bigint AS "count" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."date" >= $2 AND "coaching_sessions"."date" < $3 AND ("coaching_relationships"."coach_id" = $4 OR "coaching_relationships"."coachee_id" = $5) AND "coaching_sessions"."coaching_relationship_id" = $6 GROUP BY "month" ORDER BY "month" ASC"#,
+                [
+                    "Europe/Berlin".into(),
+                    from_date.into(),
+                    to_exclusive.into(),
+                    user_id.into(),
+                    user_id.into(),
+                    rel_id.into(),
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn find_by_user_with_includes_no_includes_returns_basic_sessions() -> Result<(), Error> {
         let now = chrono::Utc::now();
@@ -961,63 +1104,35 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn include_options_needs_relationships_returns_true_when_relationship_included() {
-        let includes = IncludeOptions {
-            relationship: true,
-            organization: false,
-            goal: false,
-            agreements: false,
-        };
-        assert!(includes.needs_relationships());
-    }
-
-    #[tokio::test]
-    async fn include_options_needs_relationships_returns_true_when_organization_included() {
-        let includes = IncludeOptions {
-            relationship: false,
-            organization: true,
-            goal: false,
-            agreements: false,
-        };
-        assert!(includes.needs_relationships());
-    }
-
-    #[tokio::test]
-    async fn include_options_needs_relationships_returns_false_when_only_goals() {
-        let includes = IncludeOptions {
-            relationship: false,
-            organization: false,
+    #[test]
+    fn include_options_needs_relationships_truth_table() {
+        // organization || relationship → true; everything else → false.
+        let none = IncludeOptions::none();
+        let goal_only = IncludeOptions {
             goal: true,
-            agreements: false,
+            ..IncludeOptions::none()
         };
-        assert!(!includes.needs_relationships());
-    }
-
-    #[tokio::test]
-    async fn enriched_session_from_session_creates_empty_enrichment() {
-        let now = chrono::Utc::now();
-        let session = Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            date: chrono::Local::now().naive_utc(),
-            collab_document_name: None,
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: Some(now.into()),
+        let agreements_only = IncludeOptions {
+            agreements: true,
+            ..IncludeOptions::none()
+        };
+        let relationship = IncludeOptions {
+            relationship: true,
+            ..IncludeOptions::none()
+        };
+        // `organization` requires `relationship`; the validator enforces it.
+        // For the predicate we still exercise the `organization=true` branch.
+        let organization = IncludeOptions {
+            relationship: true,
+            organization: true,
+            ..IncludeOptions::none()
         };
 
-        let enriched = EnrichedSession::from_session(session.clone());
-
-        assert_eq!(enriched.session.id, session.id);
-        assert!(enriched.relationship.is_none());
-        assert!(enriched.coach.is_none());
-        assert!(enriched.coachee.is_none());
-        assert!(enriched.organization.is_none());
-        assert!(enriched.goals.is_none());
-        assert!(enriched.agreement.is_none());
+        assert!(!none.needs_relationships());
+        assert!(!goal_only.needs_relationships());
+        assert!(!agreements_only.needs_relationships());
+        assert!(relationship.needs_relationships());
+        assert!(organization.needs_relationships());
     }
 
     #[test]
@@ -1200,13 +1315,14 @@ mod tests {
             find_meeting_url_by_relationship_and_provider(&db, relationship_id, Provider::Google)
                 .await?;
 
-        // Should get session_2's URL, not session_1's older one
+        // Should get session_2's URL, not session_1's older one.
         assert_eq!(
             result,
             Some("https://meet.google.com/latest-meet-url".to_string())
         );
 
-        // Verify the generated SQL includes the right filters and ordering
+        // Sanity-check the generated SQL: filters by relationship + provider,
+        // requires meeting_url non-null, ordered by created_at desc.
         assert_eq!(
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(

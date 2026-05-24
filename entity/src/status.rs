@@ -1,10 +1,21 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Serialize, DeriveActiveEnum, Default,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    EnumIter,
+    Deserialize,
+    Serialize,
+    DeriveActiveEnum,
+    Default,
+    ToSchema,
 )]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "status")]
+#[schema(as = domain::status::Status)]
 pub enum Status {
     #[sea_orm(string_value = "not_started")]
     NotStarted,
