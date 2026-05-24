@@ -124,7 +124,7 @@ curl -i -X POST https://<your-ngrok-url>/webhooks/recall_ai
 
 Interpret the response:
 
-- **401 Unauthorized** (body: `Webhook secret not configured` or `Invalid signature`) means the request reached the Axum handler. This is the **expected** response for a raw curl, since it has no valid Svix signature. The URL is correct.
+- **401 Unauthorized** (body: `Webhook secret not configured`, `Signature validation failed`, or `Invalid signature`) means the request reached the Axum handler. This is the **expected** response for a raw curl, since it has no valid Svix signature. The URL is correct.
 - **405 Method Not Allowed** means the URL path is wrong and the request was absorbed by the static-file fallback. Re-check that the endpoint in the Recall.ai dashboard ends in `/webhooks/recall_ai`.
 - **404 Not Found** or no response means ngrok isn't tunneling to your backend, or the backend isn't running on port 4000.
 
