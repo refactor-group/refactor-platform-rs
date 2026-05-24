@@ -197,7 +197,6 @@ Key differences from local setup:
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
 GOOGLE_REDIRECT_URI=https://api.myrefactor.com/api/auth/google/callback
-# Reminder: no `GOOGLE_` prefix on this var (a typo'd `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI` is silently ignored).
 OAUTH_SUCCESS_REDIRECT_URI=https://myrefactor.com/settings
 ```
 
