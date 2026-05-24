@@ -5,8 +5,15 @@ use log::debug;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, Order, QueryOrder, TryIntoModel,
+    DatabaseConnection, IntoActiveModel, Order, QueryOrder, QuerySelect, TransactionError,
+    TransactionTrait, TryIntoModel,
 };
+
+const TERMINAL_RECORDING_STATUSES: &[MeetingRecordingStatus] = &[
+    MeetingRecordingStatus::Completed,
+    MeetingRecordingStatus::Failed,
+    MeetingRecordingStatus::Cancelled,
+];
 
 /// Creates a new meeting recording record
 pub async fn create(db: &DatabaseConnection, model: Model) -> Result<Model, Error> {
@@ -57,27 +64,36 @@ pub async fn find_by_bot_id(db: &DatabaseConnection, bot_id: &str) -> Result<Opt
 
 /// Atomically transitions a recording to `Completed`, but only if it is not already
 /// in a terminal state (`completed`, `failed`, or `cancelled`). Returns `true` if the
-/// transition succeeded — the caller won the race and should proceed with transcription.
+/// transition succeeded; the caller won the race and should proceed with transcription.
 /// Returns `false` if the recording was already terminal and the caller should skip.
 pub async fn try_claim_completed(db: &DatabaseConnection, id: Id) -> Result<bool, Error> {
-    let result = Entity::update_many()
-        .col_expr(
-            Column::Status,
-            Expr::value(MeetingRecordingStatus::Completed),
-        )
-        .col_expr(
-            Column::UpdatedAt,
-            Expr::value(chrono::Utc::now().fixed_offset()),
-        )
-        .filter(Column::Id.eq(id))
-        .filter(Column::Status.is_not_in([
-            MeetingRecordingStatus::Completed,
-            MeetingRecordingStatus::Failed,
-            MeetingRecordingStatus::Cancelled,
-        ]))
-        .exec(db)
-        .await?;
-    Ok(result.rows_affected > 0)
+    db.transaction::<_, bool, Error>(|txn| {
+        Box::pin(async move {
+            let Some(model) = Entity::find_by_id(id)
+                .lock_exclusive()
+                .one(txn)
+                .await?
+                .filter(|m| !TERMINAL_RECORDING_STATUSES.contains(&m.status))
+            else {
+                return Ok(false);
+            };
+
+            ActiveModel {
+                status: Set(MeetingRecordingStatus::Completed),
+                updated_at: Set(chrono::Utc::now().into()),
+                ..model.into_active_model()
+            }
+            .update(txn)
+            .await?;
+
+            Ok(true)
+        })
+    })
+    .await
+    .map_err(|e| match e {
+        TransactionError::Connection(db_err) => db_err.into(),
+        TransactionError::Transaction(err) => err,
+    })
 }
 
 /// Optional artifact fields to set when updating a recording's status.
@@ -130,7 +146,7 @@ pub async fn update_status(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+    use sea_orm::{DatabaseBackend, MockDatabase};
 
     fn test_model() -> Model {
         let now = chrono::Utc::now();
@@ -257,27 +273,47 @@ mod tests {
         assert!(result.is_err());
     }
 
+    fn test_model_with_status(status: MeetingRecordingStatus) -> Model {
+        let mut m = test_model();
+        m.status = status;
+        m
+    }
+
     #[tokio::test]
-    async fn try_claim_completed_returns_true_when_rows_affected() -> Result<(), Error> {
+    async fn try_claim_completed_returns_true_when_non_terminal() -> Result<(), Error> {
+        let existing = test_model_with_status(MeetingRecordingStatus::Processing);
+        let id = existing.id;
+        let mut after_update = existing.clone();
+        after_update.status = MeetingRecordingStatus::Completed;
+
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }])
+            .append_query_results(vec![vec![existing]])
+            .append_query_results(vec![vec![after_update]])
             .into_connection();
 
-        let result = try_claim_completed(&db, Id::new_v4()).await?;
+        let result = try_claim_completed(&db, id).await?;
         assert!(result);
         Ok(())
     }
 
     #[tokio::test]
-    async fn try_claim_completed_returns_false_when_no_rows_affected() -> Result<(), Error> {
+    async fn try_claim_completed_returns_false_when_already_terminal() -> Result<(), Error> {
+        let existing = test_model_with_status(MeetingRecordingStatus::Completed);
+        let id = existing.id;
+
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 0,
-            }])
+            .append_query_results(vec![vec![existing]])
+            .into_connection();
+
+        let result = try_claim_completed(&db, id).await?;
+        assert!(!result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn try_claim_completed_returns_false_when_not_found() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
             .into_connection();
 
         let result = try_claim_completed(&db, Id::new_v4()).await?;
