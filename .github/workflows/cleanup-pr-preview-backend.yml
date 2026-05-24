@@ -41,6 +41,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          IS_MERGED: ${{ github.event.pull_request.merged }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -56,7 +57,12 @@ jobs:
             exit 0
           fi
 
-          echo "::notice::Preview environment found for PR #$PR_NUMBER. Dispatching cleanup workflow."
+          echo "::notice::Preview environment found for PR #$PR_NUMBER (merged=$IS_MERGED). Dispatching cleanup workflow."
+          # Pass merged state explicitly so the reusable workflow can run its
+          # merged-only follow-ups (main-arm64 rebuild, PR image delete, PR
+          # comment update). The dispatched run has event_name=workflow_dispatch
+          # and no pull_request payload, so this input is the only signal.
           gh workflow run cleanup-pr-preview.yml \
             --ref main \
-            --field pr_number="$PR_NUMBER"
+            --field pr_number="$PR_NUMBER" \
+            --field is_merged="$IS_MERGED"
