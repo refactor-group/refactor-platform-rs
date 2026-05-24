@@ -54,7 +54,7 @@ Limit one active PAT per user, enforced by a partial unique index: `UNIQUE (user
 ## Authentication
 Personal Access Token (PAT) as bearer token. PATs will be issued through the UI in the personal settings page.
 - New UI to create/view PAT.
-- New endpionts to create and get a PAT, scoped to current user.
+- New endpoints to create and get a PAT, scoped to current user.
 
 ## Authorization
 Authorization is built off of the existing authorization model, using Axum's [`FromRequestParts`](https://docs.rs/axum/latest/axum/extract/trait.FromRequestParts.html) extractor pattern. See `web/src/extractors/`. Extractors verify access against the authenticated user, returns the resource model, and returns a `(StatusCode, String)` rejection on failure.
