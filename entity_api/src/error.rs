@@ -45,7 +45,11 @@ pub enum EntityApiErrorKind {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Entity API Error: {self:?}")
+        write!(f, "{:?}", self.error_kind)?;
+        if let Some(ref src) = self.source {
+            write!(f, ": {src}")?;
+        }
+        Ok(())
     }
 }
 
