@@ -60,6 +60,10 @@ ENCRYPTION_KEY=<64-hex-char output from above>
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
 GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
+
+# Note: this var has NO `GOOGLE_` prefix even though it's used by the Google OAuth flow.
+# A typo like `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI=...` is silently ignored (the code
+# falls back to the default `http://localhost:3000/settings`).
 OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 
 # These have working defaults — only set if you need to override:
@@ -82,10 +86,17 @@ OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 Recall.ai sends bot lifecycle events to `POST /webhooks/recall_ai`. For local development the backend must be publicly reachable — use ngrok:
 
 ```bash
-# Start the backend first, then in another terminal:
+# Start the backend first, then in another terminal.
+
+# Free plan (random subdomain, changes on every restart):
 ngrok http 4000
-# Copy the https URL, e.g. https://abc123.ngrok.io
+# Copy the https URL from the output, e.g. https://abc123.ngrok-free.dev
+
+# Paid plan (reserved domain that survives restarts):
+ngrok http 4000 --url=<your-stable-domain>.ngrok-free.dev
 ```
+
+> Note: ngrok deprecated the `--domain` flag. Use `--url` for reserved domains. Plain `ngrok http 4000` still works for free-plan ephemeral URLs.
 
 In the Recall.ai dashboard:
 
@@ -94,7 +105,28 @@ In the Recall.ai dashboard:
 3. Select events: `bot.status_change`, `recording.done`, `transcript.done`
 4. After saving, copy the **Signing Secret** (starts with `whsec_`)
 
+> **Important: the `/webhooks/recall_ai` path is required.**
+>
+> Setting the URL to just the ngrok host (e.g. `https://abc123.ngrok-free.dev`) causes every delivery to fail with **405 Method Not Allowed**, because the Axum router falls back to a static-file handler that only accepts GET/HEAD for unmatched paths.
+>
+> - Wrong: `https://abc123.ngrok-free.dev`
+> - Right: `https://abc123.ngrok-free.dev/webhooks/recall_ai`
+
 > **Note:** The ngrok URL changes every restart on the free plan. Update the Recall.ai webhook endpoint each session, or use a paid ngrok plan with a stable URL.
+
+#### Verify the endpoint
+
+Before triggering a real Recall.ai bot, send a raw POST to confirm the path resolves to the handler:
+
+```bash
+curl -i -X POST https://<your-ngrok-url>/webhooks/recall_ai
+```
+
+Interpret the response:
+
+- **401 Unauthorized** (body: `Webhook secret not configured` or `Invalid signature`) means the request reached the Axum handler. This is the **expected** response for a raw curl, since it has no valid Svix signature. The URL is correct.
+- **405 Method Not Allowed** means the URL path is wrong and the request was absorbed by the static-file fallback. Re-check that the endpoint in the Recall.ai dashboard ends in `/webhooks/recall_ai`.
+- **404 Not Found** or no response means ngrok isn't tunneling to your backend, or the backend isn't running on port 4000.
 
 #### Environment Variables
 
@@ -118,6 +150,7 @@ ENCRYPTION_KEY=<output of: openssl rand -hex 32>
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
 GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
+# Reminder: no `GOOGLE_` prefix on this var (a typo'd `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI` is silently ignored).
 OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 
 # ==============================
@@ -165,6 +198,7 @@ Key differences from local setup:
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
 GOOGLE_REDIRECT_URI=https://api.myrefactor.com/api/auth/google/callback
+# Reminder: no `GOOGLE_` prefix on this var (a typo'd `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI` is silently ignored).
 OAUTH_SUCCESS_REDIRECT_URI=https://myrefactor.com/settings
 ```
 
@@ -192,6 +226,7 @@ ENCRYPTION_KEY=<64-hex-char key from secrets manager>
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
 GOOGLE_REDIRECT_URI=https://api.myrefactor.com/api/auth/google/callback
+# Reminder: no `GOOGLE_` prefix on this var (a typo'd `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI` is silently ignored).
 OAUTH_SUCCESS_REDIRECT_URI=https://myrefactor.com/settings
 
 # Recall.ai
