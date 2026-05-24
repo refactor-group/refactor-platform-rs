@@ -12,9 +12,8 @@ use sea_orm::{
     DatabaseConnection, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect, QueryTrait,
     Select, Set, Statement, TryIntoModel,
 };
-use std::collections::HashMap;
-
 use serde::Serialize;
+use std::collections::HashMap;
 use utoipa::ToSchema;
 
 pub async fn create(
@@ -324,7 +323,8 @@ pub async fn find_counts_by_month_for_user(
 ///   "organization": { "id": "org-101", ... }    // Only if included
 /// }
 /// ```
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[schema(as = domain::coaching_session::EnrichedSession)]
 pub struct EnrichedSession {
     #[serde(flatten)]
     pub session: Model,
