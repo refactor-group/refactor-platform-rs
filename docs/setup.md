@@ -150,7 +150,6 @@ ENCRYPTION_KEY=<output of: openssl rand -hex 32>
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
 GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
-# Reminder: no `GOOGLE_` prefix on this var (a typo'd `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI` is silently ignored).
 OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 
 # ==============================
