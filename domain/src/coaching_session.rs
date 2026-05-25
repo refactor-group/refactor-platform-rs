@@ -19,6 +19,8 @@ pub use entity_api::coaching_session::{
     find_by_id, find_by_user_with_includes, find_counts_by_month_for_user, find_participant_ids,
     CountByMonth, EnrichedSession, IncludeOptions, SessionQueryOptions,
 };
+
+use crate::duration::Duration;
 pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};
 
 /// Wraps the entity_api function to convert `entity_api::Error` into `domain::Error`,
@@ -56,11 +58,13 @@ pub async fn create(
     db: &DatabaseConnection,
     config: &Config,
     mut coaching_session_model: Model,
+    requested_duration: Option<Duration>,
 ) -> Result<Model, Error> {
     let coaching_relationship =
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+    let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
 
@@ -69,13 +73,7 @@ pub async fn create(
     coaching_session_model.collab_document_name = Some(document_name.clone());
     coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
 
-    maybe_attach_meeting_url(
-        db,
-        config,
-        &mut coaching_session_model,
-        coaching_relationship.coach_id,
-    )
-    .await?;
+    maybe_attach_meeting_url(db, config, &mut coaching_session_model, coach_id).await?;
 
     let tiptap = TiptapDocument::new(config).await?;
     tiptap.create(&document_name).await?;
@@ -85,7 +83,9 @@ pub async fn create(
     // deleting the Tiptap document we just created.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let result: Result<Model, Error> = async {
-        let session = coaching_session::create(&txn, coaching_session_model).await?;
+        let session =
+            coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
+                .await?;
 
         let linked = coaching_session_goal::link_in_progress_goals_to_session(
             &txn,
@@ -118,14 +118,23 @@ pub async fn create(
 pub async fn bulk_create_recurring(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
+    coach_id: Id,
     dates: Vec<NaiveDateTime>,
+    requested_duration: Option<Duration>,
 ) -> Result<Vec<Model>, Error> {
     let truncated = dates
         .into_iter()
         .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(coaching_session::bulk_create_recurring(db, coaching_relationship_id, truncated).await?)
+    Ok(coaching_session::bulk_create_recurring(
+        db,
+        coaching_relationship_id,
+        coach_id,
+        truncated,
+        requested_duration,
+    )
+    .await?)
 }
 
 /// Runs deferred side-effects (Tiptap doc, meeting URL, in-progress-goal links)
@@ -221,13 +230,19 @@ pub async fn update(
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
+    let update_map = params.into_update_map();
+    // Validate `duration_minutes` if it appears in the patch — the
+    // IntoUpdateMap pattern erased its type, so the entity_api boundary is
+    // the right place to re-check (1..=480).
+    coaching_session::validate_duration_in_update_map(&update_map, "duration_minutes")?;
+
     let coaching_session = coaching_session::find_by_id(db, id).await?;
     let active_model = coaching_session.into_active_model();
     Ok(
         mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
             db,
             active_model,
-            params.into_update_map(),
+            update_map,
         )
         .await?,
     )
@@ -426,6 +441,7 @@ mod tests {
             coaching_relationship_id: relationship_id,
             collab_document_name: None,
             date: chrono::Local::now().naive_utc(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: None,
             provider,
             created_at: now.into(),
@@ -499,6 +515,7 @@ mod tests {
             coaching_relationship_id: relationship.id,
             collab_document_name: Some("old-doc".to_string()),
             date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: Some("https://meet.google.com/existing-url".to_string()),
             provider: Some(Provider::Google),
             created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")

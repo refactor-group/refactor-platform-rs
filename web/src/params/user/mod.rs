@@ -17,6 +17,9 @@ pub struct UpdateParams {
     pub display_name: Option<String>,
     pub github_profile_url: Option<String>,
     pub timezone: Option<String>,
+    /// Per-coach default coaching-session duration in minutes (1..=480).
+    /// Validated in entity_api.
+    pub default_coaching_session_duration_minutes: Option<u16>,
 }
 
 impl IntoUpdateMap for UpdateParams {
@@ -56,6 +59,12 @@ impl IntoUpdateMap for UpdateParams {
             update_map.insert(
                 "timezone".to_string(),
                 Some(Value::String(Some(Box::new(timezone)))),
+            );
+        }
+        if let Some(default_duration) = self.default_coaching_session_duration_minutes {
+            update_map.insert(
+                "default_coaching_session_duration_minutes".to_string(),
+                Some(Value::SmallUnsigned(Some(default_duration))),
             );
         }
         update_map

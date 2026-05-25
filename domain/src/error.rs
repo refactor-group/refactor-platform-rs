@@ -88,6 +88,19 @@ impl StdError for Error {
     }
 }
 
+// Translates an out-of-range `Duration` construction into a domain-layer
+// validation error. The `?` operator at the controller boundary then
+// propagates this through to a `web::Error` 422 via the blanket impl.
+impl From<entity::duration::OutOfRange> for Error {
+    fn from(err: entity::duration::OutOfRange) -> Self {
+        let message = err.to_string();
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Validation(message),
+        }
+    }
+}
+
 // This is where we translate errors from the `entity_api`` layer to the `domain`` layer.
 impl From<EntityApiError> for Error {
     fn from(err: EntityApiError) -> Self {

@@ -56,6 +56,8 @@ impl IntoQueryFilterMap for IndexParams {
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub(crate) struct UpdateParams {
     pub(crate) date: NaiveDateTime,
+    /// Session duration in minutes (1..=480). Validated in entity_api.
+    pub(crate) duration_minutes: Option<u16>,
     pub(crate) meeting_url: Option<String>,
     pub(crate) provider: Option<Provider>,
 }
@@ -67,6 +69,12 @@ impl IntoUpdateMap for UpdateParams {
             "date".to_string(),
             Some(Value::ChronoDateTime(Some(Box::new(self.date)))),
         );
+        if let Some(duration_minutes) = self.duration_minutes {
+            update_map.insert(
+                "duration_minutes".to_string(),
+                Some(Value::SmallUnsigned(Some(duration_minutes))),
+            );
+        }
         if let Some(meeting_url) = self.meeting_url {
             update_map.insert(
                 "meeting_url".to_string(),
@@ -80,6 +88,45 @@ impl IntoUpdateMap for UpdateParams {
             );
         }
         update_map
+    }
+}
+
+/// Request body for `POST /coaching_sessions`. Decoupled from the entity
+/// `Model` so `duration_minutes` can be optional on the wire (omission
+/// triggers the BE defaulting cascade — see
+/// `entity_api::coaching_session::resolve_duration`).
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct CreateParams {
+    pub(crate) coaching_relationship_id: Id,
+    pub(crate) date: NaiveDateTime,
+    /// Session duration in minutes (1..=480). Omit to use the coach's stored
+    /// `default_coaching_session_duration_minutes`.
+    pub(crate) duration_minutes: Option<u16>,
+    pub(crate) meeting_url: Option<String>,
+    pub(crate) provider: Option<Provider>,
+}
+
+impl CreateParams {
+    /// Build the entity `Model` that the domain layer expects. The
+    /// `duration_minutes` placeholder here is irrelevant — the value is
+    /// resolved (and overridden) inside `entity_api::coaching_session::create`
+    /// via the defaulting cascade. Other field defaults are also overwritten
+    /// by the domain layer (id on insert, hydrated_at via the hydration
+    /// machinery, timestamps on save).
+    pub(crate) fn into_model(self) -> coaching_sessions::Model {
+        let now = chrono::Utc::now();
+        coaching_sessions::Model {
+            id: Id::nil(),
+            coaching_relationship_id: self.coaching_relationship_id,
+            collab_document_name: None,
+            date: self.date,
+            duration_minutes: domain::duration::Duration::default_minutes(),
+            meeting_url: self.meeting_url,
+            provider: self.provider,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        }
     }
 }
 

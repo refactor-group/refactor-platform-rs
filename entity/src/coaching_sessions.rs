@@ -17,6 +17,9 @@ pub struct Model {
     #[serde(skip_deserializing)]
     pub collab_document_name: Option<String>,
     pub date: DateTime,
+    /// Session duration in minutes. Application-layer invariant: `1..=480`,
+    /// enforced via the `entity::duration::Duration` newtype on every write.
+    pub duration_minutes: u16,
     pub meeting_url: Option<String>,
     pub provider: Option<Provider>,
     #[serde(skip_deserializing)]

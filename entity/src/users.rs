@@ -27,6 +27,13 @@ pub struct Model {
     pub github_profile_url: Option<String>,
     #[sea_orm(default = "UTC")]
     pub timezone: String,
+    /// Per-coach default duration in minutes for newly scheduled coaching
+    /// sessions. Application-layer invariant: `1..=480`, enforced via the
+    /// `entity::duration::Duration` newtype on every write. The column lives
+    /// on every user row (mirrors `timezone`) but is only meaningful when the
+    /// user is acting as a coach.
+    #[sea_orm(default = 60)]
+    pub default_coaching_session_duration_minutes: u16,
     #[sea_orm(default = "user")]
     // This is a legacy field and will be removed in favor of roles
     #[serde(skip_deserializing)]
@@ -105,6 +112,7 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".into(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             role: Role::default(),
             roles: vec![],
             invite_status: None,
