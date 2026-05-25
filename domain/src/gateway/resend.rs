@@ -88,8 +88,48 @@ impl Serialize for EmailRecipient {
     }
 }
 
-/// Reference to a published Resend template plus the variables to interpolate.
+/// Restricts which Rust types may be passed as Resend template variables.
 ///
+/// Resend's template engine interpolates JSON scalars — strings, numbers, and
+/// booleans. Passing `null`, an array, or a nested object causes Resend to
+/// reject the request with a 422 at send time, so we keep that mistake out of
+/// the type system. The trait is sealed: callers cannot widen the set by
+/// adding their own impls.
+///
+/// `serde_json::Value::Null` is intentionally not a `TemplateValue`:
+///
+/// ```compile_fail
+/// use domain::gateway::resend::SendEmailRequestBuilder;
+/// SendEmailRequestBuilder::new()
+///     .add_variable("k", serde_json::Value::Null);
+/// ```
+///
+/// Nested objects are likewise rejected — Resend's template engine can't
+/// interpolate them, so we don't let them reach the wire:
+///
+/// ```compile_fail
+/// use domain::gateway::resend::SendEmailRequestBuilder;
+/// SendEmailRequestBuilder::new()
+///     .add_variable("k", serde_json::json!({ "nested": "object" }));
+/// ```
+pub trait TemplateValue: sealed::Sealed + Into<serde_json::Value> {}
+
+impl TemplateValue for &str {}
+impl TemplateValue for String {}
+impl TemplateValue for u64 {}
+impl TemplateValue for i64 {}
+impl TemplateValue for bool {}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for &str {}
+    impl Sealed for String {}
+    impl Sealed for u64 {}
+    impl Sealed for i64 {}
+    impl Sealed for bool {}
+}
+
+/// Reference to a published Resend template plus the variables to interpolate.
 #[derive(Debug, Serialize, Eq, PartialEq)]
 pub struct TemplateRef {
     pub id: TemplateId,
@@ -168,10 +208,7 @@ impl SendEmailRequestBuilder {
     }
 
     /// Add a template variable for interpolation by Resend.
-    pub fn add_variable<V>(mut self, key: impl Into<String>, value: V) -> Self
-    where
-        V: Into<serde_json::Value>,
-    {
+    pub fn add_variable<V: TemplateValue>(mut self, key: impl Into<String>, value: V) -> Self {
         self.variables.insert(key.into(), value.into());
         self
     }
@@ -180,10 +217,11 @@ impl SendEmailRequestBuilder {
     ///
     /// `None` omits the key from the payload so Resend's template
     /// `fallback_value` can fire — sending an empty string would defeat it.
-    pub fn add_optional_variable<V>(mut self, key: impl Into<String>, value: Option<V>) -> Self
-    where
-        V: Into<serde_json::Value>,
-    {
+    pub fn add_optional_variable<V: TemplateValue>(
+        mut self,
+        key: impl Into<String>,
+        value: Option<V>,
+    ) -> Self {
         if let Some(v) = value {
             self.variables.insert(key.into(), v.into());
         }
