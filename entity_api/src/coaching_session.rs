@@ -438,10 +438,16 @@ impl IncludeOptions {
 pub struct SessionQueryOptions {
     /// Filter sessions to only those in this coaching relationship
     pub coaching_relationship_id: Option<Id>,
-    /// Filter sessions starting from this date (inclusive)
+    /// Filter sessions starting from this date (inclusive). Interpreted in
+    /// `tz` when present; otherwise UTC.
     pub from_date: Option<chrono::NaiveDate>,
-    /// Filter sessions up to this date (inclusive)
+    /// Filter sessions up to this date (inclusive at calendar-day precision).
+    /// Interpreted in `tz` when present; otherwise UTC.
     pub to_date: Option<chrono::NaiveDate>,
+    /// Optional canonical IANA timezone name for evaluating `from_date` and
+    /// `to_date` as calendar-day boundaries in that zone. `None` = UTC-naive.
+    /// Validate upstream (web layer); this layer trusts the value.
+    pub tz: Option<String>,
     /// Column to sort results by
     pub sort_column: Option<coaching_sessions::Column>,
     /// Sort direction (ascending or descending)
@@ -473,15 +479,42 @@ pub async fn find_by_user_with_includes(
         query = query.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
     }
 
-    // Apply date filtering
-    if let Some(from) = options.from_date {
-        query = query.filter(coaching_sessions::Column::Date.gte(from));
-    }
-
-    if let Some(to) = options.to_date {
-        // Use next day with less-than for inclusive end date
-        let end_of_day = to.succ_opt().unwrap_or(to);
-        query = query.filter(coaching_sessions::Column::Date.lt(end_of_day));
+    // Apply date filtering. When `tz` is supplied, evaluate the bounds as
+    // calendar-day boundaries in that zone via `AT TIME ZONE`, mirroring the
+    // expression used by `find_counts_by_month_for_user`. When omitted,
+    // preserve the legacy UTC-naive comparison so unchanged callers behave
+    // identically.
+    match options.tz.as_deref() {
+        Some(tz_name) => {
+            if let Some(from) = options.from_date {
+                query = query.filter(Expr::cust_with_values(
+                    r#""coaching_sessions"."date" >= ($1::timestamp AT TIME ZONE $2::text) AT TIME ZONE 'UTC'"#,
+                    [
+                        sea_orm::Value::from(from),
+                        sea_orm::Value::from(tz_name.to_string()),
+                    ],
+                ));
+            }
+            if let Some(to) = options.to_date {
+                let end_of_day = to.succ_opt().unwrap_or(to);
+                query = query.filter(Expr::cust_with_values(
+                    r#""coaching_sessions"."date" < ($1::timestamp AT TIME ZONE $2::text) AT TIME ZONE 'UTC'"#,
+                    [
+                        sea_orm::Value::from(end_of_day),
+                        sea_orm::Value::from(tz_name.to_string()),
+                    ],
+                ));
+            }
+        }
+        None => {
+            if let Some(from) = options.from_date {
+                query = query.filter(coaching_sessions::Column::Date.gte(from));
+            }
+            if let Some(to) = options.to_date {
+                let end_of_day = to.succ_opt().unwrap_or(to);
+                query = query.filter(coaching_sessions::Column::Date.lt(end_of_day));
+            }
+        }
     }
 
     // Apply sorting if both column and order are provided
@@ -1100,6 +1133,139 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session.id);
         assert_eq!(results[0].session.date, from_date.into());
+
+        Ok(())
+    }
+
+    // Locks down the SQL emitted when `tz` is supplied: both date bounds are
+    // shifted via `AT TIME ZONE`, matching the expression form used by
+    // `find_counts_by_month_for_user`. Catches drift in bind positions, the
+    // `to_date.succ_opt()` half-open conversion, and the tz-bind ordering.
+    #[tokio::test]
+    async fn find_by_user_with_includes_with_tz_emits_shifted_boundaries() -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let from_date = chrono::NaiveDate::from_ymd_opt(2026, 5, 24).unwrap();
+        let to_date = chrono::NaiveDate::from_ymd_opt(2026, 5, 24).unwrap();
+        let to_exclusive = chrono::NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let _ = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions {
+                from_date: Some(from_date),
+                to_date: Some(to_date),
+                tz: Some("America/Los_Angeles".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC') AND ("coaching_sessions"."date" < ($5::timestamp AT TIME ZONE $6::text) AT TIME ZONE 'UTC')"#,
+                [
+                    user_id.into(),
+                    user_id.into(),
+                    from_date.into(),
+                    "America/Los_Angeles".into(),
+                    to_exclusive.into(),
+                    "America/Los_Angeles".into(),
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    // Regression guard for the legacy UTC-naive path. When `tz` is omitted,
+    // the boundaries must be plain `Column::Date.gte/.lt`, not the
+    // tz-shifted expression. Asserting the absence of `AT TIME ZONE` here
+    // prevents an accidental "always shift" rewrite from silently breaking
+    // existing callers who rely on UTC interpretation.
+    #[tokio::test]
+    async fn find_by_user_with_includes_without_tz_emits_utc_naive_boundaries() -> Result<(), Error>
+    {
+        let user_id = Id::new_v4();
+        let from_date = chrono::NaiveDate::from_ymd_opt(2026, 5, 24).unwrap();
+        let to_date = chrono::NaiveDate::from_ymd_opt(2026, 5, 24).unwrap();
+        let to_exclusive = chrono::NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let _ = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions {
+                from_date: Some(from_date),
+                to_date: Some(to_date),
+                tz: None,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND "coaching_sessions"."date" >= $3 AND "coaching_sessions"."date" < $4"#,
+                [
+                    user_id.into(),
+                    user_id.into(),
+                    from_date.into(),
+                    to_exclusive.into(),
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    // Mixed-presence: only `from_date` supplied, `tz` present. The shift
+    // applies to the present bound only; no upper-bound filter is emitted.
+    #[tokio::test]
+    async fn find_by_user_with_includes_with_tz_and_only_from_date_shifts_lower_bound(
+    ) -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let from_date = chrono::NaiveDate::from_ymd_opt(2026, 5, 24).unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let _ = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions {
+                from_date: Some(from_date),
+                to_date: None,
+                tz: Some("Europe/Berlin".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
+                [
+                    user_id.into(),
+                    user_id.into(),
+                    from_date.into(),
+                    "Europe/Berlin".into(),
+                ]
+            )]
+        );
 
         Ok(())
     }
