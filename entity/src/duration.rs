@@ -79,7 +79,7 @@ impl fmt::Display for Duration {
         let mins = total % 60;
 
         match (hours, mins) {
-            (0, 0) => write!(f, "0 minutes"),
+            (0, 0) => unreachable!("Duration invariant violated: value must be >= 1 minute"),
             (0, 1) => write!(f, "1 minute"),
             (0, m) => write!(f, "{m} minutes"),
             (1, 0) => write!(f, "1 hour"),

@@ -485,7 +485,7 @@ mod tests {
             .into_connection();
 
         let config = test_config(&server.url());
-        let result = create(&db, &config, session.clone()).await?;
+        let result = create(&db, &config, session.clone(), Some(Duration::default())).await?;
 
         assert!(result.meeting_url.is_none());
         Ok(())
@@ -553,7 +553,7 @@ mod tests {
             .into_connection();
 
         let config = test_config(&server.url());
-        let result = create(&db, &config, session).await?;
+        let result = create(&db, &config, session, Some(Duration::default())).await?;
 
         assert_eq!(
             result.meeting_url,
@@ -598,7 +598,7 @@ mod tests {
             .into_connection();
 
         let config = test_config(&server.url());
-        let result = create(&db, &config, session.clone()).await?;
+        let result = create(&db, &config, session.clone(), Some(Duration::default())).await?;
 
         assert!(result.meeting_url.is_none());
         Ok(())
@@ -753,7 +753,14 @@ mod tests {
             .append_query_results(vec![vec![row1.clone(), row2.clone()]])
             .into_connection();
 
-        let inserted = bulk_create_recurring(&db, relationship_id, dates).await?;
+        let inserted = bulk_create_recurring(
+            &db,
+            relationship_id,
+            Id::new_v4(),
+            dates,
+            Some(Duration::default()),
+        )
+        .await?;
         assert_eq!(inserted.len(), 2);
         assert!(inserted.iter().all(|s| s.provider.is_none()));
         assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
