@@ -1267,6 +1267,51 @@ mod tests {
         Ok(())
     }
 
+    // Mirror of the lower-bound-only test: only `to_date` supplied, `tz`
+    // present. Guards against future regressions that would accidentally
+    // couple lower-bound emission to upper-bound presence (e.g. an
+    // `if let (Some(from), Some(to)) = ...` rewrite that silently drops the
+    // upper-only case while leaving both-bounds and lower-only green).
+    #[tokio::test]
+    async fn find_by_user_with_includes_with_tz_and_only_to_date_shifts_upper_bound(
+    ) -> Result<(), Error> {
+        let user_id = Id::new_v4();
+        let to_date = chrono::NaiveDate::from_ymd_opt(2026, 5, 24).unwrap();
+        let to_exclusive = chrono::NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let _ = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions {
+                from_date: None,
+                to_date: Some(to_date),
+                tz: Some("Europe/Berlin".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" < ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
+                [
+                    user_id.into(),
+                    user_id.into(),
+                    to_exclusive.into(),
+                    "Europe/Berlin".into(),
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn include_options_needs_relationships_truth_table() {
         // organization || relationship → true; everything else → false.
