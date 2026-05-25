@@ -41,38 +41,30 @@ pub async fn resolve_duration(
 
 /// Validate a duration-bearing entry of an update map if present.
 ///
-/// The `IntoUpdateMap` pattern erases types into `sea_orm::Value`, so we
-/// re-validate at the entity_api boundary before the SQL UPDATE runs. Out-of-
-/// range values surface as `EntityApiErrorKind::ValidationError`.
+/// Returns `Err(OutOfRange)` when the value is present and outside `1..=480`.
+/// Returns `Ok(())` when the value is absent OR when the wire-level `Value`
+/// variant is not `SmallUnsigned` (a programmer error in the upstream
+/// `IntoUpdateMap` impl — the SQL layer is the next safety net for that case).
 ///
-/// `key` is the update-map key that holds the duration. Reused for both
+/// Returning the entity-level `OutOfRange` rather than wrapping in
+/// `EntityApiError` lets domain callers propagate via `?` through the
+/// `From<OutOfRange> for domain::Error` impl, which routes to
+/// `DomainErrorKind::Validation` → **422 `validation_error`**. Reusing
+/// `EntityApiErrorKind::ValidationError` here would have routed to 409
+/// `conflict` (which is appropriate for goal-limit cap violations but
+/// semantically wrong for a value-range violation).
+///
+/// `key` is the update-map key holding the duration. Reused for both
 /// `coaching_sessions.duration_minutes` and
 /// `users.default_coaching_session_duration_minutes`.
-pub fn validate_duration_in_update_map(update_map: &UpdateMap, key: &str) -> Result<(), Error> {
-    let Some(value) = update_map.get_value(key) else {
+pub fn validate_duration_in_update_map(
+    update_map: &UpdateMap,
+    key: &str,
+) -> Result<(), OutOfRange> {
+    let Some(Value::SmallUnsigned(Some(n))) = update_map.get_value(key) else {
         return Ok(());
     };
-    let Value::SmallUnsigned(Some(n)) = value else {
-        return Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::ValidationError {
-                message: format!("{key} value is not a SMALLINT (unsigned)"),
-                details: None,
-            },
-        });
-    };
-    Duration::try_from(*n).map_err(out_of_range_to_error)?;
-    Ok(())
-}
-
-fn out_of_range_to_error(e: OutOfRange) -> Error {
-    Error {
-        source: None,
-        error_kind: EntityApiErrorKind::ValidationError {
-            message: e.to_string(),
-            details: None,
-        },
-    }
+    Duration::try_from(*n).map(|_| ())
 }
 
 /// Insert a new coaching session.
