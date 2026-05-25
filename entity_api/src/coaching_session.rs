@@ -465,62 +465,59 @@ pub async fn find_by_user_with_includes(
     // Validate include options
     options.includes.validate()?;
 
-    // Build query for sessions filtered by user
-    let mut query = Entity::find()
+    // Build the optional date-bound filters up-front so the query chain can
+    // stay a single fluent `apply_if` pipeline. When `tz` is supplied, each
+    // bound is wrapped in an `AT TIME ZONE` shift, mirroring the expression
+    // used by `find_counts_by_month_for_user`; otherwise the legacy
+    // `Column::Date.gte/.lt` form is preserved so unchanged callers behave
+    // byte-identically.
+    let tz = options.tz.as_deref();
+    let lower_bound_filter = options.from_date.map(|from| match tz {
+        Some(tz_name) => Expr::cust_with_values(
+            r#""coaching_sessions"."date" >= ($1::timestamp AT TIME ZONE $2::text) AT TIME ZONE 'UTC'"#,
+            [
+                sea_orm::Value::from(from),
+                sea_orm::Value::from(tz_name.to_string()),
+            ],
+        ),
+        None => coaching_sessions::Column::Date.gte(from),
+    });
+    let upper_bound_filter = options.to_date.map(|to| {
+        let end_of_day = to.succ_opt().unwrap_or(to);
+        match tz {
+            Some(tz_name) => Expr::cust_with_values(
+                r#""coaching_sessions"."date" < ($1::timestamp AT TIME ZONE $2::text) AT TIME ZONE 'UTC'"#,
+                [
+                    sea_orm::Value::from(end_of_day),
+                    sea_orm::Value::from(tz_name.to_string()),
+                ],
+            ),
+            None => coaching_sessions::Column::Date.lt(end_of_day),
+        }
+    });
+
+    // Single fluent builder chain. Each optional knob lands as an `apply_if`
+    // so the "is the knob present" branch never escapes into the surrounding
+    // function body.
+    let query = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
         .filter(
             coaching_relationships::Column::CoachId
                 .eq(user_id)
                 .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .apply_if(
+            options.coaching_relationship_id,
+            |q: Select<Entity>, rel_id| {
+                q.filter(coaching_sessions::Column::CoachingRelationshipId.eq(rel_id))
+            },
+        )
+        .apply_if(lower_bound_filter, |q: Select<Entity>, expr| q.filter(expr))
+        .apply_if(upper_bound_filter, |q: Select<Entity>, expr| q.filter(expr))
+        .apply_if(
+            options.sort_column.zip(options.sort_order),
+            |q: Select<Entity>, (col, ord)| q.order_by(col, ord),
         );
-
-    // Apply coaching relationship filter
-    if let Some(relationship_id) = options.coaching_relationship_id {
-        query = query.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
-    }
-
-    // Apply date filtering. When `tz` is supplied, evaluate the bounds as
-    // calendar-day boundaries in that zone via `AT TIME ZONE`, mirroring the
-    // expression used by `find_counts_by_month_for_user`. When omitted,
-    // preserve the legacy UTC-naive comparison so unchanged callers behave
-    // identically.
-    match options.tz.as_deref() {
-        Some(tz_name) => {
-            if let Some(from) = options.from_date {
-                query = query.filter(Expr::cust_with_values(
-                    r#""coaching_sessions"."date" >= ($1::timestamp AT TIME ZONE $2::text) AT TIME ZONE 'UTC'"#,
-                    [
-                        sea_orm::Value::from(from),
-                        sea_orm::Value::from(tz_name.to_string()),
-                    ],
-                ));
-            }
-            if let Some(to) = options.to_date {
-                let end_of_day = to.succ_opt().unwrap_or(to);
-                query = query.filter(Expr::cust_with_values(
-                    r#""coaching_sessions"."date" < ($1::timestamp AT TIME ZONE $2::text) AT TIME ZONE 'UTC'"#,
-                    [
-                        sea_orm::Value::from(end_of_day),
-                        sea_orm::Value::from(tz_name.to_string()),
-                    ],
-                ));
-            }
-        }
-        None => {
-            if let Some(from) = options.from_date {
-                query = query.filter(coaching_sessions::Column::Date.gte(from));
-            }
-            if let Some(to) = options.to_date {
-                let end_of_day = to.succ_opt().unwrap_or(to);
-                query = query.filter(coaching_sessions::Column::Date.lt(end_of_day));
-            }
-        }
-    }
-
-    // Apply sorting if both column and order are provided
-    if let (Some(column), Some(order)) = (options.sort_column, options.sort_order) {
-        query = query.order_by(column, order);
-    }
 
     // Execute query to load base sessions
     let sessions = query.all(db).await?;
