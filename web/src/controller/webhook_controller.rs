@@ -60,7 +60,7 @@ pub async fn recall_ai(
     {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
-            error!("Recall.ai webhook error: {:?}", e);
+            error!("Recall.ai webhook error: {e}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

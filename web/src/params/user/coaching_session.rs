@@ -38,10 +38,21 @@ pub(crate) struct IndexParams {
     pub(crate) user_id: Id,
     /// Optional: filter sessions to only those in this coaching relationship
     pub(crate) coaching_relationship_id: Option<Id>,
-    /// Optional: filter sessions starting from this date (inclusive)
+    /// Optional: filter sessions starting from this date (inclusive).
+    ///
+    /// Interpreted in `tz` when present; otherwise UTC.
     pub(crate) from_date: Option<NaiveDate>,
-    /// Optional: filter sessions up to this date (inclusive)
+    /// Optional: filter sessions up to this date (inclusive at calendar-day precision).
+    ///
+    /// Interpreted in `tz` when present; otherwise UTC.
     pub(crate) to_date: Option<NaiveDate>,
+    /// Optional: IANA timezone for evaluating `from_date`/`to_date` as
+    /// calendar-day boundaries in that zone. Omitted = UTC-naive boundaries.
+    ///
+    /// Validated in the handler via `chrono_tz::Tz::from_str`; invalid → 400
+    /// `invalid_timezone`. Kept as `String` so the offending value is
+    /// preserved for the structured discriminator response.
+    pub(crate) tz: Option<String>,
     /// Optional: field to sort by (e.g., "date", "created_at")
     pub(crate) sort_by: Option<SortField>,
     /// Optional: sort direction (asc/desc)
