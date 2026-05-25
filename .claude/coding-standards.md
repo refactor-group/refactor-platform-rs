@@ -256,6 +256,53 @@ txn.commit().await?;  // Rolls back automatically if we never reach here
 - **service/**: Orchestration layer, complex operations spanning multiple entities
 - **web/**: HTTP handlers, request/response types, routing
 
+### Type Re-Export Boundary
+
+Entity types — whether table Models (e.g., `coaching_sessions::Model`) or non-table value types that constrain column values (e.g., `Provider`, `Id`, `Duration`) — are declared once in the `entity` crate and re-exported up through each layer at the `lib.rs` level. The web layer accesses them via `domain::<module>::<Type>` and **must never reach across into `entity_api` or `entity` directly**.
+
+**The re-export chain:**
+
+```rust
+// entity/src/lib.rs — declare the module
+pub mod provider;
+pub mod duration;
+// ...
+pub type Id = Uuid;
+
+// entity_api/src/lib.rs — re-export entity modules in the existing block
+pub use entity::{
+    actions, agreements, coaching_sessions, /* ... */
+    provider, duration, users::Role, Id,
+};
+
+// domain/src/lib.rs — re-export entity_api re-exports in the existing block
+pub use entity_api::{
+    actions, agreements, coaching_sessions, /* ... */
+    provider, duration, users::Role, Id,
+};
+```
+
+**Access paths by layer:**
+
+| Layer | Import for a type like `Duration` |
+|---|---|
+| Inside `entity_api/*.rs` | `use crate::duration::Duration;` |
+| Inside `domain/*.rs` | `use crate::duration::Duration;` |
+| Inside `web/*.rs` | `use domain::duration::Duration;` |
+
+**Why this pattern:** As documented in `domain/src/lib.rs`, "consumers of the `domain` crate do not need to directly depend on the `entity_api` crate." The same isolation applies one layer down: entity_api hides direct dependence on entity. This means a layer can be refactored internally without breaking layers above it, and the type-import surface area at the web layer stays uniform regardless of where types originate.
+
+**Common mistake:** Adding a `pub use entity::<module>::<Type>;` re-export inside a domain module file (e.g., `domain/src/coaching_session.rs`). This reaches across the entity_api boundary and bypasses the documented isolation. Re-exports of entity types belong at `lib.rs` only — never inside individual modules.
+
+**When adding a new entity type:**
+
+1. Declare the module in `entity/src/lib.rs`: `pub mod <name>;`.
+2. Add it to the existing `pub use entity::{...};` block in `entity_api/src/lib.rs`.
+3. Add it to the existing `pub use entity_api::{...};` block in `domain/src/lib.rs`.
+4. Internal code in each crate imports via `crate::<name>::<Type>`. Web code imports via `domain::<name>::<Type>`.
+
+The error-type chain (`entity_api::error` → `domain::error` → `web::Error`) is a parallel pattern with its own conversion rules — see "Cross-Layer Error Propagation" above. Both patterns share the same architectural principle: each layer hides the layers below it from the layers above.
+
 ### Thin Controllers
 
 Controllers (web handlers) should be **thin orchestrators**: accept a request, call domain logic, and map the result to an HTTP response. Keep side-effect concerns — logging, best-effort error handling, retries — in the domain layer, not in controllers.
@@ -331,6 +378,7 @@ When reviewing or writing code, ensure:
 - [ ] Error handling uses `Result` and `?` operator appropriately
 - [ ] No `.unwrap()` or `.expect()` in production code paths
 - [ ] Errors propagate through layers (`entity_api` -> `domain` -> `web`) without skipping
+- [ ] Entity-derived types are accessed via `domain::<module>::<Type>` in web code (never `entity_api::...` or `entity::...`)
 - [ ] Async operations don't block the runtime
 - [ ] Public APIs have doc comments
 - [ ] Code passes `cargo clippy` without warnings
