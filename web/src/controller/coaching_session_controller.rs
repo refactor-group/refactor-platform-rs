@@ -14,7 +14,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::{
     coaching_relationship as CoachingRelationshipApi, coaching_session as CoachingSessionApi,
-    duration::Duration, emails as EmailsApi, Id,
+    emails as EmailsApi, Id,
 };
 use service::config::ApiVersion;
 
@@ -129,13 +129,9 @@ pub async fn create(
 ) -> Result<impl IntoResponse, Error> {
     debug!("POST Create a new Coaching Session from: {params:?}");
 
-    // Wire input is `Option<u16>` — validate at the controller boundary so the
-    // domain and entity_api layers see only `Option<Duration>` (already valid
-    // by the type). Out-of-range values propagate as 422.
-    let requested_duration: Option<Duration> = params
-        .duration_minutes
-        .map(Duration::try_from)
-        .transpose()?;
+    // Validate wire `Option<i16>` → `Option<Duration>` so lower layers see
+    // only already-validated values. Out-of-range propagates as 422.
+    let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
     let coaching_session_model = params.into_model();
 
     let coaching_session = CoachingSessionApi::create(
@@ -204,10 +200,7 @@ pub async fn create_recurring(
     }
 
     // Validate duration at the wire boundary (see `create` above).
-    let requested_duration: Option<Duration> = params
-        .duration_minutes
-        .map(Duration::try_from)
-        .transpose()?;
+    let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
     let sessions = CoachingSessionApi::bulk_create_recurring(
         db,

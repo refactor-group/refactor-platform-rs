@@ -23,6 +23,17 @@ pub use entity_api::coaching_session::{
 use crate::duration::Duration;
 pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};
 
+/// Validate a wire-supplied `Option<i16>` duration and return `Option<Duration>`.
+/// Out-of-range values propagate through `entity_api::Error` to
+/// `DomainErrorKind::Validation` → 422. Lives in domain so the web layer
+/// can call it without depending on `entity_api` directly.
+pub fn parse_duration_minutes(minutes: Option<i16>) -> Result<Option<Duration>, Error> {
+    minutes
+        .map(Duration::try_from)
+        .transpose()
+        .map_err(|out| entity_api::error::Error::from(out).into())
+}
+
 /// Wraps the entity_api function to convert `entity_api::Error` into `domain::Error`,
 /// keeping the web layer from depending on entity_api error types directly.
 pub async fn find_by_id_with_coaching_relationship(

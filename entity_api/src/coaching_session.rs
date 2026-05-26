@@ -1,5 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::duration::{Duration, OutOfRange};
+use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use entity::{
     agreements, coaching_relationships,
@@ -39,40 +39,29 @@ pub async fn resolve_duration(
     ))
 }
 
-/// Validate a duration-bearing entry of an update map if present, and
-/// return the parsed `Duration` alongside the validation outcome.
+/// Validate a duration-bearing entry of an update map if present.
 ///
 /// - `Ok(Some(dur))` — key is present and in range.
-/// - `Ok(None)` — key is absent (nothing to validate) OR the wire-level
-///   `Value` variant is not `SmallInt` (the latter is a programmer error
-///   in the upstream `IntoUpdateMap` impl; the SQL layer is the next
-///   safety net).
-/// - `Err(OutOfRange)` — key present but outside `1..=480`.
-///
-/// Returning the entity-level `OutOfRange` rather than wrapping in
-/// `EntityApiError` lets domain callers propagate via `?` through the
-/// `From<OutOfRange> for domain::Error` impl, which routes to
-/// `DomainErrorKind::Validation` → **422 `validation_error`**. Reusing
-/// `EntityApiErrorKind::ValidationError` here would have routed to 409
-/// `conflict` (appropriate for goal-limit cap violations but semantically
-/// wrong for a value-range violation).
+/// - `Ok(None)` — key is absent, or the `Value` variant is not `SmallInt`
+///   (an upstream `IntoUpdateMap` bug; the SQL layer catches it).
+/// - `Err(_)` — key present but outside `1..=480`. The entity-level
+///   `OutOfRange` is wrapped in `EntityApiError` here (rather than
+///   returned bare) so domain callers propagate via the standard
+///   `From<EntityApiError> for domain::Error` boundary, which short-
+///   circuits `EntityApiErrorKind::OutOfRange` to
+///   `DomainErrorKind::Validation` → 422.
 ///
 /// `key` is the update-map key holding the duration. Reused for both
 /// `coaching_sessions.duration_minutes` and
 /// `users.default_coaching_session_duration_minutes`.
-///
-/// Existing callers that only care about pass/fail can discard the value
-/// with `?;`. Future callers that want the parsed `Duration` (e.g. for
-/// logging or event publishing) can use the returned `Option<Duration>`
-/// without re-parsing.
 pub fn validate_duration_in_update_map(
     update_map: &UpdateMap,
     key: &str,
-) -> Result<Option<Duration>, OutOfRange> {
+) -> Result<Option<Duration>, Error> {
     let Some(Value::SmallInt(Some(n))) = update_map.get_value(key) else {
         return Ok(None);
     };
-    Duration::try_from(*n).map(Some)
+    Duration::try_from(*n).map(Some).map_err(Error::from)
 }
 
 /// Insert a new coaching session.

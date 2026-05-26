@@ -88,14 +88,6 @@ impl StdError for Error {
     }
 }
 
-// Routes `OutOfRange` through `entity_api::Error` to preserve layered error
-// flow. Propagates as 422 via the `From<EntityApiError>` impl below.
-impl From<entity::duration::OutOfRange> for Error {
-    fn from(err: entity::duration::OutOfRange) -> Self {
-        Self::from(EntityApiError::from(err))
-    }
-}
-
 // This is where we translate errors from the `entity_api`` layer to the `domain`` layer.
 impl From<EntityApiError> for Error {
     fn from(err: EntityApiError) -> Self {
