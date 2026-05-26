@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use domain::{coaching_relationship, coaching_session, Id};
 
-use log::error;
+use log::{debug, error, warn};
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueryParams {
     coaching_relationship_id: Id,
@@ -80,8 +80,16 @@ pub(crate) async fn update(
     };
 
     if coaching_relationship.coach_id == user.id {
+        debug!(
+            "PUT auth passed: coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
+            coaching_relationship.id, user.id
+        );
         next.run(request).await
     } else {
+        warn!(
+            "PUT auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
+            coaching_relationship.id, user.id
+        );
         (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
     }
 }
@@ -121,8 +129,16 @@ pub(crate) async fn delete(
     };
 
     if coaching_relationship.coach_id == user.id {
+        debug!(
+            "DELETE auth passed: coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
+            coaching_relationship.id, user.id
+        );
         next.run(request).await
     } else {
+        warn!(
+            "DELETE auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
+            coaching_relationship.id, user.id
+        );
         (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
     }
 }
