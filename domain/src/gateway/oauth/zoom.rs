@@ -15,7 +15,8 @@ use secrecy::SecretString;
 ///
 /// # Returns
 ///
-/// A configured Zoom OAuth provider ready for use.
+/// `Ok(ZoomProvider)` on success, or `Err(meeting_auth::error::Error)` if the
+/// underlying rustls HTTP client cannot be constructed.
 ///
 /// # Example
 ///
@@ -26,7 +27,8 @@ use secrecy::SecretString;
 ///     config.zoom_client_id().unwrap(),
 ///     SecretString::from(config.zoom_client_secret().unwrap()),
 ///     config.zoom_redirect_uri().unwrap(),
-/// );
+/// )
+/// .expect("failed to build Zoom OAuth provider");
 /// ```
 pub fn new_provider(
     client_id: String,
