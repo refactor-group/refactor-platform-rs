@@ -32,6 +32,7 @@ pub fn new_provider(
     client_id: String,
     client_secret: SecretString,
     redirect_uri: String,
-) -> ZoomProvider {
+) -> Result<ZoomProvider, meeting_auth::error::Error> {
     ZoomProvider::new(client_id, client_secret, redirect_uri)
+        .map_err(meeting_auth::error::Error::from)
 }

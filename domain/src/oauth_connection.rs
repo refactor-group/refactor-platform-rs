@@ -262,7 +262,7 @@ fn create_zoom_provider(config: &Config) -> Result<impl Provider, Error> {
         client_id,
         client_secret,
         redirect_uri,
-    ))
+    )?)
 }
 
 fn create_oauth_connection_model(
