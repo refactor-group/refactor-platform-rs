@@ -84,20 +84,21 @@ impl Default for Duration {
 
 impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let total = self.0;
-        let hours = total / 60;
-        let mins = total % 60;
+        fn unit(n: i16, singular: &str) -> String {
+            if n == 1 {
+                format!("1 {singular}")
+            } else {
+                format!("{n} {singular}s")
+            }
+        }
 
-        match (hours, mins) {
+        let h = self.0 / 60;
+        let m = self.0 % 60;
+        match (h, m) {
             (0, 0) => unreachable!("Duration invariant violated: value must be >= 1 minute"),
-            (0, 1) => write!(f, "1 minute"),
-            (0, m) => write!(f, "{m} minutes"),
-            (1, 0) => write!(f, "1 hour"),
-            (h, 0) => write!(f, "{h} hours"),
-            (1, 1) => write!(f, "1 hour 1 minute"),
-            (1, m) => write!(f, "1 hour {m} minutes"),
-            (h, 1) => write!(f, "{h} hours 1 minute"),
-            (h, m) => write!(f, "{h} hours {m} minutes"),
+            (0, m) => write!(f, "{}", unit(m, "minute")),
+            (h, 0) => write!(f, "{}", unit(h, "hour")),
+            (h, m) => write!(f, "{} {}", unit(h, "hour"), unit(m, "minute")),
         }
     }
 }
