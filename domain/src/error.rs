@@ -91,17 +91,19 @@ impl StdError for Error {
 // This is where we translate errors from the `entity_api`` layer to the `domain`` layer.
 impl From<EntityApiError> for Error {
     fn from(err: EntityApiError) -> Self {
-        // `OutOfRange` short-circuits to 422 `validation_error` (value-range,
-        // not entity-state conflict like `ValidationError` → 409).
-        if let EntityApiErrorKind::OutOfRange(ref out) = err.error_kind {
-            let message = out.to_string();
-            return Error {
-                source: Some(Box::new(err)),
-                error_kind: DomainErrorKind::Validation(message),
-            };
-        }
-
         let entity_error_kind = match &err.error_kind {
+            // Value-range violation → 422 `validation_error` (distinct from
+            // `ValidationError` → 409, which is for entity-state conflicts
+            // like goal-limit caps). Returned directly from the match so the
+            // outer struct construction below is reserved for `Internal`
+            // mappings only.
+            EntityApiErrorKind::OutOfRange(out) => {
+                let message = out.to_string();
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
             EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,
@@ -114,7 +116,6 @@ impl From<EntityApiError> for Error {
                 EntityErrorKind::GoalAlreadyLinkedToSession
             }
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
-            EntityApiErrorKind::OutOfRange(_) => unreachable!("handled above"),
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
 
