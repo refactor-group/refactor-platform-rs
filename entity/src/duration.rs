@@ -40,11 +40,16 @@ impl Duration {
 
     /// Construct a `Duration` without checking the range.
     ///
-    /// This is the escape hatch for values that are already known to be valid
-    /// by an external invariant — most importantly DB rows where the column is
-    /// `NOT NULL` and the only writes go through `Duration::new`. Do not use on
-    /// untrusted input.
+    /// Escape hatch for values already known to be valid by an external
+    /// invariant (e.g. `NOT NULL` DB rows where the only writes go through
+    /// `Duration::new`). Not for untrusted input. Debug builds assert the
+    /// invariant so misuse fails at the construction site rather than
+    /// downstream in `Display`.
     pub const fn from_minutes_unchecked(minutes: i16) -> Self {
+        debug_assert!(
+            minutes >= MIN_DURATION_MINUTES && minutes <= MAX_DURATION_MINUTES,
+            "from_minutes_unchecked called with out-of-range value"
+        );
         Self(minutes)
     }
 
