@@ -13,6 +13,9 @@ use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind}
 #[derive(Clone)]
 pub struct Provider {
     client: reqwest::Client,
+    /// Header-less rustls client for pre-signed transcript downloads.
+    /// Pre-signed URLs reject extra Authorization headers, so this cannot reuse `client`.
+    download_client: reqwest::Client,
     base_url: String,
 }
 
@@ -335,9 +338,19 @@ impl Provider {
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
 
+        let download_client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()?;
+
         let base_url = format!("https://{}.recall.ai/api/v1", region);
 
-        Ok(Self { client, base_url })
+        Ok(Self {
+            client,
+            download_client,
+            base_url,
+        })
     }
 
     /// Creates a Recall.ai recording bot for the given meeting URL.
@@ -556,13 +569,18 @@ impl Provider {
     ) -> Result<Vec<ParticipantEntry>, Error> {
         debug!("Downloading transcript from pre-signed URL");
 
-        let response = reqwest::get(download_url).await.map_err(|e| {
-            warn!("Failed to download transcript: {:?}", e);
-            Error {
-                source: Some(Box::new(e)),
-                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-            }
-        })?;
+        let response = self
+            .download_client
+            .get(download_url)
+            .send()
+            .await
+            .map_err(|e| {
+                warn!("Failed to download transcript: {:?}", e);
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+                }
+            })?;
 
         if response.status().is_success() {
             let data: Vec<ParticipantEntry> = response.json().await.map_err(|e| {
@@ -866,6 +884,7 @@ mod tests {
     fn test_provider(base_url: &str) -> Provider {
         Provider {
             client: reqwest::Client::new(),
+            download_client: reqwest::Client::new(),
             base_url: base_url.to_string(),
         }
     }
