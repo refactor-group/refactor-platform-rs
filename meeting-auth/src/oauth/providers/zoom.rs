@@ -103,13 +103,18 @@ impl Provider {
     /// * `client_id` - Zoom OAuth client ID
     /// * `client_secret` - Zoom OAuth client secret
     /// * `redirect_uri` - OAuth redirect URI
-    pub fn new(client_id: String, client_secret: SecretString, redirect_uri: String) -> Self {
-        Self {
+    pub fn new(
+        client_id: String,
+        client_secret: SecretString,
+        redirect_uri: String,
+    ) -> Result<Self, reqwest::Error> {
+        let http_client = reqwest::Client::builder().use_rustls_tls().build()?;
+        Ok(Self {
             client_id,
             client_secret,
             redirect_uri,
-            http_client: reqwest::Client::new(),
-        }
+            http_client,
+        })
     }
 }
 
@@ -356,6 +361,7 @@ mod tests {
             SecretString::from("test_client_secret".to_string()),
             "https://example.com/callback".to_string(),
         )
+        .expect("test provider construction must succeed")
     }
 
     #[test]
