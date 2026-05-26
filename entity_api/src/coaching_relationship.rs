@@ -556,6 +556,7 @@ mod tests {
             role: entity::users::Role::User,
             github_profile_url: Some("https://github.com/coach_user".to_string()),
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             roles: vec![],
             invite_status: None,
             created_at: chrono::Utc::now().into(),
@@ -575,6 +576,7 @@ mod tests {
             invite_status: None,
             github_profile_url: Some("https://github.com/coachee_user".to_string()),
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
         };

@@ -27,6 +27,10 @@ pub struct Model {
     pub github_profile_url: Option<String>,
     #[sea_orm(default = "UTC")]
     pub timezone: String,
+    /// Per-coach default session duration in minutes. Validated `1..=480`
+    /// via `entity::duration::Duration` on every write. The migration's
+    /// `NOT NULL DEFAULT 60` provides the column default.
+    pub default_coaching_session_duration_minutes: i16,
     #[sea_orm(default = "user")]
     // This is a legacy field and will be removed in favor of roles
     #[serde(skip_deserializing)]
@@ -105,6 +109,7 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".into(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             role: Role::default(),
             roles: vec![],
             invite_status: None,

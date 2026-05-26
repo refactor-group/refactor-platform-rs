@@ -17,6 +17,9 @@ pub struct Model {
     #[serde(skip_deserializing)]
     pub collab_document_name: Option<String>,
     pub date: DateTime,
+    /// Session duration in minutes. Validated `1..=480` via
+    /// `entity::duration::Duration` on every write.
+    pub duration_minutes: i16,
     pub meeting_url: Option<String>,
     pub provider: Option<Provider>,
     #[serde(skip_deserializing)]
