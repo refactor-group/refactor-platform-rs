@@ -17,11 +17,8 @@ pub struct Model {
     #[serde(skip_deserializing)]
     pub collab_document_name: Option<String>,
     pub date: DateTime,
-    /// Session duration in minutes. Stored as PG `SMALLINT` (`i16` at the
-    /// sqlx-postgres boundary). Application-layer invariant: `1..=480`,
-    /// enforced via the `entity::duration::Duration` newtype on every
-    /// write. The newtype wraps `i16` directly — no conversion needed at
-    /// the storage boundary.
+    /// Session duration in minutes. Validated `1..=480` via
+    /// `entity::duration::Duration` on every write.
     pub duration_minutes: i16,
     pub meeting_url: Option<String>,
     pub provider: Option<Provider>,
