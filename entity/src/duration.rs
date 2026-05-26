@@ -101,7 +101,7 @@ impl fmt::Display for Duration {
 ///
 /// Lives in the entity layer alongside the type it constrains. Higher layers
 /// (entity_api, etc.) map this to their own error kinds at the boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct OutOfRange {
     pub got: i16,
     pub min: i16,
