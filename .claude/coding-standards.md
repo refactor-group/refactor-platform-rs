@@ -273,6 +273,29 @@ pub async fn get_user(
 }
 ```
 
+### HTTP Clients (reqwest TLS)
+
+**CRITICAL:** Every `reqwest::Client` built in production code must opt into rustls explicitly with `.use_rustls_tls()`. Never use `reqwest::Client::new()`, bare `reqwest::get(...)`, or `Client::builder().build()` without the TLS opt-in.
+
+```rust
+// ✅ Good — explicit rustls
+let client = reqwest::Client::builder()
+    .use_rustls_tls()
+    .timeout(Duration::from_secs(30))
+    .build()?;
+
+// ❌ Bad — picks up the default backend (native-tls/OpenSSL)
+let client = reqwest::Client::new();
+let response = reqwest::get(url).await?;
+let client = reqwest::Client::builder().timeout(...).build()?;
+```
+
+**Why:** Cargo features are unioned across the workspace. Several deps pull in reqwest with default features, which enables `default-tls` (native-tls/OpenSSL). When both backends are compiled in, `Client::new()` / `reqwest::get(...)` default to native-tls, which reads CA roots from the runtime container's system trust store. The production runtime image (`debian:bullseye-slim`) intentionally ships **without** `ca-certificates` — keeping it out minimizes attack surface and acts as a tripwire that fails loudly when this rule is violated. Rustls bundles its trust roots via `webpki-roots` and works regardless of the system store, so `.use_rustls_tls()` is the only safe choice. **Do not "fix" a TLS failure by installing `ca-certificates` in the runtime image** — fix the offending reqwest call to use rustls.
+
+**Pre-signed download URLs:** Do not reuse a client whose `default_headers` includes `Authorization` for downloads from pre-signed URLs (e.g. S3, Recall.ai transcript downloads). Build a second header-less rustls client and store it alongside the authenticated one. See `domain::gateway::recall_ai::Provider::{client, download_client}` for the pattern.
+
+**Review checklist:** grep for `reqwest::Client::new()`, `reqwest::get(`, and `Client::builder()` whenever touching gateway/HTTP code. The only acceptable bare-default uses are test helpers under `#[cfg(test)]` and binaries in `testing-tools/`.
+
 ### Database Transactions
 
 Use transactions when multiple database operations must succeed or fail together (e.g., delete + insert patterns, multi-table updates). This prevents partial updates that leave data inconsistent.
@@ -422,5 +445,6 @@ When reviewing or writing code, ensure:
 - [ ] Entity-derived types are accessed via `domain::<module>::<Type>` in web code (never `entity_api::...` or `entity::...`)
 - [ ] Async operations don't block the runtime
 - [ ] Public APIs have doc comments
+- [ ] Every `reqwest::Client` is built with `.use_rustls_tls()`; no `reqwest::Client::new()` or bare `reqwest::get(...)` in production code
 - [ ] Code passes `cargo clippy` without warnings
 - [ ] Code is formatted with `cargo fmt`

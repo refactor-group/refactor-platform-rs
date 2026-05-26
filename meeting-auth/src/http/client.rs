@@ -83,8 +83,8 @@ impl Builder {
     ///
     /// An authenticated HTTP client with middleware configured.
     pub fn build(self) -> Result<Client, reqwest::Error> {
-        // Build the base reqwest client
         let client = reqwest::Client::builder()
+            .use_rustls_tls()
             .timeout(self.config.timeout)
             .user_agent(self.config.user_agent)
             .build()?;
