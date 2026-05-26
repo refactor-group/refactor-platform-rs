@@ -5,7 +5,7 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::recurring::CreateRecurringParams;
-use crate::params::coaching_session::{IndexParams, SortField, UpdateParams};
+use crate::params::coaching_session::{CreateParams, IndexParams, SortField, UpdateParams};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
@@ -14,7 +14,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::{
     coaching_relationship as CoachingRelationshipApi, coaching_session as CoachingSessionApi,
-    coaching_sessions::Model, emails as EmailsApi, Id,
+    emails as EmailsApi, Id,
 };
 use service::config::ApiVersion;
 
@@ -107,7 +107,7 @@ pub async fn index(
     post,
     path = "/coaching_sessions",
     params(ApiVersion),
-    request_body = domain::coaching_sessions::Model,
+    request_body = CreateParams,
     responses(
         (status = 201, description = "Successfully Created a new Coaching Session", body = [domain::coaching_sessions::Model]),
         (status= 422, description = "Unprocessable Entity"),
@@ -125,14 +125,20 @@ pub async fn create(
     // TODO: create a new Extractor to authorize the user to access
     // the data requested
     State(app_state): State<AppState>,
-    Json(coaching_sessions_model): Json<Model>,
+    Json(params): Json<CreateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("POST Create a new Coaching Session from: {coaching_sessions_model:?}");
+    debug!("POST Create a new Coaching Session from: {params:?}");
+
+    // Validate wire `Option<i16>` → `Option<Duration>` so lower layers see
+    // only already-validated values. Out-of-range propagates as 422.
+    let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
+    let coaching_session_model = params.into_model();
 
     let coaching_session = CoachingSessionApi::create(
         app_state.db_conn_ref(),
         &app_state.config,
-        coaching_sessions_model,
+        coaching_session_model,
+        requested_duration,
     )
     .await?;
 
@@ -193,9 +199,17 @@ pub async fn create_recurring(
         return Err(Error::Web(WebErrorKind::Auth));
     }
 
-    let sessions =
-        CoachingSessionApi::bulk_create_recurring(db, params.coaching_relationship_id, dates)
-            .await?;
+    // Validate duration at the wire boundary (see `create` above).
+    let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
+
+    let sessions = CoachingSessionApi::bulk_create_recurring(
+        db,
+        params.coaching_relationship_id,
+        relationship.coach_id,
+        dates,
+        requested_duration,
+    )
+    .await?;
 
     EmailsApi::notify_recurring_sessions_scheduled(db, &app_state.config, &sessions).await;
 
@@ -288,6 +302,8 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
+            ),
             role: users::Role::User,
             roles: vec![],
             invite_status: None,
@@ -341,6 +357,7 @@ mod tests {
                 count: Some(3),
                 until: None,
             },
+            duration_minutes: None,
         };
 
         let result = create_recurring(

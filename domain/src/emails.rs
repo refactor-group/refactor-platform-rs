@@ -355,6 +355,8 @@ async fn send_session_email_to_recipient(
 ) -> Result<(), Error> {
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&session.id)?;
+    let session_duration =
+        crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
@@ -370,6 +372,7 @@ async fn send_session_email_to_recipient(
         .add_variable("organization_name", &organization.name)
         .add_variable("session_date", &session_date)
         .add_variable("session_time", &session_time)
+        .add_variable("session_duration", &session_duration)
         .add_variable("session_url", &session_url)
         .build()
         .await?;
@@ -556,6 +559,9 @@ async fn send_recurring_series_email_to_recipient(
         format_session_date_time(last.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&first.id)?;
     let session_count = sessions.len().to_string();
+    // All sessions in a recurring series share the same duration.
+    let session_duration =
+        crate::duration::Duration::from_minutes_unchecked(first.duration_minutes).to_string();
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
@@ -573,6 +579,7 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("first_session_date", &first_session_date)
         .add_variable("first_session_time", &first_session_time)
         .add_variable("last_session_date", &last_session_date)
+        .add_variable("session_duration", &session_duration)
         .add_variable("session_url", &session_url)
         .build()
         .await?;
@@ -757,6 +764,7 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             role: users::Role::User,
             roles: vec![],
             invite_status: None,
@@ -781,6 +789,7 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: timezone.to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             role: users::Role::User,
             roles: vec![],
             invite_status: None,
@@ -798,6 +807,7 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(15, 0, 0)
                 .unwrap(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
             created_at: chrono::Utc::now().fixed_offset(),
@@ -1082,6 +1092,7 @@ mod tests {
                         "organization_name": "Acme Corp",
                         "session_date": "Wednesday, March 4, 2026",
                         "session_time": "10:00 AM",
+                        "session_duration": "1 hour",
                         "session_url": session_url.clone(),
                     }
                 }
@@ -1109,6 +1120,7 @@ mod tests {
                         "organization_name": "Acme Corp",
                         "session_date": "Thursday, March 5, 2026",
                         "session_time": "12:00 AM",
+                        "session_duration": "1 hour",
                         "session_url": session_url.clone(),
                     }
                 }
@@ -1481,6 +1493,7 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             collab_document_name: None,
             date: date.and_hms_opt(15, 0, 0).unwrap(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
             created_at: chrono::Utc::now().fixed_offset(),
@@ -1528,6 +1541,7 @@ mod tests {
                         "first_session_date": "Wednesday, March 4, 2026",
                         "first_session_time": "3:00 PM",
                         "last_session_date": "Wednesday, March 18, 2026",
+                        "session_duration": "1 hour",
                         "session_url": first_session_url,
                     }
                 }

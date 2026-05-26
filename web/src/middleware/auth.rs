@@ -145,6 +145,8 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
+            ),
             created_at: now.into(),
             updated_at: now.into(),
             role: users::Role::User,

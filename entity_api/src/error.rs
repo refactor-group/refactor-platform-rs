@@ -6,6 +6,8 @@ use serde::Serialize;
 
 use sea_orm::error::DbErr;
 
+use entity::duration::OutOfRange;
+
 /// Errors while executing operations related to entities.
 /// The intent is to categorize errors into two major types:
 ///  * Errors related to data. Ex DbError::RecordNotFound
@@ -39,8 +41,21 @@ pub enum EntityApiErrorKind {
     CannotLinkCompletedGoal,
     // Attempt to link a goal that is already linked to the same coaching session.
     GoalAlreadyLinkedToSession,
+    // Range-bounded entity construction failed (e.g. `Duration` outside
+    // 1..=480). Maps to 422 in domain (distinct from `ValidationError`,
+    // which is for 409 state conflicts like cap violations).
+    OutOfRange(OutOfRange),
     // Other errors
     Other(String),
+}
+
+impl From<OutOfRange> for Error {
+    fn from(err: OutOfRange) -> Self {
+        Error {
+            source: None,
+            error_kind: EntityApiErrorKind::OutOfRange(err),
+        }
+    }
 }
 
 impl fmt::Display for Error {
