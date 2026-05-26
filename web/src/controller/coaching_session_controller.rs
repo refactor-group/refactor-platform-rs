@@ -241,6 +241,8 @@ pub async fn update(
     Path(coaching_session_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
+    debug!("PUT Update Coaching Session {coaching_session_id} with params: {params:?}");
+
     CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session_id, params).await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
@@ -265,6 +267,8 @@ pub async fn delete(
     State(app_state): State<AppState>,
     Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    debug!("DELETE Coaching Session {coaching_session_id}");
+
     CoachingSessionApi::delete(
         app_state.db_conn_ref(),
         &app_state.config,
