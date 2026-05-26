@@ -242,12 +242,16 @@ pub async fn update(
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
     let update_map = params.into_update_map();
-    // Validate `duration_minutes` if it appears in the patch — the
+    // Validate `duration_minutes` if it appears in the patch. The
     // IntoUpdateMap pattern erased its type, so the entity_api boundary is
     // the right place to re-check (1..=480).
     coaching_session::validate_duration_in_update_map(&update_map, "duration_minutes")?;
 
     let coaching_session = coaching_session::find_by_id(db, id).await?;
+    debug!(
+        "Domain update coaching_session id={id} relationship_id={} update_map={update_map:?}",
+        coaching_session.coaching_relationship_id
+    );
     let active_model = coaching_session.into_active_model();
     Ok(
         mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
@@ -261,6 +265,10 @@ pub async fn update(
 
 pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
     let coaching_session = find_by_id(db, id).await?;
+    debug!(
+        "Domain delete coaching_session id={id} relationship_id={} tiptap_doc={:?}",
+        coaching_session.coaching_relationship_id, coaching_session.collab_document_name,
+    );
     if let Some(document_name) = coaching_session.collab_document_name {
         let tiptap = TiptapDocument::new(config).await?;
         tiptap.delete(&document_name).await?;
