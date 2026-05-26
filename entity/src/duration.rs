@@ -112,7 +112,7 @@ impl fmt::Display for OutOfRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "duration_minutes must be between {} and {} (got {})",
+            "value must be between {} and {} (got {})",
             self.min, self.max, self.got
         )
     }
