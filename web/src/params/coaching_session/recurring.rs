@@ -15,5 +15,5 @@ pub(crate) struct CreateRecurringParams {
     pub(crate) recurrence: Recurrence,
     /// Session duration in minutes (1..=480). Omit to use the coach's stored
     /// `default_coaching_session_duration_minutes`.
-    pub(crate) duration_minutes: Option<u16>,
+    pub(crate) duration_minutes: Option<i16>,
 }

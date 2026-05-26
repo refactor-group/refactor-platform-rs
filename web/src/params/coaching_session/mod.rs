@@ -56,8 +56,11 @@ impl IntoQueryFilterMap for IndexParams {
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub(crate) struct UpdateParams {
     pub(crate) date: NaiveDateTime,
-    /// Session duration in minutes (1..=480). Validated in entity_api.
-    pub(crate) duration_minutes: Option<u16>,
+    /// Session duration in minutes (1..=480). Validated in entity_api via
+    /// the `Duration` newtype. `i16` matches both the storage type
+    /// (PG `SMALLINT` ↔ sqlx-postgres `i16`) and the newtype's inner
+    /// representation, so no conversion is needed at any layer.
+    pub(crate) duration_minutes: Option<i16>,
     pub(crate) meeting_url: Option<String>,
     pub(crate) provider: Option<Provider>,
 }
@@ -72,7 +75,7 @@ impl IntoUpdateMap for UpdateParams {
         if let Some(duration_minutes) = self.duration_minutes {
             update_map.insert(
                 "duration_minutes".to_string(),
-                Some(Value::SmallUnsigned(Some(duration_minutes))),
+                Some(Value::SmallInt(Some(duration_minutes))),
             );
         }
         if let Some(meeting_url) = self.meeting_url {
@@ -101,7 +104,7 @@ pub(crate) struct CreateParams {
     pub(crate) date: NaiveDateTime,
     /// Session duration in minutes (1..=480). Omit to use the coach's stored
     /// `default_coaching_session_duration_minutes`.
-    pub(crate) duration_minutes: Option<u16>,
+    pub(crate) duration_minutes: Option<i16>,
     pub(crate) meeting_url: Option<String>,
     pub(crate) provider: Option<Provider>,
 }

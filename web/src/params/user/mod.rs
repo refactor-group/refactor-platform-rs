@@ -18,8 +18,9 @@ pub struct UpdateParams {
     pub github_profile_url: Option<String>,
     pub timezone: Option<String>,
     /// Per-coach default coaching-session duration in minutes (1..=480).
-    /// Validated in entity_api.
-    pub default_coaching_session_duration_minutes: Option<u16>,
+    /// Validated in entity_api via the `Duration` newtype. `i16` matches
+    /// both the storage type and the newtype's inner representation.
+    pub default_coaching_session_duration_minutes: Option<i16>,
 }
 
 impl IntoUpdateMap for UpdateParams {
@@ -64,7 +65,7 @@ impl IntoUpdateMap for UpdateParams {
         if let Some(default_duration) = self.default_coaching_session_duration_minutes {
             update_map.insert(
                 "default_coaching_session_duration_minutes".to_string(),
-                Some(Value::SmallUnsigned(Some(default_duration))),
+                Some(Value::SmallInt(Some(default_duration))),
             );
         }
         update_map

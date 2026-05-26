@@ -28,12 +28,13 @@ pub struct Model {
     #[sea_orm(default = "UTC")]
     pub timezone: String,
     /// Per-coach default duration in minutes for newly scheduled coaching
-    /// sessions. Application-layer invariant: `1..=480`, enforced via the
-    /// `entity::duration::Duration` newtype on every write. The column lives
-    /// on every user row (mirrors `timezone`) but is only meaningful when the
-    /// user is acting as a coach.
+    /// sessions. Stored as PG `SMALLINT` (signed i16 at the sqlx-postgres
+    /// boundary). Application-layer invariant: `1..=480`, enforced via the
+    /// `entity::duration::Duration` newtype on every write. The column
+    /// lives on every user row (mirrors `timezone`) but is only meaningful
+    /// when the user is acting as a coach.
     #[sea_orm(default = 60)]
-    pub default_coaching_session_duration_minutes: u16,
+    pub default_coaching_session_duration_minutes: i16,
     #[sea_orm(default = "user")]
     // This is a legacy field and will be removed in favor of roles
     #[serde(skip_deserializing)]

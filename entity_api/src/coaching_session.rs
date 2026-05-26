@@ -39,32 +39,40 @@ pub async fn resolve_duration(
     ))
 }
 
-/// Validate a duration-bearing entry of an update map if present.
+/// Validate a duration-bearing entry of an update map if present, and
+/// return the parsed `Duration` alongside the validation outcome.
 ///
-/// Returns `Err(OutOfRange)` when the value is present and outside `1..=480`.
-/// Returns `Ok(())` when the value is absent OR when the wire-level `Value`
-/// variant is not `SmallUnsigned` (a programmer error in the upstream
-/// `IntoUpdateMap` impl — the SQL layer is the next safety net for that case).
+/// - `Ok(Some(dur))` — key is present and in range.
+/// - `Ok(None)` — key is absent (nothing to validate) OR the wire-level
+///   `Value` variant is not `SmallInt` (the latter is a programmer error
+///   in the upstream `IntoUpdateMap` impl; the SQL layer is the next
+///   safety net).
+/// - `Err(OutOfRange)` — key present but outside `1..=480`.
 ///
 /// Returning the entity-level `OutOfRange` rather than wrapping in
 /// `EntityApiError` lets domain callers propagate via `?` through the
 /// `From<OutOfRange> for domain::Error` impl, which routes to
 /// `DomainErrorKind::Validation` → **422 `validation_error`**. Reusing
 /// `EntityApiErrorKind::ValidationError` here would have routed to 409
-/// `conflict` (which is appropriate for goal-limit cap violations but
-/// semantically wrong for a value-range violation).
+/// `conflict` (appropriate for goal-limit cap violations but semantically
+/// wrong for a value-range violation).
 ///
 /// `key` is the update-map key holding the duration. Reused for both
 /// `coaching_sessions.duration_minutes` and
 /// `users.default_coaching_session_duration_minutes`.
+///
+/// Existing callers that only care about pass/fail can discard the value
+/// with `?;`. Future callers that want the parsed `Duration` (e.g. for
+/// logging or event publishing) can use the returned `Option<Duration>`
+/// without re-parsing.
 pub fn validate_duration_in_update_map(
     update_map: &UpdateMap,
     key: &str,
-) -> Result<(), OutOfRange> {
-    let Some(Value::SmallUnsigned(Some(n))) = update_map.get_value(key) else {
-        return Ok(());
+) -> Result<Option<Duration>, OutOfRange> {
+    let Some(Value::SmallInt(Some(n))) = update_map.get_value(key) else {
+        return Ok(None);
     };
-    Duration::try_from(*n).map(|_| ())
+    Duration::try_from(*n).map(Some)
 }
 
 /// Insert a new coaching session.
@@ -126,14 +134,14 @@ pub async fn bulk_create_recurring(
     }
 
     let duration = resolve_duration(db, coach_id, requested_duration).await?;
-    let duration_minutes = duration.minutes();
+    let duration_minutes_i16 = duration.minutes();
     let now = chrono::Utc::now();
     let active_models: Vec<ActiveModel> = dates
         .into_iter()
         .map(|date| ActiveModel {
             coaching_relationship_id: Set(coaching_relationship_id),
             date: Set(date),
-            duration_minutes: Set(duration_minutes),
+            duration_minutes: Set(duration_minutes_i16),
             collab_document_name: Set(None),
             meeting_url: Set(None),
             provider: Set(None),

@@ -1,27 +1,32 @@
-//! Validated coaching-session duration as a newtype around `u16`.
+//! Validated coaching-session duration as a newtype around `i16`.
 //!
-//! The `Duration` newtype wraps a primitive minute count and carries four
-//! concerns: the unsigned domain, the validation rule (`1..=480`), the storage
-//! type bound (matches the PG `SMALLINT` column on `coaching_sessions`), and
-//! the human-readable formatting via `Display`.
+//! The `Duration` newtype wraps a primitive minute count and carries three
+//! concerns: the validation rule (`1..=480`), the storage type bound (matches
+//! the PG `SMALLINT` column on `coaching_sessions`, which sqlx-postgres
+//! decodes as `i16`), and the human-readable formatting via `Display`.
 //!
 //! `Duration` follows the same pattern as `entity::provider::Provider`: a
 //! non-table value type that constrains the set of values for a DB column.
+//!
+//! The inner type is `i16` rather than `u16` because PostgreSQL's `SMALLINT`
+//! is signed and sqlx-postgres has no `u16` codec. Using `i16` throughout
+//! eliminates any `u16 ↔ i16` conversions at storage boundaries. The
+//! validation range `1..=480` enforces non-negative values at runtime.
 
 use std::fmt;
 
-pub const MIN_DURATION_MINUTES: u16 = 1;
-pub const MAX_DURATION_MINUTES: u16 = 480;
-const DEFAULT_DURATION_MINUTES: u16 = 60;
+pub const MIN_DURATION_MINUTES: i16 = 1;
+pub const MAX_DURATION_MINUTES: i16 = 480;
+const DEFAULT_DURATION_MINUTES: i16 = 60;
 
 /// A validated coaching-session duration in minutes, guaranteed to be within
 /// `MIN_DURATION_MINUTES..=MAX_DURATION_MINUTES`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Duration(u16);
+pub struct Duration(i16);
 
 impl Duration {
     /// Construct a `Duration`, validating the range.
-    pub fn new(minutes: u16) -> Result<Self, OutOfRange> {
+    pub fn new(minutes: i16) -> Result<Self, OutOfRange> {
         if (MIN_DURATION_MINUTES..=MAX_DURATION_MINUTES).contains(&minutes) {
             Ok(Self(minutes))
         } else {
@@ -39,21 +44,29 @@ impl Duration {
     /// by an external invariant — most importantly DB rows where the column is
     /// `NOT NULL` and the only writes go through `Duration::new`. Do not use on
     /// untrusted input.
-    pub const fn from_minutes_unchecked(minutes: u16) -> Self {
+    pub const fn from_minutes_unchecked(minutes: i16) -> Self {
         Self(minutes)
     }
 
     /// The wrapped minute count.
-    pub const fn minutes(self) -> u16 {
+    pub const fn minutes(self) -> i16 {
         self.0
     }
 
-    /// The application's default duration in minutes, as the raw storage type.
+    /// The application's default duration in minutes.
     ///
     /// Use this when constructing entity Model literals or seeding column
     /// defaults. For a `Duration` instance, use `Duration::default()`.
-    pub const fn default_minutes() -> u16 {
+    pub const fn default_minutes() -> i16 {
         DEFAULT_DURATION_MINUTES
+    }
+}
+
+impl TryFrom<i16> for Duration {
+    type Error = OutOfRange;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -61,14 +74,6 @@ impl Default for Duration {
     /// Returns the application's default `Duration` (60 minutes).
     fn default() -> Self {
         Self(DEFAULT_DURATION_MINUTES)
-    }
-}
-
-impl TryFrom<u16> for Duration {
-    type Error = OutOfRange;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        Self::new(value)
     }
 }
 
@@ -98,9 +103,9 @@ impl fmt::Display for Duration {
 /// (entity_api, etc.) map this to their own error kinds at the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutOfRange {
-    pub got: u16,
-    pub min: u16,
-    pub max: u16,
+    pub got: i16,
+    pub min: i16,
+    pub max: i16,
 }
 
 impl fmt::Display for OutOfRange {
@@ -143,20 +148,26 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_negative() {
+        assert!(Duration::new(-1).is_err());
+    }
+
+    #[test]
     fn new_rejects_above_max() {
         assert!(Duration::new(481).is_err());
     }
 
     #[test]
-    fn new_rejects_u16_max() {
-        assert!(Duration::new(u16::MAX).is_err());
+    fn new_rejects_i16_max() {
+        assert!(Duration::new(i16::MAX).is_err());
     }
 
     #[test]
     fn try_from_mirrors_new() {
-        assert!(Duration::try_from(60_u16).is_ok());
-        assert!(Duration::try_from(0_u16).is_err());
-        assert!(Duration::try_from(481_u16).is_err());
+        assert!(Duration::try_from(60_i16).is_ok());
+        assert!(Duration::try_from(0_i16).is_err());
+        assert!(Duration::try_from(481_i16).is_err());
+        assert!(Duration::try_from(-1_i16).is_err());
     }
 
     #[test]
@@ -221,5 +232,15 @@ mod tests {
     fn from_minutes_unchecked_preserves_value() {
         let d = Duration::from_minutes_unchecked(45);
         assert_eq!(d.minutes(), 45);
+    }
+
+    #[test]
+    fn default_returns_60() {
+        assert_eq!(Duration::default().minutes(), 60);
+    }
+
+    #[test]
+    fn default_minutes_returns_60() {
+        assert_eq!(Duration::default_minutes(), 60);
     }
 }
