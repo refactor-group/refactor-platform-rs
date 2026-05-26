@@ -265,23 +265,14 @@ pub async fn update(
 
 pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
     let coaching_session = find_by_id(db, id).await?;
-    let relationship_id = coaching_session.coaching_relationship_id;
-    let document_name = coaching_session.collab_document_name.ok_or_else(|| {
-        warn!("Failed to get document name from coaching session");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Failed to get document name from coaching session".to_string(),
-            )),
-        }
-    })?;
-
     debug!(
-        "Domain delete coaching_session id={id} relationship_id={relationship_id} tiptap_doc={document_name}"
+        "Domain delete coaching_session id={id} relationship_id={} tiptap_doc={:?}",
+        coaching_session.coaching_relationship_id, coaching_session.collab_document_name,
     );
-
-    let tiptap = TiptapDocument::new(config).await?;
-    tiptap.delete(&document_name).await?;
+    if let Some(document_name) = coaching_session.collab_document_name {
+        let tiptap = TiptapDocument::new(config).await?;
+        tiptap.delete(&document_name).await?;
+    }
 
     coaching_session::delete(db, id).await?;
     Ok(())
@@ -786,6 +777,38 @@ mod tests {
         assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
         assert!(inserted.iter().all(|s| s.meeting_url.is_none()));
         assert!(inserted.iter().all(|s| s.hydrated_at.is_none()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_unhydrated_session_skips_tiptap_and_succeeds() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+
+        let tiptap_mock = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            ..test_session(Id::new_v4(), None)
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        tiptap_mock.assert_async().await;
         Ok(())
     }
 }
