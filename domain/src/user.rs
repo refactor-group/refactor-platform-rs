@@ -7,7 +7,7 @@ use crate::{
 };
 use chrono::Utc;
 use entity_api::{
-    coaching_relationship, mutate, query,
+    coaching_relationship, coaching_session, mutate, query,
     query::{IntoQueryFilterMap, QuerySort},
     user, user_role,
 };
@@ -66,15 +66,19 @@ pub async fn update(
     user_id: Id,
     params: impl mutate::IntoUpdateMap,
 ) -> Result<users::Model, Error> {
+    let update_map = params.into_update_map();
+    // Validate `default_coaching_session_duration_minutes` if present.
+    // The IntoUpdateMap pattern erases types, so we re-check the range
+    // (1..=480) at the entity_api boundary.
+    coaching_session::validate_duration_in_update_map(
+        &update_map,
+        "default_coaching_session_duration_minutes",
+    )?;
+
     let existing_user = find_by_id(db, user_id).await?;
 
     let active_model = existing_user.into_active_model();
-    Ok(mutate::update::<users::ActiveModel, users::Column>(
-        db,
-        active_model,
-        params.into_update_map(),
-    )
-    .await?)
+    Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, update_map).await?)
 }
 
 pub async fn update_password(

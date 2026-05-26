@@ -29,6 +29,8 @@ mod m20260407_000003_add_transcript_segments;
 mod m20260511_000000_add_hydrated_at_to_coaching_sessions;
 mod m20260513_000000_add_purpose_to_magic_link_tokens;
 mod m20260514_000000_add_password_reset_attempts;
+mod m20260515_000000_add_duration_minutes_to_coaching_sessions;
+mod m20260515_000001_add_default_coaching_session_duration_minutes_to_users;
 
 pub struct Migrator;
 
@@ -65,6 +67,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20260511_000000_add_hydrated_at_to_coaching_sessions::Migration),
             Box::new(m20260513_000000_add_purpose_to_magic_link_tokens::Migration),
             Box::new(m20260514_000000_add_password_reset_attempts::Migration),
+            Box::new(m20260515_000000_add_duration_minutes_to_coaching_sessions::Migration),
+            Box::new(
+                m20260515_000001_add_default_coaching_session_duration_minutes_to_users::Migration,
+            ),
         ]
     }
 }

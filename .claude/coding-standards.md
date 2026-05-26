@@ -146,12 +146,52 @@ Errors must flow through the layer chain `entity_api` -> `domain` -> `web` witho
 
 1. **Never import `entity_api` types in the `web` layer.** The web layer should only depend on `domain` types. If you find yourself importing `entity_api::error::EntityApiErrorKind` in web code, you are violating the layer boundary.
 
-2. **Adding a new error variant** requires changes at each layer and should be rare — see [Error Variant Reuse](#error-variant-reuse) above. First check whether an existing variant (e.g., `ValidationError`) can carry your context. If a genuinely new category is needed:
+2. **Entity error types reach `domain::Error` exclusively through `From<EntityApiError>`.** Standalone `impl From<entity::*> for domain::Error` blocks are forbidden — even ones whose body internally calls `EntityApiError::from(...)`. The *signature* is the violation: it lets entity types skip the entity_api layer at call sites, and it forks the conversion logic across multiple impls instead of keeping it in the single `From<EntityApiError>` switch in `domain/src/error.rs`.
+
+   ```rust
+   // ❌ Bad — entity type reaches domain::Error directly. Forbidden even if the
+   //         body routes through EntityApiError, because the signature itself
+   //         exposes a cross-layer path that bypasses entity_api.
+   impl From<entity::duration::OutOfRange> for domain::Error {
+       fn from(err: entity::duration::OutOfRange) -> Self {
+           Self::from(EntityApiError::from(err))
+       }
+   }
+
+   // ✅ Good — add the variant on EntityApiErrorKind and handle it in the
+   //          existing From<EntityApiError> for domain::Error switch.
+   pub enum EntityApiErrorKind {
+       // ...
+       OutOfRange(entity::duration::OutOfRange),
+   }
+
+   impl From<entity::duration::OutOfRange> for entity_api::Error {
+       fn from(err: entity::duration::OutOfRange) -> Self {
+           Self { source: None, error_kind: EntityApiErrorKind::OutOfRange(err) }
+       }
+   }
+
+   impl From<EntityApiError> for domain::Error {
+       fn from(err: EntityApiError) -> Self {
+           if let EntityApiErrorKind::OutOfRange(ref out) = err.error_kind {
+               return domain::Error {
+                   source: Some(Box::new(err)),
+                   error_kind: DomainErrorKind::Validation(out.to_string()),
+               };
+           }
+           // ... rest of the switch
+       }
+   }
+   ```
+
+   **Web layer corollary:** because web has no Cargo dep on `entity_api`, web call sites cannot write `.map_err(EntityApiError::from)?` to bridge a bare entity error. When wire-level validation needs to surface an entity-level error (e.g. validating an `Option<i16>` into a `Duration` at a controller), add a thin helper in `domain` that returns `Result<_, domain::Error>` and call it from web. The helper owns the `entity_api::Error::from(...).into()` conversion internally. See `domain::coaching_session::parse_duration_minutes` for the canonical example.
+
+3. **Adding a new error variant** requires changes at each layer and should be rare — see [Error Variant Reuse](#error-variant-reuse) above. First check whether an existing variant (e.g., `ValidationError`) can carry your context. If a genuinely new category is needed:
    - Add the variant to `EntityApiErrorKind` in `entity_api/src/error.rs`
    - Map it to an `EntityErrorKind` variant in the `From<EntityApiError>` impl in `domain/src/error.rs`
    - Handle the `EntityErrorKind` variant in `web/src/error.rs` to return the appropriate HTTP status code
 
-3. **Domain re-exports vs. custom wrappers.** When a domain function **only** delegates to entity_api with no added business logic — use a `pub use` re-export instead of a thin wrapper. The blanket `From` impl on `web::Error` (`impl<E> From<E> for Error where E: Into<DomainError>`) ensures entity_api errors convert correctly through the full chain.
+4. **Domain re-exports vs. custom wrappers.** When a domain function **only** delegates to entity_api with no added business logic — use a `pub use` re-export instead of a thin wrapper. The blanket `From` impl on `web::Error` (`impl<E> From<E> for Error where E: Into<DomainError>`) ensures entity_api errors convert correctly through the full chain.
 
 Reserve custom domain functions for when they add value: business rules, event publishing, multi-step orchestration, or authorization logic.
 
@@ -180,7 +220,7 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
 }
 ```
 
-4. **Use `domain_error_into_response()` in protect middleware** (defined in `web/src/error.rs`) to convert domain errors into HTTP responses. This routes through `web::Error`'s `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
+5. **Use `domain_error_into_response()` in protect middleware** (defined in `web/src/error.rs`) to convert domain errors into HTTP responses. This routes through `web::Error`'s `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
 
 ### Function Argument Limits
 
@@ -255,6 +295,53 @@ txn.commit().await?;  // Rolls back automatically if we never reach here
 - **domain/**: Business logic, domain models, validation rules
 - **service/**: Orchestration layer, complex operations spanning multiple entities
 - **web/**: HTTP handlers, request/response types, routing
+
+### Type Re-Export Boundary
+
+Entity types — whether table Models (e.g., `coaching_sessions::Model`) or non-table value types that constrain column values (e.g., `Provider`, `Id`, `Duration`) — are declared once in the `entity` crate and re-exported up through each layer at the `lib.rs` level. The web layer accesses them via `domain::<module>::<Type>` and **must never reach across into `entity_api` or `entity` directly**.
+
+**The re-export chain:**
+
+```rust
+// entity/src/lib.rs — declare the module
+pub mod provider;
+pub mod duration;
+// ...
+pub type Id = Uuid;
+
+// entity_api/src/lib.rs — re-export entity modules in the existing block
+pub use entity::{
+    actions, agreements, coaching_sessions, /* ... */
+    provider, duration, users::Role, Id,
+};
+
+// domain/src/lib.rs — re-export entity_api re-exports in the existing block
+pub use entity_api::{
+    actions, agreements, coaching_sessions, /* ... */
+    provider, duration, users::Role, Id,
+};
+```
+
+**Access paths by layer:**
+
+| Layer | Import for a type like `Duration` |
+|---|---|
+| Inside `entity_api/*.rs` | `use crate::duration::Duration;` |
+| Inside `domain/*.rs` | `use crate::duration::Duration;` |
+| Inside `web/*.rs` | `use domain::duration::Duration;` |
+
+**Why this pattern:** As documented in `domain/src/lib.rs`, "consumers of the `domain` crate do not need to directly depend on the `entity_api` crate." The same isolation applies one layer down: entity_api hides direct dependence on entity. This means a layer can be refactored internally without breaking layers above it, and the type-import surface area at the web layer stays uniform regardless of where types originate.
+
+**Common mistake:** Adding a `pub use entity::<module>::<Type>;` re-export inside a domain module file (e.g., `domain/src/coaching_session.rs`). This reaches across the entity_api boundary and bypasses the documented isolation. Re-exports of entity types belong at `lib.rs` only — never inside individual modules.
+
+**When adding a new entity type:**
+
+1. Declare the module in `entity/src/lib.rs`: `pub mod <name>;`.
+2. Add it to the existing `pub use entity::{...};` block in `entity_api/src/lib.rs`.
+3. Add it to the existing `pub use entity_api::{...};` block in `domain/src/lib.rs`.
+4. Internal code in each crate imports via `crate::<name>::<Type>`. Web code imports via `domain::<name>::<Type>`.
+
+The error-type chain (`entity_api::error` → `domain::error` → `web::Error`) is a parallel pattern with its own conversion rules — see "Cross-Layer Error Propagation" above. Both patterns share the same architectural principle: each layer hides the layers below it from the layers above.
 
 ### Thin Controllers
 
@@ -331,6 +418,8 @@ When reviewing or writing code, ensure:
 - [ ] Error handling uses `Result` and `?` operator appropriately
 - [ ] No `.unwrap()` or `.expect()` in production code paths
 - [ ] Errors propagate through layers (`entity_api` -> `domain` -> `web`) without skipping
+- [ ] No standalone `impl From<entity::*> for domain::Error` blocks; entity errors reach domain only via `From<EntityApiError>`
+- [ ] Entity-derived types are accessed via `domain::<module>::<Type>` in web code (never `entity_api::...` or `entity::...`)
 - [ ] Async operations don't block the runtime
 - [ ] Public APIs have doc comments
 - [ ] Code passes `cargo clippy` without warnings

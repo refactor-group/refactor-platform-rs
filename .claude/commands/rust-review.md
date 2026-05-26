@@ -19,6 +19,7 @@ Perform a Rust-focused review of this code for idiomatic patterns and language b
 - `?` operator usage and propagation
 - Custom error context with `.context()` or `.map_err()`
 - Avoiding `.unwrap()` and `.expect()` in library code
+- **Cross-layer error routing:** entity-layer error types (anything from `entity::*`, e.g. `entity::duration::OutOfRange`) must reach `domain::Error` *exclusively* through the `From<EntityApiError>` impl in `domain/src/error.rs`. Standalone `impl From<entity::*> for domain::Error` blocks are forbidden — even ones whose body internally calls `EntityApiError::from(...)`. The signature itself is the violation: it lets entity types skip the entity_api layer. To add a new entity-error mapping: add a variant to `EntityApiErrorKind`, add `From<entity::*> for entity_api::Error`, then handle it in the existing `From<EntityApiError> for domain::Error`. Mirror rule lives in `.claude/coding-standards.md` under "Cross-Layer Error Propagation".
 
 **TYPE SYSTEM**
 - Newtype patterns for type safety

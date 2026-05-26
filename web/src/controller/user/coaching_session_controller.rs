@@ -20,7 +20,12 @@ use serde::Serialize;
 use service::config::ApiVersion;
 use utoipa::ToSchema;
 
-/// GET all coaching sessions for a specific user with optional related data
+/// GET all coaching sessions for a specific user with optional related data.
+///
+/// When `tz` is supplied, `from_date` and `to_date` are evaluated as
+/// calendar-day boundaries in that IANA zone. Omitting `tz` preserves the
+/// legacy UTC-naive interpretation. Invalid `tz` values surface a structured
+/// `invalid_timezone` 400 (see `WebErrorKind::InvalidTimezone`).
 #[utoipa::path(
     get,
     path = "/users/{user_id}/coaching_sessions",
@@ -28,15 +33,16 @@ use utoipa::ToSchema;
         ApiVersion,
         ("user_id" = Id, Path, description = "User ID to retrieve coaching sessions for"),
         ("coaching_relationship_id" = Option<Id>, Query, description = "Filter sessions to only those in this coaching relationship"),
-        ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive, UTC)"),
-        ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive, UTC)"),
+        ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive). Evaluated in `tz` if supplied; otherwise UTC."),
+        ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive at calendar-day precision). Evaluated in `tz` if supplied; otherwise UTC."),
+        ("tz" = Option<String>, Query, description = "Optional IANA timezone identifier (e.g. 'America/Los_Angeles'). Interprets `from_date`/`to_date` as local-day boundaries in that zone. Invalid value → 400 invalid_timezone."),
         ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements'. Example: 'relationship,organization,goal'"),
         ("sort_by" = Option<crate::params::coaching_session::SortField>, Query, description = "Sort by field. Valid values: 'date', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "date"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
         (status = 200, description = "Successfully retrieved coaching sessions for user", body = [domain::coaching_session::EnrichedSession]),
-        (status = 400, description = "Bad Request - Invalid include parameter"),
+        (status = 400, description = "Bad Request (e.g. invalid include parameter, invalid timezone, malformed query)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "User not found"),
@@ -60,6 +66,20 @@ pub async fn index(
     // Set user_id from path parameter and apply defaults
     let params = params.with_user_id(user_id).apply_defaults();
 
+    // Validate the optional IANA timezone identifier before touching the DB.
+    // Mirrors the counts handler: on failure surface a structured 400 with
+    // `error: "invalid_timezone"`. Normalize to the canonical IANA name via
+    // `tz.name()` so deprecated aliases are accepted but a single canonical
+    // string is propagated downstream.
+    let tz_name = match params.tz.as_deref() {
+        Some(raw) => {
+            let tz = Tz::from_str(raw)
+                .map_err(|_| Error::Web(WebErrorKind::InvalidTimezone(raw.to_string())))?;
+            Some(tz.name().to_string())
+        }
+        None => None,
+    };
+
     // Build include options from parameters
     let includes = CoachingSessionApi::IncludeOptions {
         relationship: params.include.contains(&IncludeParam::Relationship),
@@ -78,6 +98,7 @@ pub async fn index(
             coaching_relationship_id: params.coaching_relationship_id,
             from_date: params.from_date,
             to_date: params.to_date,
+            tz: tz_name,
             sort_column,
             sort_order,
             includes,

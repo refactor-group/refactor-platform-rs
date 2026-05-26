@@ -27,6 +27,11 @@ on:
         description: "Branch name associated with the PR"
         required: false
         type: string
+      is_merged:
+        description: "Whether the PR was merged (vs. closed without merging). Drives the merged-only cleanup jobs."
+        required: false
+        type: string
+        default: "false"
 
   # Manual trigger for cleanup of specific PR numbers
   workflow_dispatch:
@@ -35,6 +40,11 @@ on:
         description: "PR number to clean up"
         required: true
         type: string
+      is_merged:
+        description: "Whether the PR was merged (vs. closed without merging). Drives the merged-only cleanup jobs."
+        required: false
+        type: string
+        default: "false"
 
 # Permissions needed for cleanup and building main-arm64 image
 permissions:
@@ -67,13 +77,16 @@ jobs:
       - name: Set Cleanup Context
         id: context
         run: |
-          # Extract PR metadata
+          # Extract PR metadata. When triggered directly by pull_request, the
+          # event payload carries `merged`. Otherwise (workflow_call /
+          # workflow_dispatch) the caller must pass `is_merged` explicitly;
+          # missing input defaults to "false" for safety.
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             PR_NUM="${{ github.event.pull_request.number }}"
             IS_MERGED="${{ github.event.pull_request.merged }}"
           else
             PR_NUM="${{ inputs.pr_number }}"
-            IS_MERGED="false"
+            IS_MERGED="${{ inputs.is_merged }}"
           fi
 
           # Calculate ports for logging/verification (same formula as deployment)
@@ -309,9 +322,9 @@ jobs:
           echo "✅ Cleanup complete for PR #${PR_NUMBER}!"
           CLEANUP_SCRIPT
 
-      # Post cleanup status to PR as comment for developer visibility
+      # Post cleanup status to PR as comment for developer visibility.
+      # Runs regardless of trigger; pr_number is available on every path.
       - name: Update PR Comment with Cleanup Status
-        if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -546,8 +559,7 @@ jobs:
     needs: [cleanup-preview, build-main-arm64, delete-pr-image]
     if: |
       always() &&
-      needs.cleanup-preview.outputs.is_merged == 'true' &&
-      github.event_name == 'pull_request'
+      needs.cleanup-preview.outputs.is_merged == 'true'
 
     steps:
       # Update the PR comment with all cleanup and build details

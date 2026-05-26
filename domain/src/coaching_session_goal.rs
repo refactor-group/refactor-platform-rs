@@ -273,6 +273,7 @@ mod integration_tests {
             coaching_relationship_id: relationship_id,
             collab_document_name: None,
             date: now.naive_utc(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
             created_at: now.into(),
