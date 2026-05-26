@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use domain::{coaching_relationship, coaching_session, Id};
 
-use log::{debug, error};
+use log::{debug, error, warn};
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueryParams {
     coaching_relationship_id: Id,
