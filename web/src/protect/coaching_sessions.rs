@@ -86,7 +86,7 @@ pub(crate) async fn update(
         );
         next.run(request).await
     } else {
-        debug!(
+        warn!(
             "PUT auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
@@ -135,7 +135,7 @@ pub(crate) async fn delete(
         );
         next.run(request).await
     } else {
-        debug!(
+        warn!(
             "DELETE auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
