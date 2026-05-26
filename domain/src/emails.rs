@@ -578,7 +578,7 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("first_session_date", first_session_date.as_str())
         .add_variable("first_session_time", first_session_time.as_str())
         .add_variable("last_session_date", last_session_date.as_str())
-        .add_variable("session_duration", &session_duration.as_str())
+        .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
         .build()
         .await?;
