@@ -27,7 +27,7 @@ pub(crate) struct ValidateParams {
         ("token" = String, Query, description = "Magic login token from the welcome email"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a User", body = User),
+        (status = 200, description = "Successfully retrieved a User", body = domain::users::Model),
         (status = 400, description = "Invalid login token"),
         (status = 401, description = "Expired token"),
     )
@@ -58,7 +58,7 @@ pub(crate) async fn validate(
     path = "/magic-link/complete-setup",
     request_body = CompleteSetupParams,
     responses(
-        (status = 200, description = "User profile successfully updated", body = User),
+        (status = 200, description = "User profile successfully updated", body = domain::users::Model),
         (status = 422, description = "Password confirmation does not match"),
         (status = 503, description = "Service temporarily unavailable")
     )
@@ -118,6 +118,8 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
+            ),
             role: users::Role::User,
             roles: vec![],
             invite_status: None,

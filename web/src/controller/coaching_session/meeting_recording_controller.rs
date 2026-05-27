@@ -13,8 +13,9 @@ use domain::meeting_recording::MeetingRecordingStatus;
 use log::*;
 use serde::Deserialize;
 use service::config::ApiVersion;
+use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct StartRecordingParams {
     pub meeting_url: String,
 }
@@ -190,6 +191,8 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
+            ),
             role: users::Role::User,
             roles: vec![],
             invite_status: None,
@@ -294,6 +297,7 @@ mod tests {
             coaching_relationship_id: relationship_id,
             collab_document_name: None,
             date: now.naive_utc(),
+            duration_minutes: domain::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
             hydrated_at: None,
@@ -351,6 +355,7 @@ mod tests {
             coaching_relationship_id: relationship_id,
             collab_document_name: None,
             date: now.naive_utc(),
+            duration_minutes: domain::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
             hydrated_at: None,

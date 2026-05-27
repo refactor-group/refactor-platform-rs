@@ -17,6 +17,7 @@ use sea_orm::{
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
+use utoipa::ToSchema;
 
 pub async fn create(
     db: &impl ConnectionTrait,
@@ -407,8 +408,9 @@ pub async fn find_by_user_id_with_user_names(
 }
 
 // A convenient combined struct that holds the results of looking up the Users associated
-// with the coach/coachee ids. This should be used as an implementation detail only.
-#[derive(FromQueryResult, Debug, PartialEq, Clone)]
+// with the coach/coachee ids.
+#[derive(FromQueryResult, Debug, PartialEq, Clone, ToSchema)]
+#[schema(as = domain::coaching_relationship::CoachingRelationshipWithUserNames)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
@@ -554,6 +556,7 @@ mod tests {
             role: entity::users::Role::User,
             github_profile_url: Some("https://github.com/coach_user".to_string()),
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             roles: vec![],
             invite_status: None,
             created_at: chrono::Utc::now().into(),
@@ -573,6 +576,7 @@ mod tests {
             invite_status: None,
             github_profile_url: Some("https://github.com/coachee_user".to_string()),
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
         };

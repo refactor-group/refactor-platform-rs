@@ -201,11 +201,11 @@ async fn send_welcome_email(
             format!("{} {}", user.first_name, user.last_name),
         )
         .template_id(&email_config.template_id)
-        .add_variable("first_name", &user.first_name)
-        .add_variable("last_name", &user.last_name)
-        .add_variable("coach_first_name", &inviter.first_name)
-        .add_variable("coach_full_name", &coach_full_name)
-        .add_variable("magic_link_url", &magic_link_url)
+        .add_variable("first_name", user.first_name.as_str())
+        .add_variable("last_name", user.last_name.as_str())
+        .add_variable("coach_first_name", inviter.first_name.as_str())
+        .add_variable("coach_full_name", coach_full_name.as_str())
+        .add_variable("magic_link_url", magic_link_url.as_str())
         .build()
         .await?;
     debug!("Email request created for {}", user.email);
@@ -240,9 +240,9 @@ pub(crate) async fn send_password_reset_email(
             format!("{} {}", user.first_name, user.last_name),
         )
         .template_id(&email_config.template_id)
-        .add_variable("first_name", &user.first_name)
-        .add_variable("last_name", &user.last_name)
-        .add_variable("password_reset_url", &password_reset_url)
+        .add_variable("first_name", user.first_name.as_str())
+        .add_variable("last_name", user.last_name.as_str())
+        .add_variable("password_reset_url", password_reset_url.as_str())
         .build()
         .await?;
 
@@ -355,6 +355,8 @@ async fn send_session_email_to_recipient(
 ) -> Result<(), Error> {
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&session.id)?;
+    let session_duration =
+        crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
@@ -363,14 +365,15 @@ async fn send_session_email_to_recipient(
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
         .template_id(&email_config.template_id)
-        .add_variable("first_name", &recipient.first_name)
-        .add_variable("other_user_first_name", &other_user.first_name)
-        .add_variable("other_user_last_name", &other_user.last_name)
+        .add_variable("first_name", recipient.first_name.as_str())
+        .add_variable("other_user_first_name", other_user.first_name.as_str())
+        .add_variable("other_user_last_name", other_user.last_name.as_str())
         .add_variable("other_user_role", other_user_role)
-        .add_variable("organization_name", &organization.name)
-        .add_variable("session_date", &session_date)
-        .add_variable("session_time", &session_time)
-        .add_variable("session_url", &session_url)
+        .add_variable("organization_name", organization.name.as_str())
+        .add_variable("session_date", session_date.as_str())
+        .add_variable("session_time", session_time.as_str())
+        .add_variable("session_duration", session_duration.as_str())
+        .add_variable("session_url", session_url.as_str())
         .build()
         .await?;
 
@@ -471,14 +474,14 @@ async fn send_action_assigned_email(
                 format!("{} {}", assignee.first_name, assignee.last_name),
             )
             .template_id(&email_config.template_id)
-            .add_variable("first_name", &assignee.first_name)
+            .add_variable("first_name", assignee.first_name.as_str())
             .add_variable("action_body", ctx.action_body)
-            .add_variable("due_date", &due_date_str)
-            .add_variable("assigner_first_name", &assigner.first_name)
-            .add_variable("assigner_last_name", &assigner.last_name)
-            .add_variable("organization_name", &ctx.organization.name)
+            .add_variable("due_date", due_date_str.as_str())
+            .add_variable("assigner_first_name", assigner.first_name.as_str())
+            .add_variable("assigner_last_name", assigner.last_name.as_str())
+            .add_variable("organization_name", ctx.organization.name.as_str())
             .add_optional_variable("goal", ctx.goal)
-            .add_variable("session_url", &session_url)
+            .add_variable("session_url", session_url.as_str())
             .build()
             .await;
 
@@ -555,7 +558,9 @@ async fn send_recurring_series_email_to_recipient(
     let (last_session_date, _last_session_time) =
         format_session_date_time(last.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&first.id)?;
-    let session_count = sessions.len().to_string();
+    // All sessions in a recurring series share the same duration.
+    let session_duration =
+        crate::duration::Duration::from_minutes_unchecked(first.duration_minutes).to_string();
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
@@ -564,16 +569,17 @@ async fn send_recurring_series_email_to_recipient(
             format!("{} {}", recipient.first_name, recipient.last_name),
         )
         .template_id(&email_config.template_id)
-        .add_variable("first_name", &recipient.first_name)
-        .add_variable("other_user_first_name", &other_user.first_name)
-        .add_variable("other_user_last_name", &other_user.last_name)
+        .add_variable("first_name", recipient.first_name.as_str())
+        .add_variable("other_user_first_name", other_user.first_name.as_str())
+        .add_variable("other_user_last_name", other_user.last_name.as_str())
         .add_variable("other_user_role", other_user_role)
-        .add_variable("organization_name", &organization.name)
-        .add_variable("session_count", &session_count)
-        .add_variable("first_session_date", &first_session_date)
-        .add_variable("first_session_time", &first_session_time)
-        .add_variable("last_session_date", &last_session_date)
-        .add_variable("session_url", &session_url)
+        .add_variable("organization_name", organization.name.as_str())
+        .add_variable("session_count", sessions.len() as u64)
+        .add_variable("first_session_date", first_session_date.as_str())
+        .add_variable("first_session_time", first_session_time.as_str())
+        .add_variable("last_session_date", last_session_date.as_str())
+        .add_variable("session_duration", session_duration.as_str())
+        .add_variable("session_url", session_url.as_str())
         .build()
         .await?;
 
@@ -757,6 +763,7 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             role: users::Role::User,
             roles: vec![],
             invite_status: None,
@@ -781,6 +788,7 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: timezone.to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             role: users::Role::User,
             roles: vec![],
             invite_status: None,
@@ -798,6 +806,7 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(15, 0, 0)
                 .unwrap(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
             created_at: chrono::Utc::now().fixed_offset(),
@@ -1082,6 +1091,7 @@ mod tests {
                         "organization_name": "Acme Corp",
                         "session_date": "Wednesday, March 4, 2026",
                         "session_time": "10:00 AM",
+                        "session_duration": "1 hour",
                         "session_url": session_url.clone(),
                     }
                 }
@@ -1109,6 +1119,7 @@ mod tests {
                         "organization_name": "Acme Corp",
                         "session_date": "Thursday, March 5, 2026",
                         "session_time": "12:00 AM",
+                        "session_duration": "1 hour",
                         "session_url": session_url.clone(),
                     }
                 }
@@ -1481,6 +1492,7 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             collab_document_name: None,
             date: date.and_hms_opt(15, 0, 0).unwrap(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
             created_at: chrono::Utc::now().fixed_offset(),
@@ -1524,10 +1536,11 @@ mod tests {
                         "other_user_last_name": "Smith",
                         "other_user_role": "coach",
                         "organization_name": "Acme Corp",
-                        "session_count": "3",
+                        "session_count": 3,
                         "first_session_date": "Wednesday, March 4, 2026",
                         "first_session_time": "3:00 PM",
                         "last_session_date": "Wednesday, March 18, 2026",
+                        "session_duration": "1 hour",
                         "session_url": first_session_url,
                     }
                 }
@@ -1572,7 +1585,7 @@ mod tests {
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "template": {
                     "variables": {
-                        "session_count": "1",
+                        "session_count": 1,
                         "first_session_date": "Wednesday, March 4, 2026",
                         "last_session_date": "Wednesday, March 4, 2026",
                     }

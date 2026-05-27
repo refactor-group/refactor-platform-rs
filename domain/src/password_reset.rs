@@ -619,6 +619,7 @@ mod tests {
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".into(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             role: Default::default(),
             roles: vec![],
             invite_status: None,

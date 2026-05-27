@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use sea_orm::Order;
 use serde::Deserialize;
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::params::coaching_session::SortField;
 use crate::params::sort::SortOrder;
@@ -38,10 +38,21 @@ pub(crate) struct IndexParams {
     pub(crate) user_id: Id,
     /// Optional: filter sessions to only those in this coaching relationship
     pub(crate) coaching_relationship_id: Option<Id>,
-    /// Optional: filter sessions starting from this date (inclusive)
+    /// Optional: filter sessions starting from this date (inclusive).
+    ///
+    /// Interpreted in `tz` when present; otherwise UTC.
     pub(crate) from_date: Option<NaiveDate>,
-    /// Optional: filter sessions up to this date (inclusive)
+    /// Optional: filter sessions up to this date (inclusive at calendar-day precision).
+    ///
+    /// Interpreted in `tz` when present; otherwise UTC.
     pub(crate) to_date: Option<NaiveDate>,
+    /// Optional: IANA timezone for evaluating `from_date`/`to_date` as
+    /// calendar-day boundaries in that zone. Omitted = UTC-naive boundaries.
+    ///
+    /// Validated in the handler via `chrono_tz::Tz::from_str`; invalid → 400
+    /// `invalid_timezone`. Kept as `String` so the offending value is
+    /// preserved for the structured discriminator response.
+    pub(crate) tz: Option<String>,
     /// Optional: field to sort by (e.g., "date", "created_at")
     pub(crate) sort_by: Option<SortField>,
     /// Optional: sort direction (asc/desc)
@@ -120,4 +131,59 @@ impl QuerySort<coaching_sessions::Column> for IndexParams {
 
 impl WithSortDefaults for IndexParams {
     type SortField = SortField;
+}
+
+/// Aggregation grouping for the counts endpoint.
+///
+/// v1 accepts only `month`. Invalid values are rejected by serde at the Axum
+/// deserialization boundary with a 400 before reaching the handler.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupByParam {
+    Month,
+}
+
+/// Query parameters for GET `/users/{user_id}/coaching_sessions/counts`.
+///
+/// The `tz` field carries an IANA timezone identifier as a raw string; the
+/// handler parses it via `chrono_tz::Tz::from_str` and returns
+/// `WebErrorKind::InvalidTimezone` (400) if it does not match. Keeping the
+/// type as `String` rather than `chrono_tz::Tz` here lets the handler
+/// produce a structured discriminator response with the offending value
+/// rather than Axum's default plain-text rejection.
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct CountsByMonthParams {
+    #[serde(skip)]
+    pub(crate) user_id: Id,
+    pub(crate) from_date: NaiveDate,
+    pub(crate) to_date: NaiveDate,
+    pub(crate) group_by: GroupByParam,
+    pub(crate) tz: String,
+    pub(crate) coaching_relationship_id: Option<Id>,
+}
+
+impl CountsByMonthParams {
+    pub fn with_user_id(mut self, user_id: Id) -> Self {
+        self.user_id = user_id;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The v1 contract accepts only `group_by=month`. Anything else must fail
+    // deserialization so axum rejects the request with 400 before the handler
+    // runs. If the enum ever grows (e.g. `Week`), the handler's exhaustive
+    // match catches the missing branch at compile time.
+    #[test]
+    fn group_by_param_accepts_month_and_rejects_other_values() {
+        let month: GroupByParam = serde_json::from_str(r#""month""#).expect("month parses");
+        assert_eq!(month, GroupByParam::Month);
+
+        assert!(serde_json::from_str::<GroupByParam>(r#""week""#).is_err());
+        assert!(serde_json::from_str::<GroupByParam>(r#""MONTH""#).is_err());
+        assert!(serde_json::from_str::<GroupByParam>(r#""""#).is_err());
+    }
 }

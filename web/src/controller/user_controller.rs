@@ -22,7 +22,7 @@ use service::config::ApiVersion;
         ("user_id" = Id, Path, description = "User ID", example = "1234567890"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a User", body = User),
+        (status = 200, description = "Successfully retrieved a User", body = domain::users::Model),
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
