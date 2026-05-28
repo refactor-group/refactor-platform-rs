@@ -31,12 +31,18 @@ pub async fn handle(
         return Ok(());
     }
 
+    let ended_at = recording
+        .ended_at
+        .is_none()
+        .then(|| chrono::Utc::now().into());
+
     recording_api::update_status(
         db,
         recording.id,
         MeetingRecordingStatus::Failed,
         RecordingArtifacts {
             error_message,
+            ended_at,
             ..Default::default()
         },
     )

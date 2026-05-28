@@ -124,6 +124,23 @@ pub async fn update_status(
 
     debug!("Updating meeting recording status: {id}");
 
+    let new_started_at = artifacts.started_at.or(existing.started_at);
+    let new_ended_at = artifacts.ended_at.or(existing.ended_at);
+
+    // Auto-derive duration_seconds from start/end whenever both are known and no
+    // explicit value is supplied. Keeps the field consistent across every transition
+    // path (bot.done, recording.failed, user-cancel, etc.) without duplicating math.
+    let new_duration_seconds = artifacts
+        .duration_seconds
+        .or(existing.duration_seconds)
+        .or_else(|| match (new_started_at, new_ended_at) {
+            (Some(start), Some(end)) => {
+                let secs = (end - start).num_seconds();
+                (secs > 0).then_some(secs as i32)
+            }
+            _ => None,
+        });
+
     let active_model = ActiveModel {
         id: Unchanged(existing.id),
         coaching_session_id: Unchanged(existing.coaching_session_id),
@@ -131,9 +148,9 @@ pub async fn update_status(
         status: Set(status),
         video_url: Set(artifacts.video_url.or(existing.video_url)),
         audio_url: Set(artifacts.audio_url.or(existing.audio_url)),
-        duration_seconds: Set(artifacts.duration_seconds.or(existing.duration_seconds)),
-        started_at: Set(artifacts.started_at.or(existing.started_at)),
-        ended_at: Set(artifacts.ended_at.or(existing.ended_at)),
+        duration_seconds: Set(new_duration_seconds),
+        started_at: Set(new_started_at),
+        ended_at: Set(new_ended_at),
         error_message: Set(artifacts.error_message.or(existing.error_message)),
         created_at: Unchanged(existing.created_at),
         updated_at: Set(chrono::Utc::now().into()),
@@ -146,7 +163,25 @@ pub async fn update_status(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, Transaction, Value};
+
+    /// Extract the `duration_seconds` bind from the UPDATE statement in a captured txn log.
+    /// Bind order matches the SET clause in `update_status` (status, video_url, audio_url,
+    /// duration_seconds, started_at, ended_at, error_message, updated_at, [id in WHERE]).
+    fn duration_seconds_bind_in_update(log: &[Transaction]) -> Option<i32> {
+        for txn in log {
+            for stmt in txn.statements() {
+                if stmt.sql.starts_with("UPDATE ") {
+                    let binds = &stmt.values.as_ref().expect("update has binds").0;
+                    return match &binds[3] {
+                        Value::Int(opt) => *opt,
+                        other => panic!("bind[3] was not Int: {other:?}"),
+                    };
+                }
+            }
+        }
+        panic!("no UPDATE statement found in transaction log");
+    }
 
     fn test_model() -> Model {
         let now = chrono::Utc::now();
@@ -253,6 +288,135 @@ mod tests {
         .await?;
 
         assert_eq!(result.status, MeetingRecordingStatus::Recording);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_auto_derives_duration_seconds_from_timestamps() -> Result<(), Error> {
+        let start = chrono::Utc::now() - chrono::Duration::seconds(125);
+        let end = chrono::Utc::now();
+        let mut existing = test_model();
+        existing.started_at = Some(start.into());
+        existing.ended_at = None;
+        existing.duration_seconds = None;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .append_query_results(vec![vec![existing.clone()]])
+            .into_connection();
+
+        update_status(
+            &db,
+            existing.id,
+            MeetingRecordingStatus::Processing,
+            RecordingArtifacts {
+                ended_at: Some(end.into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        // Inspect the actual UPDATE bind, not the mock's return value.
+        let bound = duration_seconds_bind_in_update(&db.into_transaction_log())
+            .expect("auto-derive should have produced Some(_)");
+        // Allow ±1s slack for the `chrono::Utc::now()` capture above.
+        assert!(
+            (124..=126).contains(&bound),
+            "expected duration ~125s, got {bound}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_does_not_overwrite_explicit_duration_seconds() -> Result<(), Error> {
+        let mut existing = test_model();
+        existing.started_at = Some((chrono::Utc::now() - chrono::Duration::seconds(60)).into());
+        existing.duration_seconds = Some(999); // pre-set, must be preserved
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .append_query_results(vec![vec![existing.clone()]])
+            .into_connection();
+
+        update_status(
+            &db,
+            existing.id,
+            MeetingRecordingStatus::Processing,
+            RecordingArtifacts {
+                ended_at: Some(chrono::Utc::now().into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let bound = duration_seconds_bind_in_update(&db.into_transaction_log());
+        assert_eq!(
+            bound,
+            Some(999),
+            "existing duration_seconds=999 must be preserved, not overwritten by derived ~60s"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_skips_duration_when_started_at_unknown() -> Result<(), Error> {
+        let mut existing = test_model();
+        existing.started_at = None; // missing → cannot derive
+        existing.ended_at = None;
+        existing.duration_seconds = None;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .append_query_results(vec![vec![existing.clone()]])
+            .into_connection();
+
+        // ended_at supplied, but started_at is still None → no derivation possible.
+        update_status(
+            &db,
+            existing.id,
+            MeetingRecordingStatus::Processing,
+            RecordingArtifacts {
+                ended_at: Some(chrono::Utc::now().into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let bound = duration_seconds_bind_in_update(&db.into_transaction_log());
+        assert_eq!(bound, None, "no derivation possible without started_at");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_skips_negative_duration_from_clock_skew() -> Result<(), Error> {
+        let mut existing = test_model();
+        // Pathological: end is *before* start (clock skew, manual data, etc.).
+        existing.started_at = Some(chrono::Utc::now().into());
+        existing.ended_at = None;
+        existing.duration_seconds = None;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .append_query_results(vec![vec![existing.clone()]])
+            .into_connection();
+
+        let earlier = chrono::Utc::now() - chrono::Duration::seconds(30);
+        update_status(
+            &db,
+            existing.id,
+            MeetingRecordingStatus::Processing,
+            RecordingArtifacts {
+                ended_at: Some(earlier.into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let bound = duration_seconds_bind_in_update(&db.into_transaction_log());
+        assert_eq!(
+            bound, None,
+            "negative-duration arithmetic (end<start) should not store a value"
+        );
         Ok(())
     }
 
