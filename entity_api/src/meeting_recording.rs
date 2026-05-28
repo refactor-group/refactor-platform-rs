@@ -62,10 +62,15 @@ pub async fn find_by_bot_id(db: &DatabaseConnection, bot_id: &str) -> Result<Opt
         .await?)
 }
 
-/// Atomically transitions a recording to `Completed`, but only if it is not already
-/// in a terminal state (`completed`, `failed`, or `cancelled`). Returns `true` if the
-/// transition succeeded; the caller won the race and should proceed with transcription.
-/// Returns `false` if the recording was already terminal and the caller should skip.
+/// Atomically transitions a recording to `Completed` along with `ended_at` and
+/// `duration_seconds` in a single transaction. Returns `true` if the transition
+/// succeeded; the caller won the race and should proceed with transcription. Returns
+/// `false` if the recording was already terminal and the caller should skip.
+///
+/// `ended_at` is written when not already set; `duration_seconds` is auto-derived
+/// from `started_at` + `ended_at` when both are known. Folding these writes inside
+/// the same transaction as the status flip means a `Completed` row can never end up
+/// with `NULL` timestamps due to a partial-failure window.
 pub async fn try_claim_completed(db: &DatabaseConnection, id: Id) -> Result<bool, Error> {
     db.transaction::<_, bool, Error>(|txn| {
         Box::pin(async move {
@@ -78,9 +83,17 @@ pub async fn try_claim_completed(db: &DatabaseConnection, id: Id) -> Result<bool
                 return Ok(false);
             };
 
+            let now: DateTimeWithTimeZone = chrono::Utc::now().into();
+            let new_ended_at = model.ended_at.or(Some(now));
+            let new_duration_seconds = model
+                .duration_seconds
+                .or_else(|| derive_duration_seconds(model.started_at, new_ended_at));
+
             ActiveModel {
                 status: Set(MeetingRecordingStatus::Completed),
-                updated_at: Set(chrono::Utc::now().into()),
+                ended_at: Set(new_ended_at),
+                duration_seconds: Set(new_duration_seconds),
+                updated_at: Set(now),
                 ..model.into_active_model()
             }
             .update(txn)
@@ -94,6 +107,23 @@ pub async fn try_claim_completed(db: &DatabaseConnection, id: Id) -> Result<bool
         TransactionError::Connection(db_err) => db_err.into(),
         TransactionError::Transaction(err) => err,
     })
+}
+
+/// Derive `duration_seconds` from `started_at` + `ended_at` when both are known.
+/// Returns `None` if either timestamp is missing, if the result would be non-positive
+/// (clock skew), or if it would overflow `i32` (≈68 years — physically impossible but
+/// guarded explicitly rather than silently truncated).
+fn derive_duration_seconds(
+    started_at: Option<DateTimeWithTimeZone>,
+    ended_at: Option<DateTimeWithTimeZone>,
+) -> Option<i32> {
+    match (started_at, ended_at) {
+        (Some(start), Some(end)) => {
+            let secs = (end - start).num_seconds();
+            i32::try_from(secs).ok().filter(|&s| s > 0)
+        }
+        _ => None,
+    }
 }
 
 /// Optional artifact fields to set when updating a recording's status.
@@ -133,13 +163,7 @@ pub async fn update_status(
     let new_duration_seconds = artifacts
         .duration_seconds
         .or(existing.duration_seconds)
-        .or_else(|| match (new_started_at, new_ended_at) {
-            (Some(start), Some(end)) => {
-                let secs = (end - start).num_seconds();
-                (secs > 0).then_some(secs as i32)
-            }
-            _ => None,
-        });
+        .or_else(|| derive_duration_seconds(new_started_at, new_ended_at));
 
     let active_model = ActiveModel {
         id: Unchanged(existing.id),
@@ -165,17 +189,33 @@ mod tests {
     use super::*;
     use sea_orm::{DatabaseBackend, MockDatabase, Transaction, Value};
 
+    /// Locate a column's bind index by parsing the UPDATE SET clause directly.
+    /// Robust against ActiveModel field reordering or SeaORM changing SET-bind ordering.
+    fn bind_index_for_column(sql: &str, column: &str) -> usize {
+        let needle = format!(r#""{column}" = $"#);
+        let start = sql
+            .find(&needle)
+            .unwrap_or_else(|| panic!("column {column:?} not found in SQL: {sql}"));
+        let after = &sql[start + needle.len()..];
+        let end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        let one_based: usize = after[..end]
+            .parse()
+            .unwrap_or_else(|_| panic!("could not parse bind position for {column} in: {sql}"));
+        one_based - 1
+    }
+
     /// Extract the `duration_seconds` bind from the UPDATE statement in a captured txn log.
-    /// Bind order matches the SET clause in `update_status` (status, video_url, audio_url,
-    /// duration_seconds, started_at, ended_at, error_message, updated_at, [id in WHERE]).
     fn duration_seconds_bind_in_update(log: &[Transaction]) -> Option<i32> {
         for txn in log {
             for stmt in txn.statements() {
                 if stmt.sql.starts_with("UPDATE ") {
+                    let idx = bind_index_for_column(&stmt.sql, "duration_seconds");
                     let binds = &stmt.values.as_ref().expect("update has binds").0;
-                    return match &binds[3] {
+                    return match &binds[idx] {
                         Value::Int(opt) => *opt,
-                        other => panic!("bind[3] was not Int: {other:?}"),
+                        other => panic!("bind for duration_seconds was not Int: {other:?}"),
                     };
                 }
             }
@@ -482,6 +522,98 @@ mod tests {
 
         let result = try_claim_completed(&db, Id::new_v4()).await?;
         assert!(!result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn try_claim_completed_writes_ended_at_and_derives_duration_atomically(
+    ) -> Result<(), Error> {
+        let start = chrono::Utc::now() - chrono::Duration::seconds(300);
+        let mut existing = test_model_with_status(MeetingRecordingStatus::Processing);
+        existing.started_at = Some(start.into());
+        existing.ended_at = None;
+        existing.duration_seconds = None;
+        let id = existing.id;
+
+        let before = chrono::Utc::now();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .append_query_results(vec![vec![existing]])
+            .into_connection();
+
+        let result = try_claim_completed(&db, id).await?;
+        assert!(result, "claim should succeed");
+
+        let log = db.into_transaction_log();
+        let after = chrono::Utc::now();
+
+        // ended_at written in the same UPDATE that flipped status — no best-effort window.
+        let ended = match log.iter().find_map(|t| {
+            t.statements()
+                .iter()
+                .find(|s| s.sql.starts_with("UPDATE "))
+                .cloned()
+        }) {
+            Some(stmt) => {
+                let idx = bind_index_for_column(&stmt.sql, "ended_at");
+                match &stmt.values.as_ref().unwrap().0[idx] {
+                    Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
+                    other => panic!("bind for ended_at not a timestamp: {other:?}"),
+                }
+            }
+            None => panic!("no UPDATE in log"),
+        };
+        let ended = ended.expect("ended_at must be set by atomic claim");
+        assert!(
+            ended.to_utc() >= before && ended.to_utc() <= after,
+            "ended_at should be freshly captured"
+        );
+
+        // duration_seconds derived from started_at + ended_at, ≈300s within ±1s slack.
+        let duration =
+            duration_seconds_bind_in_update(&log).expect("duration_seconds must be derived");
+        assert!(
+            (299..=301).contains(&duration),
+            "expected ~300s, got {duration}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn try_claim_completed_preserves_existing_ended_at() -> Result<(), Error> {
+        let preset_end: DateTimeWithTimeZone =
+            (chrono::Utc::now() - chrono::Duration::seconds(30)).into();
+        let mut existing = test_model_with_status(MeetingRecordingStatus::Processing);
+        existing.ended_at = Some(preset_end); // set by an earlier bot.done transition
+        let id = existing.id;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .append_query_results(vec![vec![existing]])
+            .into_connection();
+
+        try_claim_completed(&db, id).await?;
+
+        let log = db.into_transaction_log();
+        let stmt = log
+            .iter()
+            .find_map(|t| {
+                t.statements()
+                    .iter()
+                    .find(|s| s.sql.starts_with("UPDATE "))
+                    .cloned()
+            })
+            .expect("no UPDATE in log");
+        let idx = bind_index_for_column(&stmt.sql, "ended_at");
+        let bound = match &stmt.values.as_ref().unwrap().0[idx] {
+            Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
+            other => panic!("bind for ended_at not a timestamp: {other:?}"),
+        };
+        assert_eq!(
+            bound,
+            Some(preset_end),
+            "preset ended_at must be preserved, not overwritten by Utc::now()"
+        );
         Ok(())
     }
 }

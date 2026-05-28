@@ -42,7 +42,8 @@ pub async fn handle(
         return Ok(());
     }
 
-    // Atomically claim this recording as Completed. Returns false if the recording is
+    // Atomically claim this recording as Completed, writing ended_at and deriving
+    // duration_seconds in the same transaction. Returns false if the recording is
     // already terminal (Completed, Failed, or Cancelled — including the user-cancelled
     // case). This prevents concurrent recording.done webhooks from both reaching
     // create_transcription (double billing).
@@ -52,29 +53,6 @@ pub async fn handle(
             recording.id, recording.status
         );
         return Ok(());
-    }
-
-    // Enrich the now-completed recording with ended_at if it wasn't already set by an
-    // earlier bot.done transition. duration_seconds auto-derives in update_status when
-    // both started_at and ended_at are known.
-    if recording.ended_at.is_none() {
-        let ended_at = Some(chrono::Utc::now().into());
-        if let Err(e) = recording_api::update_status(
-            &db,
-            recording.id,
-            MeetingRecordingStatus::Completed,
-            RecordingArtifacts {
-                ended_at,
-                ..Default::default()
-            },
-        )
-        .await
-        {
-            warn!(
-                "recording.done: failed to enrich ended_at on recording {}: {:?}",
-                recording.id, e
-            );
-        }
     }
 
     match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await {

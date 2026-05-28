@@ -105,29 +105,43 @@ mod tests {
         }
     }
 
-    /// Extract a timestamp bind by index from the UPDATE statement in the captured log.
-    /// Bind order: status, video_url, audio_url, duration_seconds, started_at (4),
-    /// ended_at (5), error_message, updated_at (7), [id in WHERE].
+    /// Locate a column's bind index by parsing the UPDATE SET clause directly.
+    /// Robust against ActiveModel field reordering or SeaORM changing SET-bind ordering.
+    /// Matches `"<column>" = $N` and returns the 0-indexed bind position.
+    fn bind_index_for_column(sql: &str, column: &str) -> usize {
+        let needle = format!(r#""{column}" = $"#);
+        let start = sql
+            .find(&needle)
+            .unwrap_or_else(|| panic!("column {column:?} not found in SQL: {sql}"));
+        let after = &sql[start + needle.len()..];
+        let end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        let one_based: usize = after[..end]
+            .parse()
+            .unwrap_or_else(|_| panic!("could not parse bind position for {column} in: {sql}"));
+        one_based - 1
+    }
+
+    /// Extract a timestamp bind by column name from the UPDATE statement.
     fn ts_bind_in_update(
         log: &[Transaction],
-        bind_index: usize,
+        column: &str,
     ) -> Option<sea_orm::prelude::DateTimeWithTimeZone> {
         for txn in log {
             for stmt in txn.statements() {
                 if stmt.sql.starts_with("UPDATE ") {
+                    let idx = bind_index_for_column(&stmt.sql, column);
                     let binds = &stmt.values.as_ref().expect("update has binds").0;
-                    return match &binds[bind_index] {
+                    return match &binds[idx] {
                         Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
-                        other => panic!("bind[{bind_index}] not a timestamp: {other:?}"),
+                        other => panic!("bind for {column:?} not a timestamp: {other:?}"),
                     };
                 }
             }
         }
         panic!("no UPDATE statement found in transaction log");
     }
-
-    const BIND_STARTED_AT: usize = 4;
-    const BIND_ENDED_AT: usize = 5;
 
     #[tokio::test]
     async fn bot_status_skips_completed_recording() {
@@ -212,7 +226,7 @@ mod tests {
         let existing = recording_with_status(MeetingRecordingStatus::Joining);
         let log = run_transition_and_capture(existing, MeetingRecordingStatus::InMeeting).await;
 
-        let bound = ts_bind_in_update(&log, BIND_STARTED_AT)
+        let bound = ts_bind_in_update(&log, "started_at")
             .expect("started_at should be written on first InMeeting transition");
         let after = chrono::Utc::now();
         assert!(
@@ -227,7 +241,7 @@ mod tests {
         let log = run_transition_and_capture(existing, MeetingRecordingStatus::Recording).await;
 
         assert!(
-            ts_bind_in_update(&log, BIND_STARTED_AT).is_some(),
+            ts_bind_in_update(&log, "started_at").is_some(),
             "Recording transition (when no prior started_at) should write started_at"
         );
     }
@@ -241,7 +255,7 @@ mod tests {
 
         let log = run_transition_and_capture(existing, MeetingRecordingStatus::Recording).await;
 
-        let bound = ts_bind_in_update(&log, BIND_STARTED_AT)
+        let bound = ts_bind_in_update(&log, "started_at")
             .expect("started_at should remain non-null after preserve");
         // First-write-wins: the original value, not a fresh Utc::now(), must appear in the bind.
         assert_eq!(
@@ -262,12 +276,12 @@ mod tests {
 
         // started_at preserved exactly.
         assert_eq!(
-            ts_bind_in_update(&log, BIND_STARTED_AT),
+            ts_bind_in_update(&log, "started_at"),
             Some(original_start),
             "Processing transition must preserve original started_at"
         );
         // ended_at freshly written.
-        let ended = ts_bind_in_update(&log, BIND_ENDED_AT)
+        let ended = ts_bind_in_update(&log, "ended_at")
             .expect("Processing transition should write ended_at");
         let after = chrono::Utc::now();
         assert!(
@@ -282,12 +296,12 @@ mod tests {
         let log = run_transition_and_capture(existing, MeetingRecordingStatus::Joining).await;
 
         assert_eq!(
-            ts_bind_in_update(&log, BIND_STARTED_AT),
+            ts_bind_in_update(&log, "started_at"),
             None,
             "Joining transition should not write started_at"
         );
         assert_eq!(
-            ts_bind_in_update(&log, BIND_ENDED_AT),
+            ts_bind_in_update(&log, "ended_at"),
             None,
             "Joining transition should not write ended_at"
         );
