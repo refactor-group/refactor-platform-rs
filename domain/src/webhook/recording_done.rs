@@ -42,7 +42,8 @@ pub async fn handle(
         return Ok(());
     }
 
-    // Atomically claim this recording as Completed. Returns false if the recording is
+    // Atomically claim this recording as Completed, writing ended_at and deriving
+    // duration_seconds in the same transaction. Returns false if the recording is
     // already terminal (Completed, Failed, or Cancelled — including the user-cancelled
     // case). This prevents concurrent recording.done webhooks from both reaching
     // create_transcription (double billing).
