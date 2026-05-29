@@ -1,58 +1,35 @@
-use sea_orm::entity::prelude::*;
+use crate::meeting_provider;
+use crate::pipeline_provider;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    EnumIter,
-    Deserialize,
-    Serialize,
-    DeriveActiveEnum,
-    Default,
-    ToSchema,
-)]
-#[serde(rename_all = "lowercase")]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "provider")]
-#[schema(as = domain::provider::Provider)]
+/// Rust-only wrapper enum for any provider in the system.
+/// Not backed by a DB column — use `meeting_provider::Provider` or
+/// `pipeline_provider::Provider` for DB fields.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize, ToSchema)]
+#[serde(tag = "type", content = "provider", rename_all = "snake_case")]
 pub enum Provider {
-    #[sea_orm(string_value = "google")]
-    #[default]
-    Google,
-
-    #[sea_orm(string_value = "zoom")]
-    Zoom,
+    Meeting(meeting_provider::Provider),
+    Pipeline(pipeline_provider::Provider),
 }
 
-/// Describes meeting-space lifecycle behavior for a video-conferencing provider.
-///
-/// Some providers (e.g. Google Meet) create persistent spaces whose URL never expires,
-/// making it safe — and desirable — to reuse the same link across sessions in a coaching
-/// relationship. Other providers (e.g. Zoom) create time-bound meetings that expire, so
-/// each session needs a fresh link.
-pub trait MeetingProperties {
-    /// Whether meeting URLs from this provider are persistent and can be reused
-    /// across sessions within the same coaching relationship.
-    fn has_persistent_meeting_urls(&self) -> bool;
+impl From<meeting_provider::Provider> for Provider {
+    fn from(p: meeting_provider::Provider) -> Self {
+        Provider::Meeting(p)
+    }
 }
 
-impl MeetingProperties for Provider {
-    fn has_persistent_meeting_urls(&self) -> bool {
-        match self {
-            Self::Google => true,
-            Self::Zoom => false,
-        }
+impl From<pipeline_provider::Provider> for Provider {
+    fn from(p: pipeline_provider::Provider) -> Self {
+        Provider::Pipeline(p)
     }
 }
 
 impl std::fmt::Display for Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Google => write!(f, "Google"),
-            Self::Zoom => write!(f, "Zoom"),
+            Provider::Meeting(p) => write!(f, "{}", p),
+            Provider::Pipeline(p) => write!(f, "{}", p),
         }
     }
 }

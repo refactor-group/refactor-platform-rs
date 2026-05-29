@@ -171,7 +171,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::jwts::Jwt,
                 domain::notes::Model,
                 domain::organizations::Model,
-                domain::provider::Provider,
+                domain::meeting_provider::Provider,
                 domain::status::Status,
                 domain::user::Credentials,
                 domain::users::Model,
