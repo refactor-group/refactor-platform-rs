@@ -27,6 +27,7 @@ mod coaching_session_hydration;
 pub mod coaching_session_series;
 pub mod coaching_session_topic;
 pub mod coaching_session_view;
+pub mod cost;
 pub mod emails;
 pub mod error;
 pub mod goal;

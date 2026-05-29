@@ -40,6 +40,7 @@ pub async fn handle(
     }
 
     let transcription_id = transcription.id;
+    let meeting_recording_id = transcription.meeting_recording_id;
     let coaching_session_id: Id = transcription.coaching_session_id;
     let transcript_id = transcript_id.to_string();
 
@@ -65,6 +66,16 @@ pub async fn handle(
                 Some(e.to_string()),
             )
             .await;
+        }
+
+        if let Err(e) =
+            crate::cost::record_transcription_hours(&db, transcription_id, meeting_recording_id)
+                .await
+        {
+            warn!(
+                "cost: transcription hours failed for transcription {}: {:?}",
+                transcription_id, e
+            );
         }
 
         match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await {

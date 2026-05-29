@@ -70,6 +70,17 @@ pub async fn handle(
         ),
     }
 
+    let recording_id = recording.id;
+    let db_cost = Arc::clone(&db);
+    tokio::spawn(async move {
+        if let Err(e) = crate::cost::record_bot_minutes(&db_cost, recording_id).await {
+            warn!(
+                "cost: bot minutes failed for recording {}: {:?}",
+                recording_id, e
+            );
+        }
+    });
+
     let recall_recording_id = recall_recording_id.to_string();
 
     tokio::spawn(async move {
