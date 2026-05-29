@@ -31,6 +31,8 @@ mod m20260513_000000_add_purpose_to_magic_link_tokens;
 mod m20260514_000000_add_password_reset_attempts;
 mod m20260515_000000_add_duration_minutes_to_coaching_sessions;
 mod m20260515_000001_add_default_coaching_session_duration_minutes_to_users;
+mod m20260529_000000_rename_provider_to_meeting_provider;
+mod m20260529_000001_add_cost_tables;
 mod m20260607_000000_add_title_to_coaching_sessions;
 mod m20260607_000001_create_coaching_session_topics;
 mod m20260607_000002_add_topic_priority_status;
@@ -78,6 +80,8 @@ impl MigratorTrait for Migrator {
             Box::new(
                 m20260515_000001_add_default_coaching_session_duration_minutes_to_users::Migration,
             ),
+            Box::new(m20260529_000000_rename_provider_to_meeting_provider::Migration),
+            Box::new(m20260529_000001_add_cost_tables::Migration),
             Box::new(m20260607_000000_add_title_to_coaching_sessions::Migration),
             Box::new(m20260607_000001_create_coaching_session_topics::Migration),
             Box::new(m20260607_000002_add_topic_priority_status::Migration),
