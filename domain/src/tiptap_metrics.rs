@@ -3,6 +3,7 @@
 //! Domain wrapper over `gateway::tiptap_metrics`. Composes raw gateway
 //! responses into the shapes admin endpoints actually surface
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use sea_orm::DatabaseConnection;
@@ -183,7 +184,7 @@ fn reconcile_abandoned(docs: &[Document], session_names: &[String]) -> Abandoned
 
     // Sort biggest first, THEN truncate. Truncate-then-sort would give an
     // arbitrary slice; this way the most impactful leaks are always visible.
-    abandoned.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    abandoned.sort_by_key(|a| Reverse(a.size_bytes));
     abandoned.truncate(ABANDONED_LIMIT);
 
     AbandonedReport {
@@ -234,7 +235,7 @@ fn aggregate_by_org(docs: &[Document], rows: &[SessionOrgRow]) -> Vec<OrgMetrics
     // HashMap iteration order is non-deterministic. Sort by count desc so
     // admins see biggest tenants first AND test assertions stay stable.
     let mut result: Vec<OrgMetrics> = by_org.into_values().collect();
-    result.sort_by(|a, b| b.document_count.cmp(&a.document_count));
+    result.sort_by_key(|a| Reverse(a.document_count));
     result
 }
 

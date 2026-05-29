@@ -138,7 +138,7 @@ mod tests {
             .append_query_results(vec![vec![note_model.clone()]])
             .into_connection();
 
-        let note = create(&db, note_model.clone().into(), Id::new_v4()).await?;
+        let note = create(&db, note_model.clone(), Id::new_v4()).await?;
 
         assert_eq!(note.id, note_model.id);
 

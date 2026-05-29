@@ -506,7 +506,7 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
-                [organization_id.clone().into()]
+                [organization_id.into()]
             )]
         );
 
@@ -526,7 +526,7 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
-                [organization_id.clone().into()]
+                [organization_id.into()]
             )]
         );
 
@@ -546,7 +546,7 @@ mod tests {
         let coachee_organization_id = Id::new_v4();
 
         let coach_user = entity::users::Model {
-            id: coach_id.clone(),
+            id: coach_id,
             first_name: "Coach".to_string(),
             last_name: "User".to_string(),
             email: "coach@example.com".to_string(),
@@ -564,7 +564,7 @@ mod tests {
         };
 
         let coachee_user = entity::users::Model {
-            id: coachee_id.clone(),
+            id: coachee_id,
             first_name: "Coachee".to_string(),
             last_name: "User".to_string(),
             email: "coachee@example.com".to_string(),
@@ -583,9 +583,9 @@ mod tests {
 
         let coaching_relationships = vec![Model {
             id: Id::new_v4(),
-            organization_id: organization_id.clone(),
-            coach_id: coach_id.clone(),
-            coachee_id: coachee_id.clone(),
+            organization_id,
+            coach_id,
+            coachee_id,
             slug: "coach-coachee".to_string(),
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
@@ -619,9 +619,9 @@ mod tests {
 
         let model = Model {
             id: Id::new_v4(),
-            organization_id: organization_id.clone(),
-            coach_id: coach_id.clone(),
-            coachee_id: coachee_id.clone(),
+            organization_id,
+            coach_id,
+            coachee_id,
             slug: "coach-coachee".to_string(),
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
@@ -649,7 +649,7 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
-                [user_id.clone().into(), user_id.clone().into()]
+                [user_id.into(), user_id.into()]
             )]
         );
 

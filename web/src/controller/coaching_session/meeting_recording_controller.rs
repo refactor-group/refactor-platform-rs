@@ -187,7 +187,7 @@ mod tests {
             first_name: "Coach".to_string(),
             last_name: "User".to_string(),
             display_name: None,
-            password: Some(generate_hash("password123".to_string())),
+            password: Some(generate_hash("password123")),
             github_username: None,
             github_profile_url: None,
             timezone: "UTC".to_string(),

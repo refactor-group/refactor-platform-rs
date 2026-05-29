@@ -100,7 +100,7 @@ mod tests {
             .append_query_results(vec![vec![agreement_model.clone()]])
             .into_connection();
 
-        let agreement = create(&db, agreement_model.clone().into(), Id::new_v4()).await?;
+        let agreement = create(&db, agreement_model.clone(), Id::new_v4()).await?;
 
         assert_eq!(agreement.id, agreement_model.id);
 
