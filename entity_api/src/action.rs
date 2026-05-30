@@ -619,7 +619,7 @@ mod tests {
             .append_query_results(vec![vec![action_model.clone()]])
             .into_connection();
 
-        let action = create(&db, action_model.clone().into(), Id::new_v4()).await?;
+        let action = create(&db, action_model.clone(), Id::new_v4()).await?;
 
         assert_eq!(action.id, action_model.id);
 
@@ -704,7 +704,7 @@ mod tests {
 
         let result = update_status(&db, Id::new_v4(), Status::Completed).await;
 
-        assert_eq!(result.is_err(), true);
+        assert!(result.is_err());
 
         Ok(())
     }

@@ -256,18 +256,14 @@ mod tests {
             id: Id::new_v4(),
             user_id,
             provider: Provider::Google,
-            updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
-                .unwrap()
-                .into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ..test_model()
         };
         let newer = Model {
             id: Id::new_v4(),
             user_id,
             provider: Provider::Zoom,
-            updated_at: chrono::DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z")
-                .unwrap()
-                .into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z").unwrap(),
             ..test_model()
         };
 

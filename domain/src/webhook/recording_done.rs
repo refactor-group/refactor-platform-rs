@@ -142,7 +142,7 @@ mod tests {
     use entity::meeting_recording::{MeetingRecordingStatus, Model as RecordingModel};
     use entity::Id;
     use events::EventPublisher;
-    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+    use sea_orm::{DatabaseBackend, MockDatabase};
     use std::sync::Arc;
 
     fn recording_for_session(session_id: Id) -> RecordingModel {
@@ -167,16 +167,16 @@ mod tests {
     async fn recording_done_skips_when_try_claim_completed_returns_false() {
         let session_id = Id::new_v4();
         let recording = recording_for_session(session_id);
+        let mut already_terminal = recording.clone();
+        already_terminal.status = MeetingRecordingStatus::Completed;
 
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
                 // find_by_bot_id
                 .append_query_results(vec![vec![recording]])
-                // try_claim_completed — 0 rows affected means already terminal
-                .append_exec_results(vec![MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                }])
+                // try_claim_completed: locked re-read returns an already-terminal row,
+                // so the claim is declined (Ok(false)) without an UPDATE
+                .append_query_results(vec![vec![already_terminal]])
                 .into_connection(),
         );
 
