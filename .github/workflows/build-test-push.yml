@@ -72,6 +72,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Run clippy (mock feature)
+        run: cargo clippy -p entity_api -p domain -p web --all-targets --features "domain/mock,web/mock" -- -D warnings
+
       - name: Run format check
         run: cargo fmt --all -- --check
 
@@ -117,6 +120,9 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+      - name: Run mock-gated tests
+        run: cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"
 
       - name: Show sccache stats
         run: sccache --show-stats

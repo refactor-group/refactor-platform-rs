@@ -93,7 +93,7 @@ mod tests {
     use entity::transcription::{Model as TranscriptionModel, TranscriptionStatus};
     use entity::Id;
     use events::EventPublisher;
-    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+    use sea_orm::{DatabaseBackend, MockDatabase};
     use std::sync::Arc;
 
     fn queued_transcription() -> TranscriptionModel {
@@ -119,16 +119,16 @@ mod tests {
     #[tokio::test]
     async fn transcript_done_skips_when_try_claim_for_processing_returns_false() {
         let transcription = queued_transcription();
+        let mut already_claimed = transcription.clone();
+        already_claimed.status = TranscriptionStatus::Processing;
 
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
                 // find_by_external_id
                 .append_query_results(vec![vec![transcription]])
-                // try_claim_for_processing — 0 rows affected means already claimed
-                .append_exec_results(vec![MockExecResult {
-                    last_insert_id: 0,
-                    rows_affected: 0,
-                }])
+                // try_claim_for_processing: locked re-read returns a non-queued row,
+                // so the claim is declined (Ok(false)) without an UPDATE
+                .append_query_results(vec![vec![already_claimed]])
                 .into_connection(),
         );
 
