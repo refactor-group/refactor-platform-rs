@@ -506,7 +506,7 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
-                [organization_id.clone().into()]
+                [organization_id.into()]
             )]
         );
 
@@ -526,114 +526,10 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
-                [organization_id.clone().into()]
+                [organization_id.into()]
             )]
         );
 
-        Ok(())
-    }
-
-    #[ignore = "Temporarily disabled due to user::find_by_id mock complexity with find_with_related queries"]
-    #[tokio::test]
-    async fn create_returns_validation_error_for_duplicate_relationship() -> Result<(), Error> {
-        use entity::coaching_relationships::Model;
-        use sea_orm::{DatabaseBackend, MockDatabase};
-
-        let organization_id = Id::new_v4();
-        let coach_id = Id::new_v4();
-        let coachee_id = Id::new_v4();
-        let coach_organization_id = Id::new_v4();
-        let coachee_organization_id = Id::new_v4();
-
-        let coach_user = entity::users::Model {
-            id: coach_id.clone(),
-            first_name: "Coach".to_string(),
-            last_name: "User".to_string(),
-            email: "coach@example.com".to_string(),
-            password: Some("hash".to_string()),
-            display_name: Some("Coach User".to_string()),
-            github_username: Some("coach_user".to_string()),
-            role: entity::users::Role::User,
-            github_profile_url: Some("https://github.com/coach_user".to_string()),
-            timezone: "UTC".to_string(),
-            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            roles: vec![],
-            invite_status: None,
-            created_at: chrono::Utc::now().into(),
-            updated_at: chrono::Utc::now().into(),
-        };
-
-        let coachee_user = entity::users::Model {
-            id: coachee_id.clone(),
-            first_name: "Coachee".to_string(),
-            last_name: "User".to_string(),
-            email: "coachee@example.com".to_string(),
-            password: Some("hash".to_string()),
-            display_name: Some("Coachee User".to_string()),
-            github_username: Some("coachee_user".to_string()),
-            role: entity::users::Role::User,
-            roles: vec![],
-            invite_status: None,
-            github_profile_url: Some("https://github.com/coachee_user".to_string()),
-            timezone: "UTC".to_string(),
-            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            created_at: chrono::Utc::now().into(),
-            updated_at: chrono::Utc::now().into(),
-        };
-
-        let coaching_relationships = vec![Model {
-            id: Id::new_v4(),
-            organization_id: organization_id.clone(),
-            coach_id: coach_id.clone(),
-            coachee_id: coachee_id.clone(),
-            slug: "coach-coachee".to_string(),
-            created_at: chrono::Utc::now().into(),
-            updated_at: chrono::Utc::now().into(),
-        }];
-
-        let coach_organization = entity::organizations::Model {
-            id: coach_organization_id,
-            name: "Organization".to_string(),
-            slug: "organization".to_string(),
-            logo: None,
-            created_at: chrono::Utc::now().into(),
-            updated_at: chrono::Utc::now().into(),
-        };
-
-        let coachee_organization = entity::organizations::Model {
-            id: coachee_organization_id,
-            name: "Organization".to_string(),
-            slug: "organization".to_string(),
-            logo: None,
-            created_at: chrono::Utc::now().into(),
-            updated_at: chrono::Utc::now().into(),
-        };
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_user]])
-            .append_query_results(vec![vec![coachee_user]])
-            .append_query_results(vec![vec![coach_organization]])
-            .append_query_results(vec![vec![coachee_organization]])
-            .append_query_results(vec![coaching_relationships])
-            .into_connection();
-
-        let model = Model {
-            id: Id::new_v4(),
-            organization_id: organization_id.clone(),
-            coach_id: coach_id.clone(),
-            coachee_id: coachee_id.clone(),
-            slug: "coach-coachee".to_string(),
-            created_at: chrono::Utc::now().into(),
-            updated_at: chrono::Utc::now().into(),
-        };
-
-        let result = create(&db, organization_id, model).await;
-        println!("Result: {:?}", result);
-        let err = result.unwrap_err();
-        assert!(matches!(
-            err.error_kind,
-            EntityApiErrorKind::ValidationError { .. }
-        ));
         Ok(())
     }
 
@@ -649,7 +545,7 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
-                [user_id.clone().into(), user_id.clone().into()]
+                [user_id.into(), user_id.into()]
             )]
         );
 
