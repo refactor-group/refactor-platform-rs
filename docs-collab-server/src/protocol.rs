@@ -74,10 +74,9 @@ pub enum ProtocolError {
 // so we can distinguish Truncated (length/read failure) from Utf8 (decode failure).
 fn read_var_string<D: Decoder>(dec: &mut D) -> Result<String, ProtocolError> {
     let bytes = dec.read_buf().map_err(|_| ProtocolError::Truncated)?;
-    match std::str::from_utf8(bytes) {
-        Ok(s) => Ok(s.to_owned()),
-        Err(_) => Err(ProtocolError::Utf8),
-    }
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| ProtocolError::Utf8)
 }
 
 fn read_var_buf<D: Decoder>(dec: &mut D) -> Result<Vec<u8>, ProtocolError> {
@@ -100,23 +99,21 @@ impl Frame {
             TAG_SYNC => decode_sync(&mut dec)?,
             TAG_AWARENESS => {
                 let payload = read_var_buf(&mut dec)?;
-                let upd =
-                    AwarenessUpdate::decode_v1(&payload).map_err(|e| ProtocolError::Malformed {
+                AwarenessUpdate::decode_v1(&payload)
+                    .map(Body::Awareness)
+                    .map_err(|e| ProtocolError::Malformed {
                         tag: TAG_AWARENESS,
                         reason: format!("awareness: {e}"),
-                    })?;
-                Body::Awareness(upd)
+                    })?
             }
             TAG_AUTH => decode_auth(&mut dec)?,
             TAG_QUERY_AWARENESS => Body::AwarenessQuery,
             TAG_STATELESS => Body::Stateless(read_var_string(&mut dec)?),
             TAG_CLOSE => Body::Close,
-            TAG_SYNC_STATUS => {
-                let v = dec
-                    .read_var::<i64>()
-                    .map_err(|_| ProtocolError::Truncated)?;
-                Body::SyncStatus(v == 1)
-            }
+            TAG_SYNC_STATUS => dec
+                .read_var::<i64>()
+                .map(|v| Body::SyncStatus(v == 1))
+                .map_err(|_| ProtocolError::Truncated)?,
             other => return Err(ProtocolError::UnknownTag(other)),
         };
 
@@ -188,11 +185,12 @@ fn decode_sync<D: Decoder>(dec: &mut D) -> Result<Body, ProtocolError> {
     match sub {
         SYNC_STEP1 => {
             let payload = read_var_buf(dec)?;
-            let sv = StateVector::decode_v1(&payload).map_err(|e| ProtocolError::Malformed {
-                tag: TAG_SYNC,
-                reason: format!("state vector: {e}"),
-            })?;
-            Ok(Body::SyncStep1(sv))
+            StateVector::decode_v1(&payload)
+                .map(Body::SyncStep1)
+                .map_err(|e| ProtocolError::Malformed {
+                    tag: TAG_SYNC,
+                    reason: format!("state vector: {e}"),
+                })
         }
         SYNC_STEP2 => Ok(Body::SyncStep2(read_var_buf(dec)?)),
         SYNC_UPDATE => Ok(Body::Update(read_var_buf(dec)?)),

@@ -115,30 +115,20 @@ async fn run_bootstrap_ddl(pool: &PgPool, sql: &str) -> Result<(), StorageError>
 fn is_concurrent_bootstrap_race(e: &sqlx::Error) -> bool {
     e.as_database_error()
         .and_then(|d| d.code())
-        .map(|c| matches!(c.as_ref(), "23505" | "42P06" | "42P07"))
-        .unwrap_or(false)
+        .is_some_and(|c| matches!(c.as_ref(), "23505" | "42P06" | "42P07"))
 }
 
 /// Reject schema names that aren't `[A-Za-z_][A-Za-z0-9_]*`. DDL can't bind
 /// identifiers, so this guards SQL injection through a misconfigured schema.
 fn validate_schema_ident(schema: &str) -> Result<(), StorageError> {
     let mut chars = schema.chars();
-    let first = chars
+    let valid = chars
         .next()
-        .ok_or_else(|| StorageError::Backend("schema name must not be empty".to_string()))?;
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return Err(StorageError::Backend(format!(
-            "invalid schema identifier: {schema}"
-        )));
-    }
-    for c in chars {
-        if !(c.is_ascii_alphanumeric() || c == '_') {
-            return Err(StorageError::Backend(format!(
-                "invalid schema identifier: {schema}"
-            )));
-        }
-    }
-    Ok(())
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    valid
+        .then_some(())
+        .ok_or_else(|| StorageError::Backend(format!("invalid schema identifier: {schema}")))
 }
 
 #[async_trait]
@@ -148,20 +138,16 @@ impl Storage for PostgresStorage {
             "SELECT state FROM {}.collab_documents WHERE name = $1",
             self.schema
         );
-        let row = sqlx::query(&sql)
+        sqlx::query(&sql)
             .bind(name)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
-        match row {
-            Some(r) => {
-                let bytes: Vec<u8> = r
-                    .try_get("state")
-                    .map_err(|e| StorageError::Backend(e.to_string()))?;
-                Ok(Some(bytes))
-            }
-            None => Ok(None),
-        }
+            .map_err(|e| StorageError::Backend(e.to_string()))?
+            .map(|r| {
+                r.try_get::<Vec<u8>, _>("state")
+                    .map_err(|e| StorageError::Backend(e.to_string()))
+            })
+            .transpose()
     }
 
     async fn store(&self, name: &str, state: &[u8]) -> Result<(), StorageError> {
