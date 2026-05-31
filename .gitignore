@@ -22,3 +22,7 @@ nginx/logs/
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
+
+# Per-phase implementation handoffs are working docs, not version-controlled.
+# Only the overall plan (docs/implementation-plans/docs-collab-server.md) is committed.
+docs/implementation-plans/handoffs/
