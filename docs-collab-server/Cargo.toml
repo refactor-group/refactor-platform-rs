@@ -1,0 +1,48 @@
+[package]
+name = "docs-collab-server"
+version = "0.1.0"
+edition = "2021"
+description = "Self-hosted collaborative document server speaking the Hocuspocus wire protocol over yrs."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "docs-collab-server"
+path = "src/main.rs"
+
+[dependencies]
+# Web + websockets
+axum = { version = "0.7", features = ["ws"] }
+
+# Storage
+sqlx = { version = "0.8", features = ["postgres", "time", "runtime-tokio"] }
+
+# Concurrent map
+dashmap = "6"
+
+# CRDT + sync protocol
+yrs = "0.26"
+
+# JWT (HS256)
+jsonwebtoken = "10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime + utilities
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Misc
+bytes = "1"
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
