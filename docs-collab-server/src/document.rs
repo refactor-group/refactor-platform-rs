@@ -4,6 +4,7 @@
 //! and a `broadcast` channel that fans out applied updates to peer connections.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 
@@ -19,12 +20,20 @@ pub struct ConnectionId(pub u64);
 pub struct Document;
 
 impl Document {
-    /// Hydrate from storage and create the broadcast channel.
-    pub async fn open(
+    /// Hydrate from storage and create the broadcast channel. Uses the
+    /// default debounce window for write-behind persistence.
+    pub async fn open(name: String, storage: Arc<dyn Storage>) -> Result<Arc<Self>, StorageError> {
+        Self::open_with_debounce(name, storage, Duration::from_millis(500)).await
+    }
+
+    /// Same as `open`, but pins the persist-debounce window. Tests use this
+    /// to drive deterministic coalescing under `tokio::time::pause`.
+    pub async fn open_with_debounce(
         _name: String,
         _storage: Arc<dyn Storage>,
+        _persist_debounce: Duration,
     ) -> Result<Arc<Self>, StorageError> {
-        todo!("Document::open in Phase 5")
+        todo!("Document::open_with_debounce in Phase 5")
     }
 
     /// Document name. Stable across the document's lifetime.

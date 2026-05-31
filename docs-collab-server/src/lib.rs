@@ -11,6 +11,9 @@ pub mod protocol;
 pub mod registry;
 pub mod storage;
 
+#[cfg(test)]
+mod test_support;
+
 pub use auth::{AuthError, Authenticator, JwtAuthenticator, Scope};
 pub use config::Config;
 pub use document::{ConnectionId, Document};
