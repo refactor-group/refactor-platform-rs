@@ -215,10 +215,19 @@ in the workspace lockfile** to avoid duplicate copies:
   (sync replies, `SyncStatus(true)` acks). Peer fan-out goes through the `join`
   broadcast receiver, which carries already-encoded wire bytes (cheap to clone,
   one encode per applied update across N peers).
-- **`registry.rs`** — `DocumentRegistry` over `DashMap<String, Arc<Document>>`:
-  `get_or_load(name)` is the entry; `Arc`-refcount + idle timer evicts (after
-  flush) when the last connection leaves. Frames route by their in-band name, so one
-  socket multiplexes many docs. Plus a test/diagnostic hook:
+- **`registry.rs`** — `DocumentRegistry` over
+  `DashMap<String, Arc<OnceCell<Weak<Document>>>>`. Single-flight loading via
+  `tokio::sync::OnceCell::get_or_try_init` (one `Storage::fetch` under
+  concurrent first-load); per-call `Mutex<Option<Arc<Document>>>` side-channel
+  hands the initiating caller the strong `Arc` while the cell only ever stores
+  a `Weak`. Concurrent non-initiating callers upgrade the `Weak` (which
+  succeeds because the winner is mid-return holding the strong ref).
+  Auto-eviction: each `Document` carries a `Weak<DocumentRegistry>` and on
+  `Drop` self-removes its cell *iff* `conns` is empty — an unjoined idle doc
+  collects as soon as its last external `Arc` releases. A still-joined doc
+  whose last external `Arc` happens to drop is left in the map so a
+  subsequent `evict_now` still reports it as present. Frames route by their
+  in-band name, so one socket multiplexes many docs. Public surface:
   ```rust
   impl DocumentRegistry {
       pub fn new(storage: Arc<dyn Storage>) -> Arc<Self>;
@@ -226,8 +235,8 @@ in the workspace lockfile** to avoid duplicate copies:
       pub async fn evict_now(&self, name: &str) -> Result<bool, StorageError>;
   }
   ```
-  `evict_now` runs the same flush-then-drop path the idle timer takes; tests use
-  it to drive eviction deterministically.
+  `evict_now` removes the cell, flushes when the `Weak` upgrades, and reports
+  presence at call time; tests use it to drive eviction deterministically.
 - **`auth.rs`** — `Authenticator` trait: `authenticate(token, doc_name) -> Result<Scope>`.
   Default impl verifies HS256 via `jsonwebtoken` and **MUST set
   `validation.validate_aud = false`** (proven: jsonwebtoken 10 defaults
@@ -262,11 +271,13 @@ in the workspace lockfile** to avoid duplicate copies:
   per-connection fan-in task feeding the same `mpsc`.) The Phase-2 multi-doc
   integration test asserts this works.
 
-  **No echo to sender (concern):** each connection has a `ConnectionId`; updates it
-  applies are published to the doc's `broadcast::Sender` **tagged with that id**, and
-  every consumer **skips frames carrying its own id** — otherwise the originator
-  re-receives its own update (double-delivery). The sender's own ack is the separate
-  `SyncStatus(true)`; peer fan-out is the broadcast.
+  **No echo to sender:** `Document` does this server-side, not as a wire tag.
+  Each `join` gets its own `broadcast::Sender<Vec<u8>>` stored in a
+  `HashMap<ConnectionId, Sender>`; fan-out iterates the map and sends to every
+  entry whose id differs from `from`, so a sender never appears in its own
+  receiver's stream. The sender's own ack is the separate `SyncStatus(true)`.
+  (Earlier draft proposed a single shared channel with id-tagged frames; the
+  per-sender topology is simpler and avoids consumer-side filtering.)
 
   Hundreds of sockets = hundreds of cheap tasks over a shared `Arc<DocumentRegistry>`;
   per-doc state shared via `Arc`, mutated under a short `RwLock` write only when

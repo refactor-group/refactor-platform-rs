@@ -22,8 +22,15 @@ sqlx = { version = "0.8", features = ["postgres", "time", "runtime-tokio"] }
 # Concurrent map
 dashmap = "6"
 
-# CRDT + sync protocol
-yrs = "0.26"
+# Poison-free sync mutex. Used for internal state that is never held across an
+# `.await`. Same shape as `std::sync::Mutex` but `lock()` does not return a
+# `Result`, so we never need `.unwrap()` on an infallible code path.
+parking_lot = "0.12"
+
+# CRDT + sync protocol. The `sync` feature makes Doc/Awareness observer
+# callback types `Send + Sync`, which lets us share an `Arc<Mutex<Awareness>>`
+# with the spawned write-behind persist task.
+yrs = { version = "0.26", features = ["sync"] }
 
 # JWT (HS256). Pin the same crypto backend (aws_lc_rs) the application uses,
 # so signatures and verifications interop bit-for-bit.
@@ -51,7 +58,7 @@ proptest = "1"
 tokio-tungstenite = "0.24"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures-util = "0.3"
-yrs = "0.26"
+yrs = { version = "0.26", features = ["sync"] }
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

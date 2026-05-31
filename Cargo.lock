@@ -1047,6 +1047,7 @@ dependencies = [
  "futures",
  "futures-util",
  "jsonwebtoken",
+ "parking_lot 0.12.5",
  "proptest",
  "serde",
  "serde_json",
