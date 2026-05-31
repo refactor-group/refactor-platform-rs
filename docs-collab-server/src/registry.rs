@@ -107,11 +107,15 @@ impl DocumentRegistry {
         }
     }
 
-    /// Drop the cell for `name` if it is still in the map. Called from
-    /// `Document::Drop` to collect orphaned entries; this path never flushes
-    /// (the doc is mid-drop and a flush would re-borrow it).
+    /// Collect the cell for `name` only if its `Document` is actually gone.
+    /// Called from `Document::Drop`; this path never flushes (the doc is
+    /// mid-drop and a flush would re-borrow it). The liveness guard is what
+    /// makes it identity-safe: a concurrent reload may have already replaced
+    /// the dead cell with a fresh live `Document` reusing this name, and an
+    /// unconditional remove-by-name would orphan that live entry (split-brain).
     pub(crate) fn forget(&self, name: &str) {
-        self.docs.remove(name);
+        self.docs
+            .remove_if(name, |_, cell| cell.get().and_then(Weak::upgrade).is_none());
     }
 }
 
