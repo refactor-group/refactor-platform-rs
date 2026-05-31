@@ -25,8 +25,9 @@ dashmap = "6"
 # CRDT + sync protocol
 yrs = "0.26"
 
-# JWT (HS256)
-jsonwebtoken = "10"
+# JWT (HS256). Pin the same crypto backend (aws_lc_rs) the application uses,
+# so signatures and verifications interop bit-for-bit.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -45,4 +46,12 @@ thiserror = "2"
 tracing = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full", "test-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+proptest = "1"
+tokio-tungstenite = "0.24"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures-util = "0.3"
+yrs = "0.26"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -17,4 +17,15 @@ impl DocumentRegistry {
     pub async fn get_or_load(&self, _name: &str) -> Result<Arc<Document>, StorageError> {
         todo!("DocumentRegistry::get_or_load in Phase 5")
     }
+
+    /// Force-evict an idle document (flushing first). Returns true if the
+    /// document was present and evicted. Production also runs this path from
+    /// the configured idle timer; tests call it directly.
+    pub async fn evict_now(&self, _name: &str) -> Result<bool, StorageError> {
+        todo!("DocumentRegistry::evict_now in Phase 5")
+    }
 }
+
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod tests;

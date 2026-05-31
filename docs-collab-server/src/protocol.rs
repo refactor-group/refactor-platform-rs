@@ -56,3 +56,7 @@ impl Frame {
         todo!("encode in Phase 3")
     }
 }
+
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;

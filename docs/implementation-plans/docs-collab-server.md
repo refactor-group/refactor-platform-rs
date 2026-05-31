@@ -191,7 +191,7 @@ in the workspace lockfile** to avoid duplicate copies:
   `MSG_SYNC_STEP_1/2/UPDATE` from `yrs::sync::protocol`. No async, no sockets.
 - **`document.rs`** — per-document shared state: `Arc<RwLock<yrs::sync::Awareness>>`
   (Awareness owns the `Doc`), loaded from `Storage` on first open, plus a
-  `tokio::sync::broadcast::Sender<Bytes>`. A `doc.observe_update_v1` subscription
+  `tokio::sync::broadcast::Sender<Vec<u8>>`. A `doc.observe_update_v1` subscription
   pushes each local update onto the channel (pattern from `yrs-warp/src/broadcast.rs`).
   **The returned `yrs::Subscription` MUST be stored as a named field** (e.g.
   `_update_sub: yrs::Subscription`): the callback unregisters when the handle drops,
@@ -199,10 +199,35 @@ in the workspace lockfile** to avoid duplicate copies:
   *handling* delegates to `yrs::sync::DefaultProtocol` (no reimplemented merge logic).
   Persistence: debounced write-behind on change (coalesce a burst into one
   `Storage::store`) + final flush on last-disconnect.
+
+  **Public API pinned by the frozen tests (Phase 2 baked these in):**
+  ```rust
+  impl Document {
+      pub async fn open(name: String, storage: Arc<dyn Storage>) -> Result<Arc<Self>, StorageError>;
+      pub fn name(&self) -> &str;
+      pub fn join(self: &Arc<Self>) -> (ConnectionId, broadcast::Receiver<Vec<u8>>);
+      pub fn leave(&self, id: ConnectionId);
+      pub async fn handle(&self, from: ConnectionId, body: Body) -> Result<Vec<Body>, StorageError>;
+      pub async fn flush(&self) -> Result<(), StorageError>;
+  }
+  ```
+  Return shape: `handle` returns frames intended for the *originating* connection
+  (sync replies, `SyncStatus(true)` acks). Peer fan-out goes through the `join`
+  broadcast receiver, which carries already-encoded wire bytes (cheap to clone,
+  one encode per applied update across N peers).
 - **`registry.rs`** — `DocumentRegistry` over `DashMap<String, Arc<Document>>`:
-  `get_or_load(name)` is the only entry; `Arc`-refcount + idle timer evicts (after
+  `get_or_load(name)` is the entry; `Arc`-refcount + idle timer evicts (after
   flush) when the last connection leaves. Frames route by their in-band name, so one
-  socket multiplexes many docs.
+  socket multiplexes many docs. Plus a test/diagnostic hook:
+  ```rust
+  impl DocumentRegistry {
+      pub fn new(storage: Arc<dyn Storage>) -> Arc<Self>;
+      pub async fn get_or_load(&self, name: &str) -> Result<Arc<Document>, StorageError>;
+      pub async fn evict_now(&self, name: &str) -> Result<bool, StorageError>;
+  }
+  ```
+  `evict_now` runs the same flush-then-drop path the idle timer takes; tests use
+  it to drive eviction deterministically.
 - **`auth.rs`** — `Authenticator` trait: `authenticate(token, doc_name) -> Result<Scope>`.
   Default impl verifies HS256 via `jsonwebtoken` and **MUST set
   `validation.validate_aud = false`** (proven: jsonwebtoken 10 defaults
@@ -345,15 +370,20 @@ silently massaged to pass. This guards against tests being bent to fit the code.
   `tests/protocol_conformance.rs`, `tests/auth.rs`, `tests/storage_pg.rs`,
   `tests/document_sync.rs`, `tests/e2e_provider.rs`, plus committed
   `tests/fixtures/`. These are the **authoritative, bias-resistant gate**.
-- **Unit tests live alongside their module** as idiomatic `#[cfg(test)] mod tests`
-  blocks — fast inner-loop checks for the implementer.
+- **Unit tests live alongside their module** in a sibling file, wired via
+  `#[cfg(test)] #[path = "<mod>_tests.rs"] mod tests;` from the source module.
+  This keeps the tests in the module's namespace (full access to private items
+  via `use super::*;`) while letting them be **physically frozen independently**
+  of the source file. (Phase-2 decision; an in-file `mod tests { }` block at
+  the bottom of a source file cannot be chmod-frozen without also locking the
+  source above it.)
 - **Freeze mechanism:** after the test suite is authored (Phase 2), run
-  `chmod a-w` on the `tests/` files and `tests/fixtures/` so they're physically
-  read-only during implementation; changing one requires a deliberate `chmod +w`,
-  making any test edit conscious and visible (and avoided per the principle). The
-  freeze is lifted only at the final triage phase. (In-file unit tests share their
-  module file so they can't be chmod-frozen; the frozen `tests/` suite is what
-  enforces the no-bias guarantee, so the highest-value conformance tests go there.)
+  `chmod -R a-w` on `docs-collab-server/tests/` plus
+  `chmod a-w docs-collab-server/src/{protocol,document,registry}_tests.rs`.
+  Both directories of frozen files are then physically read-only; changing one
+  requires a deliberate `chmod +w`, making any test edit conscious and visible
+  (and avoided per the principle). The freeze is lifted only at the final
+  triage phase.
 - **API implication:** because `tests/` integration tests see only the public API,
   `protocol.rs` (and the `Storage`/`Authenticator` traits, `Document`/`Registry`
   entry points) expose a clean `pub` surface. Genuinely internal white-box checks

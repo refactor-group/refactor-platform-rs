@@ -11,9 +11,9 @@ pub mod protocol;
 pub mod registry;
 pub mod storage;
 
-pub use auth::{Authenticator, JwtAuthenticator, Scope};
+pub use auth::{AuthError, Authenticator, JwtAuthenticator, Scope};
 pub use config::Config;
-pub use document::Document;
+pub use document::{ConnectionId, Document};
 pub use protocol::{Body, Frame, ProtocolError};
 pub use registry::DocumentRegistry;
 pub use storage::{MemoryStorage, PostgresStorage, Storage, StorageError};
