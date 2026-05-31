@@ -4,9 +4,9 @@
 //! `PostgresStorage` backs runtime via `sqlx`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use thiserror::Error;
@@ -47,19 +47,16 @@ impl MemoryStorage {
 #[async_trait]
 impl Storage for MemoryStorage {
     async fn fetch(&self, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        Ok(self.inner.lock().unwrap().get(name).cloned())
+        Ok(self.inner.lock().get(name).cloned())
     }
 
     async fn store(&self, name: &str, state: &[u8]) -> Result<(), StorageError> {
-        self.inner
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), state.to_vec());
+        self.inner.lock().insert(name.to_string(), state.to_vec());
         Ok(())
     }
 
     async fn delete(&self, name: &str) -> Result<(), StorageError> {
-        self.inner.lock().unwrap().remove(name);
+        self.inner.lock().remove(name);
         Ok(())
     }
 }
