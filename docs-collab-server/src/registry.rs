@@ -12,6 +12,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
+use tracing::warn;
 
 use crate::document::Document;
 use crate::storage::{Storage, StorageError};
@@ -22,6 +23,7 @@ const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(500);
 /// shared across every connection currently joined to it.
 pub struct DocumentRegistry {
     storage: Arc<dyn Storage>,
+    persist_debounce: Duration,
     docs: DashMap<String, Arc<OnceCell<Weak<Document>>>>,
     /// Back-reference handed to each `Document` so it can self-remove on drop.
     me: Weak<DocumentRegistry>,
@@ -29,8 +31,17 @@ pub struct DocumentRegistry {
 
 impl DocumentRegistry {
     pub fn new(storage: Arc<dyn Storage>) -> Arc<Self> {
+        Self::new_with_debounce(storage, DEFAULT_DEBOUNCE)
+    }
+
+    /// Same as `new`, but pins the persist-debounce window applied to every
+    /// `Document` minted through `get_or_load`. The runtime entrypoint uses this
+    /// to honor `--persist-debounce-ms`; the default constructor keeps the
+    /// frozen-test debounce so registry/document unit tests stay unaffected.
+    pub fn new_with_debounce(storage: Arc<dyn Storage>, persist_debounce: Duration) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             storage,
+            persist_debounce,
             docs: DashMap::new(),
             me: me.clone(),
         })
@@ -57,17 +68,14 @@ impl DocumentRegistry {
             let arc_slot_for_init = arc_slot.clone();
             let storage = self.storage.clone();
             let registry = self.me.clone();
+            let debounce = self.persist_debounce;
             let name_for_init = name.to_string();
 
             let weak = cell
                 .get_or_try_init(|| async move {
-                    let doc = Document::open_in_registry(
-                        name_for_init,
-                        storage,
-                        DEFAULT_DEBOUNCE,
-                        registry,
-                    )
-                    .await?;
+                    let doc =
+                        Document::open_in_registry(name_for_init, storage, debounce, registry)
+                            .await?;
                     let weak = Arc::downgrade(&doc);
                     *arc_slot_for_init.lock() = Some(doc);
                     Ok::<_, StorageError>(weak)
@@ -105,6 +113,33 @@ impl DocumentRegistry {
             Some(doc) => doc.flush().await.map(|_| true),
             None => Ok(was_present),
         }
+    }
+
+    /// Flush every currently-live document. Used by graceful shutdown so any
+    /// updates still inside a debounce window land in storage before exit.
+    /// `Document::Drop` aborts the persist task without flushing, so an explicit
+    /// pass here is the only thing that saves in-flight edits on stop.
+    ///
+    /// Best-effort: errors do not short-circuit the loop. Each doc gets a flush
+    /// attempt; the first error encountered is returned, the rest are logged.
+    pub async fn flush_all(&self) -> Result<(), StorageError> {
+        // Snapshot strong refs out of the DashMap so we can release the shard
+        // locks before any `.await`, and so the docs stay alive across flush
+        // (preventing `Drop`-driven abort of their persist tasks mid-flight).
+        let live: Vec<Arc<Document>> = self
+            .docs
+            .iter()
+            .filter_map(|entry| entry.value().get().and_then(Weak::upgrade))
+            .collect();
+
+        let mut first_err: Option<StorageError> = None;
+        for doc in live {
+            if let Err(e) = doc.flush().await {
+                warn!(name = %doc.name(), error = %e, "shutdown flush failed");
+                first_err.get_or_insert(e);
+            }
+        }
+        first_err.map_or(Ok(()), Err)
     }
 
     /// Collect the cell for `name` only if its `Document` is actually gone.

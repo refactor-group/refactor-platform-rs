@@ -231,12 +231,22 @@ in the workspace lockfile** to avoid duplicate copies:
   ```rust
   impl DocumentRegistry {
       pub fn new(storage: Arc<dyn Storage>) -> Arc<Self>;
+      pub fn new_with_debounce(storage: Arc<dyn Storage>, persist_debounce: Duration) -> Arc<Self>;
       pub async fn get_or_load(&self, name: &str) -> Result<Arc<Document>, StorageError>;
       pub async fn evict_now(&self, name: &str) -> Result<bool, StorageError>;
+      pub async fn flush_all(&self) -> Result<(), StorageError>;
   }
   ```
   `evict_now` removes the cell, flushes when the `Weak` upgrades, and reports
   presence at call time; tests use it to drive eviction deterministically.
+  `new_with_debounce` is the runtime constructor: it threads the configured
+  persist-debounce window into every `Document` minted through `get_or_load`,
+  while `new` keeps delegating to it with `DEFAULT_DEBOUNCE` so the frozen
+  registry/document unit tests stay on the same value. `flush_all` is the
+  graceful-shutdown hook: snapshots strong refs out of the DashMap, then
+  serially flushes each currently-live document. Required because
+  `Document::Drop` aborts the persist task without flushing, so without this
+  explicit pass any update still inside its debounce window is lost on stop.
 - **`auth.rs`** — `Authenticator` trait: `authenticate(token, doc_name) -> Result<Scope>`.
   Default impl verifies HS256 via `jsonwebtoken` and **MUST set
   `validation.validate_aud = false`** (proven: jsonwebtoken 10 defaults
@@ -260,16 +270,21 @@ in the workspace lockfile** to avoid duplicate copies:
   over three sources — (1) **inbound** client frames → decode → auth-gate → apply via
   registry → reply (`SyncStep2` to a `SyncStep1`; `SyncStatus(true)` to the sender
   after applying+persisting its `Update`); (2) **broadcast** peer updates → this
-  sink; (3) **shutdown** (server signal / client close). Outbound writes funnel
-  through a per-connection `mpsc::Sender<Bytes>` so the sink has a single writer.
+  sink; (3) **shutdown** (a `watch::Receiver<bool>` flipped to `true` by `serve`
+  on Ctrl-C, plus client close). **Sink ownership: the per-connection actor task
+  itself owns the `SplitSink`** and writes to it directly from the select arms.
+  No outbound `mpsc` is needed because `tokio::select!` already serializes the
+  two write sources (direct protocol replies + peer fan-out) on the single
+  writer.
 
-  **Dynamic multi-doc fan-in (concern):** `tokio::select!` is a static macro and
-  cannot select over a runtime-sized set of `broadcast::Receiver`s, yet one socket
-  may join many docs. Use a **`FuturesUnordered<BroadcastStream<Bytes>>`** (one
-  `tokio_stream::wrappers::BroadcastStream` per joined doc) polled in a *single*
-  `select!` arm; joining/leaving a doc pushes/removes a stream. (Alt: a dedicated
-  per-connection fan-in task feeding the same `mpsc`.) The Phase-2 multi-doc
-  integration test asserts this works.
+  **Dynamic multi-doc fan-in:** `tokio::select!` is a static macro and cannot
+  select over a runtime-sized set of `broadcast::Receiver`s, yet one socket may
+  join many docs. Use a **`tokio_stream::StreamMap<String, BroadcastStream<Vec<u8>>>`**
+  (one `BroadcastStream` per joined doc, keyed by doc name) polled in a single
+  `select!` arm; joining inserts into the map, leaving removes. The arm is
+  guarded `if !peers.is_empty()` so an empty `StreamMap` (which yields `None`
+  immediately) does not spin the loop. The Phase-2 multi-doc integration test
+  asserts this works.
 
   **No echo to sender:** `Document` does this server-side, not as a wire tag.
   Each `join` gets its own `broadcast::Sender<Vec<u8>>` stored in a
@@ -282,7 +297,9 @@ in the workspace lockfile** to avoid duplicate copies:
   Hundreds of sockets = hundreds of cheap tasks over a shared `Arc<DocumentRegistry>`;
   per-doc state shared via `Arc`, mutated under a short `RwLock` write only when
   applying an update. Bounded channels give backpressure; a lagging `BroadcastStream`
-  (`Lagged`) forces a resync rather than dropping the connection.
+  (`BroadcastStreamRecvError::Lagged`) is logged and the actor continues. A
+  dropped broadcast item is tolerable because the CRDT reconverges on the next
+  update, so no explicit resync needs to be triggered from the Lagged branch.
 - **`rest.rs`** — axum `POST`/`DELETE /api/documents/:name`. **Auth compares the
   `Authorization` header *verbatim* to the management key — NO `Bearer` prefix**
   (verified: `gateway/tiptap.rs:26-36` sets the raw key directly as the header
@@ -295,12 +312,21 @@ in the workspace lockfile** to avoid duplicate copies:
   test constructor), but self-contained (no dependency on `service`). Fields:
   `--database-url`, `--jwt-signing-key`, `--management-auth-key`, `--bind-addr`
   (default `0.0.0.0:1234`), idle/persist-debounce timeouts.
-- **`main.rs`** — builds the axum `Router` (WS `/` + REST `/api/documents/:name`),
-  shares `AppState { registry, storage, authenticator, config }`. Installs a
-  `tokio::signal::ctrl_c()` handler that signals all connection tasks and **awaits
-  their final flush** before exit, so a deliberate shutdown doesn't lose
-  debounced-but-unwritten updates (without it, killing mid-burst drops pending
-  writes — acceptable for a crash, not for an orderly stop).
+- **`main.rs` + `serve`** — the production entrypoint splits in two: `main.rs`
+  is a thin tokio bootstrap that installs `tracing-subscriber` (with
+  `RUST_LOG`-driven `EnvFilter`, defaulting to `info`) and hands off to
+  `docs_collab_server::serve(Config)`. `serve` lives in `ws.rs` and is the
+  library-public boot path: it refuses to start when either secret
+  (`--jwt-signing-key` / `--management-auth-key`) is absent (an empty fallback
+  would silently accept every token and every management call), builds the
+  axum `Router` via `build_router(AppState { registry, storage, authenticator,
+  management_auth_key, shutdown })`, binds the listener, installs
+  `tokio::signal::ctrl_c()` as the graceful-shutdown future, and after
+  `axum::serve(...).with_graceful_shutdown(...)` returns calls
+  `registry.flush_all().await` so debounced-but-unwritten updates land in
+  storage before exit (without it, killing mid-burst drops pending writes —
+  acceptable for a crash, not for an orderly stop). `build_router` is
+  separately public so tests can drive the server in-process.
 
 Add `docs-collab-server` to `[workspace].members` but NOT `default-members` in the
 root `Cargo.toml` (mirrors the `testing-tools` exclusion).

@@ -9,7 +9,9 @@ pub mod config;
 pub mod document;
 pub mod protocol;
 pub mod registry;
+pub mod rest;
 pub mod storage;
+pub mod ws;
 
 #[cfg(test)]
 mod test_support;
@@ -20,3 +22,4 @@ pub use document::{ConnectionId, Document};
 pub use protocol::{Body, Frame, ProtocolError};
 pub use registry::DocumentRegistry;
 pub use storage::{MemoryStorage, PostgresStorage, Storage, StorageError};
+pub use ws::{build_router, serve, AppState, ServeError};

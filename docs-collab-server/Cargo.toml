@@ -51,6 +51,9 @@ clap = { version = "4", features = ["derive", "env"] }
 bytes = "1"
 thiserror = "2"
 tracing = "0.1"
+# Subscriber for the binary's logging. Without it the `tracing` calls in the
+# library layer emit nothing, which would silently drop all server observability.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "test-util"] }
