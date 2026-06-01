@@ -523,6 +523,38 @@ Beyond the frozen automated suite above:
 7. **Delete**: delete the session → REST `DELETE` → row removed.
 8. Dogfood against daily notes for ~a week before considering prod/beta.
 
+## Known gaps / follow-ups (recorded Phase 9)
+
+The core round-trip is validated end-to-end (sync, presence, persistence, auth,
+REST create/delete). These are the known gaps between our focused subset and a
+faithful Hocuspocus server, to close before prod/beta. A local run runbook lives at
+`docs/test-plans/docs-collab-server-local-e2e.md`.
+
+**Pre-prod hardening:**
+1. **DELETE does not evict a live in-memory `Document`.** `rest::delete_document`
+   deletes the row but a doc being edited at delete-time can re-write it via its
+   debounce. Needs a drop-without-flush eviction path. Safe today because the app
+   deletes only when nobody is editing.
+2. **Management `Authorization` compare is not constant-time** (`rest::check_auth`
+   uses `==`). Low risk (internal, server-config secret); `subtle::ConstantTimeEq`
+   is a cheap hardening.
+
+**Spec fidelity (server is currently purely reactive; faithful Hocuspocus takes
+initiative at two moments):**
+3. **Idle keepalive.** Idle connections reconnect ~every 30s (provider
+   `messageReconnectTimeout`); confirmed via tcpdump as benign (one connection at a
+   time, no data loss) but it flickers presence. Fix server-side, NOT via the
+   client's `forceSyncInterval` (it re-arms `unsyncedChanges` each tick — see #4 — and
+   WS ping/pong does not reset the provider's data-frame liveness timer). First verify
+   whether real Hocuspocus keeps idle single-client sockets alive; if it also
+   reconnects, ours is conformant as-is.
+4. **`SyncStatus` after the initial sync.** The provider's `unsyncedChanges` counter
+   (set to 1 by `startSync`) only clears on a server `SyncStatus`; we send `SyncStatus`
+   only after an `Update`, so it never returns to 0 and `hasUnsyncedChanges` stays
+   true. Invisible today (the frontend surfaces `WebSocketStatus`/`synced`, not
+   `hasUnsyncedChanges`), but spec-correct behavior is to ack the initial handshake.
+   Editing works regardless because `synced` is set independently on `SyncStep2`.
+
 ## Explicitly out of scope
 - Semantic search / embeddings / pgvector / reindex pipeline.
 - docker-compose / deploy-workflow / production env wiring.
