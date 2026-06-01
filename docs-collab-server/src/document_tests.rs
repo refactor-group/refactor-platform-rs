@@ -14,14 +14,42 @@ use std::time::Duration;
 use super::*;
 use crate::protocol::Body;
 use crate::test_support::CountingStorage;
+use yrs::{Text, Transact, WriteTxn};
 
-#[test]
-#[ignore = "fill in: broadcast entries must carry the originating ConnectionId so consumers can skip their own echo"]
-fn broadcast_entries_carry_originating_connection_id() {}
+// RETIRED (Phase 10): broadcast entries are NOT id-tagged. Echo-skip is structural
+// `Document::join` gives each connection its own broadcast::Sender and fan-out
+// skips the originating ConnectionId. No-self-echo is covered by
+// tests/document_sync.rs::{two_clients_converge_via_document,
+// awareness_updates_fan_out_to_peers}.
 
-#[test]
-#[ignore = "fill in: the yrs::Subscription returned by observe_update_v1 must be retained as a named field"]
-fn update_observe_subscription_outlives_first_callback() {}
+#[tokio::test(start_paused = true)]
+async fn update_observe_subscription_outlives_first_callback() {
+    let storage = Arc::new(CountingStorage::new());
+    let window = Duration::from_millis(500);
+    let doc = Document::open_with_debounce("d".into(), storage.clone(), window)
+        .await
+        .expect("open");
+
+    // Two separate write+settle cycles. Mutate the inner Doc DIRECTLY (not via
+    // handle()), so persistence can only fire through the retained observer.
+    for _ in 0..2 {
+        {
+            let aw = doc.awareness.lock();
+            let mut txn = aw.doc().transact_mut();
+            let text = txn.get_or_insert_text("t");
+            text.push(&mut txn, "x");
+        } // drop guard + txn before advancing time
+        tokio::time::advance(window + Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        storage.stores(),
+        2,
+        "observer must persist each update cycle; a store on the 2nd cycle proves \
+         the observe_update_v1 subscription outlived the first callback"
+    );
+}
 
 #[tokio::test(start_paused = true)]
 async fn debounced_writes_coalesce_a_burst() {

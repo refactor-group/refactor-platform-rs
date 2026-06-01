@@ -2,18 +2,18 @@
 //! from `protocol.rs` so they can chmod a-w alongside `tests/`. Has access to
 //! private items in this module via `use super::*;`.
 //!
-//! The bias-resistant gate is `tests/protocol_conformance.rs`; these are for
-//! inner-loop checks that the public Frame API cannot reach (private helpers,
-//! codec variant choice, byte-budget bounds). Filled in alongside the
-//! implementation; un-freeze with chmod +w before editing.
+//! Protocol white-box coverage now lives in `tests/protocol_conformance.rs`
+//! (byte-exact round-trips against frozen fixtures). The two former white-box
+//! stubs here were retired in Phase 10 once that suite proved sufficient.
 
 #[allow(unused_imports)]
 use super::*;
 
-#[test]
-#[ignore = "fill in: SyncStatus payload must be varInt (signed) not varUint"]
-fn sync_status_uses_var_int_not_var_uint() {}
+// RETIRED (Phase 10): SyncStatus carries only 0/1, where lib0 signed varInt and
+// unsigned varUint are byte-identical, so the distinction is unobservable here.
+// Covered byte-exactly by tests/protocol_conformance.rs (sync_status.bin fixture
+// + round_trip_simple_bodies).
 
-#[test]
-#[ignore = "fill in: Auth sub-tag dispatch is hand-rolled, not via yrs::sync::Message::Auth"]
-fn auth_sub_tag_path_is_separate_from_yrs_sync_message_auth() {}
+// RETIRED (Phase 10): the hand-rolled auth sub-tag path is proven byte-exact by
+// tests/protocol_conformance.rs (auth_token/authenticated/permission_denied
+// fixtures) and the negative case unknown_auth_subtag_is_rejected.
