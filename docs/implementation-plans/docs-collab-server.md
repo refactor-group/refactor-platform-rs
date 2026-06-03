@@ -580,10 +580,9 @@ initiative at two moments):**
   drives a hard requirement in `auth.rs`.
 
 **Still to verify at runtime/implementation (not assumable from docs):**
-- Local Postgres confirmed reachable this session: Postgres.app **pg 17.10**, DB
-  `refactor`, role `refactor`, password `password` (from `scripts/rebuild_db.sh` +
-  the `sync-prod-db` skill), schema `refactor_platform` present. Connection:
-  `postgres://refactor:password@localhost:5432/refactor`.
+- Local Postgres confirmed reachable this session: Postgres.app **pg 17.10**, schema
+  `refactor_platform` present. Use the local `DATABASE_URL` from your environment / the
+  project's `.env` (see `scripts/rebuild_db.sh`); do not hardcode credentials here.
 - `axum 0.7.7` `WebSocketUpgrade` delivers Hocuspocus binary frames intact (proven
   only when the round-trip runs / the e2e test passes).
 - End-to-end CRDT interop with a real `@hocuspocus/provider` — Phase-2 fixtures +
