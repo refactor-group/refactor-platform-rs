@@ -115,7 +115,6 @@ impl Client {
 /// `name` is the identifier; equals `coaching_sessions.collab_document_name`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub(crate) struct Document {
     pub(crate) name: String,
 

@@ -21,9 +21,9 @@ use service::config::ApiVersion;
     path = "/admin/tiptap/metrics/totals",
     params(ApiVersion),
     responses(
-        (status = 200, description = "Platform totals (total_documents, total_bytes, archived_doccuments)"),
+        (status = 200, description = "Platform totals (total_documents, total_bytes, archived_documents)"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden - SuperAdminonly"),
+        (status = 403, description = "Forbidden - SuperAdmin only"),
         (status = 502, description = "TipTap upstream error"),
     ),
     security(("cookie_auth" = []))

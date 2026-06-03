@@ -13,6 +13,7 @@ use service::config::Config;
 use crate::error::Error;
 use crate::gateway::tiptap_metrics::{Client, Document};
 use crate::Id;
+use entity_api::tiptap_metrics::SessionOrgRow;
 
 /// Soft cap on returned abandoned docs. A wall of thousands buries useful
 /// signal; admins get a representative sample plus the true total.
@@ -83,9 +84,6 @@ pub async fn platform_totals(config: &Config) -> Result<PlatformTotals, Error> {
     });
     Ok(totals)
 }
-
-// Re-export the row type for tests (and any future caller in this module).
-pub use entity_api::tiptap_metrics::SessionOrgRow;
 
 /// Per-organization TipTap document metrics.
 ///
@@ -359,8 +357,6 @@ mod tests {
 
     #[test]
     fn reconcile_abandoned_returns_tiptap_docs_with_no_matching_session() {
-        use crate::gateway::tiptap_metrics::Document;
-
         let docs = vec![
             // Mapped to a live session - not abandoned
             Document {
@@ -411,8 +407,6 @@ mod tests {
 
     #[test]
     fn reconcile_abandoned_truncates_and_reports_total() {
-        use crate::gateway::tiptap_metrics::Document;
-
         // 502 orphand -> truncated to 500, total found = 502
         let docs: Vec<Document> = (0..502)
             .map(|i| Document {
