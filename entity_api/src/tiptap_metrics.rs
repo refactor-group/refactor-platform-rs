@@ -26,9 +26,13 @@ pub struct SessionOrgRow {
     pub organization_name: String,
 }
 
-/// Fetch session -> org mappings for a batch of TipTap document names.
-/// Single round-trip via a 3-way inner join. No N+1: one query per call
-/// regardless of how many doc names are in scope.
+/// Max doc names per `IN (...)` batch. PostgreSQL caps a single statement at
+/// 65,535 bind parameters; batching keeps a large doc set under that ceiling.
+const DOC_NAME_BATCH_SIZE: usize = 10_000;
+
+/// Fetch session -> org mappings for a set of TipTap document names.
+/// A 3-way inner join per batch; doc names are chunked so a very large set
+/// can't exceed PostgreSQL's bind-parameter limit. No N+1 within a batch.
 pub async fn find_sessions_with_org_by_doc_names(
     db: &impl ConnectionTrait,
     doc_names: Vec<String>,
@@ -38,33 +42,38 @@ pub async fn find_sessions_with_org_by_doc_names(
         return Ok(Vec::new());
     }
 
-    Ok(coaching_sessions::Entity::find()
-        // Two chained inner joins: sessions -> relationships -> organizations.
-        // SeaORM tracks the "current" table for each subsequent join, so the
-        // second `Relation::Organizations` resolves against coaching_relationships.
-        .join(
-            JoinType::InnerJoin,
-            coaching_sessions::Relation::CoachingRelationships.def(),
-        )
-        .join(
-            JoinType::InnerJoin,
-            coaching_relationships::Relation::Organizations.def(),
-        )
-        // `is_in` translates to SQL `IN (...)`. NULLs are auto-excluded by IN.
-        .filter(coaching_sessions::Column::CollabDocumentName.is_in(doc_names))
-        // `select_only` switches off the default "select all columns of E".
-        // From here, only explicitly-added columns appear in the projection.
-        .select_only()
-        .column(coaching_sessions::Column::CollabDocumentName)
-        // `column_as` lets us alias columns to match the FromQueryResult
-        // struct field names. Required when columns from different tables
-        // share names (here, `id` and `name`).
-        .column_as(organizations::Column::Id, "organization_id")
-        .column_as(organizations::Column::Name, "organization_name")
-        // Materialize each row into the typed struct.
-        .into_model::<SessionOrgRow>()
-        .all(db)
-        .await?)
+    let mut rows = Vec::new();
+    for batch in doc_names.chunks(DOC_NAME_BATCH_SIZE) {
+        let batch_rows = coaching_sessions::Entity::find()
+            // Two chained inner joins: sessions -> relationships -> organizations.
+            // SeaORM tracks the "current" table for each subsequent join, so the
+            // second `Relation::Organizations` resolves against coaching_relationships.
+            .join(
+                JoinType::InnerJoin,
+                coaching_sessions::Relation::CoachingRelationships.def(),
+            )
+            .join(
+                JoinType::InnerJoin,
+                coaching_relationships::Relation::Organizations.def(),
+            )
+            // `is_in` translates to SQL `IN (...)`. NULLs are auto-excluded by IN.
+            .filter(coaching_sessions::Column::CollabDocumentName.is_in(batch.iter().cloned()))
+            // `select_only` switches off the default "select all columns of E".
+            // From here, only explicitly-added columns appear in the projection.
+            .select_only()
+            .column(coaching_sessions::Column::CollabDocumentName)
+            // `column_as` lets us alias columns to match the FromQueryResult
+            // struct field names. Required when columns from different tables
+            // share names (here, `id` and `name`).
+            .column_as(organizations::Column::Id, "organization_id")
+            .column_as(organizations::Column::Name, "organization_name")
+            // Materialize each row into the typed struct.
+            .into_model::<SessionOrgRow>()
+            .all(db)
+            .await?;
+        rows.extend(batch_rows);
+    }
+    Ok(rows)
 }
 
 /// Dump every non-null collab_document_name from coaching sessions.

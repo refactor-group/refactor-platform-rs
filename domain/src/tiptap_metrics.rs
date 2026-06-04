@@ -6,6 +6,7 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
+use entity_api::tiptap_metrics::SessionOrgRow;
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use service::config::Config;
@@ -13,7 +14,6 @@ use service::config::Config;
 use crate::error::Error;
 use crate::gateway::tiptap_metrics::{Client, Document};
 use crate::Id;
-use entity_api::tiptap_metrics::SessionOrgRow;
 
 /// Soft cap on returned abandoned docs. A wall of thousands buries useful
 /// signal; admins get a representative sample plus the true total.
@@ -65,7 +65,7 @@ pub async fn platform_totals(config: &Config) -> Result<PlatformTotals, Error> {
     // Build a client per call. `reqwest::Client` is cheap to construct; the
     // expensive part (the connection pool) warms on first request. Hoist into
     // AppState only if profiling shows setup is a hotspot
-    let client = Client::new(config).await?;
+    let client = Client::new(config)?;
     let docs = client.list_all_documents().await?;
 
     // `iter().fold` is the idiomatic multi-counter accumulator. Equivalent to
@@ -111,7 +111,7 @@ pub async fn per_org_metrics(
     db: &DatabaseConnection,
     config: &Config,
 ) -> Result<Vec<OrgMetrics>, Error> {
-    let client = Client::new(config).await?;
+    let client = Client::new(config)?;
     let docs = client.list_all_documents().await?;
 
     // Collect live doc names for the DB lookup. Archived docs don't contribute
@@ -144,7 +144,7 @@ pub async fn abandoned_documents(
     db: &DatabaseConnection,
     config: &Config,
 ) -> Result<AbandonedReport, Error> {
-    let client = Client::new(config).await?;
+    let client = Client::new(config)?;
 
     // Snapshot TipTap first - it's the slower source (HTTP, paginated).
     // Reading it first means any session created during the walk that
@@ -205,6 +205,11 @@ fn aggregate_by_org(docs: &[Document], rows: &[SessionOrgRow]) -> Vec<OrgMetrics
         .map(|d| (d.name.as_str(), d.size))
         .collect();
 
+    // `collab_document_name` has no UNIQUE constraint, so the join can return
+    // several session rows for one doc name. Count each live doc once (first
+    // owning org wins); otherwise document_count and total_bytes inflate.
+    let mut seen_docs: HashSet<&str> = HashSet::new();
+
     // Per-org accumulator. `entry().or_insert_with(...)` is the idiomatic
     // group-by pattern - single hash lookup per insert vs contains_key+insert.
     let mut by_org: HashMap<Id, OrgMetrics> = HashMap::new();
@@ -217,6 +222,10 @@ fn aggregate_by_org(docs: &[Document], rows: &[SessionOrgRow]) -> Vec<OrgMetrics
         let Some(&size) = size_by_name.get(doc_name.as_str()) else {
             continue;
         };
+        // Already attributed this doc to an org; skip the duplicate row.
+        if !seen_docs.insert(doc_name.as_str()) {
+            continue;
+        }
 
         let entry = by_org
             .entry(row.organization_id)
@@ -353,6 +362,39 @@ mod tests {
         assert_eq!(result[1].organization_id, org_y);
         assert_eq!(result[1].document_count, 1);
         assert_eq!(result[1].total_bytes, 50);
+    }
+
+    /// Two sessions sharing one collab_document_name must count the live doc
+    /// once. `collab_document_name` has no UNIQUE constraint, so the join can
+    /// fan out; without dedupe both document_count and total_bytes inflate.
+    #[test]
+    fn aggregate_by_org_dedupes_duplicate_doc_names() {
+        let org_x = Id::new_v4();
+
+        let docs = vec![Document {
+            name: "shared".to_string(),
+            size: 100,
+            archived: false,
+        }];
+
+        // Same doc name on two rows (e.g. two sessions in the same org).
+        let rows = vec![
+            SessionOrgRow {
+                collab_document_name: Some("shared".to_string()),
+                organization_id: org_x,
+                organization_name: "X".to_string(),
+            },
+            SessionOrgRow {
+                collab_document_name: Some("shared".to_string()),
+                organization_id: org_x,
+                organization_name: "X".to_string(),
+            },
+        ];
+
+        let result = aggregate_by_org(&docs, &rows);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].document_count, 1);
+        assert_eq!(result[0].total_bytes, 100);
     }
 
     #[test]

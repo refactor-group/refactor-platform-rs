@@ -3,17 +3,18 @@
 //! Three GETs under `/admin/tiptap/metrics/*`, gated by SuperAdmin via the
 //! `protect::tiptap_metrics::admin_only` middleware in the router.
 
-use crate::controller::ApiResponse;
-use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
-};
-use crate::{AppState, Error};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::tiptap_metrics as TiptapMetricsApi;
 use service::config::ApiVersion;
+
+use crate::controller::ApiResponse;
+use crate::extractors::{
+    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+};
+use crate::{AppState, Error};
 
 /// Get platform-wide TipTap totals
 #[utoipa::path(

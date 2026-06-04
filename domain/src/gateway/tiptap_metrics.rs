@@ -29,8 +29,8 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    pub(crate) async fn new(config: &Config) -> Result<Self, Error> {
-        let client = build_client(config).await?;
+    pub(crate) fn new(config: &Config) -> Result<Self, Error> {
+        let client = build_client(config)?;
 
         let base_url = config.tiptap_url().ok_or_else(|| {
             warn!("TipTap URL missing from config (metrics gateway init)");
@@ -127,8 +127,8 @@ pub(crate) struct Document {
 
 pub(crate) type DocumentsPage = Vec<Document>;
 
-async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
-    let headers = build_auth_headers(config).await?;
+fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
+    let headers = build_auth_headers(config)?;
 
     Ok(reqwest::Client::builder()
         .use_rustls_tls()
@@ -140,7 +140,7 @@ async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
 
 // TipTap auth is the raw secret value, NOT `Bearer <secret>`. Matches
 // `tiptap.rs::build_auth_headers`; do not copy mailersend's Bearer pattern.
-async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
+fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
     let auth_key = config.tiptap_auth_key().ok_or_else(|| {
         warn!("TipTap auth key missing from config (metrics gateway init)");
         Error {
@@ -222,7 +222,7 @@ mod tests {
             .await;
 
         let config = test_config(&server.url());
-        let client = Client::new(&config).await?;
+        let client = Client::new(&config)?;
 
         let docs = client.list_all_documents().await?;
 
@@ -245,7 +245,7 @@ mod tests {
             .await;
 
         let config = test_config(&server.url());
-        let client = Client::new(&config).await.expect("client builds");
+        let client = Client::new(&config).expect("client builds");
         let err = client.list_all_documents().await.expect_err("expected Err");
 
         assert!(
@@ -271,7 +271,7 @@ mod tests {
             .await;
 
         let config = test_config(&server.url());
-        let client = Client::new(&config).await.expect("client builds");
+        let client = Client::new(&config).expect("client builds");
         let err = client.list_all_documents().await.expect_err("expected Err");
 
         assert!(matches!(
