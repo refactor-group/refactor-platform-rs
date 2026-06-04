@@ -47,6 +47,7 @@ pub async fn read(
     let coaching_session = CoachingSessionApi::ensure_hydrated(
         app_state.db_conn_ref(),
         &app_state.config,
+        app_state.event_publisher.as_ref(),
         coaching_session,
     )
     .await?;
@@ -137,6 +138,7 @@ pub async fn create(
     let coaching_session = CoachingSessionApi::create(
         app_state.db_conn_ref(),
         &app_state.config,
+        app_state.event_publisher.as_ref(),
         coaching_session_model,
         requested_duration,
     )

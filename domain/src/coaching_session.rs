@@ -2,6 +2,7 @@ pub(crate) mod recurrence;
 
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::provider::MeetingProperties;
 use crate::Id;
@@ -68,6 +69,7 @@ impl SessionDate {
 pub async fn create(
     db: &DatabaseConnection,
     config: &Config,
+    event_publisher: &EventPublisher,
     mut coaching_session_model: Model,
     requested_duration: Option<Duration>,
 ) -> Result<Model, Error> {
@@ -93,34 +95,48 @@ pub async fn create(
     // succeed or fail atomically. If the transaction fails, compensate by
     // deleting the Tiptap document we just created.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let result: Result<Model, Error> = async {
+    let result: Result<(Model, Vec<Id>), Error> = async {
         let session =
             coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
                 .await?;
 
-        let linked = coaching_session_goal::link_in_progress_goals_to_session(
+        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
             &txn,
             session.coaching_relationship_id,
             session.id,
         )
         .await?;
         debug!(
-            "Linked {linked} in-progress goal(s) to session {}",
+            "Linked {} in-progress goal(s) to session {}",
+            linked_goal_ids.len(),
             session.id
         );
 
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok(session)
+        Ok((session, linked_goal_ids))
     }
     .await;
 
-    if result.is_err() {
-        if let Err(e) = tiptap.delete(&document_name).await {
-            warn!("Failed to clean up Tiptap document '{document_name}' after DB error: {e}");
+    // Publish after commit so subscribers never refetch against goal links
+    // that a rolled-back transaction never persisted.
+    match result {
+        Ok((session, linked_goal_ids)) => {
+            publish_goals_linked(
+                event_publisher,
+                &coaching_relationship,
+                session.id,
+                &linked_goal_ids,
+            )
+            .await;
+            Ok(session)
+        }
+        Err(e) => {
+            if let Err(cleanup_err) = tiptap.delete(&document_name).await {
+                warn!("Failed to clean up Tiptap document '{document_name}' after DB error: {cleanup_err}");
+            }
+            Err(e)
         }
     }
-
-    result
 }
 
 /// Bulk-creates a series of coaching sessions. Provider is intentionally not
@@ -160,6 +176,7 @@ pub async fn bulk_create_recurring(
 pub async fn ensure_hydrated(
     db: &DatabaseConnection,
     config: &Config,
+    event_publisher: &EventPublisher,
     session: Model,
 ) -> Result<Model, Error> {
     if session.hydrated_at.is_some() {
@@ -188,7 +205,7 @@ pub async fn ensure_hydrated(
     let tiptap = TiptapDocument::new(config).await?;
 
     let coach_id = coaching_relationship.coach_id;
-    let result: Result<Model, Error> = async {
+    let result: Result<(Model, Vec<Id>), Error> = async {
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
 
@@ -197,7 +214,7 @@ pub async fn ensure_hydrated(
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
         }
 
-        let linked = coaching_session_goal::link_in_progress_goals_to_session(
+        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
             &txn,
             session.coaching_relationship_id,
             session.id,
@@ -205,25 +222,71 @@ pub async fn ensure_hydrated(
         .await?;
 
         debug!(
-            "Linked {linked} in-progress goal(s) to session {}",
+            "Linked {} in-progress goal(s) to session {}",
+            linked_goal_ids.len(),
             session.id
         );
 
         let updated = coaching_session::mark_hydrated(&txn, &session).await?;
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok(updated)
+        Ok((updated, linked_goal_ids))
     }
     .await;
 
-    if result.is_err() {
-        if let Err(e) = tiptap.delete(&document_name).await {
-            warn!(
-                "Failed to clean up Tiptap document '{document_name}' after hydration error: {e}"
-            );
+    // Publish after commit so subscribers never refetch against goal links
+    // that a rolled-back transaction never persisted.
+    match result {
+        Ok((updated, linked_goal_ids)) => {
+            publish_goals_linked(
+                event_publisher,
+                &coaching_relationship,
+                updated.id,
+                &linked_goal_ids,
+            )
+            .await;
+            Ok(updated)
+        }
+        Err(e) => {
+            if let Err(cleanup_err) = tiptap.delete(&document_name).await {
+                warn!(
+                    "Failed to clean up Tiptap document '{document_name}' after hydration error: {cleanup_err}"
+                );
+            }
+            Err(e)
         }
     }
+}
 
-    result
+/// Publishes a `CoachingSessionGoalCreated` event for each goal newly linked to
+/// a session during create/hydration, so connected clients refresh the session's
+/// goal list. Mirrors the manual link path's notification contract; a no-op when
+/// no new links were inserted.
+async fn publish_goals_linked(
+    event_publisher: &EventPublisher,
+    relationship: &crate::coaching_relationships::Model,
+    coaching_session_id: Id,
+    goal_ids: &[Id],
+) {
+    if goal_ids.is_empty() {
+        return;
+    }
+
+    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+    for goal_id in goal_ids {
+        event_publisher
+            .publish(DomainEvent::CoachingSessionGoalCreated {
+                coaching_relationship_id: relationship.id,
+                coaching_session_id,
+                goal_id: *goal_id,
+                notify_user_ids: notify_user_ids.clone(),
+            })
+            .await;
+    }
+
+    debug!(
+        "Published {} CoachingSessionGoalCreated event(s) for session {coaching_session_id}",
+        goal_ids.len()
+    );
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -413,9 +476,32 @@ mod tests {
         coaching_relationships, coaching_sessions, goals, oauth_connections, organizations,
         provider::Provider,
     };
+    use async_trait::async_trait;
+    use events::EventHandler;
     use mockito::Server;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
+    use std::sync::{Arc, Mutex};
+
+    /// Records published events so tests can assert exactly what fired.
+    struct RecordingHandler {
+        events: Arc<Mutex<Vec<DomainEvent>>>,
+    }
+
+    #[async_trait]
+    impl EventHandler for RecordingHandler {
+        async fn handle(&self, event: &DomainEvent) {
+            self.events.lock().unwrap().push(event.clone());
+        }
+    }
+
+    fn recording_publisher() -> (EventPublisher, Arc<Mutex<Vec<DomainEvent>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let handler = Arc::new(RecordingHandler {
+            events: events.clone(),
+        });
+        (EventPublisher::new().with_handler(handler), events)
+    }
 
     fn test_organization() -> organizations::Model {
         let now = chrono::Utc::now();
@@ -469,6 +555,88 @@ mod tests {
         ])
     }
 
+    /// Creating a session links the relationship's in-progress goals and
+    /// publishes one `CoachingSessionGoalCreated` per newly-linked goal,
+    /// scoped to the coach and coachee. This is the signal the carry-forward
+    /// path previously omitted, leaving clients unaware of auto-linked goals.
+    #[tokio::test]
+    async fn create_publishes_link_event_for_each_carried_forward_goal() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        let now = chrono::Utc::now();
+        let goal = goals::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship.id,
+            created_in_session_id: None,
+            user_id: Id::new_v4(),
+            title: Some("Carried-forward goal".to_string()),
+            body: None,
+            status: entity_api::status::Status::InProgress,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let link = entity_api::coaching_sessions_goals::Model {
+            id: Id::new_v4(),
+            coaching_session_id: session.id,
+            goal_id: goal.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Queries: relationship, organization, session INSERT, in-progress goals
+        // SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![goal.clone()]])
+            .append_query_results(vec![vec![link.clone()]])
+            .into_connection();
+
+        let config = test_config(&server.url());
+        let (publisher, recorded) = recording_publisher();
+        create(
+            &db,
+            &config,
+            &publisher,
+            session.clone(),
+            Some(Duration::default()),
+        )
+        .await?;
+
+        let events = recorded.lock().unwrap();
+        assert_eq!(events.len(), 1, "expected one link event, got {events:?}");
+        match &events[0] {
+            DomainEvent::CoachingSessionGoalCreated {
+                coaching_relationship_id,
+                coaching_session_id,
+                goal_id,
+                notify_user_ids,
+            } => {
+                assert_eq!(*coaching_relationship_id, relationship.id);
+                assert_eq!(*coaching_session_id, session.id);
+                assert_eq!(*goal_id, goal.id);
+                assert_eq!(notify_user_ids, &vec![coach_id, relationship.coachee_id]);
+            }
+            other => panic!("expected CoachingSessionGoalCreated, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
     /// When no provider is set, the oauth credentials lookup is skipped entirely.
     #[tokio::test]
     async fn create_without_provider_skips_oauth_lookup() -> Result<(), Error> {
@@ -496,7 +664,14 @@ mod tests {
             .into_connection();
 
         let config = test_config(&server.url());
-        let result = create(&db, &config, session.clone(), Some(Duration::default())).await?;
+        let result = create(
+            &db,
+            &config,
+            &EventPublisher::new(),
+            session.clone(),
+            Some(Duration::default()),
+        )
+        .await?;
 
         assert!(result.meeting_url.is_none());
         Ok(())
@@ -558,7 +733,14 @@ mod tests {
             .into_connection();
 
         let config = test_config(&server.url());
-        let result = create(&db, &config, session, Some(Duration::default())).await?;
+        let result = create(
+            &db,
+            &config,
+            &EventPublisher::new(),
+            session,
+            Some(Duration::default()),
+        )
+        .await?;
 
         assert_eq!(
             result.meeting_url,
@@ -603,7 +785,14 @@ mod tests {
             .into_connection();
 
         let config = test_config(&server.url());
-        let result = create(&db, &config, session.clone(), Some(Duration::default())).await?;
+        let result = create(
+            &db,
+            &config,
+            &EventPublisher::new(),
+            session.clone(),
+            Some(Duration::default()),
+        )
+        .await?;
 
         assert!(result.meeting_url.is_none());
         Ok(())
@@ -641,7 +830,7 @@ mod tests {
             .append_query_results(vec![vec![hydrated_row.clone()]])
             .into_connection();
 
-        let result = ensure_hydrated(&db, &config, input.clone()).await?;
+        let result = ensure_hydrated(&db, &config, &EventPublisher::new(), input.clone()).await?;
         assert_eq!(result.id, input.id);
         assert!(result.hydrated_at.is_some());
         Ok(())
@@ -690,7 +879,7 @@ mod tests {
             )])
             .into_connection();
 
-        let result = ensure_hydrated(&db, &config, input).await;
+        let result = ensure_hydrated(&db, &config, &EventPublisher::new(), input).await;
         assert!(
             result.is_err(),
             "expected ensure_hydrated to surface the error"
@@ -718,7 +907,7 @@ mod tests {
         let session = test_session(Id::new_v4(), None);
         assert!(session.hydrated_at.is_some());
 
-        let result = ensure_hydrated(&db, &config, session.clone()).await?;
+        let result = ensure_hydrated(&db, &config, &EventPublisher::new(), session.clone()).await?;
         assert_eq!(result.id, session.id);
         Ok(())
     }
