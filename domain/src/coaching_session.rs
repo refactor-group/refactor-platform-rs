@@ -1,5 +1,6 @@
 pub(crate) mod recurrence;
 
+use crate::coaching_relationships;
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
@@ -40,7 +41,7 @@ pub fn parse_duration_minutes(minutes: Option<i16>) -> Result<Option<Duration>, 
 pub async fn find_by_id_with_coaching_relationship(
     db: &DatabaseConnection,
     id: Id,
-) -> Result<(Model, crate::coaching_relationships::Model), Error> {
+) -> Result<(Model, coaching_relationships::Model), Error> {
     Ok(coaching_session::find_by_id_with_coaching_relationship(db, id).await?)
 }
 
@@ -263,7 +264,7 @@ pub async fn ensure_hydrated(
 /// no new links were inserted.
 async fn publish_goals_linked(
     event_publisher: &EventPublisher,
-    relationship: &crate::coaching_relationships::Model,
+    relationship: &coaching_relationships::Model,
     coaching_session_id: Id,
     goal_ids: &[Id],
 ) {
@@ -472,36 +473,11 @@ fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> S
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::{
-        coaching_relationships, coaching_sessions, goals, oauth_connections, organizations,
-        provider::Provider,
-    };
-    use async_trait::async_trait;
-    use events::EventHandler;
+    use crate::test_support::recording_publisher;
+    use crate::{coaching_sessions, goals, oauth_connections, organizations, provider::Provider};
     use mockito::Server;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
-    use std::sync::{Arc, Mutex};
-
-    /// Records published events so tests can assert exactly what fired.
-    struct RecordingHandler {
-        events: Arc<Mutex<Vec<DomainEvent>>>,
-    }
-
-    #[async_trait]
-    impl EventHandler for RecordingHandler {
-        async fn handle(&self, event: &DomainEvent) {
-            self.events.lock().unwrap().push(event.clone());
-        }
-    }
-
-    fn recording_publisher() -> (EventPublisher, Arc<Mutex<Vec<DomainEvent>>>) {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let handler = Arc::new(RecordingHandler {
-            events: events.clone(),
-        });
-        (EventPublisher::new().with_handler(handler), events)
-    }
 
     fn test_organization() -> organizations::Model {
         let now = chrono::Utc::now();
