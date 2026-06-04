@@ -883,12 +883,8 @@ mod tests {
         );
     }
 
-    // The target padding constant must stay in the "imperceptible-to-user
-    // but generous-over-DB-jitter" range. Loosening below 100ms risks not
-    // masking real DB-jitter variance; raising above ~500ms turns every
-    // HANDLER_TARGET_DURATION_MS bounds are guarded at compile time,
-    // see the const assertion at module scope (`_HANDLER_TARGET_DURATION_BOUNDS_CHECK`).
-    // Build fails if someone loosens the value.
+    // HANDLER_TARGET_DURATION_MS bounds are enforced at compile time by
+    // _HANDLER_TARGET_DURATION_BOUNDS_CHECK at module scope.
 
     /// Server-side password policy must fire from `complete_password_reset`,
     /// independently of any FE validation. Empty password → 422 Validation,

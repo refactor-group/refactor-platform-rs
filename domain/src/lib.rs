@@ -36,6 +36,7 @@ pub mod oauth_token_storage;
 pub mod organization;
 pub mod password_policy;
 pub mod password_reset;
+pub mod tiptap_metrics;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user;
