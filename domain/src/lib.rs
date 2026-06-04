@@ -43,5 +43,8 @@ pub mod user;
 pub mod gateway;
 pub mod webhook;
 
+#[cfg(all(test, feature = "mock"))]
+mod test_support;
+
 // Re-export events crate as the events module to maintain existing API
 pub use events;
