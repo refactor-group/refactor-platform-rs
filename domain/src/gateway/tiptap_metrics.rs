@@ -79,6 +79,50 @@ impl Client {
         })
     }
 
+    /// Export one document's raw Yjs v1 binary update (`?format=yjs`). This is the
+    /// exact byte shape `collab_documents.state` stores. Returns None on 404.
+    pub(crate) async fn export_document(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
+        let url = format!("{}/api/documents/{name}", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&[("format", "yjs")])
+            .send()
+            .await
+            .map_err(|e| {
+                warn!("Failed to export TipTap document (name={name}): {e:?}");
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+                }
+            })?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            warn!("TipTap export of {name} returned {status}: {body}");
+            return Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            });
+        }
+
+        let bytes = response.bytes().await.map_err(|e| {
+            warn!("Failed to read TipTap export body for {name}: {e:?}");
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            }
+        })?;
+
+        Ok(Some(bytes.to_vec()))
+    }
+
     /// Fetch every TipTap document via offset pagination.
     ///
     /// Offset pagination is racy under concurrent writes — acceptable for
@@ -278,5 +322,46 @@ mod tests {
             err.error_kind,
             DomainErrorKind::External(ExternalErrorKind::Network),
         ));
+    }
+
+    #[tokio::test]
+    async fn export_document_returns_raw_bytes() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let body = vec![1u8, 2, 3, 4, 255];
+
+        let _mock = server
+            .mock("GET", "/api/documents/doc-1")
+            .match_query(mockito::Matcher::UrlEncoded("format".into(), "yjs".into()))
+            .with_status(200)
+            .with_header("content-type", "application/octet-stream")
+            .with_body(body.clone())
+            .create_async()
+            .await;
+
+        let config = test_config(&server.url());
+        let client = Client::new(&config)?;
+
+        let exported = client.export_document("doc-1").await?;
+        assert_eq!(exported, Some(body));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn export_document_returns_none_on_404() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+
+        let _mock = server
+            .mock("GET", "/api/documents/doc-1")
+            .match_query(mockito::Matcher::UrlEncoded("format".into(), "yjs".into()))
+            .with_status(404)
+            .with_body("not found")
+            .create_async()
+            .await;
+
+        let config = test_config(&server.url());
+        let client = Client::new(&config)?;
+
+        assert_eq!(client.export_document("doc-1").await?, None);
+        Ok(())
     }
 }
