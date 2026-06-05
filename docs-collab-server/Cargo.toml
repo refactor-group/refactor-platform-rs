@@ -17,7 +17,7 @@ path = "src/main.rs"
 axum = { version = "0.7", features = ["ws"] }
 
 # Storage
-sqlx = { version = "0.8", features = ["postgres", "time", "runtime-tokio"] }
+sqlx = { version = "0.8", features = ["postgres", "time", "runtime-tokio", "tls-rustls"] }
 
 # Concurrent map
 dashmap = "6"
