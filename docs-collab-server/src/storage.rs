@@ -68,7 +68,8 @@ pub struct PostgresStorage {
 }
 
 impl PostgresStorage {
-    /// Connect, ensure the schema and table exist, return a ready instance.
+    /// Connect with sqlx pool defaults, ensure the schema and table exist,
+    /// return a ready instance.
     pub async fn connect(database_url: &str, schema: &str) -> Result<Self, StorageError> {
         validate_schema_ident(schema)?;
 
@@ -77,8 +78,42 @@ impl PostgresStorage {
             .await
             .map_err(|e| StorageError::Backend(e.to_string()))?;
 
+        Self::bootstrap_schema_and_table(&pool, schema).await?;
+
+        Ok(Self {
+            pool,
+            schema: schema.to_string(),
+        })
+    }
+
+    /// Connect with explicit pool sizing, then bootstrap as in `connect`.
+    pub async fn connect_with_pool(
+        database_url: &str,
+        schema: &str,
+        max_connections: u32,
+        min_connections: u32,
+    ) -> Result<Self, StorageError> {
+        validate_schema_ident(schema)?;
+
+        let pool = PgPoolOptions::new()
+            .max_connections(max_connections)
+            .min_connections(min_connections)
+            .connect(database_url)
+            .await
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+
+        Self::bootstrap_schema_and_table(&pool, schema).await?;
+
+        Ok(Self {
+            pool,
+            schema: schema.to_string(),
+        })
+    }
+
+    /// Create the schema and `collab_documents` table if absent.
+    async fn bootstrap_schema_and_table(pool: &PgPool, schema: &str) -> Result<(), StorageError> {
         let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {schema}");
-        run_bootstrap_ddl(&pool, &create_schema).await?;
+        run_bootstrap_ddl(pool, &create_schema).await?;
 
         let create_table = format!(
             "CREATE TABLE IF NOT EXISTS {schema}.collab_documents (\
@@ -87,12 +122,8 @@ impl PostgresStorage {
                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\
              )"
         );
-        run_bootstrap_ddl(&pool, &create_table).await?;
-
-        Ok(Self {
-            pool,
-            schema: schema.to_string(),
-        })
+        run_bootstrap_ddl(pool, &create_table).await?;
+        Ok(())
     }
 }
 

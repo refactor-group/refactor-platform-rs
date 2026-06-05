@@ -47,6 +47,14 @@ pub struct Config {
     /// Evict a document this many seconds after the last connection leaves.
     #[arg(long, env, default_value_t = DEFAULT_IDLE_EVICT_SECS)]
     idle_evict_secs: u64,
+
+    /// Maximum number of database connections in the pool.
+    #[arg(long, env, default_value_t = 10)]
+    db_max_connections: u32,
+
+    /// Minimum number of idle database connections to maintain.
+    #[arg(long, env, default_value_t = 1)]
+    db_min_connections: u32,
 }
 
 impl Default for Config {
@@ -103,5 +111,13 @@ impl Config {
 
     pub fn idle_evict_secs(&self) -> u64 {
         self.idle_evict_secs
+    }
+
+    pub fn db_max_connections(&self) -> u32 {
+        self.db_max_connections
+    }
+
+    pub fn db_min_connections(&self) -> u32 {
+        self.db_min_connections
     }
 }

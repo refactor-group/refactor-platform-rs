@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
@@ -80,8 +81,15 @@ pub async fn serve(config: Config) -> Result<(), ServeError> {
         .ok_or(ServeError::MissingSecret("MANAGEMENT_AUTH_KEY"))?
         .to_owned();
 
-    let storage: Arc<dyn Storage> =
-        Arc::new(PostgresStorage::connect(config.database_url(), config.database_schema()).await?);
+    let storage: Arc<dyn Storage> = Arc::new(
+        PostgresStorage::connect_with_pool(
+            config.database_url(),
+            config.database_schema(),
+            config.db_max_connections(),
+            config.db_min_connections(),
+        )
+        .await?,
+    );
     let registry = DocumentRegistry::new_with_debounce(
         storage.clone(),
         Duration::from_millis(config.persist_debounce_ms()),
@@ -140,7 +148,12 @@ pub fn build_router(state: AppState) -> Router {
             "/api/documents/:name",
             post(rest::create_document).delete(rest::delete_document),
         )
+        .route("/health", get(health_handler))
         .with_state(state)
+}
+
+async fn health_handler() -> StatusCode {
+    StatusCode::OK
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
