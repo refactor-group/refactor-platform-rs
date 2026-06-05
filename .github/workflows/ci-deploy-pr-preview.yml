@@ -394,6 +394,9 @@ jobs:
             - name: Run tests
               run: cargo test
 
+            - name: Run mock-gated tests
+              run: cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"
+
     # ===========================================================================
     # JOB 4: Frontend Build and Test
     # ===========================================================================

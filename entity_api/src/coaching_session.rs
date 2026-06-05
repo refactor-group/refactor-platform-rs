@@ -1537,16 +1537,10 @@ mod tests {
             duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: Some("https://meet.google.com/old-meet-url".to_string()),
             provider: Some(Provider::Google),
-            created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
-                .unwrap()
-                .into(),
-            updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
-                .unwrap()
-                .into(),
+            created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             hydrated_at: Some(
-                chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
-                    .unwrap()
-                    .into(),
+                chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ),
         };
 
@@ -1559,16 +1553,10 @@ mod tests {
             duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: Some("https://meet.google.com/latest-meet-url".to_string()),
             provider: Some(Provider::Google),
-            created_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z")
-                .unwrap()
-                .into(),
-            updated_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z")
-                .unwrap()
-                .into(),
+            created_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z").unwrap(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z").unwrap(),
             hydrated_at: Some(
-                chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z")
-                    .unwrap()
-                    .into(),
+                chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z").unwrap(),
             ),
         };
 
@@ -1581,16 +1569,10 @@ mod tests {
             duration_minutes: crate::duration::Duration::default_minutes(),
             meeting_url: None,
             provider: None,
-            created_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
-                .unwrap()
-                .into(),
-            updated_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
-                .unwrap()
-                .into(),
+            created_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z").unwrap(),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z").unwrap(),
             hydrated_at: Some(
-                chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
-                    .unwrap()
-                    .into(),
+                chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z").unwrap(),
             ),
         };
 
