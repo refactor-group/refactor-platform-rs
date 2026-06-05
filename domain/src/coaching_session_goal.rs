@@ -205,35 +205,11 @@ async fn publish_session_goal_deleted(
 mod integration_tests {
     use super::*;
     use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
-    use async_trait::async_trait;
+    use crate::test_support::recording_publisher;
     use entity_api::coaching_relationships;
     use entity_api::coaching_sessions;
     use entity_api::status::Status;
-    use events::EventHandler;
     use sea_orm::{DatabaseBackend, MockDatabase};
-    use std::sync::{Arc, Mutex};
-
-    /// Recording event handler — captures every published event in order so
-    /// tests can assert exactly which events fired and in what sequence.
-    struct RecordingHandler {
-        events: Arc<Mutex<Vec<DomainEvent>>>,
-    }
-
-    #[async_trait]
-    impl EventHandler for RecordingHandler {
-        async fn handle(&self, event: &DomainEvent) {
-            self.events.lock().unwrap().push(event.clone());
-        }
-    }
-
-    fn recording_publisher() -> (EventPublisher, Arc<Mutex<Vec<DomainEvent>>>) {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let handler = Arc::new(RecordingHandler {
-            events: events.clone(),
-        });
-        let publisher = EventPublisher::new().with_handler(handler);
-        (publisher, events)
-    }
 
     fn build_goal(status: Status, relationship_id: Id) -> Model {
         let now = chrono::Utc::now().fixed_offset();

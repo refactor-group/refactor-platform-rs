@@ -36,12 +36,16 @@ pub mod oauth_token_storage;
 pub mod organization;
 pub mod password_policy;
 pub mod password_reset;
+pub mod tiptap_metrics;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user;
 
 pub mod gateway;
 pub mod webhook;
+
+#[cfg(all(test, feature = "mock"))]
+mod test_support;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;
