@@ -20,7 +20,7 @@ RUN cargo build --release -p docs-collab-server
 
 # Stage 3: minimal runtime image
 FROM debian:bullseye-slim
-RUN apt-get update && apt-get install -y ca-certificates \
+RUN apt-get update && apt-get install -y ca-certificates curl \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1001 -s /bin/bash appuser
 WORKDIR /app

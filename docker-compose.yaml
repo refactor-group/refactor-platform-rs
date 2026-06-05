@@ -136,6 +136,38 @@ services:
     networks:
       - backend_network
 
+  docs-collab:
+    image: ${DOCS_COLLAB_IMAGE_NAME}
+    build:
+      context: .
+      dockerfile: docs-collab-server/Dockerfile
+    platform: ${PLATFORM}
+    container_name: docs-collab
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
+      JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+      MANAGEMENT_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      BIND_ADDR: 0.0.0.0:1234
+      PERSIST_DEBOUNCE_MS: ${DOCS_COLLAB_PERSIST_DEBOUNCE_MS:-500}
+      IDLE_EVICT_SECS: ${DOCS_COLLAB_IDLE_EVICT_SECS:-300}
+      DB_MAX_CONNECTIONS: ${DOCS_COLLAB_DB_MAX_CONNECTIONS:-10}
+      DB_MIN_CONNECTIONS: ${DOCS_COLLAB_DB_MIN_CONNECTIONS:-1}
+      RUST_LOG: ${DOCS_COLLAB_RUST_LOG:-info}
+    depends_on:
+      - migrator
+    volumes:
+      - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:1234/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend_network
+    restart: unless-stopped
+
   nextjs-app:
     image: ${FRONTEND_IMAGE_NAME}
     build:

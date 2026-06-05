@@ -151,6 +151,31 @@ services:
       - preview-ingress
     restart: unless-stopped               # Restart automatically unless manually stopped
 
+  # Self-hosted collaborative document server (per-PR)
+  docs-collab:
+    image: ${DOCS_COLLAB_IMAGE}
+    platform: linux/arm64/v8
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA}
+      JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+      MANAGEMENT_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      BIND_ADDR: 0.0.0.0:1234
+      PERSIST_DEBOUNCE_MS: ${DOCS_COLLAB_PERSIST_DEBOUNCE_MS:-500}
+      IDLE_EVICT_SECS: ${DOCS_COLLAB_IDLE_EVICT_SECS:-300}
+      DB_MAX_CONNECTIONS: ${DOCS_COLLAB_DB_MAX_CONNECTIONS:-10}
+      DB_MIN_CONNECTIONS: ${DOCS_COLLAB_DB_MIN_CONNECTIONS:-1}
+      RUST_LOG: ${DOCS_COLLAB_RUST_LOG:-info}
+    expose:
+      - "1234"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - preview-ingress
+    restart: unless-stopped
+
   # Frontend application service
   frontend:
     image: ${FRONTEND_IMAGE}              # PR-specific frontend image
