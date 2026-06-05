@@ -7,6 +7,116 @@ use entity_api::{cost_pricing_config, meeting_recording as recording_api, platfo
 use log::warn;
 use sea_orm::DatabaseConnection;
 
+/// Records the Recall.ai bot-minutes cost for a completed recording.
+///
+/// Fetches the recording fresh from the DB so `duration_seconds` reflects the
+/// value written by `try_claim_completed`. No-ops with a warning if no pricing
+/// row is configured.
+pub async fn record_bot_minutes(db: &DatabaseConnection, recording_id: Id) -> Result<(), Error> {
+    let rate =
+        match cost_pricing_config::find_current_rate(db, Provider::RecallAi, Metric::BotMinutes)
+            .await?
+        {
+            Some(r) => r,
+            None => {
+                warn!(
+                    "cost: no pricing config for (RecallAi, BotMinutes) — skipping recording {}",
+                    recording_id
+                );
+                return Ok(());
+            }
+        };
+
+    let recording = match recording_api::find_by_id(db, recording_id).await? {
+        Some(r) => r,
+        None => {
+            warn!(
+                "cost: recording {} not found — skipping bot minutes cost",
+                recording_id
+            );
+            return Ok(());
+        }
+    };
+
+    let quantity = recording.duration_seconds.unwrap_or(0) as f64 / 60.0;
+
+    platform_cost_metrics::create(
+        db,
+        CostMetricsModel {
+            id: Id::new_v4(),
+            provider: Provider::RecallAi,
+            metric: Metric::BotMinutes,
+            coaching_session_id: Some(recording.coaching_session_id),
+            source_record_id: recording_id,
+            cost_low: quantity * rate.cost_per_unit_low,
+            cost_high: quantity * rate.cost_per_unit_high,
+            cost_avg: quantity * rate.cost_per_unit_avg,
+            created_at: chrono::Utc::now().fixed_offset(),
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Records the Recall.ai transcription-hours cost for a completed transcription.
+///
+/// Fetches the parent recording to derive duration. No-ops with a warning if no
+/// pricing row is configured or the recording cannot be found.
+pub async fn record_transcription_hours(
+    db: &DatabaseConnection,
+    transcription_id: Id,
+    meeting_recording_id: Id,
+) -> Result<(), Error> {
+    let rate = match cost_pricing_config::find_current_rate(
+        db,
+        Provider::RecallAi,
+        Metric::TranscriptionHours,
+    )
+    .await?
+    {
+        Some(r) => r,
+        None => {
+            warn!(
+                "cost: no pricing config for (RecallAi, TranscriptionHours) — skipping transcription {}",
+                transcription_id
+            );
+            return Ok(());
+        }
+    };
+
+    let recording = match recording_api::find_by_id(db, meeting_recording_id).await? {
+        Some(r) => r,
+        None => {
+            warn!(
+                "cost: recording {} not found — skipping transcription hours cost",
+                meeting_recording_id
+            );
+            return Ok(());
+        }
+    };
+
+    let quantity = recording.duration_seconds.unwrap_or(0) as f64 / 3600.0;
+
+    platform_cost_metrics::create(
+        db,
+        CostMetricsModel {
+            id: Id::new_v4(),
+            provider: Provider::RecallAi,
+            metric: Metric::TranscriptionHours,
+            coaching_session_id: Some(recording.coaching_session_id),
+            source_record_id: transcription_id,
+            cost_low: quantity * rate.cost_per_unit_low,
+            cost_high: quantity * rate.cost_per_unit_high,
+            cost_avg: quantity * rate.cost_per_unit_avg,
+            created_at: chrono::Utc::now().fixed_offset(),
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
@@ -157,114 +267,4 @@ mod tests {
         let result = super::record_transcription_hours(&db, Id::new_v4(), Id::new_v4()).await;
         assert!(result.is_ok());
     }
-}
-
-/// Records the Recall.ai bot-minutes cost for a completed recording.
-///
-/// Fetches the recording fresh from the DB so `duration_seconds` reflects the
-/// value written by `try_claim_completed`. No-ops with a warning if no pricing
-/// row is configured.
-pub async fn record_bot_minutes(db: &DatabaseConnection, recording_id: Id) -> Result<(), Error> {
-    let rate =
-        match cost_pricing_config::find_current_rate(db, Provider::RecallAi, Metric::BotMinutes)
-            .await?
-        {
-            Some(r) => r,
-            None => {
-                warn!(
-                    "cost: no pricing config for (RecallAi, BotMinutes) — skipping recording {}",
-                    recording_id
-                );
-                return Ok(());
-            }
-        };
-
-    let recording = match recording_api::find_by_id(db, recording_id).await? {
-        Some(r) => r,
-        None => {
-            warn!(
-                "cost: recording {} not found — skipping bot minutes cost",
-                recording_id
-            );
-            return Ok(());
-        }
-    };
-
-    let quantity = recording.duration_seconds.unwrap_or(0) as f64 / 60.0;
-
-    platform_cost_metrics::create(
-        db,
-        CostMetricsModel {
-            id: Id::new_v4(),
-            provider: Provider::RecallAi,
-            metric: Metric::BotMinutes,
-            coaching_session_id: Some(recording.coaching_session_id),
-            source_record_id: recording_id,
-            cost_low: quantity * rate.cost_per_unit_low,
-            cost_high: quantity * rate.cost_per_unit_high,
-            cost_avg: quantity * rate.cost_per_unit_avg,
-            created_at: chrono::Utc::now().fixed_offset(),
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
-/// Records the Recall.ai transcription-hours cost for a completed transcription.
-///
-/// Fetches the parent recording to derive duration. No-ops with a warning if no
-/// pricing row is configured or the recording cannot be found.
-pub async fn record_transcription_hours(
-    db: &DatabaseConnection,
-    transcription_id: Id,
-    meeting_recording_id: Id,
-) -> Result<(), Error> {
-    let rate = match cost_pricing_config::find_current_rate(
-        db,
-        Provider::RecallAi,
-        Metric::TranscriptionHours,
-    )
-    .await?
-    {
-        Some(r) => r,
-        None => {
-            warn!(
-                "cost: no pricing config for (RecallAi, TranscriptionHours) — skipping transcription {}",
-                transcription_id
-            );
-            return Ok(());
-        }
-    };
-
-    let recording = match recording_api::find_by_id(db, meeting_recording_id).await? {
-        Some(r) => r,
-        None => {
-            warn!(
-                "cost: recording {} not found — skipping transcription hours cost",
-                meeting_recording_id
-            );
-            return Ok(());
-        }
-    };
-
-    let quantity = recording.duration_seconds.unwrap_or(0) as f64 / 3600.0;
-
-    platform_cost_metrics::create(
-        db,
-        CostMetricsModel {
-            id: Id::new_v4(),
-            provider: Provider::RecallAi,
-            metric: Metric::TranscriptionHours,
-            coaching_session_id: Some(recording.coaching_session_id),
-            source_record_id: transcription_id,
-            cost_low: quantity * rate.cost_per_unit_low,
-            cost_high: quantity * rate.cost_per_unit_high,
-            cost_avg: quantity * rate.cost_per_unit_avg,
-            created_at: chrono::Utc::now().fixed_offset(),
-        },
-    )
-    .await?;
-
-    Ok(())
 }
