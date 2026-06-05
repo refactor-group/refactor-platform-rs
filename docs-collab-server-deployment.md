@@ -65,6 +65,25 @@ Phase 1) is cleanest. NOTE: `docs-collab-server` is in `members` but EXCLUDED fr
   path, not optional.
 - **Replicas:** single instance (in-memory registry), mirroring the SSE constraint.
 
+## Critical findings (discovered during build, 2026-06-05)
+
+- **CRITICAL (prod DB TLS):** the collab crate's `sqlx` has NO TLS feature
+  (`["postgres","time","runtime-tokio"]`), but prod uses
+  `sslmode=verify-full&sslrootcert=/app/root.crt` on the shared `DATABASE_URL`
+  (`deploy_to_do.yml:93`). Reusing that URL (Q1), the collab server cannot connect to
+  the production DO Postgres. Fix: add `tls-rustls` to the crate's `sqlx` features
+  (Phase 1b) + mount `/app/root.crt` and pass `sslmode/sslrootcert` in the collab
+  service's `DATABASE_URL` (Phase 4/5). Does NOT affect PR preview (local non-SSL
+  Postgres), so Phase 6 rehearsal would not catch it. Blocks Phase 8 (prod cutover).
+- **TIPTAP_URL flip is Phase 8, not Phase 4.** Standing up the collab service (Phases
+  4-6) must NOT repoint `rust-app`'s `TIPTAP_URL` at `http://docs-collab:1234` - that is
+  the cutover, done in Phase 8 after the import. Phase 4 adds the service + routing only.
+- **Two preview nginx configs.** `nginx-preview/pr-previews.conf` is the deployed
+  preview config (mounted by `docker-compose.nginx-preview.yaml`); `nginx/conf.d/
+  pr-previews.conf` is the canonical source. Both need the `/pr-N/collab` route.
+- **Healthcheck tooling.** The minimal collab runtime image has no curl/wget/bash; a
+  compose `/health` healthcheck needs an HTTP client added to the Dockerfile runtime.
+
 ## Phases
 
 ### Phase 0 - Decisions + readiness checklist (no code)
