@@ -65,6 +65,28 @@ Phase 1) is cleanest. NOTE: `docs-collab-server` is in `members` but EXCLUDED fr
   path, not optional.
 - **Replicas:** single instance (in-memory registry), mirroring the SSE constraint.
 
+## Build execution status (overseer + handoff run, 2026-06-05)
+
+Work branch: `feat/docs-collab-deploy` (= `feat/docs-collab-server` + merged `main`).
+Each phase below = one reviewed implementer commit, independently verified by the overseer.
+
+DONE + verified:
+- Phase 1 (2887607): `/health` route + env-configurable DB pool. clippy/fmt/4 lib tests green.
+- Phase 1b (90c894c): CRITICAL rustls TLS for sqlx (prod needs sslmode=verify-full). rustls linked.
+- Phase 2 (561ab6f): `collab_documents` migration owned by refactor. DDL run on scratch DB; matches the crate bootstrap exactly.
+- Phase 3 (3b0b399): dedicated `docs-collab-server/Dockerfile`. Release build green; image NOT built (no docker daemon locally).
+- Phase 4 (9569367 + f2f3f0c): `docs-collab` compose service (prod TLS + cert mount; preview non-SSL) + nginx `/collab` and `/pr-<NUM>/collab` (both preview confs). compose config validates; nginx -t deferred (no daemon).
+- Phase 7 (54ecf8e): TipTap Cloud -> collab_documents importer (export `?format=yjs`, intersect+skip filters, upsert, dry-run). mockito + classify tests pass.
+
+NOT done - need YOUR attention (see below):
+- Phase 5 (CI image build/push + env wiring): the dedicated collab image needs a build+push
+  job in `build_and_push_production_images.yml` and `ci-deploy-pr-preview.yml`, a
+  `DOCS_COLLAB_IMAGE_NAME` GitHub var, `NEXT_PUBLIC_DOCS_COLLAB_URL` (frontend), and deploy
+  heredoc lines. NOT authored: unverifiable locally (no docker/GHA), needs GitHub-UI config,
+  and partial wiring breaks prod (empty `${DOCS_COLLAB_IMAGE_NAME}` -> compose fails).
+- Phase 6 (PR-preview rehearsal): operational; needs a real preview deploy + e2e.
+- Phase 8 (prod cutover): out of scope by request.
+
 ## Critical findings (discovered during build, 2026-06-05)
 
 - **CRITICAL (prod DB TLS):** the collab crate's `sqlx` has NO TLS feature
