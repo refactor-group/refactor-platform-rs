@@ -28,6 +28,8 @@ services:
         condition: service_started
       nextjs-app:
         condition: service_started
+      docs-collab:
+        condition: service_started
     networks:
       - backend_network
     restart: unless-stopped
