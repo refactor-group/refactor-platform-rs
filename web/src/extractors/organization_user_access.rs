@@ -14,11 +14,8 @@ use log::*;
 /// member of the `{organization_id}` named in the same path, yielding the loaded
 /// target user model on success.
 ///
-/// This closes the cross-tenant gap on user-scoped organization routes: the
-/// caller's authorization is verified elsewhere, but without this the target
-/// `user_id` is operated on globally, regardless of which organization it
-/// belongs to. A target outside the path organization resolves to `NOT_FOUND`
-/// so membership of other organizations is not disclosed.
+/// A target outside the path organization resolves to `NOT_FOUND` so membership
+/// of other organizations is not disclosed.
 pub(crate) struct OrganizationUserAccess(pub users::Model);
 
 #[async_trait]
