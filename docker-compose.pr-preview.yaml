@@ -194,6 +194,7 @@ services:
       NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${NEXT_PUBLIC_BACKEND_SERVICE_API_PATH}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${NEXT_PUBLIC_BACKEND_API_VERSION:-1.0.0-beta1}
       NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      NEXT_PUBLIC_DOCS_COLLAB_URL: ${NEXT_PUBLIC_DOCS_COLLAB_URL}
     # Expose port to Docker networks only (no host port binding)
     expose:
       - "3000"                            # Container listens on port 3000
