@@ -10,6 +10,11 @@ on:
         required: false # Not required to run the workflow
         default: false # Disabled by default
         type: boolean # Simple checkbox in the UI
+      deploy_docs_collab:
+        description: "Also (re)deploy docs-collab-server. Restarts it, dropping live editing sessions. Leave false for app-only deploys."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read # Minimal permissions required for this workflow
@@ -109,6 +114,8 @@ jobs:
           # -------- Backend Config
           # Docker image for backend
           BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
+          # Docker image for docs-collab-server
+          DOCS_COLLAB_IMAGE_NAME=${{ vars.DOCS_COLLAB_IMAGE_NAME }}
           # Container name for backend
           BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
           # We are not building locally so setting to empty string to quiet warning
@@ -157,6 +164,8 @@ jobs:
           RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
           # Base URL of the frontend app, used to construct links in emails
           FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL }}
+          # Public URL of the docs-collab-server, used by the frontend collaborative editor
+          NEXT_PUBLIC_DOCS_COLLAB_URL=${{ vars.NEXT_PUBLIC_DOCS_COLLAB_URL }}
 
           # -------- Frontend Config
           # Docker image for frontend
@@ -477,6 +486,12 @@ jobs:
               # Announce image pull
               docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
               # Pull frontend image
+            fi
+            if [ "${{ inputs.deploy_docs_collab }}" = "true" ] && [ -n "${{ vars.DOCS_COLLAB_IMAGE_NAME }}" ]; then
+              echo "INFO: Pulling docs-collab image: ${{ vars.DOCS_COLLAB_IMAGE_NAME }}"
+              docker pull ${{ vars.DOCS_COLLAB_IMAGE_NAME }}
+            else
+              echo "INFO: Skipping docs-collab image pull (deploy_docs_collab=false); leaving any running collab server untouched."
             fi
 
             echo "INFO: 🔍 Validating config..."
