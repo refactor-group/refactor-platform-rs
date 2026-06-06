@@ -99,6 +99,15 @@ jobs:
           # Database connection string
           DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ vars.POSTGRES_HOST }}:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}?${{ vars.POSTGRES_OPTIONS }}
 
+          # -------- docs-collab dedicated database (its own managed instance)
+          # Full connection string for the collab server's OWN managed Postgres
+          # cluster (NOT the shared app DB). MUST include
+          # ?sslmode=verify-full&sslrootcert=/app/root.crt in the value.
+          DOCS_COLLAB_DATABASE_URL=${{ secrets.DOCS_COLLAB_DATABASE_URL }}
+          # Host path to that cluster's CA cert (mounted into the collab
+          # container at /app/root.crt). May differ from the app cluster CA.
+          DOCS_COLLAB_SSL_ROOT_CERT=${{ secrets.DOCS_COLLAB_SSL_ROOT_CERT }}
+
           # -------- Database Pool Config
           # Pool sizing must stay below the managed Postgres max connections
           # ceiling (22 on the 1 GB DO tier) to leave headroom for migrator,

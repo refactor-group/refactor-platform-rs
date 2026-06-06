@@ -48,8 +48,9 @@ pub struct Config {
     #[arg(long, env, default_value_t = DEFAULT_IDLE_EVICT_SECS)]
     idle_evict_secs: u64,
 
-    /// Maximum number of database connections in the pool.
-    #[arg(long, env, default_value_t = 10)]
+    /// Maximum number of database connections in the pool. The collab workload
+    /// is light (1 load SELECT + debounced UPSERTs), so a small pool suffices.
+    #[arg(long, env, default_value_t = 4)]
     db_max_connections: u32,
 
     /// Minimum number of idle database connections to maintain.

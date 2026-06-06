@@ -34,9 +34,14 @@ Phase 1) is cleanest. NOTE: `docs-collab-server` is in `members` but EXCLUDED fr
    `--jwt-signing-key` to equal the app's `TIPTAP_JWT_SIGNING_KEY` and its
    `--management-auth-key` to equal `TIPTAP_AUTH_KEY`. Those already flow through
    every layer (GitHub secrets, both compose files, both deploy heredocs). So we do
-   NOT introduce new secrets; we pass the existing ones into one more service. The
-   only secret whose *value* changes is `TIPTAP_URL` (Cloud URL -> internal
-   `http://docs-collab:1234`).
+   NOT introduce new app secrets for those keys; we pass the existing ones into one
+   more service. The only reused secret whose *value* changes is `TIPTAP_URL` (Cloud
+   URL -> internal `http://docs-collab:1234`).
+
+   EXCEPTION (revised 2026-06-05): the database is no longer the shared `DATABASE_URL`.
+   The collab server uses its OWN managed Postgres via a dedicated
+   `DOCS_COLLAB_DATABASE_URL` plus that cluster's CA cert (`DOCS_COLLAB_SSL_ROOT_CERT`),
+   two new production secrets. See the Database placement decision below.
 2. **Dedicated collab image.** The collab server ships as its own multi-stage
    `docs-collab-server/Dockerfile` with its own CI build+push job and image tag, kept
    separate from the app image. Config flows entirely through the compose
@@ -54,11 +59,27 @@ Phase 1) is cleanest. NOTE: `docs-collab-server` is in `members` but EXCLUDED fr
 
 - **Routing:** path-based `/collab` on the existing host (recommended) vs a
   `collab.` subdomain (new cert/DNS). Default: path-based.
-- **DB table ownership:** create `refactor_platform.collab_documents` via a **SeaORM
-  migration** in `migration/` (owns the DDL + `ALTER TABLE ... OWNER TO refactor`,
-  per the project's ownership rule), run by the existing migrator container. The
-  server keeps its `CREATE TABLE IF NOT EXISTS` bootstrap for local dev; in prod the
-  table already exists, so it is a harmless no-op. `DATABASE_SCHEMA=refactor_platform`.
+- **Database placement (revised 2026-06-05): dedicated managed instance.** The collab
+  server gets its OWN managed Postgres cluster (small tier), NOT the shared app DB. It
+  connects via a dedicated `DOCS_COLLAB_DATABASE_URL` plus that cluster's CA cert
+  (`DOCS_COLLAB_SSL_ROOT_CERT`). Rationale: decide the final home before the import (so
+  the ~250 docs land once, in place, with no future live migration), keep all ~22
+  connections of the 1 GB app tier for the app, and isolate the high-churn full-blob
+  UPSERT workload. A separate MANAGED instance avoids the durability downgrade a
+  self-managed container would carry. Frugal alternative if cost-bound: a separate
+  database + role on the existing managed cluster ($0, shares the cluster failure
+  domain, does not relieve the connection ceiling).
+- **DB table ownership (revised): self-bootstrap on the dedicated DB.** On a single-role
+  dedicated DB the server's `CREATE TABLE IF NOT EXISTS` bootstrap (`storage.rs`) creates
+  `collab_documents` owned by the collab role automatically, so the SeaORM migration plus
+  `ALTER ... OWNER TO refactor` dance is unnecessary. The Phase 2 migration is superseded
+  (see Phase 2). `DATABASE_SCHEMA=refactor_platform` (the server creates the schema).
+- **Compute placement: co-located now, dedicated VPS trigger-gated.** The collab server
+  stays on the existing droplet for now (light CPU/RAM at 10s-hundreds of users;
+  same-host nginx routing). Because the DB is separate, the server is data-stateless
+  (durable state in the managed DB; in-memory docs flush on graceful shutdown), so moving
+  it to its own VPS later is cheap (no data move). Triggers: droplet RAM tight under real
+  load, or wanting to decouple the app and editing failure domains.
 - **Existing-doc import: REQUIRED.** Production must import the existing TipTap Cloud
   documents (~250) into `collab_documents` before cutover so existing coaching notes
   survive the switch. See the import design + Phases 7-8 below. This is on the critical
@@ -73,7 +94,7 @@ Each phase below = one reviewed implementer commit, independently verified by th
 DONE + verified:
 - Phase 1 (2887607): `/health` route + env-configurable DB pool. clippy/fmt/4 lib tests green.
 - Phase 1b (90c894c): CRITICAL rustls TLS for sqlx (prod needs sslmode=verify-full). rustls linked.
-- Phase 2 (561ab6f): `collab_documents` migration owned by refactor. DDL run on scratch DB; matches the crate bootstrap exactly.
+- Phase 2 (561ab6f): `collab_documents` migration owned by refactor. DDL run on scratch DB; matches the crate bootstrap exactly. SUPERSEDED (2026-06-05) by the dedicated-DB self-bootstrap; see Decisions + Phase 2.
 - Phase 3 (3b0b399): dedicated `docs-collab-server/Dockerfile`. Release build green; image NOT built (no docker daemon locally).
 - Phase 4 (9569367 + f2f3f0c): `docs-collab` compose service (prod TLS + cert mount; preview non-SSL) + nginx `/collab` and `/pr-<NUM>/collab` (both preview confs). compose config validates; nginx -t deferred (no daemon).
 - Phase 7 (54ecf8e): TipTap Cloud -> collab_documents importer (export `?format=yjs`, intersect+skip filters, upsert, dry-run). mockito + classify tests pass.
@@ -109,14 +130,15 @@ Phase 5 - PARTIALLY done:
 
 ## Critical findings (discovered during build, 2026-06-05)
 
-- **CRITICAL (prod DB TLS):** the collab crate's `sqlx` has NO TLS feature
-  (`["postgres","time","runtime-tokio"]`), but prod uses
-  `sslmode=verify-full&sslrootcert=/app/root.crt` on the shared `DATABASE_URL`
-  (`deploy_to_do.yml:93`). Reusing that URL (Q1), the collab server cannot connect to
-  the production DO Postgres. Fix: add `tls-rustls` to the crate's `sqlx` features
-  (Phase 1b) + mount `/app/root.crt` and pass `sslmode/sslrootcert` in the collab
-  service's `DATABASE_URL` (Phase 4/5). Does NOT affect PR preview (local non-SSL
-  Postgres), so Phase 6 rehearsal would not catch it. Blocks Phase 8 (prod cutover).
+- **CRITICAL (prod DB TLS):** the collab crate's `sqlx` had NO TLS feature
+  (`["postgres","time","runtime-tokio"]`), but every managed DO Postgres needs
+  `sslmode=verify-full&sslrootcert=/app/root.crt`. Revised: this applies to collab's OWN
+  dedicated cluster too. Its `DOCS_COLLAB_DATABASE_URL` value must carry those params and
+  the container must mount that cluster's CA at `/app/root.crt` (via
+  `DOCS_COLLAB_SSL_ROOT_CERT`). Fix: `tls-rustls` in the crate's `sqlx` features
+  (Phase 1b, done) + the cert mount and SSL params (Phase 4/5). Does NOT affect PR preview
+  (local non-SSL Postgres), so Phase 6 rehearsal would not catch it. Blocks Phase 8 (prod
+  cutover).
 - **TIPTAP_URL flip is Phase 8, not Phase 4.** Standing up the collab service (Phases
   4-6) must NOT repoint `rust-app`'s `TIPTAP_URL` at `http://docs-collab:1234` - that is
   the cutover, done in Phase 8 after the import. Phase 4 adds the service + routing only.
@@ -130,14 +152,17 @@ Phase 5 - PARTIALLY done:
 
 ### Phase 0 - Decisions + readiness checklist (no code)
 Record the four decisions above in this doc. Readiness status:
-- **DB ownership — RESOLVED (no blocker).** 12 existing migrations create-then-
-  `ALTER ... OWNER TO refactor` (e.g. `m20260514_..._add_password_reset_attempts.rs`),
-  so ownership converges to `refactor` regardless of which user the migrator connects
-  as. `collab_documents` is a plain table (no custom PG type), so the cross-migration
-  *type*-ownership gotcha does not apply. The collab server reuses the app's
-  `DATABASE_URL`, inheriting the same proven read/write access to `refactor`-owned
-  tables. Knowing prod `POSTGRES_USER` is useful for ops but not required for
-  correctness.
+- **DB placement and ownership (revised): RESOLVED.** The collab server now uses its OWN
+  managed Postgres (`DOCS_COLLAB_DATABASE_URL`), not the shared `DATABASE_URL`. On a
+  single-role dedicated DB, the server's `CREATE TABLE IF NOT EXISTS` bootstrap creates
+  `collab_documents` owned by the collab role automatically, so the cross-user
+  `OWNER TO refactor` concern does not arise (it existed only because the shared DB mixes
+  `doadmin` and `refactor`). `collab_documents` is a plain table (no custom PG type), so
+  the type-ownership gotcha also does not apply.
+- **New-cluster CA cert (readiness).** Provision the dedicated managed cluster, download
+  its CA cert, and set the `DOCS_COLLAB_DATABASE_URL` (value carrying
+  `?sslmode=verify-full&sslrootcert=/app/root.crt`) and `DOCS_COLLAB_SSL_ROOT_CERT` (host
+  path to that CA cert) production secrets before the cutover deploy.
 - **Cert covers WS route — CONFIRMED.** Apex `myrefactor.com` server block exists
   (`nginx/conf.d/refactor-platform.conf:77-83`) with a valid cert; it's the same block
   `/api/sse` lives in. `location /collab` goes there, reusing the cert. No new
@@ -154,6 +179,9 @@ Record the four decisions above in this doc. Readiness status:
   (the app already uses these names) and apply via `PgPoolOptions` instead of the sqlx
   defaults (currently a bare `PgPoolOptions::new().connect()`, max 10). The collab pool
   is a distinct `sqlx` pool from the app's sea-orm pool; only the var *names* are shared.
+  Revised (2026-06-05): the default is now `DB_MAX_CONNECTIONS=4` / `DB_MIN_CONNECTIONS=1`
+  (the collab workload is a load SELECT plus debounced UPSERTs, so 4 is ample), set via the
+  clap default and the compose fallback in both compose files.
 - Confirm the server reads all config from **process env** (it does, via clap) so the
   compose `environment:` block is sufficient; no `.env` load needed. Log level is
   `RUST_LOG` (read by `tracing_subscriber::EnvFilter` in `main.rs`, default `info`);
@@ -161,6 +189,15 @@ Record the four decisions above in this doc. Readiness status:
 - Verify: `cargo test -p docs-collab-server` still green; `clippy`/`fmt` clean.
 
 ### Phase 2 - DB migration (own the table)
+**SUPERSEDED (revised 2026-06-05).** With collab on its OWN dedicated DB, the server's
+`CREATE TABLE IF NOT EXISTS` bootstrap creates and owns `collab_documents` there, so this
+SeaORM migration is not needed in production. The already-merged migration
+(`m20260604_000000_create_collab_documents.rs`, commit 561ab6f) would otherwise leave an
+orphan unused table in the SHARED app DB. User decision: leave it (harmless empty table) or
+remove it and unregister from `migration/src/lib.rs` (cleaner, but only if it was never
+applied to prod, since removing an applied migration is discouraged). Original intent kept
+below for reference.
+
 - Add `migration/src/mYYYYMMDD_..._create_collab_documents.rs` creating
   `refactor_platform.collab_documents` (`name TEXT PRIMARY KEY`, `state BYTEA NOT
   NULL`, `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`) with `ALTER TABLE ... OWNER
@@ -206,6 +243,11 @@ exist; this is mostly referencing them for the new service):
   env (referencing existing `TIPTAP_JWT_SIGNING_KEY`/`TIPTAP_AUTH_KEY`, the DB vars,
   `BIND_ADDR`, timeouts). **Change the `TIPTAP_URL` value** in the GitHub `production`
   and `PR_PREVIEW_*` environments to the internal collab URL.
+- **NEW dedicated-DB secrets (revised 2026-06-05):** `DOCS_COLLAB_DATABASE_URL` and
+  `DOCS_COLLAB_SSL_ROOT_CERT` are added to the `deploy_to_do.yml` production heredoc (done)
+  and must be set as `production` environment secrets. PR preview keeps using its local
+  Postgres container, so no preview passthrough is required for these; only production
+  points at the dedicated managed cluster.
 - **Frontend**: add `NEXT_PUBLIC_DOCS_COLLAB_URL` to the frontend compose env and both
   deploy heredocs (prod: `wss://myrefactor.com/collab`; preview: the per-PR path), and
   to the GitHub vars. (Frontend PR refactor-platform-fe#409 already consumes it.)
@@ -304,3 +346,9 @@ edits are lost. Keep the maintenance window tight to bound this.
 ## Out of scope
 Horizontal scaling (Redis pub/sub for multi-node fan-out), and load-test tuning beyond
 setting `ulimit`/`LimitNOFILE` for the service.
+
+**Deferred, trigger-gated (not out of scope, just not now):** moving the collab SERVER to
+its own VPS, which is cheap once the DB is separate (no data move; repoint the nginx
+upstream + frontend WS URL). Triggers: droplet RAM tight under real load, or decoupling the
+app and editing failure domains. Redis fan-out only near low-thousands of concurrent
+live-doc editors.

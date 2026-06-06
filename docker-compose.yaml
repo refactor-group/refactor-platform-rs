@@ -146,20 +146,23 @@ services:
     platform: ${PLATFORM}
     container_name: docs-collab
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
+      # Collab's OWN managed Postgres (not the shared app DB). The secret value
+      # must embed ?sslmode=verify-full&sslrootcert=/app/root.crt.
+      DATABASE_URL: ${DOCS_COLLAB_DATABASE_URL}
       DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
       JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
       MANAGEMENT_AUTH_KEY: ${TIPTAP_AUTH_KEY}
       BIND_ADDR: 0.0.0.0:1234
       PERSIST_DEBOUNCE_MS: ${DOCS_COLLAB_PERSIST_DEBOUNCE_MS:-500}
       IDLE_EVICT_SECS: ${DOCS_COLLAB_IDLE_EVICT_SECS:-300}
-      DB_MAX_CONNECTIONS: ${DOCS_COLLAB_DB_MAX_CONNECTIONS:-10}
+      DB_MAX_CONNECTIONS: ${DOCS_COLLAB_DB_MAX_CONNECTIONS:-4}
       DB_MIN_CONNECTIONS: ${DOCS_COLLAB_DB_MIN_CONNECTIONS:-1}
       RUST_LOG: ${DOCS_COLLAB_RUST_LOG:-info}
     depends_on:
       - migrator
     volumes:
-      - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
+      # CA cert for collab's own managed cluster (may differ from the app's).
+      - ${DOCS_COLLAB_SSL_ROOT_CERT}:/app/root.crt:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:1234/health"]
       interval: 15s
