@@ -64,6 +64,32 @@ pub fn validate_duration_in_update_map(
     Duration::try_from(*n).map(Some).map_err(Error::from)
 }
 
+/// Empty or whitespace-only title normalizes to `None` (no empty titles stored).
+pub fn normalize_title(title: Option<String>) -> Option<String> {
+    title
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Normalize an update-map `title` to NULL when empty/whitespace. Explicit
+/// null (clear) and an absent key are left unchanged.
+pub fn normalize_title_in_update_map(update_map: &mut UpdateMap) {
+    let normalized = match update_map.get_value("title") {
+        Some(Value::String(Some(s))) => {
+            let trimmed = s.trim();
+            Some(if trimmed.is_empty() {
+                None
+            } else {
+                Some(Box::new(trimmed.to_string()))
+            })
+        }
+        _ => None,
+    };
+    if let Some(value) = normalized {
+        update_map.insert("title".to_string(), Some(Value::String(value)));
+    }
+}
+
 /// Insert a new coaching session.
 ///
 /// `requested_duration` resolves via the defaulting cascade (see
@@ -84,7 +110,7 @@ pub async fn create(
         coaching_relationship_id: Set(coaching_session_model.coaching_relationship_id),
         date: Set(coaching_session_model.date),
         duration_minutes: Set(duration.minutes()),
-        title: Set(coaching_session_model.title),
+        title: Set(normalize_title(coaching_session_model.title)),
         collab_document_name: Set(coaching_session_model.collab_document_name),
         meeting_url: Set(coaching_session_model.meeting_url),
         provider: Set(coaching_session_model.provider),
@@ -847,6 +873,10 @@ impl EnrichedSession {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "coaching_session_normalize_tests.rs"]
+mod normalize_tests;
 
 #[cfg(test)]
 // We need to gate seaORM's mock feature behind conditional compilation because

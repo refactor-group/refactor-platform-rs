@@ -305,11 +305,12 @@ pub async fn update(
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
-    let update_map = params.into_update_map();
+    let mut update_map = params.into_update_map();
     // Validate `duration_minutes` if it appears in the patch. The
     // IntoUpdateMap pattern erased its type, so the entity_api boundary is
     // the right place to re-check (1..=480).
     coaching_session::validate_duration_in_update_map(&update_map, "duration_minutes")?;
+    coaching_session::normalize_title_in_update_map(&mut update_map);
 
     let coaching_session = coaching_session::find_by_id(db, id).await?;
     debug!(
