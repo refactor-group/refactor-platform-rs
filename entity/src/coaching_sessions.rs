@@ -49,6 +49,8 @@ pub enum Relation {
     CoachingRelationships,
     #[sea_orm(has_many = "super::notes::Entity")]
     Notes,
+    #[sea_orm(has_many = "super::coaching_session_topics::Entity")]
+    CoachingSessionTopics,
     #[sea_orm(has_many = "super::goals::Entity")]
     Goals,
     #[sea_orm(has_many = "super::coaching_sessions_goals::Entity")]
@@ -76,6 +78,12 @@ impl Related<super::coaching_relationships::Entity> for Entity {
 impl Related<super::notes::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Notes.def()
+    }
+}
+
+impl Related<super::coaching_session_topics::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CoachingSessionTopics.def()
     }
 }
 
