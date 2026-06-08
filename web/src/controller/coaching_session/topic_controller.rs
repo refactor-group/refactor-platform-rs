@@ -2,7 +2,10 @@ use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser,
     coaching_session_access::CoachingSessionAccess,
-    coaching_session_topic_access::{CoachingSessionTopicAccess, CoachingSessionTopicAuthorAccess},
+    coaching_session_topic_access::{
+        CoachingSessionTopicAccess, CoachingSessionTopicAuthorAccess,
+        CoachingSessionTopicCoacheeAccess,
+    },
     compare_api_version::CompareApiVersion,
 };
 use crate::{AppState, Error};
@@ -30,6 +33,12 @@ pub struct UpdateParams {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ReorderParams {
     pub ordered_ids: Vec<Id>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RatingParams {
+    pub relevance: Option<domain::topic_relevance::Relevance>,
+    pub immediacy: Option<domain::topic_immediacy::Immediacy>,
 }
 
 /// GET all topics for a coaching session, in canonical order
@@ -178,4 +187,41 @@ pub async fn delete(
         StatusCode::OK.into(),
         serde_json::json!({ "id": topic.id }),
     )))
+}
+
+/// PATCH set a topic's relevance/immediacy rating (coachee only)
+#[utoipa::path(
+    patch,
+    path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/rating",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("topic_id" = Id, Path, description = "Topic id"),
+    ),
+    request_body = RatingParams,
+    responses(
+        (status = 200, description = "Topic rating updated", body = domain::coaching_session_topics::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Only the coachee may rate a topic"),
+        (status = 404, description = "Topic not found in this session"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn set_rating(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionTopicCoacheeAccess(topic): CoachingSessionTopicCoacheeAccess,
+    State(app_state): State<AppState>,
+    Json(params): Json<RatingParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("PATCH rating for topic {}", topic.id);
+
+    let updated = TopicApi::set_rating(
+        app_state.db_conn_ref(),
+        topic.id,
+        params.relevance,
+        params.immediacy,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }

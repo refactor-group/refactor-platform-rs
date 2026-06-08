@@ -1,5 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use entity::coaching_session_topics::{self, ActiveModel, Entity, Model};
+use entity::topic_immediacy::Immediacy;
+use entity::topic_relevance::Relevance;
 use entity::Id;
 use sea_orm::{
     entity::prelude::*,
@@ -71,6 +73,25 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
         created_at: Unchanged(topic.created_at),
         updated_at: Set(chrono::Utc::now().into()),
     };
+    Ok(active.update(db).await?.try_into_model()?)
+}
+
+/// Coachee-set rating. Sets whichever axis is provided; stamps updated_at.
+pub async fn set_rating(
+    db: &DatabaseConnection,
+    id: Id,
+    relevance: Option<Relevance>,
+    immediacy: Option<Immediacy>,
+) -> Result<Model, Error> {
+    let topic = find_by_id(db, id).await?;
+    let mut active: ActiveModel = topic.into();
+    if let Some(relevance) = relevance {
+        active.relevance = Set(relevance);
+    }
+    if let Some(immediacy) = immediacy {
+        active.immediacy = Set(immediacy);
+    }
+    active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
 

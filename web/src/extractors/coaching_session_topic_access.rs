@@ -5,7 +5,7 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path},
     http::{request::Parts, StatusCode},
 };
-use domain::{coaching_session_topic, coaching_session_topics, Id};
+use domain::{coaching_session, coaching_session_topic, coaching_session_topics, Id};
 
 use crate::{
     extractors::{
@@ -99,6 +99,81 @@ where
     }
 }
 
+/// Rating writes are coachee-only. Verifies the caller is the coachee of the path session's
+/// relationship (else 403), and that the `:topic_id` topic belongs to that session (else 404).
+pub(crate) struct CoachingSessionTopicCoacheeAccess(pub coaching_session_topics::Model);
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionTopicCoacheeAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+
+        let AuthenticatedUser(user) =
+            AuthenticatedUser::from_request_parts(parts, &app_state).await?;
+
+        let Path(path_params) =
+            Path::<HashMap<String, String>>::from_request_parts(parts, &app_state)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "Invalid path parameters".to_string(),
+                    )
+                })?;
+
+        let coaching_session_id: Id = path_params
+            .get("coaching_session_id")
+            .ok_or((
+                StatusCode::BAD_REQUEST,
+                "Missing coaching_session_id in path".to_string(),
+            ))?
+            .parse()
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Invalid coaching session id".to_string(),
+                )
+            })?;
+
+        let topic_id: Id = path_params
+            .get("topic_id")
+            .ok_or((
+                StatusCode::BAD_REQUEST,
+                "Missing topic_id in path".to_string(),
+            ))?
+            .parse()
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid topic id".to_string()))?;
+
+        let (session, relationship) = coaching_session::find_by_id_with_coaching_relationship(
+            app_state.db_conn_ref(),
+            coaching_session_id,
+        )
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "NOT FOUND".to_string()))?;
+
+        // Coachee-only: a coach can read the topic but not rate it -> 403.
+        if relationship.coachee_id != user.id {
+            return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+        }
+
+        let topic = coaching_session_topic::find_by_id(app_state.db_conn_ref(), topic_id)
+            .await
+            .map_err(|_| (StatusCode::NOT_FOUND, "NOT FOUND".to_string()))?;
+
+        if topic.coaching_session_id != session.id {
+            return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
+        }
+
+        Ok(CoachingSessionTopicCoacheeAccess(topic))
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
@@ -108,7 +183,11 @@ mod tests {
 
     use super::*;
     use axum::{body::Body, middleware::from_fn};
-    use axum::{extract::Request, routing::delete, Router};
+    use axum::{
+        extract::Request,
+        routing::{delete, patch},
+        Router,
+    };
     use axum_login::{
         tower_sessions::{MemoryStore, SessionManagerLayer},
         AuthManagerLayerBuilder,
@@ -187,6 +266,23 @@ mod tests {
         }
     }
 
+    fn test_relationship_with_coach(
+        relationship_id: Id,
+        coach_id: Id,
+        coachee_id: Id,
+    ) -> coaching_relationships::Model {
+        let now = Utc::now();
+        coaching_relationships::Model {
+            id: relationship_id,
+            coach_id,
+            coachee_id,
+            organization_id: Id::new_v4(),
+            slug: "test".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
     fn test_topic(
         topic_id: Id,
         coaching_session_id: Id,
@@ -210,6 +306,14 @@ mod tests {
     // full composed chain (session participant -> topic-belongs-to-session -> author).
     async fn author_route(
         CoachingSessionTopicAuthorAccess(_topic): CoachingSessionTopicAuthorAccess,
+    ) -> &'static str {
+        "extracted_success"
+    }
+
+    // Mounts the coachee extractor behind require_auth so a logged-in PATCH exercises the
+    // coachee-only rating guard (coachee -> ok, coach -> 403).
+    async fn coachee_route(
+        CoachingSessionTopicCoacheeAccess(_topic): CoachingSessionTopicCoacheeAccess,
     ) -> &'static str {
         "extracted_success"
     }
@@ -242,6 +346,10 @@ mod tests {
                     .route(
                         "/coaching_sessions/:coaching_session_id/topics/:topic_id",
                         delete(author_route),
+                    )
+                    .route(
+                        "/coaching_sessions/:coaching_session_id/topics/:topic_id/rating",
+                        patch(coachee_route),
                     )
                     .route_layer(from_fn(require_auth)),
             )
@@ -371,5 +479,80 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn coachee_extractor_ok_when_user_is_coachee() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let topic_id = Id::new_v4();
+        let user = create_test_user();
+        let role = test_role(user.id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                // Caller is the coachee of the relationship -> rating allowed.
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship(relationship_id, user.id),
+                )]])
+                .append_query_results(vec![vec![test_topic(topic_id, session_id, user.id)]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .into_connection(),
+        );
+
+        let app = build_app(Arc::clone(&db));
+        let cookie = do_login(&app).await;
+
+        let req = Request::builder()
+            .uri(format!(
+                "/coaching_sessions/{session_id}/topics/{topic_id}/rating"
+            ))
+            .method("PATCH")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn coachee_extractor_403_when_user_is_coach() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let topic_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+        let user = create_test_user();
+        let role = test_role(user.id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                // Caller is the coach (a participant) but not the coachee -> 403.
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship_with_coach(relationship_id, user.id, coachee_id),
+                )]])
+                .into_connection(),
+        );
+
+        let app = build_app(Arc::clone(&db));
+        let cookie = do_login(&app).await;
+
+        let req = Request::builder()
+            .uri(format!(
+                "/coaching_sessions/{session_id}/topics/{topic_id}/rating"
+            ))
+            .method("PATCH")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }

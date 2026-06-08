@@ -58,6 +58,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::update,
             coaching_session::topic_controller::reorder,
             coaching_session::topic_controller::delete,
+            coaching_session::topic_controller::set_rating,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
@@ -125,6 +126,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::controller::coaching_session::topic_controller::CreateParams,
                 crate::controller::coaching_session::topic_controller::UpdateParams,
                 crate::controller::coaching_session::topic_controller::ReorderParams,
+                crate::controller::coaching_session::topic_controller::RatingParams,
                 crate::controller::oauth_controller::ConnectionResponse,
                 crate::controller::password_reset_controller::ValidateParams,
                 crate::controller::password_reset_controller::ValidateResponse,
@@ -783,6 +785,10 @@ fn coaching_session_topic_routes(app_state: AppState) -> Router {
             "/coaching_sessions/:coaching_session_id/topics/:topic_id",
             put(coaching_session::topic_controller::update)
                 .delete(coaching_session::topic_controller::delete),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id/rating",
+            patch(coaching_session::topic_controller::set_rating),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
