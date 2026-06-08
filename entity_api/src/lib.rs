@@ -4,9 +4,9 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
-    coaching_sessions, coaching_sessions_goals, duration, goals, jwts, magic_link_tokens, notes,
-    oauth_connections, organizations, password_reset_attempts, provider, status, token_purpose,
-    user_invite_status, user_roles, users, users::Role, Id,
+    coaching_session_topics, coaching_sessions, coaching_sessions_goals, duration, goals, jwts,
+    magic_link_tokens, notes, oauth_connections, organizations, password_reset_attempts, provider,
+    status, token_purpose, user_invite_status, user_roles, users, users::Role, Id,
 };
 
 pub mod action;
@@ -15,6 +15,7 @@ pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
 pub mod coaching_session_goal;
+pub mod coaching_session_topic;
 pub mod error;
 pub mod goal;
 pub mod goal_progress;
