@@ -25,6 +25,8 @@ pub enum IncludeParam {
     Goal,
     /// Include session agreements
     Agreements,
+    /// Include session topics
+    Topics,
 }
 
 /// Query parameters for GET `/users/{user_id}/coaching_sessions` endpoint.

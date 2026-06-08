@@ -2,7 +2,7 @@ use super::error::{EntityApiErrorKind, Error};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use entity::{
-    agreements, coaching_relationships,
+    agreements, coaching_relationships, coaching_session_topics,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals, organizations,
     provider::Provider,
@@ -406,6 +406,8 @@ pub struct EnrichedSession {
     pub goals: Option<Vec<goals::Model>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<coaching_session_topics::Model>>,
 }
 
 /// Configuration for which related resources to include when fetching coaching sessions.
@@ -448,6 +450,7 @@ pub struct IncludeOptions {
     pub organization: bool,
     pub goal: bool,
     pub agreements: bool,
+    pub topics: bool,
 }
 
 impl IncludeOptions {
@@ -461,6 +464,7 @@ impl IncludeOptions {
             organization: false,
             goal: false,
             agreements: false,
+            topics: false,
         }
     }
 
@@ -592,6 +596,7 @@ pub async fn find_by_user_with_includes(
     if !options.includes.needs_relationships()
         && !options.includes.goal
         && !options.includes.agreements
+        && !options.includes.topics
     {
         return Ok(sessions
             .into_iter()
@@ -626,6 +631,7 @@ struct RelatedData {
     organizations: HashMap<Id, organizations::Model>,
     goals: HashMap<Id, Vec<goals::Model>>,
     agreements: HashMap<Id, agreements::Model>,
+    topics: HashMap<Id, Vec<coaching_session_topics::Model>>,
 }
 
 /// Load all requested related data in efficient batches
@@ -675,6 +681,11 @@ async fn load_related_data(
     // Load agreements by session_id
     if includes.agreements {
         data.agreements = batch_load_agreements(db, &session_ids).await?;
+    }
+
+    // Load topics by session_id
+    if includes.topics {
+        data.topics = batch_load_topics(db, &session_ids).await?;
     }
 
     Ok(data)
@@ -782,6 +793,31 @@ async fn batch_load_agreements(
         .collect())
 }
 
+/// Batch load topics by session IDs, pre-sorted by display_order then created_at.
+async fn batch_load_topics(
+    db: &impl ConnectionTrait,
+    session_ids: &[Id],
+) -> Result<HashMap<Id, Vec<coaching_session_topics::Model>>, Error> {
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut map: HashMap<Id, Vec<coaching_session_topics::Model>> = HashMap::new();
+    for topic in coaching_session_topics::Entity::find()
+        .filter(
+            coaching_session_topics::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
+        )
+        .order_by_asc(coaching_session_topics::Column::DisplayOrder)
+        .order_by_asc(coaching_session_topics::Column::CreatedAt)
+        .all(db)
+        .await?
+    {
+        map.entry(topic.coaching_session_id)
+            .or_default()
+            .push(topic);
+    }
+    Ok(map)
+}
+
 /// Assemble an enriched session from base session and related data.
 ///
 /// `includes` is needed to distinguish "not requested" (`None`) from
@@ -819,6 +855,12 @@ fn assemble_enriched_session(
 
     let agreement = related.agreements.get(&session.id).cloned();
 
+    let topics = if includes.topics {
+        Some(related.topics.get(&session.id).cloned().unwrap_or_default())
+    } else {
+        None
+    };
+
     EnrichedSession {
         session,
         relationship,
@@ -827,6 +869,7 @@ fn assemble_enriched_session(
         organization,
         goals,
         agreement,
+        topics,
     }
 }
 
@@ -841,6 +884,7 @@ impl EnrichedSession {
             organization: None,
             goals: None,
             agreement: None,
+            topics: None,
         }
     }
 }
@@ -1480,6 +1524,7 @@ mod tests {
             organization: true,
             goal: false,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1491,6 +1536,7 @@ mod tests {
             organization: true,
             goal: false,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_err());
     }
@@ -1502,6 +1548,7 @@ mod tests {
             organization: false,
             goal: true,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1513,6 +1560,7 @@ mod tests {
             organization: true,
             goal: true,
             agreements: true,
+            topics: true,
         };
         assert!(includes.validate().is_ok());
     }
