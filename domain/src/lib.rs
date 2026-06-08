@@ -14,7 +14,7 @@ pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_session_topics,
     coaching_sessions, coaching_sessions_goals, duration, goals, jwts, magic_link_tokens, notes,
     oauth_connections, organizations, password_reset_attempts, provider, query::QuerySort, status,
-    token_purpose, user_roles, users, Id,
+    token_purpose, topic_immediacy, topic_relevance, user_roles, users, Id,
 };
 
 pub mod action;

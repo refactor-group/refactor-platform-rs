@@ -1,5 +1,7 @@
 //! `SeaORM` Entity.
 
+use crate::topic_immediacy::Immediacy;
+use crate::topic_relevance::Relevance;
 use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,9 @@ pub struct Model {
     // Backend-internal ordering index. Never crosses the wire in either direction.
     #[serde(skip)]
     pub display_order: i32,
+    // Coachee-set rating axes. Default to Neutral (untriaged).
+    pub relevance: Relevance,
+    pub immediacy: Immediacy,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]

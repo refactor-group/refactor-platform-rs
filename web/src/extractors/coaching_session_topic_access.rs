@@ -199,6 +199,8 @@ mod tests {
             body: "A topic".to_string(),
             user_id,
             display_order: 0,
+            relevance: domain::topic_relevance::Relevance::Neutral,
+            immediacy: domain::topic_immediacy::Immediacy::Neutral,
             created_at: now.into(),
             updated_at: now.into(),
         }

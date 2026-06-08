@@ -10,6 +10,8 @@ fn topic(session_id: Id, id: Id, order: i32) -> Model {
         body: "topic body".to_owned(),
         user_id: Id::new_v4(),
         display_order: order,
+        relevance: entity::topic_relevance::Relevance::Neutral,
+        immediacy: entity::topic_immediacy::Immediacy::Neutral,
         created_at: now.into(),
         updated_at: now.into(),
     }
@@ -82,6 +84,9 @@ fn display_order_is_never_serialized() {
     assert!(value.get("id").is_some());
     assert!(value.get("coaching_session_id").is_some());
     assert!(value.get("user_id").is_some());
+    // Rating axes ARE on the wire.
+    assert!(value.get("relevance").is_some());
+    assert!(value.get("immediacy").is_some());
 }
 
 #[tokio::test]
@@ -97,7 +102,7 @@ async fn find_by_coaching_session_id_orders_by_display_order_then_created_at() {
         db.into_transaction_log(),
         [Transaction::from_sql_and_values(
             DatabaseBackend::Postgres,
-            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
+            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."relevance" AS "text"), CAST("coaching_session_topics"."immediacy" AS "text"), "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
             [session_id.into()]
         )]
     );

@@ -66,6 +66,8 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
         user_id: Unchanged(topic.user_id),
         body: Set(body),
         display_order: Unchanged(topic.display_order),
+        relevance: Unchanged(topic.relevance),
+        immediacy: Unchanged(topic.immediacy),
         created_at: Unchanged(topic.created_at),
         updated_at: Set(chrono::Utc::now().into()),
     };
