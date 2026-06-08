@@ -199,7 +199,29 @@ from CRUD/reorder logic, and a focused migration commit is trivial to review and
   the guard. Gates reproduced: 173/194/83 (no new tests — mirrors untested sibling loaders). 4
   `IncludeOptions` test literals got the new field. Scope: 3 files, no out-of-scope.
 - **✅ Epic Phase 1 (P1–P5) COMPLETE** — Title (rs#346, PR #349) + Topics CRUD/reorder/authz/include
-  (rs#347). P6–P7 (rating, rs#348, epic Phase 2) not started.
+  (rs#347, PR #350).
+- **P6 — Rating schema + enums — ✅ APPROVED** (overseer-reviewed 2026-06-07). Branch
+  `feat/348-topic-rating` (off feat/347; stacked), commit `c30a9bd`. Migration
+  `m20260607_000002_add_topic_rating_enums`: `CREATE TYPE topic_relevance`/`topic_immediacy` (each
+  `+ OWNER TO refactor`), columns `NOT NULL DEFAULT 'neutral'`, `down` drops cols then types. Entity
+  enums `Relevance` (neutral/peripheral/worth_exploring/central) + `Immediacy`
+  (neutral/can_wait/soon/pressing), serde = PascalCase variant on the wire (like `status`). `update`
+  preserves rating via `Unchanged`; `create`/`reorder` unchanged (DB default applies). Frozen test
+  re-frozen: asserts relevance+immediacy serialized, display_order not, ORDER BY unchanged; SQL now
+  has `CAST(... AS "text")` enum cols. Enums re-exported `entity_api`→`domain` (VERIFIED correct:
+  web has no `entity` dep; `domain::<enum>::Type` is the established pattern, mirrors provider/status;
+  utoipa `body = entity::...` annotations are macro schema-name refs, not a real entity dep). Gates
+  173/194/83. **Pre-merge:** run migration up/down on live PG (PG enum + OWNER TO).
+- **P7 — Rating endpoint + coachee authz — ✅ APPROVED** (overseer-reviewed 2026-06-07). Branch
+  `feat/348-topic-rating`, commit `d57cc03`. `entity_api::set_rating` (via `topic.into()` + `Set`,
+  stamps `updated_at`); domain re-export; route `PATCH /coaching_sessions/:id/topics/:topic_id/rating`;
+  new `CoachingSessionTopicCoacheeAccess` extractor — **coachee-only (403 for a coach), topic-in-session
+  (404)**. 2 HTTP integration tests (coachee→200, coach→403). Gates reproduced: clippy/fmt clean, web
+  **85** (+2). **Coachee guard MUTATION-TESTED:** defeating it fails the 403 test — real teeth. Scope:
+  5 files, no migration/enum/entity change. **Pre-merge:** live-PG migration check (P6 enums).
+- **✅✅ ENTIRE BUILD COMPLETE (P1–P7).** Title (rs#346, PR #349) · Topics CRUD/reorder/authz/include
+  (rs#347, PR #350) · rating (rs#348, PR pending). Every phase independently reviewed; reorder guard,
+  both topic authz guards, and the coachee guard all mutation-tested.
 
 ---
 
