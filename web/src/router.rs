@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{
     middleware::{from_fn, from_fn_with_state},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::services::ServeDir;
@@ -53,6 +53,11 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
+            coaching_session::topic_controller::index,
+            coaching_session::topic_controller::create,
+            coaching_session::topic_controller::update,
+            coaching_session::topic_controller::reorder,
+            coaching_session::topic_controller::delete,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
@@ -117,6 +122,9 @@ use utoipa_rapidoc::RapiDoc;
             schemas(
                 crate::controller::action_controller::ActionRequest,
                 crate::controller::coaching_session::meeting_recording_controller::StartRecordingParams,
+                crate::controller::coaching_session::topic_controller::CreateParams,
+                crate::controller::coaching_session::topic_controller::UpdateParams,
+                crate::controller::coaching_session::topic_controller::ReorderParams,
                 crate::controller::oauth_controller::ConnectionResponse,
                 crate::controller::password_reset_controller::ValidateParams,
                 crate::controller::password_reset_controller::ValidateResponse,
@@ -140,6 +148,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_relationships::Model,
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
+                domain::coaching_session_topics::Model,
                 domain::coaching_sessions::Model,
                 domain::coaching_sessions_goals::Model,
                 domain::goals::Model,
@@ -193,6 +202,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(goal_routes(app_state.clone()))
         .merge(coaching_session_goal_routes(app_state.clone()))
         .merge(coaching_session_meeting_recording_routes(app_state.clone()))
+        .merge(coaching_session_topic_routes(app_state.clone()))
         .merge(coaching_session_transcription_routes(app_state.clone()))
         .merge(coaching_session_transcription_segment_routes(
             app_state.clone(),
@@ -753,6 +763,26 @@ fn coaching_session_meeting_recording_routes(app_state: AppState) -> Router {
             get(coaching_session::meeting_recording_controller::read)
                 .post(coaching_session::meeting_recording_controller::create)
                 .delete(coaching_session::meeting_recording_controller::delete),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_topic_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics",
+            get(coaching_session::topic_controller::index)
+                .post(coaching_session::topic_controller::create),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/reorder",
+            patch(coaching_session::topic_controller::reorder),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id",
+            put(coaching_session::topic_controller::update)
+                .delete(coaching_session::topic_controller::delete),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
