@@ -536,6 +536,8 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![vec![link.clone()]])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -569,6 +571,101 @@ mod tests {
         Ok(())
     }
 
+    /// A prior session with a Deferred topic carries that topic forward at create
+    /// and publishes a `TopicsChanged` scoped to coach + coachee, alongside the
+    /// usual (here empty) goal events.
+    #[tokio::test]
+    async fn create_carries_over_prior_session_deferred_topics_and_publishes_topics_changed(
+    ) -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        let now = chrono::Utc::now();
+        let prior = coaching_sessions::Model {
+            id: Id::new_v4(),
+            date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
+            ..session.clone()
+        };
+        let deferred_topic = crate::coaching_session_topics::Model {
+            id: Id::new_v4(),
+            coaching_session_id: prior.id,
+            body: "Deferred topic".to_string(),
+            user_id: Id::new_v4(),
+            display_order: 0,
+            priority: Some(crate::topic_priority::Priority::High),
+            status: crate::topic_status::Status::Deferred,
+            carried_from_topic_id: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let carried_copy = crate::coaching_session_topics::Model {
+            id: Id::new_v4(),
+            coaching_session_id: session.id,
+            status: crate::topic_status::Status::Open,
+            carried_from_topic_id: Some(deferred_topic.id),
+            display_order: 0,
+            ..deferred_topic.clone()
+        };
+
+        // relationship → organization → session INSERT → in-progress goals SELECT
+        // (empty, no goal event) → find_prior_session (returns prior) → carry_over
+        // source SELECT (one Deferred topic) → carry_over target SELECT (empty) →
+        // INSERT (the carried copy).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![vec![prior.clone()]])
+            .append_query_results(vec![vec![deferred_topic.clone()]])
+            .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
+            .append_query_results(vec![vec![carried_copy.clone()]])
+            .into_connection();
+
+        let config = test_config(&server.url());
+        let (publisher, recorded) = recording_publisher();
+        create(
+            &db,
+            &config,
+            &publisher,
+            session.clone(),
+            Some(Duration::default()),
+        )
+        .await?;
+
+        let events = recorded.lock().unwrap();
+        let topics_changed: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::TopicsChanged { .. }))
+            .collect();
+        assert_eq!(
+            topics_changed.len(),
+            1,
+            "expected one TopicsChanged event, got {events:?}"
+        );
+        match topics_changed[0] {
+            DomainEvent::TopicsChanged {
+                coaching_session_id,
+                notify_user_ids,
+            } => {
+                assert_eq!(*coaching_session_id, session.id);
+                assert_eq!(notify_user_ids, &vec![coach_id, relationship.coachee_id]);
+            }
+            other => panic!("expected TopicsChanged, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
     /// When no provider is set, the oauth credentials lookup is skipped entirely.
     #[tokio::test]
     async fn create_without_provider_skips_oauth_lookup() -> Result<(), Error> {
@@ -593,6 +690,8 @@ mod tests {
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -662,6 +761,8 @@ mod tests {
             .append_query_results(vec![vec![existing_session_with_url]])
             .append_query_results(vec![vec![saved_session]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -714,6 +815,8 @@ mod tests {
             )
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());

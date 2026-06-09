@@ -1,6 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
+use chrono::NaiveDateTime;
 use entity::{
     agreements, coaching_relationships, coaching_session_topics,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
@@ -151,6 +152,22 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// Most recent session in the relationship strictly before `before`. Sources
+/// topics for carry-over at the next session's hydration; `None` for the first
+/// session in a relationship.
+pub async fn find_prior_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    before: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.lt(before))
+        .order_by_desc(Column::Date)
+        .one(db)
+        .await?)
 }
 
 /// Returns the coach and coachee user IDs for a coaching session.
@@ -1013,6 +1030,38 @@ mod tests {
                 r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_prior_session_filters_relationship_and_date_orders_desc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let before = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_prior_session(&db, relationship_id, before).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    before.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
                 ]
             )]

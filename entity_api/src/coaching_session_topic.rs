@@ -109,7 +109,7 @@ pub async fn delete(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
 
 /// All topics for a session, pre-sorted in canonical wire order.
 pub async fn find_by_coaching_session_id(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     coaching_session_id: Id,
 ) -> Result<Vec<Model>, Error> {
     Ok(Entity::find()
@@ -147,6 +147,44 @@ pub async fn reorder(
         active.update(db).await?;
     }
     find_by_coaching_session_id(db, coaching_session_id).await
+}
+
+/// Copies the source session's `Deferred` topics into the target session,
+/// preserving body/priority/author, resetting status to Open, appending after any
+/// existing target topics, and stamping carried_from_topic_id with the source id.
+/// Returns the created copies in carry order. Status filtering is done in Rust;
+/// filtering by a PG enum in SQL binds as text and Postgres rejects it (42804).
+pub async fn carry_over(
+    db: &impl ConnectionTrait,
+    source_session_id: Id,
+    target_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    let deferred: Vec<Model> = find_by_coaching_session_id(db, source_session_id)
+        .await?
+        .into_iter()
+        .filter(|topic| topic.status == Status::Deferred)
+        .collect();
+
+    let base = next_display_order(&find_by_coaching_session_id(db, target_session_id).await?);
+
+    let mut carried = Vec::with_capacity(deferred.len());
+    for (offset, source) in deferred.into_iter().enumerate() {
+        let now = chrono::Utc::now();
+        let copy = ActiveModel {
+            coaching_session_id: Set(target_session_id),
+            user_id: Set(source.user_id),
+            body: Set(source.body),
+            display_order: Set(base + offset as i32),
+            priority: Set(source.priority),
+            status: Set(Status::Open),
+            carried_from_topic_id: Set(Some(source.id)),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+            ..Default::default()
+        };
+        carried.push(copy.save(db).await?.try_into_model()?);
+    }
+    Ok(carried)
 }
 
 #[cfg(test)]

@@ -2,7 +2,9 @@ use crate::coaching_relationships;
 use crate::coaching_sessions::Model;
 use crate::error::Error;
 use crate::events::DomainEvent;
+use entity_api::coaching_session;
 use entity_api::coaching_session_goal;
+use entity_api::coaching_session_topic;
 use log::*;
 use sea_orm::DatabaseTransaction;
 
@@ -28,9 +30,12 @@ pub(crate) trait CoachingSessionHydrationTask: Send + Sync {
     ) -> Result<Vec<DomainEvent>, Error>;
 }
 
-/// Ordered registry of hydration tasks. Goals-only for now.
+/// Ordered registry of hydration tasks.
 fn coaching_session_hydration_tasks() -> Vec<Box<dyn CoachingSessionHydrationTask>> {
-    vec![Box::new(GoalsCarryForwardTask)]
+    vec![
+        Box::new(GoalsCarryForwardTask),
+        Box::new(TopicsCarryOverTask),
+    ]
 }
 
 /// Runs every registered task on `ctx`, collecting their events in order. A task
@@ -88,5 +93,43 @@ impl CoachingSessionHydrationTask for GoalsCarryForwardTask {
             notify_user_ids: notify_user_ids.clone(),
         })
         .collect())
+    }
+}
+
+/// Carries the prior session's Deferred topics into this session at hydration.
+struct TopicsCarryOverTask;
+
+#[async_trait::async_trait]
+impl CoachingSessionHydrationTask for TopicsCarryOverTask {
+    fn name(&self) -> &'static str {
+        "topics_carry_over"
+    }
+
+    /// Reads as a sentence: find the prior session, carry its Deferred topics
+    /// forward, and announce a topics change only when something actually carried.
+    async fn run(
+        &self,
+        ctx: &CoachingSessionHydrationContext<'_>,
+    ) -> Result<Vec<DomainEvent>, Error> {
+        let Some(prior) = coaching_session::find_prior_session(
+            ctx.txn,
+            ctx.session.coaching_relationship_id,
+            ctx.session.date,
+        )
+        .await?
+        else {
+            return Ok(Vec::new());
+        };
+
+        let carried = coaching_session_topic::carry_over(ctx.txn, prior.id, ctx.session.id).await?;
+
+        // Announce a topics change only when something actually carried.
+        if carried.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![DomainEvent::TopicsChanged {
+            coaching_session_id: ctx.session.id,
+            notify_user_ids: vec![ctx.relationship.coach_id, ctx.relationship.coachee_id],
+        }])
     }
 }
