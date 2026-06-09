@@ -42,6 +42,11 @@ pub struct RatingParams {
     pub priority: Option<domain::topic_priority::Priority>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StatusParams {
+    pub status: domain::topic_status::Status,
+}
+
 /// GET all topics for a coaching session, in canonical order
 #[utoipa::path(
     get,
@@ -246,6 +251,42 @@ pub async fn set_rating(
         app_state.event_publisher.as_ref(),
         topic.id,
         params.priority,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
+}
+
+/// PATCH set a topic's lifecycle status (either participant)
+#[utoipa::path(
+    patch,
+    path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/status",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("topic_id" = Id, Path, description = "Topic id"),
+    ),
+    request_body = StatusParams,
+    responses(
+        (status = 200, description = "Topic status updated", body = domain::coaching_session_topics::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Topic not found in this session"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn set_status(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionTopicAccess(topic): CoachingSessionTopicAccess,
+    State(app_state): State<AppState>,
+    Json(params): Json<StatusParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("PATCH status for topic {}", topic.id);
+
+    let updated = TopicApi::set_status(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        topic.id,
+        params.status,
     )
     .await?;
 
