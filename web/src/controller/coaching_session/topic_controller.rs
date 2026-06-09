@@ -23,10 +23,8 @@ use utoipa::ToSchema;
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateParams {
     pub body: String,
-    /// Optional initial rating, used by topic-restore to preserve a deleted
-    /// topic's ratings. Omit for new topics; both default to Neutral.
-    pub relevance: Option<domain::topic_relevance::Relevance>,
-    pub immediacy: Option<domain::topic_immediacy::Immediacy>,
+    /// Optional initial priority. Omit for new topics; null until the coachee triages.
+    pub priority: Option<domain::topic_priority::Priority>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -41,8 +39,7 @@ pub struct ReorderParams {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RatingParams {
-    pub relevance: Option<domain::topic_relevance::Relevance>,
-    pub immediacy: Option<domain::topic_immediacy::Immediacy>,
+    pub priority: Option<domain::topic_priority::Priority>,
 }
 
 /// GET all topics for a coaching session, in canonical order
@@ -103,8 +100,7 @@ pub async fn create(
         session.id,
         params.body,
         user.id,
-        params.relevance,
-        params.immediacy,
+        params.priority,
     )
     .await?;
 
@@ -219,7 +215,7 @@ pub async fn delete(
     )))
 }
 
-/// PATCH set a topic's relevance/immediacy rating (coachee only)
+/// PATCH set a topic's priority (coachee only)
 #[utoipa::path(
     patch,
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/rating",
@@ -230,9 +226,9 @@ pub async fn delete(
     ),
     request_body = RatingParams,
     responses(
-        (status = 200, description = "Topic rating updated", body = domain::coaching_session_topics::Model),
+        (status = 200, description = "Topic priority updated", body = domain::coaching_session_topics::Model),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Only the coachee may rate a topic"),
+        (status = 403, description = "Only the coachee may set a topic's priority"),
         (status = 404, description = "Topic not found in this session"),
     ),
     security(("cookie_auth" = []))
@@ -243,14 +239,13 @@ pub async fn set_rating(
     State(app_state): State<AppState>,
     Json(params): Json<RatingParams>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("PATCH rating for topic {}", topic.id);
+    debug!("PATCH priority for topic {}", topic.id);
 
-    let updated = TopicApi::set_rating(
+    let updated = TopicApi::set_priority(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         topic.id,
-        params.relevance,
-        params.immediacy,
+        params.priority,
     )
     .await?;
 

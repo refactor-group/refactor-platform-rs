@@ -1,7 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use entity::coaching_session_topics::{self, ActiveModel, Entity, Model};
-use entity::topic_immediacy::Immediacy;
-use entity::topic_relevance::Relevance;
+use entity::topic_priority::Priority;
+use entity::topic_status::Status;
 use entity::Id;
 use sea_orm::{
     entity::prelude::*,
@@ -35,21 +35,20 @@ pub async fn create(
     coaching_session_id: Id,
     body: String,
     user_id: Id,
-    relevance: Option<Relevance>,
-    immediacy: Option<Immediacy>,
+    priority: Option<Priority>,
 ) -> Result<Model, Error> {
     let existing = Entity::find()
         .filter(coaching_session_topics::Column::CoachingSessionId.eq(coaching_session_id))
         .all(db)
         .await?;
     let now = chrono::Utc::now();
+    // status defaults to 'open' and carried_from_topic_id to NULL via Default.
     let active = ActiveModel {
         coaching_session_id: Set(coaching_session_id),
         user_id: Set(user_id),
         body: Set(body),
         display_order: Set(next_display_order(&existing)),
-        relevance: relevance.map_or(NotSet, Set),
-        immediacy: immediacy.map_or(NotSet, Set),
+        priority: priority.map_or(NotSet, |p| Set(Some(p))),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -72,29 +71,33 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
         user_id: Unchanged(topic.user_id),
         body: Set(body),
         display_order: Unchanged(topic.display_order),
-        relevance: Unchanged(topic.relevance),
-        immediacy: Unchanged(topic.immediacy),
+        priority: Unchanged(topic.priority),
+        status: Unchanged(topic.status),
+        carried_from_topic_id: Unchanged(topic.carried_from_topic_id),
         created_at: Unchanged(topic.created_at),
         updated_at: Set(chrono::Utc::now().into()),
     };
     Ok(active.update(db).await?.try_into_model()?)
 }
 
-/// Coachee-set rating. Sets whichever axis is provided; stamps updated_at.
-pub async fn set_rating(
+/// Coachee-set priority. `Some` sets it, `None` clears it; stamps updated_at.
+pub async fn set_priority(
     db: &DatabaseConnection,
     id: Id,
-    relevance: Option<Relevance>,
-    immediacy: Option<Immediacy>,
+    priority: Option<Priority>,
 ) -> Result<Model, Error> {
     let topic = find_by_id(db, id).await?;
     let mut active: ActiveModel = topic.into();
-    if let Some(relevance) = relevance {
-        active.relevance = Set(relevance);
-    }
-    if let Some(immediacy) = immediacy {
-        active.immediacy = Set(immediacy);
-    }
+    active.priority = Set(priority);
+    active.updated_at = Set(chrono::Utc::now().into());
+    Ok(active.update(db).await?.try_into_model()?)
+}
+
+/// Sets the lifecycle status; stamps updated_at.
+pub async fn set_status(db: &DatabaseConnection, id: Id, status: Status) -> Result<Model, Error> {
+    let topic = find_by_id(db, id).await?;
+    let mut active: ActiveModel = topic.into();
+    active.status = Set(status);
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }

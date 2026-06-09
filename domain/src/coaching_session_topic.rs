@@ -2,8 +2,8 @@ use crate::coaching_session;
 use crate::coaching_session_topics::Model;
 use crate::error::Error;
 use crate::events::{DomainEvent, EventPublisher};
-use crate::topic_immediacy::Immediacy;
-use crate::topic_relevance::Relevance;
+use crate::topic_priority::Priority;
+use crate::topic_status::Status;
 use crate::Id;
 use entity_api::coaching_session_topic as TopicApi;
 use log::*;
@@ -40,11 +40,9 @@ pub async fn create(
     coaching_session_id: Id,
     body: String,
     user_id: Id,
-    relevance: Option<Relevance>,
-    immediacy: Option<Immediacy>,
+    priority: Option<Priority>,
 ) -> Result<Model, Error> {
-    let topic =
-        TopicApi::create(db, coaching_session_id, body, user_id, relevance, immediacy).await?;
+    let topic = TopicApi::create(db, coaching_session_id, body, user_id, priority).await?;
     publish_topics_changed(db, event_publisher, coaching_session_id).await;
     Ok(topic)
 }
@@ -83,14 +81,24 @@ pub async fn reorder(
     Ok(topics)
 }
 
-pub async fn set_rating(
+pub async fn set_priority(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     id: Id,
-    relevance: Option<Relevance>,
-    immediacy: Option<Immediacy>,
+    priority: Option<Priority>,
 ) -> Result<Model, Error> {
-    let topic = TopicApi::set_rating(db, id, relevance, immediacy).await?;
+    let topic = TopicApi::set_priority(db, id, priority).await?;
+    publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
+    Ok(topic)
+}
+
+pub async fn set_status(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+    status: Status,
+) -> Result<Model, Error> {
+    let topic = TopicApi::set_status(db, id, status).await?;
     publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
     Ok(topic)
 }

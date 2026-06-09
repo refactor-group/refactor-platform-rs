@@ -295,8 +295,9 @@ mod tests {
             body: "A topic".to_string(),
             user_id,
             display_order: 0,
-            relevance: domain::topic_relevance::Relevance::Neutral,
-            immediacy: domain::topic_immediacy::Immediacy::Neutral,
+            priority: Some(domain::topic_priority::Priority::High),
+            status: domain::topic_status::Status::Open,
+            carried_from_topic_id: None,
             created_at: now.into(),
             updated_at: now.into(),
         }

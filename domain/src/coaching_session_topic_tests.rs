@@ -14,8 +14,9 @@ fn topic_model(coaching_session_id: Id) -> Model {
         body: "Topic body".to_string(),
         user_id: Id::new_v4(),
         display_order: 0,
-        relevance: Relevance::Neutral,
-        immediacy: Immediacy::Neutral,
+        priority: Some(Priority::High),
+        status: Status::Open,
+        carried_from_topic_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -82,7 +83,6 @@ async fn create_publishes_topics_changed() {
         "Topic body".to_string(),
         Id::new_v4(),
         None,
-        None,
     )
     .await;
 
@@ -108,6 +108,25 @@ async fn reorder_publishes_topics_changed() {
         .into_connection();
 
     let result = reorder(&db, &publisher, session_id, ordered).await;
+
+    assert!(result.is_ok());
+    assert_topics_changed(&events.lock().unwrap(), session_id);
+}
+
+#[tokio::test]
+async fn set_status_publishes_topics_changed() {
+    let session_id = Id::new_v4();
+    let topic = topic_model(session_id);
+    let (publisher, events) = recording_publisher();
+
+    // set_status: load topic (find_by_id) → update → participant lookup
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![topic.clone()]])
+        .append_query_results(vec![vec![topic.clone()]])
+        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .into_connection();
+
+    let result = set_status(&db, &publisher, topic.id, Status::Discussed).await;
 
     assert!(result.is_ok());
     assert_topics_changed(&events.lock().unwrap(), session_id);
