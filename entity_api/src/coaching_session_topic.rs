@@ -56,7 +56,7 @@ pub async fn create(
     Ok(active.save(db).await?.try_into_model()?)
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or(Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
@@ -94,7 +94,7 @@ pub async fn set_priority(
 }
 
 /// Sets the lifecycle status; stamps updated_at.
-pub async fn set_status(db: &DatabaseConnection, id: Id, status: Status) -> Result<Model, Error> {
+pub async fn set_status(db: &impl ConnectionTrait, id: Id, status: Status) -> Result<Model, Error> {
     let topic = find_by_id(db, id).await?;
     let mut active: ActiveModel = topic.into();
     active.status = Set(status);
@@ -159,16 +159,26 @@ pub async fn carry_over(
     source_session_id: Id,
     target_session_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    let deferred: Vec<Model> = find_by_coaching_session_id(db, source_session_id)
+    let deferred = find_by_coaching_session_id(db, source_session_id)
         .await?
         .into_iter()
-        .filter(|topic| topic.status == Status::Deferred)
+        .filter(|topic| topic.status == Status::Deferred);
+
+    // One fetch of the target: gives both the append base and the set of source ids
+    // already carried in (so re-running this, hydration AND defer-time, never dupes).
+    let target_topics = find_by_coaching_session_id(db, target_session_id).await?;
+    let already_carried: HashSet<Id> = target_topics
+        .iter()
+        .filter_map(|topic| topic.carried_from_topic_id)
+        .collect();
+    let base = next_display_order(&target_topics);
+
+    let to_carry: Vec<Model> = deferred
+        .filter(|topic| !already_carried.contains(&topic.id))
         .collect();
 
-    let base = next_display_order(&find_by_coaching_session_id(db, target_session_id).await?);
-
-    let mut carried = Vec::with_capacity(deferred.len());
-    for (offset, source) in deferred.into_iter().enumerate() {
+    let mut carried = Vec::with_capacity(to_carry.len());
+    for (offset, source) in to_carry.into_iter().enumerate() {
         let now = chrono::Utc::now();
         let copy = ActiveModel {
             coaching_session_id: Set(target_session_id),

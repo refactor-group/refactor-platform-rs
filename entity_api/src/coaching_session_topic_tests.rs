@@ -272,3 +272,43 @@ async fn carry_over_no_deferred_topics_returns_empty_and_inserts_nothing() {
         .count();
     assert_eq!(selects, 2, "only the source and target SELECTs run");
 }
+
+/// Dedupe on carried_from_topic_id: source has two Deferred topics d1, d2; the
+/// target already holds a copy of d1. carry_over copies only d2. Exactly one
+/// insert result is appended, so a stray copy of d1 would fail buffer-empty.
+#[tokio::test]
+async fn carry_over_skips_already_carried_source_topics() {
+    let source_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let d1 = topic_with(source_id, Id::new_v4(), 0, Status::Deferred, "deferred 1");
+    let d2 = topic_with(source_id, Id::new_v4(), 1, Status::Deferred, "deferred 2");
+
+    // Target already contains a copy carried from d1.
+    let mut existing_copy = topic_with(target_id, Id::new_v4(), 0, Status::Open, "deferred 1");
+    existing_copy.carried_from_topic_id = Some(d1.id);
+
+    let copy_d2 = topic_with(target_id, Id::new_v4(), 1, Status::Open, "deferred 2");
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // source SELECT (d1, d2), target SELECT (existing copy of d1), then ONE insert.
+        .append_query_results(vec![vec![d1.clone(), d2.clone()]])
+        .append_query_results(vec![vec![existing_copy]])
+        .append_query_results(vec![vec![copy_d2]])
+        .into_connection();
+
+    let carried = carry_over(&db, source_id, target_id).await.unwrap();
+    assert_eq!(carried.len(), 1, "only d2 is carried (d1 already present)");
+
+    let inserts = topic_insert_value_rows(&db.into_transaction_log());
+    assert_eq!(inserts.len(), 1);
+    assert!(
+        inserts[0].contains(&Value::from(d2.id)),
+        "carried_from_topic_id should be d2: {:?}",
+        inserts[0]
+    );
+    assert!(
+        !inserts[0].contains(&Value::from(d1.id)),
+        "must not re-carry d1: {:?}",
+        inserts[0]
+    );
+}

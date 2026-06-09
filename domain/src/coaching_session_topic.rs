@@ -7,7 +7,7 @@ use crate::topic_status::Status;
 use crate::Id;
 use entity_api::coaching_session_topic as TopicApi;
 use log::*;
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, TransactionTrait};
 
 // reads stay as direct re-exports
 pub use entity_api::coaching_session_topic::{find_by_coaching_session_id, find_by_id};
@@ -98,8 +98,39 @@ pub async fn set_status(
     id: Id,
     status: Status,
 ) -> Result<Model, Error> {
-    let topic = TopicApi::set_status(db, id, status).await?;
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    let topic = TopicApi::set_status(&txn, id, status).await?;
+
+    // On defer, eagerly carry forward into the already-existing next session (if any).
+    // The hydration-time task still covers the "next session not created yet" case;
+    // carry_over dedupes on carried_from_topic_id, so the two paths never double-copy.
+    let carried_target = if topic.status == Status::Deferred {
+        let session = coaching_session::find_by_id(&txn, topic.coaching_session_id).await?;
+        match coaching_session::find_next_session(
+            &txn,
+            session.coaching_relationship_id,
+            session.date,
+        )
+        .await?
+        {
+            Some(next) => {
+                let carried = TopicApi::carry_over(&txn, session.id, next.id).await?;
+                (!carried.is_empty()).then_some(next.id)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Publish after commit so subscribers never refetch against a rolled-back copy.
     publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
+    if let Some(target_id) = carried_target {
+        publish_topics_changed(db, event_publisher, target_id).await;
+    }
     Ok(topic)
 }
 

@@ -170,6 +170,21 @@ pub async fn find_prior_session(
         .await?)
 }
 
+/// Earliest session in the relationship strictly after `after`. Used to eagerly
+/// carry a just-deferred topic into the already-existing next session.
+pub async fn find_next_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    after: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.gt(after))
+        .order_by_asc(Column::Date)
+        .one(db)
+        .await?)
+}
+
 /// Returns the coach and coachee user IDs for a coaching session.
 ///
 /// Used by webhook handlers to determine which users to notify via SSE when
@@ -1062,6 +1077,38 @@ mod tests {
                 [
                     relationship_id.into(),
                     before.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_next_session_filters_relationship_and_date_orders_asc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let after = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_next_session(&db, relationship_id, after).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    after.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
                 ]
             )]
