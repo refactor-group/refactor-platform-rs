@@ -23,6 +23,10 @@ use utoipa::ToSchema;
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateParams {
     pub body: String,
+    /// Optional initial rating, used by topic-restore to preserve a deleted
+    /// topic's ratings. Omit for new topics; both default to Neutral.
+    pub relevance: Option<domain::topic_relevance::Relevance>,
+    pub immediacy: Option<domain::topic_immediacy::Immediacy>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -93,7 +97,15 @@ pub async fn create(
 ) -> Result<impl IntoResponse, Error> {
     debug!("POST topic for session {}", session.id);
 
-    let topic = TopicApi::create(app_state.db_conn_ref(), session.id, params.body, user.id).await?;
+    let topic = TopicApi::create(
+        app_state.db_conn_ref(),
+        session.id,
+        params.body,
+        user.id,
+        params.relevance,
+        params.immediacy,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), topic)))
 }

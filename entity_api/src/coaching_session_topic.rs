@@ -5,7 +5,7 @@ use entity::topic_relevance::Relevance;
 use entity::Id;
 use sea_orm::{
     entity::prelude::*,
-    ActiveValue::{Set, Unchanged},
+    ActiveValue::{NotSet, Set, Unchanged},
     DatabaseConnection, QueryOrder, TryIntoModel,
 };
 use std::collections::HashSet;
@@ -35,6 +35,8 @@ pub async fn create(
     coaching_session_id: Id,
     body: String,
     user_id: Id,
+    relevance: Option<Relevance>,
+    immediacy: Option<Immediacy>,
 ) -> Result<Model, Error> {
     let existing = Entity::find()
         .filter(coaching_session_topics::Column::CoachingSessionId.eq(coaching_session_id))
@@ -46,6 +48,8 @@ pub async fn create(
         user_id: Set(user_id),
         body: Set(body),
         display_order: Set(next_display_order(&existing)),
+        relevance: relevance.map_or(NotSet, Set),
+        immediacy: immediacy.map_or(NotSet, Set),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
