@@ -1,3 +1,101 @@
-pub use entity_api::coaching_session_topic::{
-    create, delete, find_by_coaching_session_id, find_by_id, reorder, set_rating, update,
-};
+use crate::coaching_session;
+use crate::coaching_session_topics::Model;
+use crate::error::Error;
+use crate::events::{DomainEvent, EventPublisher};
+use crate::topic_immediacy::Immediacy;
+use crate::topic_relevance::Relevance;
+use crate::Id;
+use entity_api::coaching_session_topic as TopicApi;
+use log::*;
+use sea_orm::DatabaseConnection;
+
+// reads stay as direct re-exports
+pub use entity_api::coaching_session_topic::{find_by_coaching_session_id, find_by_id};
+
+/// Best-effort SSE notify. The DB write is the contract; a failure to resolve
+/// participants must NOT fail the mutation — log and continue (mirrors bot_status.rs).
+async fn publish_topics_changed(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    coaching_session_id: Id,
+) {
+    match coaching_session::find_participant_ids(db, coaching_session_id).await {
+        Ok(notify_user_ids) => {
+            event_publisher
+                .publish(DomainEvent::TopicsChanged {
+                    coaching_session_id,
+                    notify_user_ids,
+                })
+                .await;
+        }
+        Err(e) => error!(
+            "TopicsChanged: failed to resolve participants for session {coaching_session_id}: {e:?}"
+        ),
+    }
+}
+
+pub async fn create(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    coaching_session_id: Id,
+    body: String,
+    user_id: Id,
+    relevance: Option<Relevance>,
+    immediacy: Option<Immediacy>,
+) -> Result<Model, Error> {
+    let topic =
+        TopicApi::create(db, coaching_session_id, body, user_id, relevance, immediacy).await?;
+    publish_topics_changed(db, event_publisher, coaching_session_id).await;
+    Ok(topic)
+}
+
+pub async fn update(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+    body: String,
+) -> Result<Model, Error> {
+    let topic = TopicApi::update(db, id, body).await?;
+    publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
+    Ok(topic)
+}
+
+pub async fn delete(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+) -> Result<(), Error> {
+    // Capture the session id BEFORE deletion (the row is gone after).
+    let coaching_session_id = TopicApi::find_by_id(db, id).await?.coaching_session_id;
+    TopicApi::delete(db, id).await?;
+    publish_topics_changed(db, event_publisher, coaching_session_id).await;
+    Ok(())
+}
+
+pub async fn reorder(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    coaching_session_id: Id,
+    ordered_ids: Vec<Id>,
+) -> Result<Vec<Model>, Error> {
+    let topics = TopicApi::reorder(db, coaching_session_id, ordered_ids).await?;
+    publish_topics_changed(db, event_publisher, coaching_session_id).await;
+    Ok(topics)
+}
+
+pub async fn set_rating(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+    relevance: Option<Relevance>,
+    immediacy: Option<Immediacy>,
+) -> Result<Model, Error> {
+    let topic = TopicApi::set_rating(db, id, relevance, immediacy).await?;
+    publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
+    Ok(topic)
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_topic_tests.rs"]
+mod tests;

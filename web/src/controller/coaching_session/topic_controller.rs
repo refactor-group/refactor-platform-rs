@@ -99,6 +99,7 @@ pub async fn create(
 
     let topic = TopicApi::create(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         session.id,
         params.body,
         user.id,
@@ -135,7 +136,13 @@ pub async fn update(
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT topic {}", topic.id);
 
-    let updated = TopicApi::update(app_state.db_conn_ref(), topic.id, params.body).await?;
+    let updated = TopicApi::update(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        topic.id,
+        params.body,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }
@@ -165,7 +172,13 @@ pub async fn reorder(
 ) -> Result<impl IntoResponse, Error> {
     debug!("PATCH reorder topics for session {}", session.id);
 
-    let topics = TopicApi::reorder(app_state.db_conn_ref(), session.id, params.ordered_ids).await?;
+    let topics = TopicApi::reorder(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        session.id,
+        params.ordered_ids,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), topics)))
 }
@@ -193,7 +206,12 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, Error> {
     debug!("DELETE topic {}", topic.id);
 
-    TopicApi::delete(app_state.db_conn_ref(), topic.id).await?;
+    TopicApi::delete(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        topic.id,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
@@ -229,6 +247,7 @@ pub async fn set_rating(
 
     let updated = TopicApi::set_rating(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         topic.id,
         params.relevance,
         params.immediacy,
