@@ -1,6 +1,9 @@
 pub(crate) mod recurrence;
 
 use crate::coaching_relationships;
+use crate::coaching_session_hydration::{
+    run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
+};
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
@@ -9,8 +12,7 @@ use crate::provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions, mutate,
-    organization, query,
+    coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
@@ -96,39 +98,28 @@ pub async fn create(
     // succeed or fail atomically. If the transaction fails, compensate by
     // deleting the Tiptap document we just created.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let result: Result<(Model, Vec<Id>), Error> = async {
+    let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         let session =
             coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
                 .await?;
 
-        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
-            &txn,
-            session.coaching_relationship_id,
-            session.id,
-        )
-        .await?;
-        debug!(
-            "Linked {} in-progress goal(s) to session {}",
-            linked_goal_ids.len(),
-            session.id
-        );
+        let ctx = CoachingSessionHydrationContext {
+            txn: &txn,
+            session: &session,
+            relationship: &coaching_relationship,
+        };
+        let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok((session, linked_goal_ids))
+        Ok((session, events))
     }
     .await;
 
     // Publish after commit so subscribers never refetch against goal links
     // that a rolled-back transaction never persisted.
     match result {
-        Ok((session, linked_goal_ids)) => {
-            publish_goals_linked(
-                event_publisher,
-                &coaching_relationship,
-                session.id,
-                &linked_goal_ids,
-            )
-            .await;
+        Ok((session, events)) => {
+            publish_events(event_publisher, events).await;
             Ok(session)
         }
         Err(e) => {
@@ -206,7 +197,7 @@ pub async fn ensure_hydrated(
     let tiptap = TiptapDocument::new(config).await?;
 
     let coach_id = coaching_relationship.coach_id;
-    let result: Result<(Model, Vec<Id>), Error> = async {
+    let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
 
@@ -215,36 +206,24 @@ pub async fn ensure_hydrated(
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
         }
 
-        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
-            &txn,
-            session.coaching_relationship_id,
-            session.id,
-        )
-        .await?;
-
-        debug!(
-            "Linked {} in-progress goal(s) to session {}",
-            linked_goal_ids.len(),
-            session.id
-        );
+        let ctx = CoachingSessionHydrationContext {
+            txn: &txn,
+            session: &session,
+            relationship: &coaching_relationship,
+        };
+        let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
         let updated = coaching_session::mark_hydrated(&txn, &session).await?;
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok((updated, linked_goal_ids))
+        Ok((updated, events))
     }
     .await;
 
     // Publish after commit so subscribers never refetch against goal links
     // that a rolled-back transaction never persisted.
     match result {
-        Ok((updated, linked_goal_ids)) => {
-            publish_goals_linked(
-                event_publisher,
-                &coaching_relationship,
-                updated.id,
-                &linked_goal_ids,
-            )
-            .await;
+        Ok((updated, events)) => {
+            publish_events(event_publisher, events).await;
             Ok(updated)
         }
         Err(e) => {
@@ -258,36 +237,13 @@ pub async fn ensure_hydrated(
     }
 }
 
-/// Publishes a `CoachingSessionGoalCreated` event for each goal newly linked to
-/// a session during create/hydration, so connected clients refresh the session's
-/// goal list. Mirrors the manual link path's notification contract; a no-op when
-/// no new links were inserted.
-async fn publish_goals_linked(
-    event_publisher: &EventPublisher,
-    relationship: &coaching_relationships::Model,
-    coaching_session_id: Id,
-    goal_ids: &[Id],
-) {
-    if goal_ids.is_empty() {
-        return;
+/// Publishes each event produced by the hydration tasks after the transaction
+/// commits, so subscribers never refetch against writes a rolled-back txn never
+/// persisted. A no-op when no task produced events.
+async fn publish_events(event_publisher: &EventPublisher, events: Vec<DomainEvent>) {
+    for event in events {
+        event_publisher.publish(event).await;
     }
-
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
-    for goal_id in goal_ids {
-        event_publisher
-            .publish(DomainEvent::CoachingSessionGoalCreated {
-                coaching_relationship_id: relationship.id,
-                coaching_session_id,
-                goal_id: *goal_id,
-                notify_user_ids: notify_user_ids.clone(),
-            })
-            .await;
-    }
-
-    debug!(
-        "Published {} CoachingSessionGoalCreated event(s) for session {coaching_session_id}",
-        goal_ids.len()
-    );
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
