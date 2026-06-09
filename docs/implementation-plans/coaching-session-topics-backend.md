@@ -421,3 +421,83 @@ rejection on an isolated setup.
 - **Cross-repo wire agreement** is part of epic DoD: Title `Option<string>`; topics returned
   pre-sorted; non-null topic enums with `Neutral` default; no FE tolerance hacks. Coordinate
   via the shared blackboard at each phase boundary that changes the wire.
+
+## 9. v4 Redesign — priority + status lifecycle (decided 2026-06-09)
+
+Supersedes the relevance/immediacy 2×2 rating (P6/P7). Driven by FE board proposal
+`topic_priority_status_redesign`. **Nothing shipped** (PRs draft), so we modify in place rather
+than ship-then-revert. The epic's Phase-3 2×2 priority matrix (#416) is **dropped**.
+
+**Decisions:**
+- **Change A — single `priority`** (`topic_priority` ∈ `Low | Medium | High`, **nullable/Option**,
+  unset by default — cleaner than the always-`Neutral` two-enum shape). Drops
+  `relevance`/`immediacy` entirely. Rating endpoint stays coachee-only, body `{ priority? }`.
+  Create accepts optional `priority` (restore fidelity).
+- **Change B — `status` lifecycle** (`topic_status` ∈ `Open | Discussed | Deferred`, `NOT NULL
+  DEFAULT 'open'`). **Authz: either participant** (reuses `CoachingSessionTopicAccess`); rating
+  stays coachee-only (`CoachingSessionTopicCoacheeAccess`). New `PATCH .../status` endpoint.
+- **Change C — carry-over on defer = Q1 option (b)**: a `Deferred` topic copies forward into the
+  **next session at session-create/hydration time** (mirrors goals' `link_in_progress_goals`),
+  setting `carried_from_topic_id` (nullable self-FK). Source stays `Deferred` in its session.
+  Handles "no next session yet" for free (waits); robust to rescheduling.
+- **`CoachingSessionHydrationTask` registry** (full, loosely-coupled): a trait + registry +
+  runner that de-dups the inline task sequence in `create`/`ensure_hydrated`. Context
+  `CoachingSessionHydrationContext { txn, db, config, &mut session, relationship }`. Existing work
+  becomes `MeetingUrlHandler` + `GoalsCarryForwardHandler`; new `TopicsCarryOverHandler`. **Tiptap
+  doc stays the external-resource bracket** (needs delete-on-failure compensation; don't fold it
+  into the trait). Named for `CoachingSession` (not `Session` — user/auth sessions exist) and
+  `Hydration` (consistent with `ensure_hydrated`/`hydrated_at`/`mark_hydrated`, the `hydrated_at`
+  flag is the single source of truth for "has this run").
+- **Version `CoachingSessionTopics` v4** (breaking). SSE `topics_changed` unchanged (still fires
+  on every mutation incl. the new status writes + carry-over).
+
+**Branch:** `feat/topic-priority-lifecycle` off `feat/topic-sse-events` (keeps table/CRUD/reorder/
+authz/include/SSE; the redesign commits replace rating + add status/carry-over/hydration). Will
+**supersede #351 (rating) + #352 (SSE)** into one PR (base `feat/347` = #350); close those when the
+replacement PR is up. Dev DB already rolled back past the topics+rating migrations (2026-06-09).
+
+**Phases (executed shape — R1 merged schema+data-layer+web-DTOs into one compiling vertical):**
+- **R1 — Data-model swap [DONE, commit `31fe0b6`].** Migration `m20260607_000002_add_topic_priority_status`:
+  `topic_priority` (nullable enum low/medium/high) + `topic_status` (NOT NULL default `open`) +
+  `carried_from_topic_id` (nullable self-FK `ON DELETE SET NULL`), both types `OWNER TO refactor`.
+  Replaced `topic_relevance`/`topic_immediacy` entity enums with `topic_priority`/`topic_status`;
+  Model `priority: Option<Priority>`, `status: Status`, `carried_from_topic_id: Option<Id>`
+  (`#[serde(skip_deserializing)]`). Data layer: `create(priority?)`, `set_rating`→`set_priority`,
+  new `set_status`. Domain wrappers + web `CreateParams`/`RatingParams` → `{ priority? }`; rating
+  endpoint sets priority. Frozen tests updated + re-frozen. **Overseer-verified:** all gates green
+  (mock 176/194/85, fmt, clippy); migration up/down + `ON DELETE SET NULL` + `status` default
+  proven against real Postgres (scratch schema). NOT in R1: status endpoint, carry-over logic.
+- **R2 — `CoachingSessionHydrationTask` registry (HIGH BLAST RADIUS) [DONE, commit `b52922a`].**
+  New `domain/src/coaching_session_hydration.rs`: trait + `CoachingSessionHydrationContext { txn,
+  session, relationship }` + registry + runner + `GoalsCarryForwardTask` (combinator form).
+  `create`/`ensure_hydrated` route the goal tail through the runner, publish via generic
+  `publish_events`; `publish_goals_linked` deleted. **Pure behavior-preserving refactor**:
+  overseer-verified zero test changes (test module byte-identical), exact mock query sequences +
+  events unchanged (domain 176/0), non-mock build + live boot HTTP 200. Reserved: full goals
+  carry-forward e2e (disproportionate given exact-sequence mock coverage). Context deliberately
+  minimal (`db`/`config`/`organization` added per-task later).
+- **R2b — `TopicsCarryOverTask` [DONE, commit `46939ad`].** Policy = **Deferred-only** (user chose
+  Option B, not Open+Deferred; board decision `topics_carry_over_policy` corrected). `entity_api`:
+  `coaching_session::find_prior_session` (relationship + `date < before`, desc, one);
+  `coaching_session_topic::carry_over` (filters `Deferred` **in Rust** to dodge the enum-in-WHERE
+  42804 trap; copy resets status→Open, preserves body/priority/user_id, appends order, stamps
+  `carried_from_topic_id`); `find_by_coaching_session_id` widened to `&impl ConnectionTrait`.
+  `TopicsCarryOverTask` registered 2nd; **context UNCHANGED, `create`/`ensure_hydrated` bodies
+  UNCHANGED** (seam paid off). Emits `topics_changed` only when ≥1 carried. Overseer-verified:
+  gates green (entity_api 198 / domain 177), Deferred-only filter **mutation-tested (test fails when
+  guard defeated)**, frozen test re-frozen. Real-PG write primitives (enum INSERT via ActiveModel+Set,
+  self-FK) already proven in R1; fresh full carry-over e2e reserved as disproportionate.
+- **R3 — Status endpoint + OpenAPI [DONE, commit `23c7a78`].** `PATCH .../topics/{id}/status`
+  (either-participant via `CoachingSessionTopicAccess` — no 403; required `StatusParams { status }`)
+  calls `TopicApi::set_status` (publishes `topics_changed`); route + OpenAPI `paths`/`schemas` wired.
+  Overseer-verified: gates green (web 85), and **live** — booted the binary, new route returns 401
+  (auth chain runs ⇒ wired) vs an unregistered subpath that never reaches auth; served OpenAPI
+  (`/api-docs/openapi2.json`) advertises the path + `StatusParams`. No web handler test (sibling
+  `set_rating` has none; authz covered by extractor tests, behavior by domain `set_status` test).
+
+**Redesign feature-complete (R1–R3 + R5).** Remaining: refresh the integration branch with the
+redesign; open the replacement PR (base `feat/347` = #350) and **supersede/close #351 (rating) +
+#352 (SSE)**; coordinate the breaking wire change with the frontend (contract v4 + Deferred-only
+carry-over decision are on the board).
+- **R5 — Contract v4 + board [DONE].** Posted `CoachingSessionTopics` v4 + answered the proposal's
+  3 asks (Q1→b, status authz→either-participant, version→v4).
