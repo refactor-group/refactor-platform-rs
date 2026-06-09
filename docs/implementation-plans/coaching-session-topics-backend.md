@@ -495,9 +495,19 @@ replacement PR is up. Dev DB already rolled back past the topics+rating migratio
   (`/api-docs/openapi2.json`) advertises the path + `StatusParams`. No web handler test (sibling
   `set_rating` has none; authz covered by extractor tests, behavior by domain `set_status` test).
 
-**Redesign feature-complete (R1–R3 + R5).** Remaining: refresh the integration branch with the
-redesign; open the replacement PR (base `feat/347` = #350) and **supersede/close #351 (rating) +
-#352 (SSE)**; coordinate the breaking wire change with the frontend (contract v4 + Deferred-only
-carry-over decision are on the board).
+- **R4 — late-defer carry-over fix [DONE, commit `98f7af1`].** Bug (FE board question
+  `topic_carryover_misses_late_defer`): carry-over only ran as a once-per-session hydration task, so a
+  defer set *after* the next session already hydrated was silently lost (the common case). Fix (option
+  b): domain `set_status` transactionally triggers a **defer-time** carry-over into the already-existing
+  next session (`coaching_session::find_next_session`), and `carry_over` is now **idempotent** (dedup on
+  `carried_from_topic_id`, reusing its single target fetch) so defer-time + hydration compose without
+  double-copying. Publishes `topics_changed` for source AND next on copy. Hydration task unchanged
+  (inherits dedup). Overseer-verified: gates green (entity_api 200/domain 178), both new guards
+  mutation-tested, **exact FE bug reproduced live → fixed** (ceff71c6, June 10→11 both pre-hydrated).
+  Pushed to PR #353; FE board question answered.
+
+**Redesign feature-complete (R1–R3 + R5; + R4 late-defer fix), all on PR #353.** Remaining: when #350
+merges, retarget/ready #353; coordinate the breaking wire change with the frontend (contract v4 +
+Deferred-only carry-over + defer-time-trigger answer are on the board).
 - **R5 — Contract v4 + board [DONE].** Posted `CoachingSessionTopics` v4 + answered the proposal's
   3 asks (Q1→b, status authz→either-participant, version→v4).
