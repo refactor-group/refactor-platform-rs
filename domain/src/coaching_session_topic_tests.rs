@@ -3,6 +3,7 @@ use crate::coaching_relationships;
 use crate::coaching_sessions;
 use crate::events::DomainEvent;
 use crate::test_support::recording_publisher;
+use entity::coaching_session_topics::TopicDeferSnapshot;
 use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase};
 
@@ -17,6 +18,7 @@ fn topic_model(coaching_session_id: Id) -> Model {
         priority: Some(Priority::High),
         status: Status::Open,
         moved_from_session_id: None,
+        pre_defer_snapshot: None,
         created_at: now,
         updated_at: now,
     }
@@ -178,6 +180,13 @@ async fn set_status_deferred_moves_to_existing_next_session() {
         coaching_session_id: next_session_id,
         status: Status::Open,
         moved_from_session_id: Some(source_session_id),
+        pre_defer_snapshot: Some(TopicDeferSnapshot {
+            coaching_session_id: source_session_id,
+            status: topic.status.clone(),
+            display_order: topic.display_order,
+            moved_from_session_id: topic.moved_from_session_id,
+            updated_at: topic.updated_at,
+        }),
         ..topic.clone()
     };
 
@@ -189,7 +198,7 @@ async fn set_status_deferred_moves_to_existing_next_session() {
         .append_query_results(vec![vec![topic.clone()]])
         .append_query_results(vec![vec![source_session.clone()]])
         .append_query_results(vec![vec![next_session.clone()]])
-        // move_topic: target-topics fetch (empty) → topic find_by_id → UPDATE.
+        // defer_move: target-topics fetch (empty) → topic find_by_id → UPDATE.
         .append_query_results(vec![Vec::<Model>::new()])
         .append_query_results(vec![vec![topic.clone()]])
         .append_query_results(vec![vec![moved.clone()]])
@@ -204,6 +213,10 @@ async fn set_status_deferred_moves_to_existing_next_session() {
     assert_eq!(result.coaching_session_id, next_session_id);
     assert_eq!(result.status, Status::Open);
     assert_eq!(result.moved_from_session_id, Some(source_session_id));
+    assert!(
+        result.pre_defer_snapshot.is_some(),
+        "defer snapshots pre-defer state"
+    );
 
     let recorded = events.lock().unwrap();
     let topics_changed: Vec<Id> = recorded
@@ -237,6 +250,13 @@ async fn set_status_deferred_with_no_next_session_holds() {
     let topic = topic_model(session_id);
     let deferred = Model {
         status: Status::Deferred,
+        pre_defer_snapshot: Some(TopicDeferSnapshot {
+            coaching_session_id: session_id,
+            status: topic.status.clone(),
+            display_order: topic.display_order,
+            moved_from_session_id: topic.moved_from_session_id,
+            updated_at: topic.updated_at,
+        }),
         ..topic.clone()
     };
     let session = coaching_session(session_id, relationship_id, date);
@@ -248,7 +268,7 @@ async fn set_status_deferred_with_no_next_session_holds() {
         .append_query_results(vec![vec![topic.clone()]])
         .append_query_results(vec![vec![session.clone()]])
         .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
-        // set_status: find_by_id(topic) → UPDATE (now Deferred).
+        // defer_hold: find_by_id(topic) → UPDATE (now Deferred, snapshot set).
         .append_query_results(vec![vec![topic.clone()]])
         .append_query_results(vec![vec![deferred.clone()]])
         // participant lookup (in place).
@@ -260,48 +280,62 @@ async fn set_status_deferred_with_no_next_session_holds() {
         .unwrap();
     assert_eq!(result.coaching_session_id, session_id);
     assert_eq!(result.status, Status::Deferred);
+    assert!(
+        result.pre_defer_snapshot.is_some(),
+        "hold snapshots pre-defer state"
+    );
 
     assert_topics_changed(&events.lock().unwrap(), session_id);
 }
 
-/// Undefer a moved topic: re-parent BACK to its origin (status Open, pointer cleared) and
-/// publish TopicsChanged for the origin (result session) first, then the current session.
+/// Undefer a moved topic restores the PRE-defer status (not Open) at the origin and publishes
+/// TopicsChanged for the restored session (origin) first, then the old current session.
 #[tokio::test]
-async fn undefer_moved_topic_returns_to_origin() {
+async fn undefer_restores_pre_defer_status() {
     let origin_session_id = Id::new_v4();
     let current_session_id = Id::new_v4();
+    let t0 = chrono::Utc::now().fixed_offset();
 
     let moved = Model {
         coaching_session_id: current_session_id,
         status: Status::Open,
         moved_from_session_id: Some(origin_session_id),
+        pre_defer_snapshot: Some(TopicDeferSnapshot {
+            coaching_session_id: origin_session_id,
+            status: Status::Discussed,
+            display_order: 4,
+            moved_from_session_id: None,
+            updated_at: t0,
+        }),
         ..topic_model(current_session_id)
     };
-    let returned = Model {
+    let restored = Model {
         coaching_session_id: origin_session_id,
-        status: Status::Open,
+        status: Status::Discussed,
+        display_order: 4,
         moved_from_session_id: None,
+        updated_at: t0,
+        pre_defer_snapshot: None,
         ..moved.clone()
     };
 
     let (publisher, events) = recording_publisher();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // undefer: find_by_id(topic) → move_topic [target(origin)-topics fetch (empty) →
-        // topic find_by_id → UPDATE returning topic@origin/open/moved_from=None].
+        // undefer: find_by_id(before) → undefer_restore [find_by_id → UPDATE].
         .append_query_results(vec![vec![moved.clone()]])
-        .append_query_results(vec![Vec::<Model>::new()])
         .append_query_results(vec![vec![moved.clone()]])
-        .append_query_results(vec![vec![returned.clone()]])
-        // participant lookup for origin (result), then current (notify_other).
+        .append_query_results(vec![vec![restored.clone()]])
+        // participant lookup for restored (origin), then old current (notify_other).
         .append_query_results(vec![vec![session_with_relationship(origin_session_id)]])
         .append_query_results(vec![vec![session_with_relationship(current_session_id)]])
         .into_connection();
 
     let result = undefer(&db, &publisher, moved.id).await.unwrap();
     assert_eq!(result.coaching_session_id, origin_session_id);
-    assert_eq!(result.status, Status::Open);
+    assert_eq!(result.status, Status::Discussed);
     assert_eq!(result.moved_from_session_id, None);
+    assert_eq!(result.pre_defer_snapshot, None);
 
     let recorded = events.lock().unwrap();
     let topics_changed: Vec<Id> = recorded
@@ -317,49 +351,21 @@ async fn undefer_moved_topic_returns_to_origin() {
     assert_eq!(
         topics_changed,
         vec![origin_session_id, current_session_id],
-        "expected TopicsChanged for origin (result) then current (notify_other)"
+        "expected TopicsChanged for restored origin then old current"
     );
 }
 
-/// Undefer a held Deferred topic: open in place, one TopicsChanged for that session.
+/// Undefer a topic without a snapshot (nothing to undo) is a validation error (no publish).
 #[tokio::test]
-async fn undefer_held_topic_opens_in_place() {
+async fn undefer_without_snapshot_is_validation_error() {
     let session_id = Id::new_v4();
-    let held = Model {
-        status: Status::Deferred,
-        ..topic_model(session_id)
-    };
-    let opened = Model {
-        status: Status::Open,
-        ..held.clone()
-    };
+    let settled = topic_model(session_id); // pre_defer_snapshot: None
 
     let (publisher, events) = recording_publisher();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // undefer held path: find_by_id(topic) → set_status [find_by_id → UPDATE] → participant lookup.
-        .append_query_results(vec![vec![held.clone()]])
-        .append_query_results(vec![vec![held.clone()]])
-        .append_query_results(vec![vec![opened.clone()]])
-        .append_query_results(vec![vec![session_with_relationship(session_id)]])
-        .into_connection();
-
-    let result = undefer(&db, &publisher, held.id).await.unwrap();
-    assert_eq!(result.coaching_session_id, session_id);
-    assert_eq!(result.status, Status::Open);
-
-    assert_topics_changed(&events.lock().unwrap(), session_id);
-}
-
-/// Undefer a settled topic (not deferred, never moved) is a validation error (no writes, no publish).
-#[tokio::test]
-async fn undefer_settled_topic_is_validation_error() {
-    let session_id = Id::new_v4();
-    let settled = topic_model(session_id); // status Open, moved_from None
-
-    let (publisher, events) = recording_publisher();
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // undefer: find_by_id(before) → undefer_restore find_by_id (no snapshot → None).
+        .append_query_results(vec![vec![settled.clone()]])
         .append_query_results(vec![vec![settled.clone()]])
         .into_connection();
 

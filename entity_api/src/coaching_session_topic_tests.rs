@@ -13,6 +13,7 @@ fn topic(session_id: Id, id: Id, order: i32) -> Model {
         priority: Some(entity::topic_priority::Priority::High),
         status: entity::topic_status::Status::Open,
         moved_from_session_id: None,
+        pre_defer_snapshot: None,
         created_at: now.into(),
         updated_at: now.into(),
     }
@@ -98,6 +99,8 @@ fn display_order_is_never_serialized() {
     assert!(value.get("priority").is_some());
     assert!(value.get("status").is_some());
     assert!(value.get("moved_from_session_id").is_some());
+    // pre_defer_snapshot is server-only (#[serde(skip)]).
+    assert!(value.get("pre_defer_snapshot").is_none());
 }
 
 #[tokio::test]
@@ -113,7 +116,7 @@ async fn find_by_coaching_session_id_orders_by_display_order_then_created_at() {
         db.into_transaction_log(),
         [Transaction::from_sql_and_values(
             DatabaseBackend::Postgres,
-            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."priority" AS "text"), CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."moved_from_session_id", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
+            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."priority" AS "text"), CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."moved_from_session_id", "coaching_session_topics"."pre_defer_snapshot", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
             [session_id.into()]
         )]
     );
@@ -151,28 +154,53 @@ fn topic_update_value_rows(log: &[Transaction]) -> Vec<Vec<Value>> {
         .collect()
 }
 
-/// move_topic re-parents one topic: the UPDATE binds coaching_session_id = target,
-/// status = open, moved_from_session_id = source, and a fresh display_order from the
-/// target's base (here 1, the target already holds one topic at order 0).
+/// defer_move re-parents one topic and snapshots its PRE-defer state: the returned topic
+/// lives at the target with status Open and moved_from = origin, while pre_defer_snapshot
+/// captures the row exactly as it was (origin session, Discussed, original order/moved_from/updated_at).
 #[tokio::test]
-async fn move_topic_reparents_and_resets() {
-    let source_id = Id::new_v4();
+async fn defer_move_snapshots_and_reparents() {
+    let origin_id = Id::new_v4();
     let target_id = Id::new_v4();
-    let deferred = topic_with(source_id, Id::new_v4(), 0, Status::Deferred, "deferred");
+    let original = topic_with(origin_id, Id::new_v4(), 2, Status::Discussed, "deferred");
     let existing = topic_with(target_id, Id::new_v4(), 0, Status::Open, "existing");
-    let moved = topic_with(target_id, deferred.id, 1, Status::Open, "deferred");
+    // The DB returns the post-update row carrying the snapshot of the pre-defer state.
+    let moved = Model {
+        coaching_session_id: target_id,
+        status: Status::Open,
+        moved_from_session_id: Some(origin_id),
+        display_order: 1,
+        pre_defer_snapshot: Some(TopicDeferSnapshot {
+            coaching_session_id: origin_id,
+            status: Status::Discussed,
+            display_order: original.display_order,
+            moved_from_session_id: original.moved_from_session_id,
+            updated_at: original.updated_at,
+        }),
+        ..original.clone()
+    };
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         // target-topics fetch (for base) → topic find_by_id → UPDATE.
         .append_query_results(vec![vec![existing]])
-        .append_query_results(vec![vec![deferred.clone()]])
+        .append_query_results(vec![vec![original.clone()]])
         .append_query_results(vec![vec![moved]])
         .into_connection();
 
-    let result = move_topic(&db, deferred.id, target_id, Some(source_id))
-        .await
-        .unwrap();
+    let result = defer_move(&db, original.id, target_id).await.unwrap();
     assert_eq!(result.coaching_session_id, target_id);
+    assert_eq!(result.status, Status::Open);
+    assert_eq!(result.moved_from_session_id, Some(origin_id));
+    // The snapshot is the PRE-defer state, not the moved state.
+    assert_eq!(
+        result.pre_defer_snapshot,
+        Some(TopicDeferSnapshot {
+            coaching_session_id: origin_id,
+            status: Status::Discussed,
+            display_order: original.display_order,
+            moved_from_session_id: original.moved_from_session_id,
+            updated_at: original.updated_at,
+        })
+    );
 
     let updates = topic_update_value_rows(&db.into_transaction_log());
     assert_eq!(updates.len(), 1);
@@ -187,8 +215,8 @@ async fn move_topic_reparents_and_resets() {
         updates[0]
     );
     assert!(
-        updates[0].contains(&Value::from(source_id)),
-        "moved_from_session_id should be the source: {:?}",
+        updates[0].contains(&Value::from(origin_id)),
+        "moved_from_session_id should be the origin: {:?}",
         updates[0]
     );
     assert!(
@@ -196,6 +224,68 @@ async fn move_topic_reparents_and_resets() {
         "display_order should append from the target base: {:?}",
         updates[0]
     );
+}
+
+/// undefer_restore restores every snapshotted field (location, status, position, moved_from,
+/// updated_at) and clears the buffer in the same write.
+#[tokio::test]
+async fn undefer_restore_restores_snapshot() {
+    let origin_id = Id::new_v4();
+    let current_id = Id::new_v4();
+    let t0 = chrono::Utc::now().fixed_offset();
+    let snapshot = TopicDeferSnapshot {
+        coaching_session_id: origin_id,
+        status: Status::Discussed,
+        display_order: 3,
+        moved_from_session_id: None,
+        updated_at: t0,
+    };
+    let moved = Model {
+        coaching_session_id: current_id,
+        status: Status::Open,
+        moved_from_session_id: Some(origin_id),
+        display_order: 0,
+        pre_defer_snapshot: Some(snapshot.clone()),
+        ..topic(current_id, Id::new_v4(), 0)
+    };
+    let restored = Model {
+        coaching_session_id: origin_id,
+        status: Status::Discussed,
+        display_order: 3,
+        moved_from_session_id: None,
+        updated_at: t0,
+        pre_defer_snapshot: None,
+        ..moved.clone()
+    };
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // find_by_id → UPDATE.
+        .append_query_results(vec![vec![moved.clone()]])
+        .append_query_results(vec![vec![restored]])
+        .into_connection();
+
+    let result = undefer_restore(&db, moved.id).await.unwrap().unwrap();
+    assert_eq!(result.coaching_session_id, origin_id);
+    assert_eq!(result.status, Status::Discussed);
+    assert_eq!(result.display_order, 3);
+    assert_eq!(result.moved_from_session_id, None);
+    assert_eq!(result.updated_at, t0);
+    assert_eq!(result.pre_defer_snapshot, None);
+}
+
+/// undefer_restore on a topic with no snapshot is a no-op: returns Ok(None), no UPDATE.
+#[tokio::test]
+async fn undefer_restore_returns_none_without_snapshot() {
+    let session_id = Id::new_v4();
+    let settled = topic(session_id, Id::new_v4(), 0); // pre_defer_snapshot: None
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![settled.clone()]])
+        .into_connection();
+
+    let result = undefer_restore(&db, settled.id).await.unwrap();
+    assert!(result.is_none());
+    assert!(topic_update_value_rows(&db.into_transaction_log()).is_empty());
 }
 
 /// move_deferred_to_session moves only Deferred topics: a source with
@@ -241,4 +331,80 @@ async fn move_deferred_to_session_moves_only_deferred() {
         "moved_from_session_id should be the source: {:?}",
         updates[0]
     );
+}
+
+/// move_deferred_to_session (hydration) re-parents a held Deferred topic forward but PRESERVES
+/// its existing snapshot: the snapshot field is never re-set, so undo still reaches the origin.
+#[tokio::test]
+async fn move_deferred_to_session_preserves_snapshot() {
+    let hold_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let origin_id = Id::new_v4();
+    let snapshot = TopicDeferSnapshot {
+        coaching_session_id: origin_id,
+        status: Status::Discussed,
+        display_order: 5,
+        moved_from_session_id: None,
+        updated_at: chrono::Utc::now().fixed_offset(),
+    };
+    let held = Model {
+        status: Status::Deferred,
+        pre_defer_snapshot: Some(snapshot.clone()),
+        ..topic(hold_id, Id::new_v4(), 0)
+    };
+    // The returned row still carries the original snapshot (field left Unchanged).
+    let moved_row = Model {
+        coaching_session_id: target_id,
+        status: Status::Open,
+        moved_from_session_id: Some(hold_id),
+        display_order: 0,
+        ..held.clone()
+    };
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // source SELECT → target SELECT (empty, for base) → ONE UPDATE.
+        .append_query_results(vec![vec![held.clone()]])
+        .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+        .append_query_results(vec![vec![moved_row]])
+        .into_connection();
+
+    let moved = move_deferred_to_session(&db, hold_id, target_id)
+        .await
+        .unwrap();
+    assert_eq!(moved.len(), 1);
+    // Snapshot survives hydration so undo still reaches the original origin.
+    assert_eq!(moved[0].pre_defer_snapshot, Some(snapshot));
+}
+
+/// set_status is the settle point: a deliberate non-defer write CLEARS the snapshot.
+#[tokio::test]
+async fn set_status_clears_snapshot() {
+    let session_id = Id::new_v4();
+    let snapshot = TopicDeferSnapshot {
+        coaching_session_id: Id::new_v4(),
+        status: Status::Discussed,
+        display_order: 1,
+        moved_from_session_id: None,
+        updated_at: chrono::Utc::now().fixed_offset(),
+    };
+    let with_snapshot = Model {
+        pre_defer_snapshot: Some(snapshot),
+        ..topic(session_id, Id::new_v4(), 0)
+    };
+    let settled = Model {
+        status: Status::Open,
+        pre_defer_snapshot: None,
+        ..with_snapshot.clone()
+    };
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // find_by_id → UPDATE.
+        .append_query_results(vec![vec![with_snapshot.clone()]])
+        .append_query_results(vec![vec![settled]])
+        .into_connection();
+
+    let result = set_status(&db, with_snapshot.id, Status::Open)
+        .await
+        .unwrap();
+    assert_eq!(result.pre_defer_snapshot, None);
 }

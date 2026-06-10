@@ -4,8 +4,20 @@ use crate::topic_priority::Priority;
 use crate::topic_status::Status;
 use crate::Id;
 use sea_orm::entity::prelude::*;
+use sea_orm::FromJsonQueryResult;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+// Server-only undo buffer: the row's pre-defer state, captured at defer time so undefer
+// can restore it faithfully. Coupled to the defer operation, not the topic schema.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, FromJsonQueryResult)]
+pub struct TopicDeferSnapshot {
+    pub coaching_session_id: Id,
+    pub status: crate::topic_status::Status,
+    pub display_order: i32,
+    pub moved_from_session_id: Option<Id>,
+    pub updated_at: DateTimeWithTimeZone,
+}
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::coaching_session_topics::Model)]
@@ -31,6 +43,10 @@ pub struct Model {
     // Provenance for a moved topic: the session it was last moved out of. Server-set; null normally.
     #[serde(skip_deserializing)]
     pub moved_from_session_id: Option<Id>,
+    // Server-only undo buffer for a faithful undefer; never crosses the wire.
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    #[serde(skip)]
+    pub pre_defer_snapshot: Option<TopicDeferSnapshot>,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]

@@ -1,5 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use entity::coaching_session_topics::{self, ActiveModel, Entity, Model};
+use entity::coaching_session_topics::{self, ActiveModel, Entity, Model, TopicDeferSnapshot};
 use entity::topic_priority::Priority;
 use entity::topic_status::Status;
 use entity::Id;
@@ -74,6 +74,8 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
         priority: Unchanged(topic.priority),
         status: Unchanged(topic.status),
         moved_from_session_id: Unchanged(topic.moved_from_session_id),
+        // Deliberate non-defer write settles the undo window.
+        pre_defer_snapshot: Set(None),
         created_at: Unchanged(topic.created_at),
         updated_at: Set(chrono::Utc::now().into()),
     };
@@ -89,15 +91,18 @@ pub async fn set_priority(
     let topic = find_by_id(db, id).await?;
     let mut active: ActiveModel = topic.into();
     active.priority = Set(priority);
+    active.pre_defer_snapshot = Set(None); // settle the undo window
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
 
-/// Sets the lifecycle status; stamps updated_at.
+/// Sets the lifecycle status; stamps updated_at. Called only for NON-Deferred statuses
+/// (the Deferred path uses defer_move/defer_hold), so this is the undo-window settle point.
 pub async fn set_status(db: &impl ConnectionTrait, id: Id, status: Status) -> Result<Model, Error> {
     let topic = find_by_id(db, id).await?;
     let mut active: ActiveModel = topic.into();
     active.status = Set(status);
+    active.pre_defer_snapshot = Set(None); // settle the undo window
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
@@ -141,6 +146,8 @@ pub async fn reorder(
         let active = ActiveModel {
             id: Unchanged(*id),
             display_order: Set(index as i32),
+            // Deliberate non-defer write settles the undo window.
+            pre_defer_snapshot: Set(None),
             updated_at: Set(now.into()),
             ..Default::default()
         };
@@ -149,23 +156,64 @@ pub async fn reorder(
     find_by_coaching_session_id(db, coaching_session_id).await
 }
 
-/// Re-parents a topic to `target_session_id`, resetting status to Open, stamping
-/// `moved_from_session_id`, appending to the target's order, touching updated_at.
-pub async fn move_topic(
+/// Captures the row's pre-defer state so undefer can restore it faithfully.
+fn defer_snapshot(topic: &Model) -> TopicDeferSnapshot {
+    TopicDeferSnapshot {
+        coaching_session_id: topic.coaching_session_id,
+        status: topic.status.clone(),
+        display_order: topic.display_order,
+        moved_from_session_id: topic.moved_from_session_id,
+        updated_at: topic.updated_at,
+    }
+}
+
+/// Defer-forward: re-parent the topic into `target_session_id`, snapshotting its pre-defer
+/// state so undefer can restore it faithfully. Status -> Open, moved_from -> origin, appended.
+pub async fn defer_move(
     db: &impl ConnectionTrait,
     id: Id,
     target_session_id: Id,
-    moved_from_session_id: Option<Id>,
 ) -> Result<Model, Error> {
     let existing = find_by_coaching_session_id(db, target_session_id).await?;
     let topic = find_by_id(db, id).await?;
+    let snapshot = defer_snapshot(&topic);
+    let origin = topic.coaching_session_id;
     let mut active: ActiveModel = topic.into();
     active.coaching_session_id = Set(target_session_id);
     active.status = Set(Status::Open);
-    active.moved_from_session_id = Set(moved_from_session_id);
+    active.moved_from_session_id = Set(Some(origin));
     active.display_order = Set(next_display_order(&existing));
+    active.pre_defer_snapshot = Set(Some(snapshot));
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
+}
+
+/// Defer-hold (no next session): mark Deferred in place, snapshotting pre-defer state.
+pub async fn defer_hold(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    let topic = find_by_id(db, id).await?;
+    let snapshot = defer_snapshot(&topic);
+    let mut active: ActiveModel = topic.into();
+    active.status = Set(Status::Deferred);
+    active.pre_defer_snapshot = Set(Some(snapshot));
+    active.updated_at = Set(chrono::Utc::now().into());
+    Ok(active.update(db).await?.try_into_model()?)
+}
+
+/// Undo a defer: restore the snapshot (status, position, location, timestamp, moved_from) and
+/// clear it. Returns None when there's no snapshot (nothing to undo).
+pub async fn undefer_restore(db: &impl ConnectionTrait, id: Id) -> Result<Option<Model>, Error> {
+    let topic = find_by_id(db, id).await?;
+    let Some(snapshot) = topic.pre_defer_snapshot.clone() else {
+        return Ok(None);
+    };
+    let mut active: ActiveModel = topic.into();
+    active.coaching_session_id = Set(snapshot.coaching_session_id);
+    active.status = Set(snapshot.status);
+    active.display_order = Set(snapshot.display_order);
+    active.moved_from_session_id = Set(snapshot.moved_from_session_id);
+    active.updated_at = Set(snapshot.updated_at);
+    active.pre_defer_snapshot = Set(None);
+    Ok(Some(active.update(db).await?.try_into_model()?))
 }
 
 /// Moves the source session's `Deferred` topics into the target session (status -> Open,

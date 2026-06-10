@@ -298,6 +298,7 @@ mod tests {
             priority: Some(domain::topic_priority::Priority::High),
             status: domain::topic_status::Status::Open,
             moved_from_session_id: None,
+            pre_defer_snapshot: None,
             created_at: now.into(),
             updated_at: now.into(),
         }
