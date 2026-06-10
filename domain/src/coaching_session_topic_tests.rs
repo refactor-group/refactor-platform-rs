@@ -3,7 +3,7 @@ use crate::coaching_relationships;
 use crate::coaching_sessions;
 use crate::events::DomainEvent;
 use crate::test_support::recording_publisher;
-use entity::coaching_session_topics::TopicDeferSnapshot;
+use entity::coaching_session_topics::TopicSnapshot;
 use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase};
 
@@ -18,7 +18,8 @@ fn topic_model(coaching_session_id: Id) -> Model {
         priority: Some(Priority::High),
         status: Status::Open,
         moved_from_session_id: None,
-        pre_defer_snapshot: None,
+        undo_snapshot: None,
+        deleted_at: None,
         created_at: now,
         updated_at: now,
     }
@@ -180,11 +181,14 @@ async fn set_status_deferred_moves_to_existing_next_session() {
         coaching_session_id: next_session_id,
         status: Status::Open,
         moved_from_session_id: Some(source_session_id),
-        pre_defer_snapshot: Some(TopicDeferSnapshot {
+        undo_snapshot: Some(TopicSnapshot {
             coaching_session_id: source_session_id,
-            status: topic.status.clone(),
+            body: topic.body.clone(),
             display_order: topic.display_order,
+            priority: topic.priority.clone(),
+            status: topic.status.clone(),
             moved_from_session_id: topic.moved_from_session_id,
+            deleted_at: None,
             updated_at: topic.updated_at,
         }),
         ..topic.clone()
@@ -214,7 +218,7 @@ async fn set_status_deferred_moves_to_existing_next_session() {
     assert_eq!(result.status, Status::Open);
     assert_eq!(result.moved_from_session_id, Some(source_session_id));
     assert!(
-        result.pre_defer_snapshot.is_some(),
+        result.undo_snapshot.is_some(),
         "defer snapshots pre-defer state"
     );
 
@@ -250,11 +254,14 @@ async fn set_status_deferred_with_no_next_session_holds() {
     let topic = topic_model(session_id);
     let deferred = Model {
         status: Status::Deferred,
-        pre_defer_snapshot: Some(TopicDeferSnapshot {
+        undo_snapshot: Some(TopicSnapshot {
             coaching_session_id: session_id,
-            status: topic.status.clone(),
+            body: topic.body.clone(),
             display_order: topic.display_order,
+            priority: topic.priority.clone(),
+            status: topic.status.clone(),
             moved_from_session_id: topic.moved_from_session_id,
+            deleted_at: None,
             updated_at: topic.updated_at,
         }),
         ..topic.clone()
@@ -281,17 +288,17 @@ async fn set_status_deferred_with_no_next_session_holds() {
     assert_eq!(result.coaching_session_id, session_id);
     assert_eq!(result.status, Status::Deferred);
     assert!(
-        result.pre_defer_snapshot.is_some(),
+        result.undo_snapshot.is_some(),
         "hold snapshots pre-defer state"
     );
 
     assert_topics_changed(&events.lock().unwrap(), session_id);
 }
 
-/// Undefer a moved topic restores the PRE-defer status (not Open) at the origin and publishes
+/// Undo a moved topic restores the PRE-defer status (not Open) at the origin and publishes
 /// TopicsChanged for the restored session (origin) first, then the old current session.
 #[tokio::test]
-async fn undefer_restores_pre_defer_status() {
+async fn undo_restores_pre_defer_status() {
     let origin_session_id = Id::new_v4();
     let current_session_id = Id::new_v4();
     let t0 = chrono::Utc::now().fixed_offset();
@@ -300,11 +307,14 @@ async fn undefer_restores_pre_defer_status() {
         coaching_session_id: current_session_id,
         status: Status::Open,
         moved_from_session_id: Some(origin_session_id),
-        pre_defer_snapshot: Some(TopicDeferSnapshot {
+        undo_snapshot: Some(TopicSnapshot {
             coaching_session_id: origin_session_id,
-            status: Status::Discussed,
+            body: "Topic body".to_string(),
             display_order: 4,
+            priority: Some(Priority::High),
+            status: Status::Discussed,
             moved_from_session_id: None,
+            deleted_at: None,
             updated_at: t0,
         }),
         ..topic_model(current_session_id)
@@ -315,14 +325,14 @@ async fn undefer_restores_pre_defer_status() {
         display_order: 4,
         moved_from_session_id: None,
         updated_at: t0,
-        pre_defer_snapshot: None,
+        undo_snapshot: None,
         ..moved.clone()
     };
 
     let (publisher, events) = recording_publisher();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // undefer: find_by_id(before) → undefer_restore [find_by_id → UPDATE].
+        // undo: find_including_deleted_by_id(before) → restore_from_snapshot [find_including_deleted_by_id → UPDATE].
         .append_query_results(vec![vec![moved.clone()]])
         .append_query_results(vec![vec![moved.clone()]])
         .append_query_results(vec![vec![restored.clone()]])
@@ -331,11 +341,11 @@ async fn undefer_restores_pre_defer_status() {
         .append_query_results(vec![vec![session_with_relationship(current_session_id)]])
         .into_connection();
 
-    let result = undefer(&db, &publisher, moved.id).await.unwrap();
+    let result = undo(&db, &publisher, moved.id).await.unwrap();
     assert_eq!(result.coaching_session_id, origin_session_id);
     assert_eq!(result.status, Status::Discussed);
     assert_eq!(result.moved_from_session_id, None);
-    assert_eq!(result.pre_defer_snapshot, None);
+    assert_eq!(result.undo_snapshot, None);
 
     let recorded = events.lock().unwrap();
     let topics_changed: Vec<Id> = recorded
@@ -355,21 +365,67 @@ async fn undefer_restores_pre_defer_status() {
     );
 }
 
-/// Undefer a topic without a snapshot (nothing to undo) is a validation error (no publish).
+/// Undo a topic without a snapshot (nothing to undo) is a validation error (no publish).
 #[tokio::test]
-async fn undefer_without_snapshot_is_validation_error() {
+async fn undo_without_snapshot_is_validation_error() {
     let session_id = Id::new_v4();
-    let settled = topic_model(session_id); // pre_defer_snapshot: None
+    let settled = topic_model(session_id); // undo_snapshot: None
 
     let (publisher, events) = recording_publisher();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // undefer: find_by_id(before) → undefer_restore find_by_id (no snapshot → None).
+        // undo: find_including_deleted_by_id(before) → restore_from_snapshot find_including_deleted_by_id (no snapshot → None).
         .append_query_results(vec![vec![settled.clone()]])
         .append_query_results(vec![vec![settled.clone()]])
         .into_connection();
 
-    let err = undefer(&db, &publisher, settled.id).await.unwrap_err();
+    let err = undo(&db, &publisher, settled.id).await.unwrap_err();
     assert!(matches!(err.error_kind, DomainErrorKind::Validation(_)));
     assert!(events.lock().unwrap().is_empty());
+}
+
+/// Undo a soft-deleted topic un-deletes it in place: deleted_at returns to NULL and the
+/// snapshot's status is restored. One affected session (old == new), so one publish.
+#[tokio::test]
+async fn undo_restores_a_soft_deleted_topic() {
+    let session_id = Id::new_v4();
+    let t0 = chrono::Utc::now().fixed_offset();
+
+    let deleted = Model {
+        deleted_at: Some(t0),
+        undo_snapshot: Some(TopicSnapshot {
+            coaching_session_id: session_id,
+            body: "Topic body".to_string(),
+            display_order: 0,
+            priority: Some(Priority::High),
+            status: Status::Discussed,
+            moved_from_session_id: None,
+            deleted_at: None,
+            updated_at: t0,
+        }),
+        ..topic_model(session_id)
+    };
+    let restored = Model {
+        status: Status::Discussed,
+        deleted_at: None,
+        undo_snapshot: None,
+        ..deleted.clone()
+    };
+
+    let (publisher, events) = recording_publisher();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // undo: find_including_deleted_by_id(before) → restore_from_snapshot [find_including_deleted_by_id → UPDATE].
+        .append_query_results(vec![vec![deleted.clone()]])
+        .append_query_results(vec![vec![deleted.clone()]])
+        .append_query_results(vec![vec![restored.clone()]])
+        // participant lookup (one session; old == new).
+        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .into_connection();
+
+    let result = undo(&db, &publisher, deleted.id).await.unwrap();
+    assert_eq!(result.status, Status::Discussed);
+    assert_eq!(result.deleted_at, None);
+    assert_eq!(result.undo_snapshot, None);
+    assert_topics_changed(&events.lock().unwrap(), session_id);
 }

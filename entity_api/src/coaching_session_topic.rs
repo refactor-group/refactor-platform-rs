@@ -1,5 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use entity::coaching_session_topics::{self, ActiveModel, Entity, Model, TopicDeferSnapshot};
+use entity::coaching_session_topics::{self, ActiveModel, Entity, Model, TopicSnapshot};
 use entity::topic_priority::Priority;
 use entity::topic_status::Status;
 use entity::Id;
@@ -39,6 +39,7 @@ pub async fn create(
 ) -> Result<Model, Error> {
     let existing = Entity::find()
         .filter(coaching_session_topics::Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
         .all(db)
         .await?;
     let now = chrono::Utc::now();
@@ -57,6 +58,21 @@ pub async fn create(
 }
 
 pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
+        .one(db)
+        .await?
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
+/// Like find_by_id but also returns a soft-deleted row (undo must reach a deleted topic).
+pub async fn find_including_deleted_by_id(
+    db: &impl ConnectionTrait,
+    id: Id,
+) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or(Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
@@ -75,7 +91,8 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
         status: Unchanged(topic.status),
         moved_from_session_id: Unchanged(topic.moved_from_session_id),
         // Deliberate non-defer write settles the undo window.
-        pre_defer_snapshot: Set(None),
+        undo_snapshot: Set(None),
+        deleted_at: Unchanged(topic.deleted_at),
         created_at: Unchanged(topic.created_at),
         updated_at: Set(chrono::Utc::now().into()),
     };
@@ -91,7 +108,7 @@ pub async fn set_priority(
     let topic = find_by_id(db, id).await?;
     let mut active: ActiveModel = topic.into();
     active.priority = Set(priority);
-    active.pre_defer_snapshot = Set(None); // settle the undo window
+    active.undo_snapshot = Set(None); // settle the undo window
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
@@ -102,13 +119,18 @@ pub async fn set_status(db: &impl ConnectionTrait, id: Id, status: Status) -> Re
     let topic = find_by_id(db, id).await?;
     let mut active: ActiveModel = topic.into();
     active.status = Set(status);
-    active.pre_defer_snapshot = Set(None); // settle the undo window
+    active.undo_snapshot = Set(None); // settle the undo window
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
 
 pub async fn delete(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
-    Entity::delete_by_id(id).exec(db).await?;
+    let topic = find_by_id(db, id).await?; // live rows only
+    let snapshot = snapshot_for_undo(&topic);
+    let mut active: ActiveModel = topic.into();
+    active.deleted_at = Set(Some(chrono::Utc::now().into()));
+    active.undo_snapshot = Set(Some(snapshot));
+    active.update(db).await?;
     Ok(())
 }
 
@@ -119,6 +141,7 @@ pub async fn find_by_coaching_session_id(
 ) -> Result<Vec<Model>, Error> {
     Ok(Entity::find()
         .filter(coaching_session_topics::Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
         .order_by_asc(coaching_session_topics::Column::DisplayOrder)
         .order_by_asc(coaching_session_topics::Column::CreatedAt)
         .all(db)
@@ -147,7 +170,7 @@ pub async fn reorder(
             id: Unchanged(*id),
             display_order: Set(index as i32),
             // Deliberate non-defer write settles the undo window.
-            pre_defer_snapshot: Set(None),
+            undo_snapshot: Set(None),
             updated_at: Set(now.into()),
             ..Default::default()
         };
@@ -156,19 +179,22 @@ pub async fn reorder(
     find_by_coaching_session_id(db, coaching_session_id).await
 }
 
-/// Captures the row's pre-defer state so undefer can restore it faithfully.
-fn defer_snapshot(topic: &Model) -> TopicDeferSnapshot {
-    TopicDeferSnapshot {
+/// Captures the row's pre-mutation state so undo can restore it faithfully.
+fn snapshot_for_undo(topic: &Model) -> TopicSnapshot {
+    TopicSnapshot {
         coaching_session_id: topic.coaching_session_id,
-        status: topic.status.clone(),
+        body: topic.body.clone(),
         display_order: topic.display_order,
+        priority: topic.priority.clone(),
+        status: topic.status.clone(),
         moved_from_session_id: topic.moved_from_session_id,
+        deleted_at: topic.deleted_at,
         updated_at: topic.updated_at,
     }
 }
 
 /// Defer-forward: re-parent the topic into `target_session_id`, snapshotting its pre-defer
-/// state so undefer can restore it faithfully. Status -> Open, moved_from -> origin, appended.
+/// state so undo can restore it faithfully. Status -> Open, moved_from -> origin, appended.
 pub async fn defer_move(
     db: &impl ConnectionTrait,
     id: Id,
@@ -176,14 +202,14 @@ pub async fn defer_move(
 ) -> Result<Model, Error> {
     let existing = find_by_coaching_session_id(db, target_session_id).await?;
     let topic = find_by_id(db, id).await?;
-    let snapshot = defer_snapshot(&topic);
+    let snapshot = snapshot_for_undo(&topic);
     let origin = topic.coaching_session_id;
     let mut active: ActiveModel = topic.into();
     active.coaching_session_id = Set(target_session_id);
     active.status = Set(Status::Open);
     active.moved_from_session_id = Set(Some(origin));
     active.display_order = Set(next_display_order(&existing));
-    active.pre_defer_snapshot = Set(Some(snapshot));
+    active.undo_snapshot = Set(Some(snapshot));
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
@@ -191,28 +217,34 @@ pub async fn defer_move(
 /// Defer-hold (no next session): mark Deferred in place, snapshotting pre-defer state.
 pub async fn defer_hold(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     let topic = find_by_id(db, id).await?;
-    let snapshot = defer_snapshot(&topic);
+    let snapshot = snapshot_for_undo(&topic);
     let mut active: ActiveModel = topic.into();
     active.status = Set(Status::Deferred);
-    active.pre_defer_snapshot = Set(Some(snapshot));
+    active.undo_snapshot = Set(Some(snapshot));
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
 
-/// Undo a defer: restore the snapshot (status, position, location, timestamp, moved_from) and
-/// clear it. Returns None when there's no snapshot (nothing to undo).
-pub async fn undefer_restore(db: &impl ConnectionTrait, id: Id) -> Result<Option<Model>, Error> {
-    let topic = find_by_id(db, id).await?;
-    let Some(snapshot) = topic.pre_defer_snapshot.clone() else {
+/// Reverses any undoable op (defer or delete) by writing the captured prior row back and
+/// clearing the buffer. Returns None when there is nothing to undo.
+pub async fn restore_from_snapshot(
+    db: &impl ConnectionTrait,
+    id: Id,
+) -> Result<Option<Model>, Error> {
+    let topic = find_including_deleted_by_id(db, id).await?;
+    let Some(snapshot) = topic.undo_snapshot.clone() else {
         return Ok(None);
     };
     let mut active: ActiveModel = topic.into();
     active.coaching_session_id = Set(snapshot.coaching_session_id);
-    active.status = Set(snapshot.status);
+    active.body = Set(snapshot.body);
     active.display_order = Set(snapshot.display_order);
+    active.priority = Set(snapshot.priority);
+    active.status = Set(snapshot.status);
     active.moved_from_session_id = Set(snapshot.moved_from_session_id);
+    active.deleted_at = Set(snapshot.deleted_at); // delete-undo: NULL un-deletes; defer-undo: stays NULL
     active.updated_at = Set(snapshot.updated_at);
-    active.pre_defer_snapshot = Set(None);
+    active.undo_snapshot = Set(None);
     Ok(Some(active.update(db).await?.try_into_model()?))
 }
 

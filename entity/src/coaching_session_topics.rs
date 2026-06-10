@@ -8,14 +8,17 @@ use sea_orm::FromJsonQueryResult;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-// Server-only undo buffer: the row's pre-defer state, captured at defer time so undefer
-// can restore it faithfully. Coupled to the defer operation, not the topic schema.
+// The row's pre-mutation state, captured before any undoable op (defer or delete) so undo can
+// restore it faithfully. Server-only; never crosses the wire.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, FromJsonQueryResult)]
-pub struct TopicDeferSnapshot {
+pub struct TopicSnapshot {
     pub coaching_session_id: Id,
-    pub status: crate::topic_status::Status,
+    pub body: String,
     pub display_order: i32,
+    pub priority: Option<crate::topic_priority::Priority>,
+    pub status: crate::topic_status::Status,
     pub moved_from_session_id: Option<Id>,
+    pub deleted_at: Option<DateTimeWithTimeZone>,
     pub updated_at: DateTimeWithTimeZone,
 }
 
@@ -43,10 +46,14 @@ pub struct Model {
     // Provenance for a moved topic: the session it was last moved out of. Server-set; null normally.
     #[serde(skip_deserializing)]
     pub moved_from_session_id: Option<Id>,
-    // Server-only undo buffer for a faithful undefer; never crosses the wire.
+    // Server-only undo buffer for a faithful undo; never crosses the wire.
     #[sea_orm(column_type = "JsonBinary", nullable)]
     #[serde(skip)]
-    pub pre_defer_snapshot: Option<TopicDeferSnapshot>,
+    pub undo_snapshot: Option<TopicSnapshot>,
+    // Soft-delete marker; null for live rows. Reads exclude non-null. Server-only.
+    #[sea_orm(nullable)]
+    #[serde(skip)]
+    pub deleted_at: Option<DateTimeWithTimeZone>,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]

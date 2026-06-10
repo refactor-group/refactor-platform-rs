@@ -4,7 +4,7 @@ use crate::extractors::{
     coaching_session_access::CoachingSessionAccess,
     coaching_session_topic_access::{
         CoachingSessionTopicAccess, CoachingSessionTopicAuthorAccess,
-        CoachingSessionTopicCoacheeAccess,
+        CoachingSessionTopicCoacheeAccess, CoachingSessionTopicUndoAccess,
     },
     compare_api_version::CompareApiVersion,
 };
@@ -293,31 +293,40 @@ pub async fn set_status(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }
 
-/// POST un-defer a topic — reverse a defer (either participant)
+/// Undo the most recent reversible change to a topic (a deferral or a deletion).
+///
+/// Restores the topic to the state it held immediately before that change: its
+/// original session, status, priority, position, and timestamps are all brought
+/// back, so the reversal is a faithful no-op rather than a fresh write. The server
+/// decides what to reverse from the topic's own state, not from any request input:
+/// a deleted topic is un-deleted in place, a deferred or moved topic is returned to
+/// the session it came from, and a topic with nothing pending yields 422. Takes no
+/// request body. The caller must be a participant of the topic's session; undoing a
+/// deletion additionally requires that the caller authored the topic.
 #[utoipa::path(
     post,
-    path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/undefer",
+    path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/undo",
     params(
         ApiVersion,
         ("coaching_session_id" = Id, Path, description = "Coaching session id"),
         ("topic_id" = Id, Path, description = "Topic id"),
     ),
     responses(
-        (status = 200, description = "Topic un-deferred", body = domain::coaching_session_topics::Model),
+        (status = 200, description = "Change undone; the restored topic is returned", body = domain::coaching_session_topics::Model),
         (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Topic not found in this session"),
-        (status = 422, description = "Topic is not deferred or moved"),
+        (status = 404, description = "Topic not found in this session, caller is not a participant, or (when undoing a deletion) not the author"),
+        (status = 422, description = "Topic has no reversible change to undo"),
     ),
     security(("cookie_auth" = []))
 )]
-pub async fn undefer(
+pub async fn undo(
     CompareApiVersion(_v): CompareApiVersion,
-    CoachingSessionTopicAccess(topic): CoachingSessionTopicAccess,
+    CoachingSessionTopicUndoAccess(topic): CoachingSessionTopicUndoAccess,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("POST undefer for topic {}", topic.id);
+    debug!("POST undo for topic {}", topic.id);
 
-    let updated = TopicApi::undefer(
+    let updated = TopicApi::undo(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         topic.id,

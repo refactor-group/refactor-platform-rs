@@ -10,7 +10,9 @@ use log::*;
 use sea_orm::{DatabaseConnection, TransactionTrait};
 
 // reads stay as direct re-exports
-pub use entity_api::coaching_session_topic::{find_by_coaching_session_id, find_by_id};
+pub use entity_api::coaching_session_topic::{
+    find_by_coaching_session_id, find_by_id, find_including_deleted_by_id,
+};
 
 /// Best-effort SSE notify. The DB write is the contract; a failure to resolve
 /// participants must NOT fail the mutation — log and continue (mirrors bot_status.rs).
@@ -132,23 +134,21 @@ pub async fn set_status(
     Ok(result)
 }
 
-/// Reverses a defer faithfully by restoring the pre-defer snapshot (status, position, location,
-/// timestamp, moved_from) and clearing it. 422 if there's no snapshot (nothing to undo). Either
-/// participant (authz at the web layer). Publishes topics_changed for both sessions on a move-back.
-pub async fn undefer(
+/// Reverses the most recent undoable change to a topic (a defer or a delete) by restoring
+/// its pre-mutation snapshot. 422 when there is nothing to undo. Publishes topics_changed
+/// for every affected session (two on a move-back, one otherwise).
+pub async fn undo(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     id: Id,
 ) -> Result<Model, Error> {
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let before = TopicApi::find_by_id(&txn, id).await?;
+    let before = TopicApi::find_including_deleted_by_id(&txn, id).await?;
     let old_session = before.coaching_session_id;
-    let Some(restored) = TopicApi::undefer_restore(&txn, id).await? else {
+    let Some(restored) = TopicApi::restore_from_snapshot(&txn, id).await? else {
         return Err(Error {
             source: None,
-            error_kind: DomainErrorKind::Validation(
-                "Topic is not deferred and has not been moved.".to_string(),
-            ),
+            error_kind: DomainErrorKind::Validation("Topic has nothing to undo.".to_string()),
         });
     };
 

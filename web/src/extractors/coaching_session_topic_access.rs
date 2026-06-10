@@ -99,6 +99,67 @@ where
     }
 }
 
+/// Authorizes an undo. Composes CoachingSessionAccess (participant + path session), loads the
+/// topic INCLUDING soft-deleted, and confirms it belongs to the path session. Undoing a delete
+/// (the topic is soft-deleted) additionally requires the caller to be the author. Any failure
+/// collapses to 404 so an inaccessible topic is never revealed.
+pub(crate) struct CoachingSessionTopicUndoAccess(pub coaching_session_topics::Model);
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionTopicUndoAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+
+        let CoachingSessionAccess(session) =
+            CoachingSessionAccess::from_request_parts(parts, state).await?;
+
+        let Path(path_params) =
+            Path::<HashMap<String, String>>::from_request_parts(parts, &app_state)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "Invalid path parameters".to_string(),
+                    )
+                })?;
+
+        let topic_id: Id = path_params
+            .get("topic_id")
+            .ok_or((
+                StatusCode::BAD_REQUEST,
+                "Missing topic_id in path".to_string(),
+            ))?
+            .parse()
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid topic id".to_string()))?;
+
+        let topic =
+            coaching_session_topic::find_including_deleted_by_id(app_state.db_conn_ref(), topic_id)
+                .await
+                .map_err(|_| (StatusCode::NOT_FOUND, "NOT FOUND".to_string()))?;
+
+        if topic.coaching_session_id != session.id {
+            return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
+        }
+
+        // Undoing a delete is author-only; undoing a defer is open to either participant.
+        if topic.deleted_at.is_some() {
+            let AuthenticatedUser(user) =
+                AuthenticatedUser::from_request_parts(parts, &app_state).await?;
+            if topic.user_id != user.id {
+                return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
+            }
+        }
+
+        Ok(CoachingSessionTopicUndoAccess(topic))
+    }
+}
+
 /// Rating writes are coachee-only. Verifies the caller is the coachee of the path session's
 /// relationship (else 403), and that the `:topic_id` topic belongs to that session (else 404).
 pub(crate) struct CoachingSessionTopicCoacheeAccess(pub coaching_session_topics::Model);
@@ -185,7 +246,7 @@ mod tests {
     use axum::{body::Body, middleware::from_fn};
     use axum::{
         extract::Request,
-        routing::{delete, patch},
+        routing::{delete, patch, post},
         Router,
     };
     use axum_login::{
@@ -298,7 +359,8 @@ mod tests {
             priority: Some(domain::topic_priority::Priority::High),
             status: domain::topic_status::Status::Open,
             moved_from_session_id: None,
-            pre_defer_snapshot: None,
+            undo_snapshot: None,
+            deleted_at: None,
             created_at: now.into(),
             updated_at: now.into(),
         }
@@ -316,6 +378,14 @@ mod tests {
     // coachee-only rating guard (coachee -> ok, coach -> 403).
     async fn coachee_route(
         CoachingSessionTopicCoacheeAccess(_topic): CoachingSessionTopicCoacheeAccess,
+    ) -> &'static str {
+        "extracted_success"
+    }
+
+    // Mounts the undo extractor behind require_auth so a logged-in POST exercises the
+    // state-derived undo guard (defer: any participant; delete: author only).
+    async fn undo_route(
+        CoachingSessionTopicUndoAccess(_topic): CoachingSessionTopicUndoAccess,
     ) -> &'static str {
         "extracted_success"
     }
@@ -352,6 +422,10 @@ mod tests {
                     .route(
                         "/coaching_sessions/:coaching_session_id/topics/:topic_id/rating",
                         patch(coachee_route),
+                    )
+                    .route(
+                        "/coaching_sessions/:coaching_session_id/topics/:topic_id/undo",
+                        post(undo_route),
                     )
                     .route_layer(from_fn(require_auth)),
             )
@@ -556,5 +630,183 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Builds a soft-deleted topic (deleted_at set) authored by `user_id`.
+    fn deleted_test_topic(
+        topic_id: Id,
+        coaching_session_id: Id,
+        user_id: Id,
+    ) -> coaching_session_topics::Model {
+        let now = Utc::now();
+        coaching_session_topics::Model {
+            deleted_at: Some(now.into()),
+            ..test_topic(topic_id, coaching_session_id, user_id)
+        }
+    }
+
+    // Undoing a defer is open to either participant: a live (not soft-deleted) topic
+    // authored by someone else is still undoable by the caller -> 200.
+    #[tokio::test]
+    async fn undo_extractor_ok_for_live_topic_by_non_author() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let topic_id = Id::new_v4();
+        let other_user_id = Id::new_v4();
+        let user = create_test_user();
+        let role = test_role(user.id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship(relationship_id, user.id),
+                )]])
+                // Live topic authored by someone else: defer-undo needs no author check.
+                .append_query_results(vec![vec![test_topic(topic_id, session_id, other_user_id)]])
+                .into_connection(),
+        );
+
+        let app = build_app(Arc::clone(&db));
+        let cookie = do_login(&app).await;
+
+        let req = Request::builder()
+            .uri(format!(
+                "/coaching_sessions/{session_id}/topics/{topic_id}/undo"
+            ))
+            .method("POST")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // Undoing a delete is author-only: the soft-deleted topic's author -> 200.
+    #[tokio::test]
+    async fn undo_extractor_ok_for_deleted_topic_by_author() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let topic_id = Id::new_v4();
+        let user = create_test_user();
+        let role = test_role(user.id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship(relationship_id, user.id),
+                )]])
+                // Soft-deleted topic authored by the caller -> author branch passes.
+                .append_query_results(vec![vec![deleted_test_topic(
+                    topic_id, session_id, user.id,
+                )]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .into_connection(),
+        );
+
+        let app = build_app(Arc::clone(&db));
+        let cookie = do_login(&app).await;
+
+        let req = Request::builder()
+            .uri(format!(
+                "/coaching_sessions/{session_id}/topics/{topic_id}/undo"
+            ))
+            .method("POST")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // Security teeth: a soft-deleted topic authored by someone else is NOT undoable by a
+    // non-author participant -> 404. The author-only branch fires only for deleted topics.
+    #[tokio::test]
+    async fn undo_extractor_404_for_deleted_topic_by_non_author() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let topic_id = Id::new_v4();
+        let other_user_id = Id::new_v4();
+        let user = create_test_user();
+        let role = test_role(user.id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship(relationship_id, user.id),
+                )]])
+                // Soft-deleted topic authored by someone else -> author guard fails to 404.
+                .append_query_results(vec![vec![deleted_test_topic(
+                    topic_id,
+                    session_id,
+                    other_user_id,
+                )]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .into_connection(),
+        );
+
+        let app = build_app(Arc::clone(&db));
+        let cookie = do_login(&app).await;
+
+        let req = Request::builder()
+            .uri(format!(
+                "/coaching_sessions/{session_id}/topics/{topic_id}/undo"
+            ))
+            .method("POST")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // A topic that belongs to a different session -> 404 (session-match guard).
+    #[tokio::test]
+    async fn undo_extractor_404_when_topic_belongs_to_other_session() {
+        let session_id = Id::new_v4();
+        let other_session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let topic_id = Id::new_v4();
+        let user = create_test_user();
+        let role = test_role(user.id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship(relationship_id, user.id),
+                )]])
+                // Topic belongs to a different session -> session-match guard fails to 404.
+                .append_query_results(vec![vec![test_topic(topic_id, other_session_id, user.id)]])
+                .into_connection(),
+        );
+
+        let app = build_app(Arc::clone(&db));
+        let cookie = do_login(&app).await;
+
+        let req = Request::builder()
+            .uri(format!(
+                "/coaching_sessions/{session_id}/topics/{topic_id}/undo"
+            ))
+            .method("POST")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

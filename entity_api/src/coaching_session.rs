@@ -838,6 +838,7 @@ async fn batch_load_topics(
         .filter(
             coaching_session_topics::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
         )
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
         .order_by_asc(coaching_session_topics::Column::DisplayOrder)
         .order_by_asc(coaching_session_topics::Column::CreatedAt)
         .all(db)

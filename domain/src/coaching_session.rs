@@ -604,7 +604,8 @@ mod tests {
             priority: Some(crate::topic_priority::Priority::High),
             status: crate::topic_status::Status::Deferred,
             moved_from_session_id: None,
-            pre_defer_snapshot: None,
+            undo_snapshot: None,
+            deleted_at: None,
             created_at: now.into(),
             updated_at: now.into(),
         };

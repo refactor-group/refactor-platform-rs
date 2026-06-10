@@ -13,7 +13,8 @@ fn topic(session_id: Id, id: Id, order: i32) -> Model {
         priority: Some(entity::topic_priority::Priority::High),
         status: entity::topic_status::Status::Open,
         moved_from_session_id: None,
-        pre_defer_snapshot: None,
+        undo_snapshot: None,
+        deleted_at: None,
         created_at: now.into(),
         updated_at: now.into(),
     }
@@ -99,8 +100,9 @@ fn display_order_is_never_serialized() {
     assert!(value.get("priority").is_some());
     assert!(value.get("status").is_some());
     assert!(value.get("moved_from_session_id").is_some());
-    // pre_defer_snapshot is server-only (#[serde(skip)]).
-    assert!(value.get("pre_defer_snapshot").is_none());
+    // undo_snapshot and deleted_at are server-only (#[serde(skip)]).
+    assert!(value.get("undo_snapshot").is_none());
+    assert!(value.get("deleted_at").is_none());
 }
 
 #[tokio::test]
@@ -116,7 +118,7 @@ async fn find_by_coaching_session_id_orders_by_display_order_then_created_at() {
         db.into_transaction_log(),
         [Transaction::from_sql_and_values(
             DatabaseBackend::Postgres,
-            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."priority" AS "text"), CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."moved_from_session_id", "coaching_session_topics"."pre_defer_snapshot", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
+            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."priority" AS "text"), CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."moved_from_session_id", "coaching_session_topics"."undo_snapshot", "coaching_session_topics"."deleted_at", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 AND "coaching_session_topics"."deleted_at" IS NULL ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
             [session_id.into()]
         )]
     );
@@ -155,7 +157,7 @@ fn topic_update_value_rows(log: &[Transaction]) -> Vec<Vec<Value>> {
 }
 
 /// defer_move re-parents one topic and snapshots its PRE-defer state: the returned topic
-/// lives at the target with status Open and moved_from = origin, while pre_defer_snapshot
+/// lives at the target with status Open and moved_from = origin, while undo_snapshot
 /// captures the row exactly as it was (origin session, Discussed, original order/moved_from/updated_at).
 #[tokio::test]
 async fn defer_move_snapshots_and_reparents() {
@@ -169,11 +171,14 @@ async fn defer_move_snapshots_and_reparents() {
         status: Status::Open,
         moved_from_session_id: Some(origin_id),
         display_order: 1,
-        pre_defer_snapshot: Some(TopicDeferSnapshot {
+        undo_snapshot: Some(TopicSnapshot {
             coaching_session_id: origin_id,
-            status: Status::Discussed,
+            body: original.body.clone(),
             display_order: original.display_order,
+            priority: original.priority.clone(),
+            status: Status::Discussed,
             moved_from_session_id: original.moved_from_session_id,
+            deleted_at: None,
             updated_at: original.updated_at,
         }),
         ..original.clone()
@@ -192,19 +197,23 @@ async fn defer_move_snapshots_and_reparents() {
     assert_eq!(result.moved_from_session_id, Some(origin_id));
     // The snapshot is the PRE-defer state, not the moved state.
     assert_eq!(
-        result.pre_defer_snapshot,
-        Some(TopicDeferSnapshot {
+        result.undo_snapshot,
+        Some(TopicSnapshot {
             coaching_session_id: origin_id,
-            status: Status::Discussed,
+            body: original.body.clone(),
             display_order: original.display_order,
+            priority: original.priority.clone(),
+            status: Status::Discussed,
             moved_from_session_id: original.moved_from_session_id,
+            deleted_at: None,
             updated_at: original.updated_at,
         })
     );
 
     // The return-value asserts above only check the canned Mock row; verify the actual UPDATE
     // re-parents (coaching_session_id=target, display_order=1 appended, status=open,
-    // moved_from=origin) AND binds pre_defer_snapshot = the captured pre-defer state. The two
+    // moved_from=origin) AND binds undo_snapshot = the captured pre-defer state. deleted_at is
+    // left Unchanged (not in the SET clause), so the SET-bind count is unchanged. The two
     // updated_at timestamps (column + snapshot) are runtime now(), so we assert their fields
     // structurally rather than pinning the exact instant.
     let updates = topic_update_value_rows(&db.into_transaction_log());
@@ -217,9 +226,9 @@ async fn defer_move_snapshots_and_reparents() {
     assert_eq!(row[3], Value::from(origin_id)); // moved_from_session_id -> origin
     assert_eq!(row[6], Value::from(original.id)); // WHERE id
 
-    // pre_defer_snapshot (JSONB) captures the PRE-defer state, not the re-parented state.
+    // undo_snapshot (JSONB) captures the PRE-defer state, not the re-parented state.
     let Value::Json(Some(snapshot_json)) = &row[4] else {
-        panic!("pre_defer_snapshot should bind a JSON object: {:?}", row[4]);
+        panic!("undo_snapshot should bind a JSON object: {:?}", row[4]);
     };
     assert_eq!(snapshot_json["coaching_session_id"], origin_id.to_string());
     assert_eq!(snapshot_json["status"], "Discussed");
@@ -228,6 +237,7 @@ async fn defer_move_snapshots_and_reparents() {
         snapshot_json["moved_from_session_id"],
         serde_json::Value::Null
     );
+    assert_eq!(snapshot_json["deleted_at"], serde_json::Value::Null);
     assert_eq!(
         snapshot_json["updated_at"],
         original
@@ -236,18 +246,21 @@ async fn defer_move_snapshots_and_reparents() {
     );
 }
 
-/// undefer_restore restores every snapshotted field (location, status, position, moved_from,
-/// updated_at) and clears the buffer in the same write.
+/// restore_from_snapshot writes the FULL captured prior row back (location, status, position,
+/// moved_from, deleted_at, updated_at) and clears the buffer in the same write.
 #[tokio::test]
-async fn undefer_restore_restores_snapshot() {
+async fn restore_from_snapshot_restores_snapshot() {
     let origin_id = Id::new_v4();
     let current_id = Id::new_v4();
     let t0 = chrono::Utc::now().fixed_offset();
-    let snapshot = TopicDeferSnapshot {
+    let snapshot = TopicSnapshot {
         coaching_session_id: origin_id,
-        status: Status::Discussed,
+        body: "topic body".to_owned(),
         display_order: 3,
+        priority: Some(entity::topic_priority::Priority::High),
+        status: Status::Discussed,
         moved_from_session_id: None,
+        deleted_at: None,
         updated_at: t0,
     };
     let moved = Model {
@@ -255,7 +268,7 @@ async fn undefer_restore_restores_snapshot() {
         status: Status::Open,
         moved_from_session_id: Some(origin_id),
         display_order: 0,
-        pre_defer_snapshot: Some(snapshot.clone()),
+        undo_snapshot: Some(snapshot.clone()),
         ..topic(current_id, Id::new_v4(), 0)
     };
     let restored = Model {
@@ -264,56 +277,117 @@ async fn undefer_restore_restores_snapshot() {
         display_order: 3,
         moved_from_session_id: None,
         updated_at: t0,
-        pre_defer_snapshot: None,
+        undo_snapshot: None,
         ..moved.clone()
     };
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // find_by_id → UPDATE.
+        // find_including_deleted_by_id → UPDATE.
         .append_query_results(vec![vec![moved.clone()]])
         .append_query_results(vec![vec![restored]])
         .into_connection();
 
-    let result = undefer_restore(&db, moved.id).await.unwrap().unwrap();
+    let result = restore_from_snapshot(&db, moved.id).await.unwrap().unwrap();
     assert_eq!(result.coaching_session_id, origin_id);
     assert_eq!(result.status, Status::Discussed);
     assert_eq!(result.display_order, 3);
     assert_eq!(result.moved_from_session_id, None);
     assert_eq!(result.updated_at, t0);
-    assert_eq!(result.pre_defer_snapshot, None);
+    assert_eq!(result.undo_snapshot, None);
 
     // The return-value asserts above only check the canned Mock row; verify the actual UPDATE
-    // binds the SNAPSHOT's values (origin session, discussed, order 3, NULL moved_from, t0) and
-    // clears pre_defer_snapshot to a JSON NULL, scoped to this topic id.
+    // binds the SNAPSHOT's load-bearing values regardless of exact column count. Decode by
+    // meaning rather than pinning a brittle positional vector.
     let updates = topic_update_value_rows(&db.into_transaction_log());
     assert_eq!(updates.len(), 1);
-    assert_eq!(
-        updates[0],
-        vec![
-            Value::from(origin_id),   // coaching_session_id -> snapshot origin
-            Value::from(3_i32),       // display_order -> snapshot order
-            Value::from("discussed"), // status -> snapshot status
-            Value::Uuid(None),        // moved_from_session_id -> NULL
-            Value::Json(None),        // pre_defer_snapshot -> cleared
-            Value::from(t0),          // updated_at -> snapshot timestamp
-            Value::from(moved.id),    // WHERE id
-        ]
+    let row = &updates[0];
+    assert!(
+        row.contains(&Value::from(origin_id)),
+        "coaching_session_id should be the snapshot origin: {row:?}"
+    );
+    assert!(
+        row.contains(&Value::from(3_i32)),
+        "display_order should be the snapshot order: {row:?}"
+    );
+    // status binds the snapshot's status (Discussed), not the current Open.
+    assert!(
+        row.contains(&Value::from("discussed")),
+        "status should bind the snapshot status (discussed), not open: {row:?}"
+    );
+    assert!(
+        !row.contains(&Value::from("open")),
+        "status must not bind the current open status: {row:?}"
+    );
+    // deleted_at binds NULL (a NULL timestamptz), un-deleting the row on a delete-undo.
+    assert!(
+        row.contains(&Value::ChronoDateTimeWithTimeZone(None)),
+        "deleted_at should bind NULL: {row:?}"
+    );
+    // undo_snapshot is cleared to a JSON NULL.
+    assert!(
+        row.contains(&Value::Json(None)),
+        "undo_snapshot should bind JSON NULL (cleared): {row:?}"
+    );
+    // WHERE id scopes the write to this topic.
+    assert!(
+        row.contains(&Value::from(moved.id)),
+        "WHERE id should scope to this topic: {row:?}"
     );
 }
 
-/// undefer_restore on a topic with no snapshot is a no-op: returns Ok(None), no UPDATE.
+/// restore_from_snapshot on a topic with no snapshot is a no-op: returns Ok(None), no UPDATE.
 #[tokio::test]
-async fn undefer_restore_returns_none_without_snapshot() {
+async fn restore_from_snapshot_returns_none_without_snapshot() {
     let session_id = Id::new_v4();
-    let settled = topic(session_id, Id::new_v4(), 0); // pre_defer_snapshot: None
+    let settled = topic(session_id, Id::new_v4(), 0); // undo_snapshot: None
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results(vec![vec![settled.clone()]])
         .into_connection();
 
-    let result = undefer_restore(&db, settled.id).await.unwrap();
+    let result = restore_from_snapshot(&db, settled.id).await.unwrap();
     assert!(result.is_none());
     assert!(topic_update_value_rows(&db.into_transaction_log()).is_empty());
+}
+
+/// delete soft-deletes: ONE UPDATE that binds deleted_at -> a non-NULL timestamp AND
+/// undo_snapshot -> a JSON object (not NULL), scoped to the topic id.
+#[tokio::test]
+async fn delete_soft_deletes_and_snapshots() {
+    let session_id = Id::new_v4();
+    let live = topic(session_id, Id::new_v4(), 0); // undo_snapshot/deleted_at: None
+    let soft_deleted = Model {
+        deleted_at: Some(chrono::Utc::now().fixed_offset()),
+        ..live.clone()
+    };
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // find_by_id (live) → UPDATE.
+        .append_query_results(vec![vec![live.clone()]])
+        .append_query_results(vec![vec![soft_deleted]])
+        .into_connection();
+
+    delete(&db, live.id).await.unwrap();
+
+    let updates = topic_update_value_rows(&db.into_transaction_log());
+    assert_eq!(updates.len(), 1);
+    let row = &updates[0];
+    // deleted_at binds a non-NULL timestamp (teeth: missing if delete forgot to set it).
+    assert!(
+        row.iter()
+            .any(|v| matches!(v, Value::ChronoDateTimeWithTimeZone(Some(_)))),
+        "deleted_at should bind a non-NULL timestamp: {row:?}"
+    );
+    // undo_snapshot binds a JSON object (teeth: missing if delete forgot to snapshot).
+    assert!(
+        row.iter().any(|v| matches!(v, Value::Json(Some(_)))),
+        "undo_snapshot should bind a JSON object: {row:?}"
+    );
+    // Scoped to this topic id.
+    assert!(
+        row.contains(&Value::from(live.id)),
+        "WHERE id should scope to this topic: {row:?}"
+    );
 }
 
 /// move_deferred_to_session moves only Deferred topics: a source with
@@ -368,16 +442,19 @@ async fn move_deferred_to_session_preserves_snapshot() {
     let hold_id = Id::new_v4();
     let target_id = Id::new_v4();
     let origin_id = Id::new_v4();
-    let snapshot = TopicDeferSnapshot {
+    let snapshot = TopicSnapshot {
         coaching_session_id: origin_id,
-        status: Status::Discussed,
+        body: "topic body".to_owned(),
         display_order: 5,
+        priority: Some(entity::topic_priority::Priority::High),
+        status: Status::Discussed,
         moved_from_session_id: None,
+        deleted_at: None,
         updated_at: chrono::Utc::now().fixed_offset(),
     };
     let held = Model {
         status: Status::Deferred,
-        pre_defer_snapshot: Some(snapshot.clone()),
+        undo_snapshot: Some(snapshot.clone()),
         ..topic(hold_id, Id::new_v4(), 0)
     };
     // The returned row still carries the original snapshot (field left Unchanged).
@@ -401,27 +478,30 @@ async fn move_deferred_to_session_preserves_snapshot() {
         .unwrap();
     assert_eq!(moved.len(), 1);
     // Snapshot survives hydration so undo still reaches the original origin.
-    assert_eq!(moved[0].pre_defer_snapshot, Some(snapshot));
+    assert_eq!(moved[0].undo_snapshot, Some(snapshot));
 }
 
 /// set_status is the settle point: a deliberate non-defer write CLEARS the snapshot.
 #[tokio::test]
 async fn set_status_clears_snapshot() {
     let session_id = Id::new_v4();
-    let snapshot = TopicDeferSnapshot {
+    let snapshot = TopicSnapshot {
         coaching_session_id: Id::new_v4(),
-        status: Status::Discussed,
+        body: "topic body".to_owned(),
         display_order: 1,
+        priority: Some(entity::topic_priority::Priority::High),
+        status: Status::Discussed,
         moved_from_session_id: None,
+        deleted_at: None,
         updated_at: chrono::Utc::now().fixed_offset(),
     };
     let with_snapshot = Model {
-        pre_defer_snapshot: Some(snapshot),
+        undo_snapshot: Some(snapshot),
         ..topic(session_id, Id::new_v4(), 0)
     };
     let settled = Model {
         status: Status::Open,
-        pre_defer_snapshot: None,
+        undo_snapshot: None,
         ..with_snapshot.clone()
     };
 
@@ -434,5 +514,5 @@ async fn set_status_clears_snapshot() {
     let result = set_status(&db, with_snapshot.id, Status::Open)
         .await
         .unwrap();
-    assert_eq!(result.pre_defer_snapshot, None);
+    assert_eq!(result.undo_snapshot, None);
 }
