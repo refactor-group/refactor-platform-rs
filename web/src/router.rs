@@ -60,6 +60,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::delete,
             coaching_session::topic_controller::set_rating,
             coaching_session::topic_controller::set_status,
+            coaching_session::topic_controller::undefer,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
@@ -795,6 +796,10 @@ fn coaching_session_topic_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_sessions/:coaching_session_id/topics/:topic_id/status",
             patch(coaching_session::topic_controller::set_status),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id/undefer",
+            post(coaching_session::topic_controller::undefer),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

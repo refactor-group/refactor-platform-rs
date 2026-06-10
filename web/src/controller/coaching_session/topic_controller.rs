@@ -292,3 +292,37 @@ pub async fn set_status(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }
+
+/// POST un-defer a topic — reverse a defer (either participant)
+#[utoipa::path(
+    post,
+    path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/undefer",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("topic_id" = Id, Path, description = "Topic id"),
+    ),
+    responses(
+        (status = 200, description = "Topic un-deferred", body = domain::coaching_session_topics::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Topic not found in this session"),
+        (status = 422, description = "Topic is not deferred or moved"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn undefer(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionTopicAccess(topic): CoachingSessionTopicAccess,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("POST undefer for topic {}", topic.id);
+
+    let updated = TopicApi::undefer(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        topic.id,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
+}

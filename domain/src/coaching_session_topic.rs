@@ -1,6 +1,6 @@
 use crate::coaching_session;
 use crate::coaching_session_topics::Model;
-use crate::error::Error;
+use crate::error::{DomainErrorKind, Error};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::topic_priority::Priority;
 use crate::topic_status::Status;
@@ -128,6 +128,45 @@ pub async fn set_status(
     publish_topics_changed(db, event_publisher, result.coaching_session_id).await;
     if let Some(origin) = notify_origin {
         publish_topics_changed(db, event_publisher, origin).await;
+    }
+    Ok(result)
+}
+
+/// Reverses a defer. A moved topic (moved_from_session_id set) is re-parented BACK to its
+/// origin (status Open, pointer cleared); a held Deferred topic is simply set Open in place.
+/// 422 if the topic is neither moved nor held (nothing to undo). Either participant (authz at
+/// the web layer). Publishes topics_changed for both affected sessions on a move-back.
+pub async fn undefer(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+) -> Result<Model, Error> {
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let topic = TopicApi::find_by_id(&txn, id).await?;
+
+    let (result, notify_other) = if let Some(origin) = topic.moved_from_session_id {
+        // Moved -> re-parent back to origin; move_topic with moved_from = None clears the pointer.
+        (
+            TopicApi::move_topic(&txn, id, origin, None).await?,
+            Some(topic.coaching_session_id),
+        )
+    } else if topic.status == Status::Deferred {
+        // Held -> open in place.
+        (TopicApi::set_status(&txn, id, Status::Open).await?, None)
+    } else {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Validation(
+                "Topic is not deferred and has not been moved.".to_string(),
+            ),
+        });
+    };
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    publish_topics_changed(db, event_publisher, result.coaching_session_id).await;
+    if let Some(other) = notify_other {
+        publish_topics_changed(db, event_publisher, other).await;
     }
     Ok(result)
 }

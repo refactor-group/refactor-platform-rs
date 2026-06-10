@@ -263,3 +263,107 @@ async fn set_status_deferred_with_no_next_session_holds() {
 
     assert_topics_changed(&events.lock().unwrap(), session_id);
 }
+
+/// Undefer a moved topic: re-parent BACK to its origin (status Open, pointer cleared) and
+/// publish TopicsChanged for the origin (result session) first, then the current session.
+#[tokio::test]
+async fn undefer_moved_topic_returns_to_origin() {
+    let origin_session_id = Id::new_v4();
+    let current_session_id = Id::new_v4();
+
+    let moved = Model {
+        coaching_session_id: current_session_id,
+        status: Status::Open,
+        moved_from_session_id: Some(origin_session_id),
+        ..topic_model(current_session_id)
+    };
+    let returned = Model {
+        coaching_session_id: origin_session_id,
+        status: Status::Open,
+        moved_from_session_id: None,
+        ..moved.clone()
+    };
+
+    let (publisher, events) = recording_publisher();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // undefer: find_by_id(topic) → move_topic [target(origin)-topics fetch (empty) →
+        // topic find_by_id → UPDATE returning topic@origin/open/moved_from=None].
+        .append_query_results(vec![vec![moved.clone()]])
+        .append_query_results(vec![Vec::<Model>::new()])
+        .append_query_results(vec![vec![moved.clone()]])
+        .append_query_results(vec![vec![returned.clone()]])
+        // participant lookup for origin (result), then current (notify_other).
+        .append_query_results(vec![vec![session_with_relationship(origin_session_id)]])
+        .append_query_results(vec![vec![session_with_relationship(current_session_id)]])
+        .into_connection();
+
+    let result = undefer(&db, &publisher, moved.id).await.unwrap();
+    assert_eq!(result.coaching_session_id, origin_session_id);
+    assert_eq!(result.status, Status::Open);
+    assert_eq!(result.moved_from_session_id, None);
+
+    let recorded = events.lock().unwrap();
+    let topics_changed: Vec<Id> = recorded
+        .iter()
+        .filter_map(|e| match e {
+            DomainEvent::TopicsChanged {
+                coaching_session_id,
+                ..
+            } => Some(*coaching_session_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        topics_changed,
+        vec![origin_session_id, current_session_id],
+        "expected TopicsChanged for origin (result) then current (notify_other)"
+    );
+}
+
+/// Undefer a held Deferred topic: open in place, one TopicsChanged for that session.
+#[tokio::test]
+async fn undefer_held_topic_opens_in_place() {
+    let session_id = Id::new_v4();
+    let held = Model {
+        status: Status::Deferred,
+        ..topic_model(session_id)
+    };
+    let opened = Model {
+        status: Status::Open,
+        ..held.clone()
+    };
+
+    let (publisher, events) = recording_publisher();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // undefer held path: find_by_id(topic) → set_status [find_by_id → UPDATE] → participant lookup.
+        .append_query_results(vec![vec![held.clone()]])
+        .append_query_results(vec![vec![held.clone()]])
+        .append_query_results(vec![vec![opened.clone()]])
+        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .into_connection();
+
+    let result = undefer(&db, &publisher, held.id).await.unwrap();
+    assert_eq!(result.coaching_session_id, session_id);
+    assert_eq!(result.status, Status::Open);
+
+    assert_topics_changed(&events.lock().unwrap(), session_id);
+}
+
+/// Undefer a settled topic (not deferred, never moved) is a validation error (no writes, no publish).
+#[tokio::test]
+async fn undefer_settled_topic_is_validation_error() {
+    let session_id = Id::new_v4();
+    let settled = topic_model(session_id); // status Open, moved_from None
+
+    let (publisher, events) = recording_publisher();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![settled.clone()]])
+        .into_connection();
+
+    let err = undefer(&db, &publisher, settled.id).await.unwrap_err();
+    assert!(matches!(err.error_kind, DomainErrorKind::Validation(_)));
+    assert!(events.lock().unwrap().is_empty());
+}
