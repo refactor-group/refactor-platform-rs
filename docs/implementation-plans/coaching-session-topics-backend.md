@@ -506,8 +506,23 @@ replacement PR is up. Dev DB already rolled back past the topics+rating migratio
   mutation-tested, **exact FE bug reproduced live → fixed** (ceff71c6, June 10→11 both pre-hydrated).
   Pushed to PR #353; FE board question answered.
 
-**Redesign feature-complete (R1–R3 + R5; + R4 late-defer fix), all on PR #353.** Remaining: when #350
-merges, retarget/ready #353; coordinate the breaking wire change with the frontend (contract v4 +
-Deferred-only carry-over + defer-time-trigger answer are on the board).
+### v5 — Deferral becomes a MOVE (re-parent), not a copy [DONE]
+
+FE found a 2nd copy-model bug (un-defer leaves an orphaned copy). Decision: defer = MOVE one
+canonical row (stable id). Contract `CoachingSessionTopics` v5 posted; supersedes v4 copy carry-over
++ R4. Two phases, both overseer-verified, on PR #353:
+- **v5-P1 — defer = move [commit `840a61e`].** Migration `000002` revised (`carried_from_topic_id`
+  self-FK → `moved_from_session_id` FK to `coaching_sessions`, `ON DELETE SET NULL`); entity field
+  renamed; entity_api `carry_over` (copy) → `move_topic` + `move_deferred_to_session` (re-parent);
+  domain `set_status` moves on Deferred+next / holds otherwise (publishes dest+origin); hydration
+  `TopicsCarryOverTask` → `TopicsMoveForwardTask` (moves, not copies). Verified: gates green, both
+  guards mutation-tested, migration FK→coaching_sessions/SET NULL proven on real PG.
+- **v5-P2 — undefer [commit `c8ebd02`].** `POST .../topics/{id}/undefer` (either participant):
+  moved topic → re-parent back to `moved_from_session_id` (status Open, pointer cleared); held
+  Deferred → Open in place; else → 422. Verified: gates green, branch mutation-tested, and the **full
+  live round-trip** (defer A→B moves the one row; undefer returns it to A; settled→422) on real PG.
+
+**Topics redesign feature-complete (R1–R5 + R4 + v5), all on PR #353.** Remaining: when #350 merges,
+retarget/ready #353; FE refactors against `CoachingSessionTopics` v5 (board).
 - **R5 — Contract v4 + board [DONE].** Posted `CoachingSessionTopics` v4 + answered the proposal's
   3 asks (Q1→b, status authz→either-participant, version→v4).
