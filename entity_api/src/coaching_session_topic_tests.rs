@@ -202,27 +202,37 @@ async fn defer_move_snapshots_and_reparents() {
         })
     );
 
+    // The return-value asserts above only check the canned Mock row; verify the actual UPDATE
+    // re-parents (coaching_session_id=target, display_order=1 appended, status=open,
+    // moved_from=origin) AND binds pre_defer_snapshot = the captured pre-defer state. The two
+    // updated_at timestamps (column + snapshot) are runtime now(), so we assert their fields
+    // structurally rather than pinning the exact instant.
     let updates = topic_update_value_rows(&db.into_transaction_log());
     assert_eq!(updates.len(), 1);
-    assert!(
-        updates[0].contains(&Value::from(target_id)),
-        "coaching_session_id should be the target: {:?}",
-        updates[0]
+    let row = &updates[0];
+    assert_eq!(row.len(), 7);
+    assert_eq!(row[0], Value::from(target_id)); // coaching_session_id -> target
+    assert_eq!(row[1], Value::from(1_i32)); // display_order -> appended from base
+    assert_eq!(row[2], Value::from("open")); // status -> open
+    assert_eq!(row[3], Value::from(origin_id)); // moved_from_session_id -> origin
+    assert_eq!(row[6], Value::from(original.id)); // WHERE id
+
+    // pre_defer_snapshot (JSONB) captures the PRE-defer state, not the re-parented state.
+    let Value::Json(Some(snapshot_json)) = &row[4] else {
+        panic!("pre_defer_snapshot should bind a JSON object: {:?}", row[4]);
+    };
+    assert_eq!(snapshot_json["coaching_session_id"], origin_id.to_string());
+    assert_eq!(snapshot_json["status"], "Discussed");
+    assert_eq!(snapshot_json["display_order"], original.display_order);
+    assert_eq!(
+        snapshot_json["moved_from_session_id"],
+        serde_json::Value::Null
     );
-    assert!(
-        updates[0].contains(&Value::from("open")),
-        "status should bind as open: {:?}",
-        updates[0]
-    );
-    assert!(
-        updates[0].contains(&Value::from(origin_id)),
-        "moved_from_session_id should be the origin: {:?}",
-        updates[0]
-    );
-    assert!(
-        updates[0].contains(&Value::from(1_i32)),
-        "display_order should append from the target base: {:?}",
-        updates[0]
+    assert_eq!(
+        snapshot_json["updated_at"],
+        original
+            .updated_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
     );
 }
 
@@ -271,6 +281,24 @@ async fn undefer_restore_restores_snapshot() {
     assert_eq!(result.moved_from_session_id, None);
     assert_eq!(result.updated_at, t0);
     assert_eq!(result.pre_defer_snapshot, None);
+
+    // The return-value asserts above only check the canned Mock row; verify the actual UPDATE
+    // binds the SNAPSHOT's values (origin session, discussed, order 3, NULL moved_from, t0) and
+    // clears pre_defer_snapshot to a JSON NULL, scoped to this topic id.
+    let updates = topic_update_value_rows(&db.into_transaction_log());
+    assert_eq!(updates.len(), 1);
+    assert_eq!(
+        updates[0],
+        vec![
+            Value::from(origin_id),   // coaching_session_id -> snapshot origin
+            Value::from(3_i32),       // display_order -> snapshot order
+            Value::from("discussed"), // status -> snapshot status
+            Value::Uuid(None),        // moved_from_session_id -> NULL
+            Value::Json(None),        // pre_defer_snapshot -> cleared
+            Value::from(t0),          // updated_at -> snapshot timestamp
+            Value::from(moved.id),    // WHERE id
+        ]
+    );
 }
 
 /// undefer_restore on a topic with no snapshot is a no-op: returns Ok(None), no UPDATE.
