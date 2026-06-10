@@ -535,3 +535,27 @@ canonical row (stable id). Contract `CoachingSessionTopics` v5 posted; supersede
 Remaining: when #350 merges, retarget/ready #353; FE refactors against `CoachingSessionTopics` v5 (board).
 - **R5 — Contract v4 + board [DONE].** Posted `CoachingSessionTopics` v4 + answered the proposal's
   3 asks (Q1→b, status authz→either-participant, version→v4).
+
+### v6 — Unified undo (defer + delete) via soft-delete + one restore engine [DONE]
+
+FE found delete-undo was unfaithful (re-create lost `id`/`created_at`/`status`). User directive: make
+undo a single shared one-off mechanism, no duplicated logic, and (state-derived) a **single endpoint**
+(testability of the security constraint belongs at the BE, not split across two routes). Built on PR
+#353 [commit `f218ec14`]:
+- **Enabler: soft-delete.** New additive migration `m20260611_000000` adds `deleted_at TIMESTAMPTZ`;
+  `delete` snapshots then sets `deleted_at` (row survives, `updated_at` untouched). All four topic
+  reads filter `deleted_at IS NULL` (the two in `coaching_session_topic.rs`, the create-count query,
+  and `batch_load_topics` for `include=topics`); `find_including_deleted_by_id` serves undo.
+- **One engine.** `pre_defer_snapshot`/`TopicDeferSnapshot` generalized → `undo_snapshot`/`TopicSnapshot`
+  (full prior-row state; migration `000010` renamed in place since unmerged). `snapshot_for_undo` +
+  `restore_from_snapshot` are shared by `defer_move`/`defer_hold`/`delete`; deliberate writes clear the
+  buffer (settle the window). Full-row capture is safe because any content write settles the window.
+- **One state-derived endpoint.** `POST .../undefer` → `POST .../topics/{id}/undo` (no body/param).
+  New `CoachingSessionTopicUndoAccess` extractor: participant + path-session, loads including-deleted,
+  and requires AUTHOR only when `deleted_at.is_some()` (fail-closed 404). Single security chokepoint.
+- Verified: gates green (entity_api 203/domain 182/web 89), all **three guards mutation-tested**
+  (read-filter, faithful restore `deleted_at→NULL`, author-only-on-delete), **from-scratch migration**
+  clean on a scratch DB, and the **full live HTTP round-trip** on real PG (ceff71c6): delete→undo
+  faithful (id/status=Discussed/priority/created_at preserved, `updated_at`==pre-delete, JSONB snapshot
+  round-trips, soft-deleted hidden from GET) AND defer→undo via the same `/undo`. Contract
+  `CoachingSessionTopics` **v6** posted; `topic_delete_undo_not_faithful` answered.
