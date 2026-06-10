@@ -521,8 +521,17 @@ canonical row (stable id). Contract `CoachingSessionTopics` v5 posted; supersede
   moved topic → re-parent back to `moved_from_session_id` (status Open, pointer cleared); held
   Deferred → Open in place; else → 422. Verified: gates green, branch mutation-tested, and the **full
   live round-trip** (defer A→B moves the one row; undefer returns it to A; settled→422) on real PG.
+- **v5-P3 — faithful undefer [commits `0cf115d` + `a5e76d3`].** FE bug: undefer hardcoded `Open`, lost
+  pre-defer status + bumped `updated_at`. Fix (user-chosen Option A): a typed, server-only, disposable
+  **defer snapshot** — new additive migration `m20260610_000000` adds `pre_defer_snapshot` JSONB
+  (`Option<TopicDeferSnapshot>` via SeaORM `JsonBinary`+`FromJsonQueryResult`, `#[serde(skip)]`).
+  `defer_move`/`defer_hold` snapshot the pre-defer row; `undefer_restore` restores all 5 fields
+  (location/status/order/moved_from/updated_at) + clears the buffer; hydration move preserves it;
+  edits/settles clear it. Verified: gates green, guards mutation-tested, and the **live faithful
+  round-trip** on real PG (Discussed→defer→undo→Discussed, `updated_at` restored). Review catch: the
+  mock write-tests initially asserted the canned MockDB return (no teeth); hardened to `into_transaction_log`.
 
-**Topics redesign feature-complete (R1–R5 + R4 + v5), all on PR #353.** Remaining: when #350 merges,
-retarget/ready #353; FE refactors against `CoachingSessionTopics` v5 (board).
+**Topics redesign feature-complete (R1–R5 + R4 + v5 incl. faithful undefer), all on PR #353.**
+Remaining: when #350 merges, retarget/ready #353; FE refactors against `CoachingSessionTopics` v5 (board).
 - **R5 — Contract v4 + board [DONE].** Posted `CoachingSessionTopics` v4 + answered the proposal's
   3 asks (Q1→b, status authz→either-participant, version→v4).
