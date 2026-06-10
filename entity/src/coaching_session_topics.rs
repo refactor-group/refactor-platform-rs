@@ -28,9 +28,9 @@ pub struct Model {
     pub priority: Option<Priority>,
     // Lifecycle status; NOT NULL, defaults to Open.
     pub status: Status,
-    // Provenance for carried-over topics; set server-side, null normally.
+    // Provenance for a moved topic: the session it was last moved out of. Server-set; null normally.
     #[serde(skip_deserializing)]
-    pub carried_from_topic_id: Option<Id>,
+    pub moved_from_session_id: Option<Id>,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]

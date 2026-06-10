@@ -34,7 +34,7 @@ pub(crate) trait CoachingSessionHydrationTask: Send + Sync {
 fn coaching_session_hydration_tasks() -> Vec<Box<dyn CoachingSessionHydrationTask>> {
     vec![
         Box::new(GoalsCarryForwardTask),
-        Box::new(TopicsCarryOverTask),
+        Box::new(TopicsMoveForwardTask),
     ]
 }
 
@@ -96,17 +96,17 @@ impl CoachingSessionHydrationTask for GoalsCarryForwardTask {
     }
 }
 
-/// Carries the prior session's Deferred topics into this session at hydration.
-struct TopicsCarryOverTask;
+/// Moves the prior session's held Deferred topics into this session at hydration.
+struct TopicsMoveForwardTask;
 
 #[async_trait::async_trait]
-impl CoachingSessionHydrationTask for TopicsCarryOverTask {
+impl CoachingSessionHydrationTask for TopicsMoveForwardTask {
     fn name(&self) -> &'static str {
-        "topics_carry_over"
+        "topics_move_forward"
     }
 
-    /// Reads as a sentence: find the prior session, carry its Deferred topics
-    /// forward, and announce a topics change only when something actually carried.
+    /// Reads as a sentence: find the prior session, move its held Deferred topics
+    /// forward, and announce both sessions only when something actually moved.
     async fn run(
         &self,
         ctx: &CoachingSessionHydrationContext<'_>,
@@ -120,16 +120,22 @@ impl CoachingSessionHydrationTask for TopicsCarryOverTask {
         else {
             return Ok(Vec::new());
         };
-
-        let carried = coaching_session_topic::carry_over(ctx.txn, prior.id, ctx.session.id).await?;
-
-        // Announce a topics change only when something actually carried.
-        if carried.is_empty() {
+        let moved =
+            coaching_session_topic::move_deferred_to_session(ctx.txn, prior.id, ctx.session.id)
+                .await?;
+        if moved.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(vec![DomainEvent::TopicsChanged {
-            coaching_session_id: ctx.session.id,
-            notify_user_ids: vec![ctx.relationship.coach_id, ctx.relationship.coachee_id],
-        }])
+        let notify_user_ids = vec![ctx.relationship.coach_id, ctx.relationship.coachee_id];
+        Ok(vec![
+            DomainEvent::TopicsChanged {
+                coaching_session_id: ctx.session.id,
+                notify_user_ids: notify_user_ids.clone(),
+            },
+            DomainEvent::TopicsChanged {
+                coaching_session_id: prior.id,
+                notify_user_ids,
+            },
+        ])
     }
 }

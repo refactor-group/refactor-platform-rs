@@ -12,7 +12,7 @@ fn topic(session_id: Id, id: Id, order: i32) -> Model {
         display_order: order,
         priority: Some(entity::topic_priority::Priority::High),
         status: entity::topic_status::Status::Open,
-        carried_from_topic_id: None,
+        moved_from_session_id: None,
         created_at: now.into(),
         updated_at: now.into(),
     }
@@ -94,10 +94,10 @@ fn display_order_is_never_serialized() {
     assert!(value.get("id").is_some());
     assert!(value.get("coaching_session_id").is_some());
     assert!(value.get("user_id").is_some());
-    // priority, status, and carried_from_topic_id ARE on the wire.
+    // priority, status, and moved_from_session_id ARE on the wire.
     assert!(value.get("priority").is_some());
     assert!(value.get("status").is_some());
-    assert!(value.get("carried_from_topic_id").is_some());
+    assert!(value.get("moved_from_session_id").is_some());
 }
 
 #[tokio::test]
@@ -113,7 +113,7 @@ async fn find_by_coaching_session_id_orders_by_display_order_then_created_at() {
         db.into_transaction_log(),
         [Transaction::from_sql_and_values(
             DatabaseBackend::Postgres,
-            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."priority" AS "text"), CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."carried_from_topic_id", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
+            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."priority" AS "text"), CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."moved_from_session_id", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
             [session_id.into()]
         )]
     );
@@ -139,176 +139,106 @@ async fn reorder_rejects_non_permutation_id_set() {
     ));
 }
 
-/// Collect every INSERT into coaching_session_topics from the transaction log,
+/// Collect every UPDATE of coaching_session_topics from the transaction log,
 /// returning each statement's bound values.
-fn topic_insert_value_rows(log: &[Transaction]) -> Vec<Vec<Value>> {
+fn topic_update_value_rows(log: &[Transaction]) -> Vec<Vec<Value>> {
     log.iter()
         .flat_map(|txn| txn.statements())
         .filter(|stmt| {
-            stmt.sql.contains("INSERT INTO") && stmt.sql.contains(r#""coaching_session_topics""#)
+            stmt.sql.contains("UPDATE") && stmt.sql.contains(r#""coaching_session_topics""#)
         })
         .filter_map(|stmt| stmt.values.as_ref().map(|values| values.0.clone()))
         .collect()
 }
 
-/// Only Deferred topics carry: a source with [Open, Deferred, Discussed,
-/// Deferred] yields exactly 2 copies. Two saved-copy results back exactly two
-/// inserts; a stray insert of a non-Deferred topic would consume an absent
-/// result and fail.
+/// move_topic re-parents one topic: the UPDATE binds coaching_session_id = target,
+/// status = open, moved_from_session_id = source, and a fresh display_order from the
+/// target's base (here 1, the target already holds one topic at order 0).
 #[tokio::test]
-async fn carry_over_copies_only_deferred_topics() {
-    let source_id = Id::new_v4();
-    let target_id = Id::new_v4();
-    let open = topic_with(source_id, Id::new_v4(), 0, Status::Open, "open body");
-    let deferred_a = topic_with(source_id, Id::new_v4(), 1, Status::Deferred, "deferred a");
-    let discussed = topic_with(source_id, Id::new_v4(), 2, Status::Discussed, "disc body");
-    let deferred_b = topic_with(source_id, Id::new_v4(), 3, Status::Deferred, "deferred b");
-
-    let copy_a = topic_with(target_id, Id::new_v4(), 0, Status::Open, "deferred a");
-    let copy_b = topic_with(target_id, Id::new_v4(), 1, Status::Open, "deferred b");
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // source SELECT (all 4), target SELECT (empty), then exactly 2 inserts.
-        .append_query_results(vec![vec![
-            open,
-            deferred_a.clone(),
-            discussed,
-            deferred_b.clone(),
-        ]])
-        .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
-        .append_query_results(vec![vec![copy_a]])
-        .append_query_results(vec![vec![copy_b]])
-        .into_connection();
-
-    let carried = carry_over(&db, source_id, target_id).await.unwrap();
-    assert_eq!(carried.len(), 2);
-
-    // Copy shape: each INSERT binds status=open, carried_from_topic_id = the
-    // matching Deferred source id (not Open/Discussed), preserves body and
-    // priority, and appends display_order from the target's base (0, 1).
-    let inserts = topic_insert_value_rows(&db.into_transaction_log());
-    assert_eq!(inserts.len(), 2);
-    for (row, (source, order)) in inserts
-        .iter()
-        .zip([(&deferred_a, 0_i32), (&deferred_b, 1_i32)])
-    {
-        assert!(
-            row.contains(&Value::from("open")),
-            "status should bind as open: {row:?}"
-        );
-        assert!(
-            row.contains(&Value::from(source.id)),
-            "carried_from_topic_id should be the Deferred source id: {row:?}"
-        );
-        assert!(
-            row.contains(&Value::from(source.body.clone())),
-            "body should be preserved: {row:?}"
-        );
-        assert!(
-            row.contains(&Value::from("high")),
-            "priority should be preserved: {row:?}"
-        );
-        assert!(
-            row.contains(&Value::from(order)),
-            "display_order should append from the target base: {row:?}"
-        );
-    }
-}
-
-/// The append base honors existing target topics: a target with one topic at
-/// display_order 0 pushes the single carried copy to display_order 1.
-#[tokio::test]
-async fn carry_over_appends_after_existing_target_topics() {
+async fn move_topic_reparents_and_resets() {
     let source_id = Id::new_v4();
     let target_id = Id::new_v4();
     let deferred = topic_with(source_id, Id::new_v4(), 0, Status::Deferred, "deferred");
     let existing = topic_with(target_id, Id::new_v4(), 0, Status::Open, "existing");
-    let copy = topic_with(target_id, Id::new_v4(), 1, Status::Open, "deferred");
+    let moved = topic_with(target_id, deferred.id, 1, Status::Open, "deferred");
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results(vec![vec![deferred]])
+        // target-topics fetch (for base) → topic find_by_id → UPDATE.
         .append_query_results(vec![vec![existing]])
-        .append_query_results(vec![vec![copy]])
+        .append_query_results(vec![vec![deferred.clone()]])
+        .append_query_results(vec![vec![moved]])
         .into_connection();
 
-    let carried = carry_over(&db, source_id, target_id).await.unwrap();
-    assert_eq!(carried.len(), 1);
+    let result = move_topic(&db, deferred.id, target_id, Some(source_id))
+        .await
+        .unwrap();
+    assert_eq!(result.coaching_session_id, target_id);
 
-    let inserts = topic_insert_value_rows(&db.into_transaction_log());
-    assert_eq!(inserts.len(), 1);
+    let updates = topic_update_value_rows(&db.into_transaction_log());
+    assert_eq!(updates.len(), 1);
     assert!(
-        inserts[0].contains(&Value::from(1_i32)),
-        "carried copy should append at display_order 1: {:?}",
-        inserts[0]
+        updates[0].contains(&Value::from(target_id)),
+        "coaching_session_id should be the target: {:?}",
+        updates[0]
+    );
+    assert!(
+        updates[0].contains(&Value::from("open")),
+        "status should bind as open: {:?}",
+        updates[0]
+    );
+    assert!(
+        updates[0].contains(&Value::from(source_id)),
+        "moved_from_session_id should be the source: {:?}",
+        updates[0]
+    );
+    assert!(
+        updates[0].contains(&Value::from(1_i32)),
+        "display_order should append from the target base: {:?}",
+        updates[0]
     );
 }
 
-/// A source with no Deferred topics carries nothing: empty Vec, no INSERT, only
-/// the two SELECTs in the log.
+/// move_deferred_to_session moves only Deferred topics: a source with
+/// [Open, Deferred, Discussed] into an empty target yields exactly ONE UPDATE,
+/// re-parenting the Deferred topic to the target with status open + moved_from =
+/// source. One moved-row result backs exactly one UPDATE; a stray move of a
+/// non-Deferred topic would consume an absent result and fail.
 #[tokio::test]
-async fn carry_over_no_deferred_topics_returns_empty_and_inserts_nothing() {
+async fn move_deferred_to_session_moves_only_deferred() {
     let source_id = Id::new_v4();
     let target_id = Id::new_v4();
-    let open = topic_with(source_id, Id::new_v4(), 0, Status::Open, "open");
-    let discussed = topic_with(source_id, Id::new_v4(), 1, Status::Discussed, "disc");
+    let open = topic_with(source_id, Id::new_v4(), 0, Status::Open, "open body");
+    let deferred = topic_with(source_id, Id::new_v4(), 1, Status::Deferred, "deferred");
+    let discussed = topic_with(source_id, Id::new_v4(), 2, Status::Discussed, "disc body");
+    let moved_row = topic_with(target_id, deferred.id, 0, Status::Open, "deferred");
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results(vec![vec![open, discussed]])
+        // source SELECT (all 3) → target SELECT (empty, for base) → ONE UPDATE.
+        .append_query_results(vec![vec![open, deferred.clone(), discussed]])
         .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+        .append_query_results(vec![vec![moved_row]])
         .into_connection();
 
-    let carried = carry_over(&db, source_id, target_id).await.unwrap();
-    assert!(carried.is_empty());
+    let moved = move_deferred_to_session(&db, source_id, target_id)
+        .await
+        .unwrap();
+    assert_eq!(moved.len(), 1);
 
-    let log = db.into_transaction_log();
+    let updates = topic_update_value_rows(&db.into_transaction_log());
+    assert_eq!(updates.len(), 1);
     assert!(
-        topic_insert_value_rows(&log).is_empty(),
-        "no INSERT should be emitted"
-    );
-    let selects = log
-        .iter()
-        .flat_map(|txn| txn.statements())
-        .filter(|stmt| stmt.sql.contains("SELECT"))
-        .count();
-    assert_eq!(selects, 2, "only the source and target SELECTs run");
-}
-
-/// Dedupe on carried_from_topic_id: source has two Deferred topics d1, d2; the
-/// target already holds a copy of d1. carry_over copies only d2. Exactly one
-/// insert result is appended, so a stray copy of d1 would fail buffer-empty.
-#[tokio::test]
-async fn carry_over_skips_already_carried_source_topics() {
-    let source_id = Id::new_v4();
-    let target_id = Id::new_v4();
-    let d1 = topic_with(source_id, Id::new_v4(), 0, Status::Deferred, "deferred 1");
-    let d2 = topic_with(source_id, Id::new_v4(), 1, Status::Deferred, "deferred 2");
-
-    // Target already contains a copy carried from d1.
-    let mut existing_copy = topic_with(target_id, Id::new_v4(), 0, Status::Open, "deferred 1");
-    existing_copy.carried_from_topic_id = Some(d1.id);
-
-    let copy_d2 = topic_with(target_id, Id::new_v4(), 1, Status::Open, "deferred 2");
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // source SELECT (d1, d2), target SELECT (existing copy of d1), then ONE insert.
-        .append_query_results(vec![vec![d1.clone(), d2.clone()]])
-        .append_query_results(vec![vec![existing_copy]])
-        .append_query_results(vec![vec![copy_d2]])
-        .into_connection();
-
-    let carried = carry_over(&db, source_id, target_id).await.unwrap();
-    assert_eq!(carried.len(), 1, "only d2 is carried (d1 already present)");
-
-    let inserts = topic_insert_value_rows(&db.into_transaction_log());
-    assert_eq!(inserts.len(), 1);
-    assert!(
-        inserts[0].contains(&Value::from(d2.id)),
-        "carried_from_topic_id should be d2: {:?}",
-        inserts[0]
+        updates[0].contains(&Value::from(target_id)),
+        "coaching_session_id should be the target: {:?}",
+        updates[0]
     );
     assert!(
-        !inserts[0].contains(&Value::from(d1.id)),
-        "must not re-carry d1: {:?}",
-        inserts[0]
+        updates[0].contains(&Value::from("open")),
+        "status should bind as open: {:?}",
+        updates[0]
+    );
+    assert!(
+        updates[0].contains(&Value::from(source_id)),
+        "moved_from_session_id should be the source: {:?}",
+        updates[0]
     );
 }

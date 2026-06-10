@@ -603,23 +603,22 @@ mod tests {
             display_order: 0,
             priority: Some(crate::topic_priority::Priority::High),
             status: crate::topic_status::Status::Deferred,
-            carried_from_topic_id: None,
+            moved_from_session_id: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
-        let carried_copy = crate::coaching_session_topics::Model {
-            id: Id::new_v4(),
+        let moved_topic = crate::coaching_session_topics::Model {
             coaching_session_id: session.id,
             status: crate::topic_status::Status::Open,
-            carried_from_topic_id: Some(deferred_topic.id),
+            moved_from_session_id: Some(prior.id),
             display_order: 0,
             ..deferred_topic.clone()
         };
 
         // relationship → organization → session INSERT → in-progress goals SELECT
-        // (empty, no goal event) → find_prior_session (returns prior) → carry_over
-        // source SELECT (one Deferred topic) → carry_over target SELECT (empty) →
-        // INSERT (the carried copy).
+        // (empty, no goal event) → find_prior_session (returns prior) →
+        // move_deferred_to_session source SELECT (one Deferred topic) → target SELECT
+        // (empty, for base) → UPDATE (the moved topic).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
@@ -628,7 +627,7 @@ mod tests {
             .append_query_results(vec![vec![prior.clone()]])
             .append_query_results(vec![vec![deferred_topic.clone()]])
             .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
-            .append_query_results(vec![vec![carried_copy.clone()]])
+            .append_query_results(vec![vec![moved_topic.clone()]])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -643,25 +642,25 @@ mod tests {
         .await?;
 
         let events = recorded.lock().unwrap();
-        let topics_changed: Vec<_> = events
+        // The move announces both sessions: this session (dest) then the prior (origin).
+        let topics_changed: Vec<Id> = events
             .iter()
-            .filter(|e| matches!(e, DomainEvent::TopicsChanged { .. }))
+            .filter_map(|e| match e {
+                DomainEvent::TopicsChanged {
+                    coaching_session_id,
+                    notify_user_ids,
+                } => {
+                    assert_eq!(notify_user_ids, &vec![coach_id, relationship.coachee_id]);
+                    Some(*coaching_session_id)
+                }
+                _ => None,
+            })
             .collect();
         assert_eq!(
-            topics_changed.len(),
-            1,
-            "expected one TopicsChanged event, got {events:?}"
+            topics_changed,
+            vec![session.id, prior.id],
+            "expected TopicsChanged for this session then the prior, got {events:?}"
         );
-        match topics_changed[0] {
-            DomainEvent::TopicsChanged {
-                coaching_session_id,
-                notify_user_ids,
-            } => {
-                assert_eq!(*coaching_session_id, session.id);
-                assert_eq!(notify_user_ids, &vec![coach_id, relationship.coachee_id]);
-            }
-            other => panic!("expected TopicsChanged, got {other:?}"),
-        }
 
         Ok(())
     }

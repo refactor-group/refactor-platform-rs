@@ -16,7 +16,7 @@ fn topic_model(coaching_session_id: Id) -> Model {
         display_order: 0,
         priority: Some(Priority::High),
         status: Status::Open,
-        carried_from_topic_id: None,
+        moved_from_session_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -154,10 +154,11 @@ async fn set_status_publishes_topics_changed() {
 }
 
 /// Late defer: setting a topic to Deferred when the next session already exists
-/// carries it forward immediately and publishes TopicsChanged for BOTH the
-/// source session (first) and the next session (second).
+/// MOVES it forward (re-parents) immediately. The returned topic lives at the next
+/// session with status Open and moved_from = source, and TopicsChanged publishes for
+/// the destination (next) FIRST, then the origin (source).
 #[tokio::test]
-async fn set_status_deferred_carries_over_to_existing_next_session() {
+async fn set_status_deferred_moves_to_existing_next_session() {
     let source_session_id = Id::new_v4();
     let next_session_id = Id::new_v4();
     let relationship_id = Id::new_v4();
@@ -171,41 +172,38 @@ async fn set_status_deferred_carries_over_to_existing_next_session() {
         .unwrap();
 
     let topic = topic_model(source_session_id);
-    let deferred = Model {
-        status: Status::Deferred,
-        ..topic.clone()
-    };
     let source_session = coaching_session(source_session_id, relationship_id, source_date);
     let next_session = coaching_session(next_session_id, relationship_id, next_date);
-    let carried_copy = Model {
-        id: Id::new_v4(),
+    let moved = Model {
         coaching_session_id: next_session_id,
         status: Status::Open,
-        carried_from_topic_id: Some(deferred.id),
+        moved_from_session_id: Some(source_session_id),
         ..topic.clone()
     };
 
     let (publisher, events) = recording_publisher();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // set_status: find_by_id(topic) → update (now Deferred).
-        .append_query_results(vec![vec![topic.clone()]])
-        .append_query_results(vec![vec![deferred.clone()]])
-        // find_by_id(source session).
-        .append_query_results(vec![vec![source_session.clone()]])
+        // set_status defer path: find_by_id(topic) → find_by_id(source session) →
         // find_next_session → next session.
+        .append_query_results(vec![vec![topic.clone()]])
+        .append_query_results(vec![vec![source_session.clone()]])
         .append_query_results(vec![vec![next_session.clone()]])
-        // carry_over: source-topics fetch → target-topics fetch (empty) → insert.
-        .append_query_results(vec![vec![deferred.clone()]])
+        // move_topic: target-topics fetch (empty) → topic find_by_id → UPDATE.
         .append_query_results(vec![Vec::<Model>::new()])
-        .append_query_results(vec![vec![carried_copy.clone()]])
-        // participant lookup for source, then for next.
-        .append_query_results(vec![vec![session_with_relationship(source_session_id)]])
+        .append_query_results(vec![vec![topic.clone()]])
+        .append_query_results(vec![vec![moved.clone()]])
+        // participant lookup for dest (next), then for origin (source).
         .append_query_results(vec![vec![session_with_relationship(next_session_id)]])
+        .append_query_results(vec![vec![session_with_relationship(source_session_id)]])
         .into_connection();
 
-    let result = set_status(&db, &publisher, topic.id, Status::Deferred).await;
-    assert!(result.is_ok());
+    let result = set_status(&db, &publisher, topic.id, Status::Deferred)
+        .await
+        .unwrap();
+    assert_eq!(result.coaching_session_id, next_session_id);
+    assert_eq!(result.status, Status::Open);
+    assert_eq!(result.moved_from_session_id, Some(source_session_id));
 
     let recorded = events.lock().unwrap();
     let topics_changed: Vec<Id> = recorded
@@ -220,7 +218,48 @@ async fn set_status_deferred_carries_over_to_existing_next_session() {
         .collect();
     assert_eq!(
         topics_changed,
-        vec![source_session_id, next_session_id],
-        "expected TopicsChanged for source then next session"
+        vec![next_session_id, source_session_id],
+        "expected TopicsChanged for next (dest) then source (origin)"
     );
+}
+
+/// Defer with no next session HOLDS: the topic persists as Deferred in place (the
+/// hydration hook moves it later), and exactly one TopicsChanged fires in place.
+#[tokio::test]
+async fn set_status_deferred_with_no_next_session_holds() {
+    let session_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+        .unwrap()
+        .and_hms_opt(10, 0, 0)
+        .unwrap();
+
+    let topic = topic_model(session_id);
+    let deferred = Model {
+        status: Status::Deferred,
+        ..topic.clone()
+    };
+    let session = coaching_session(session_id, relationship_id, date);
+
+    let (publisher, events) = recording_publisher();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // defer path: find_by_id(topic) → find_by_id(session) → find_next_session (none).
+        .append_query_results(vec![vec![topic.clone()]])
+        .append_query_results(vec![vec![session.clone()]])
+        .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+        // set_status: find_by_id(topic) → UPDATE (now Deferred).
+        .append_query_results(vec![vec![topic.clone()]])
+        .append_query_results(vec![vec![deferred.clone()]])
+        // participant lookup (in place).
+        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .into_connection();
+
+    let result = set_status(&db, &publisher, topic.id, Status::Deferred)
+        .await
+        .unwrap();
+    assert_eq!(result.coaching_session_id, session_id);
+    assert_eq!(result.status, Status::Deferred);
+
+    assert_topics_changed(&events.lock().unwrap(), session_id);
 }

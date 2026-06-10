@@ -100,13 +100,11 @@ pub async fn set_status(
 ) -> Result<Model, Error> {
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
 
-    let topic = TopicApi::set_status(&txn, id, status).await?;
-
-    // On defer, eagerly carry forward into the already-existing next session (if any).
-    // The hydration-time task still covers the "next session not created yet" case;
-    // carry_over dedupes on carried_from_topic_id, so the two paths never double-copy.
-    let carried_target = if topic.status == Status::Deferred {
-        let session = coaching_session::find_by_id(&txn, topic.coaching_session_id).await?;
+    // Deferred + an existing next session => MOVE (re-parent), not a persisted Deferred.
+    // Deferred + no next session => HOLD (persist Deferred; the hydration hook moves it later).
+    let (result, notify_origin) = if status == Status::Deferred {
+        let current = TopicApi::find_by_id(&txn, id).await?;
+        let session = coaching_session::find_by_id(&txn, current.coaching_session_id).await?;
         match coaching_session::find_next_session(
             &txn,
             session.coaching_relationship_id,
@@ -114,24 +112,24 @@ pub async fn set_status(
         )
         .await?
         {
-            Some(next) => {
-                let carried = TopicApi::carry_over(&txn, session.id, next.id).await?;
-                (!carried.is_empty()).then_some(next.id)
-            }
-            None => None,
+            Some(next) => (
+                TopicApi::move_topic(&txn, id, next.id, Some(session.id)).await?,
+                Some(session.id),
+            ),
+            None => (TopicApi::set_status(&txn, id, status).await?, None),
         }
     } else {
-        None
+        (TopicApi::set_status(&txn, id, status).await?, None)
     };
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    // Publish after commit so subscribers never refetch against a rolled-back copy.
-    publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
-    if let Some(target_id) = carried_target {
-        publish_topics_changed(db, event_publisher, target_id).await;
+    // result.coaching_session_id is the destination (move) or the in-place session (hold/other).
+    publish_topics_changed(db, event_publisher, result.coaching_session_id).await;
+    if let Some(origin) = notify_origin {
+        publish_topics_changed(db, event_publisher, origin).await;
     }
-    Ok(topic)
+    Ok(result)
 }
 
 #[cfg(test)]

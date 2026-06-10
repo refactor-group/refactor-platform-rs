@@ -42,7 +42,7 @@ pub async fn create(
         .all(db)
         .await?;
     let now = chrono::Utc::now();
-    // status defaults to 'open' and carried_from_topic_id to NULL via Default.
+    // status defaults to 'open' and moved_from_session_id to NULL via Default.
     let active = ActiveModel {
         coaching_session_id: Set(coaching_session_id),
         user_id: Set(user_id),
@@ -73,7 +73,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
         display_order: Unchanged(topic.display_order),
         priority: Unchanged(topic.priority),
         status: Unchanged(topic.status),
-        carried_from_topic_id: Unchanged(topic.carried_from_topic_id),
+        moved_from_session_id: Unchanged(topic.moved_from_session_id),
         created_at: Unchanged(topic.created_at),
         updated_at: Set(chrono::Utc::now().into()),
     };
@@ -149,52 +149,51 @@ pub async fn reorder(
     find_by_coaching_session_id(db, coaching_session_id).await
 }
 
-/// Copies the source session's `Deferred` topics into the target session,
-/// preserving body/priority/author, resetting status to Open, appending after any
-/// existing target topics, and stamping carried_from_topic_id with the source id.
-/// Returns the created copies in carry order. Status filtering is done in Rust;
-/// filtering by a PG enum in SQL binds as text and Postgres rejects it (42804).
-pub async fn carry_over(
+/// Re-parents a topic to `target_session_id`, resetting status to Open, stamping
+/// `moved_from_session_id`, appending to the target's order, touching updated_at.
+pub async fn move_topic(
+    db: &impl ConnectionTrait,
+    id: Id,
+    target_session_id: Id,
+    moved_from_session_id: Option<Id>,
+) -> Result<Model, Error> {
+    let existing = find_by_coaching_session_id(db, target_session_id).await?;
+    let topic = find_by_id(db, id).await?;
+    let mut active: ActiveModel = topic.into();
+    active.coaching_session_id = Set(target_session_id);
+    active.status = Set(Status::Open);
+    active.moved_from_session_id = Set(moved_from_session_id);
+    active.display_order = Set(next_display_order(&existing));
+    active.updated_at = Set(chrono::Utc::now().into());
+    Ok(active.update(db).await?.try_into_model()?)
+}
+
+/// Moves the source session's `Deferred` topics into the target session (status -> Open,
+/// moved_from -> source, appended in order). One canonical row each — no copy, no dedupe
+/// needed (a moved topic no longer matches the source filter on a re-run). Status filtered
+/// in Rust (a PG enum in WHERE binds as text -> 42804).
+pub async fn move_deferred_to_session(
     db: &impl ConnectionTrait,
     source_session_id: Id,
     target_session_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    let deferred = find_by_coaching_session_id(db, source_session_id)
+    let deferred: Vec<Model> = find_by_coaching_session_id(db, source_session_id)
         .await?
         .into_iter()
-        .filter(|topic| topic.status == Status::Deferred);
-
-    // One fetch of the target: gives both the append base and the set of source ids
-    // already carried in (so re-running this, hydration AND defer-time, never dupes).
-    let target_topics = find_by_coaching_session_id(db, target_session_id).await?;
-    let already_carried: HashSet<Id> = target_topics
-        .iter()
-        .filter_map(|topic| topic.carried_from_topic_id)
+        .filter(|topic| topic.status == Status::Deferred)
         .collect();
-    let base = next_display_order(&target_topics);
-
-    let to_carry: Vec<Model> = deferred
-        .filter(|topic| !already_carried.contains(&topic.id))
-        .collect();
-
-    let mut carried = Vec::with_capacity(to_carry.len());
-    for (offset, source) in to_carry.into_iter().enumerate() {
-        let now = chrono::Utc::now();
-        let copy = ActiveModel {
-            coaching_session_id: Set(target_session_id),
-            user_id: Set(source.user_id),
-            body: Set(source.body),
-            display_order: Set(base + offset as i32),
-            priority: Set(source.priority),
-            status: Set(Status::Open),
-            carried_from_topic_id: Set(Some(source.id)),
-            created_at: Set(now.into()),
-            updated_at: Set(now.into()),
-            ..Default::default()
-        };
-        carried.push(copy.save(db).await?.try_into_model()?);
+    let base = next_display_order(&find_by_coaching_session_id(db, target_session_id).await?);
+    let mut moved = Vec::with_capacity(deferred.len());
+    for (offset, topic) in deferred.into_iter().enumerate() {
+        let mut active: ActiveModel = topic.into();
+        active.coaching_session_id = Set(target_session_id);
+        active.status = Set(Status::Open);
+        active.moved_from_session_id = Set(Some(source_session_id));
+        active.display_order = Set(base + offset as i32);
+        active.updated_at = Set(chrono::Utc::now().into());
+        moved.push(active.update(db).await?.try_into_model()?);
     }
-    Ok(carried)
+    Ok(moved)
 }
 
 #[cfg(test)]

@@ -297,7 +297,7 @@ mod tests {
             display_order: 0,
             priority: Some(domain::topic_priority::Priority::High),
             status: domain::topic_status::Status::Open,
-            carried_from_topic_id: None,
+            moved_from_session_id: None,
             created_at: now.into(),
             updated_at: now.into(),
         }

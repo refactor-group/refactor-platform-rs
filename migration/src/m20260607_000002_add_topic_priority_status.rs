@@ -33,15 +33,15 @@ impl MigrationTrait for Migration {
             .await?;
 
         // priority is nullable (no default); status defaults to 'open';
-        // carried_from_topic_id is a nullable self-FK populated by a later carry-over phase.
+        // moved_from_session_id is a nullable FK to the session a topic was moved out of.
         manager
             .get_connection()
             .execute_unprepared(
                 "ALTER TABLE refactor_platform.coaching_session_topics \
                  ADD COLUMN priority refactor_platform.topic_priority, \
                  ADD COLUMN status refactor_platform.topic_status NOT NULL DEFAULT 'open', \
-                 ADD COLUMN carried_from_topic_id UUID \
-                 REFERENCES refactor_platform.coaching_session_topics(id) ON DELETE SET NULL",
+                 ADD COLUMN moved_from_session_id UUID \
+                 REFERENCES refactor_platform.coaching_sessions(id) ON DELETE SET NULL",
             )
             .await?;
 
@@ -53,7 +53,7 @@ impl MigrationTrait for Migration {
             .get_connection()
             .execute_unprepared(
                 "ALTER TABLE refactor_platform.coaching_session_topics \
-                 DROP COLUMN carried_from_topic_id, DROP COLUMN status, DROP COLUMN priority",
+                 DROP COLUMN moved_from_session_id, DROP COLUMN status, DROP COLUMN priority",
             )
             .await?;
 
