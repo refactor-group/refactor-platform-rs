@@ -2,7 +2,7 @@ use super::error::{EntityApiErrorKind, Error};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use entity::{
-    agreements, coaching_relationships,
+    agreements, coaching_relationships, coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals, organizations,
     provider::Provider,
@@ -406,6 +406,8 @@ pub struct EnrichedSession {
     pub goals: Option<Vec<goals::Model>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
+    // Caller-scoped read receipt: when the path user last marked this session viewed; null if never.
+    pub viewer_last_viewed_at: Option<DateTimeWithTimeZone>,
 }
 
 /// Configuration for which related resources to include when fetching coaching sessions.
@@ -588,6 +590,13 @@ pub async fn find_by_user_with_includes(
     // Execute query to load base sessions
     let sessions = query.all(db).await?;
 
+    // Load the caller's view markers unconditionally so `viewer_last_viewed_at`
+    // is present on every response (null when never viewed), not gated by an
+    // include. The marker reflects the path user (`user_id`), who is the viewer
+    // for all first-party reads of this list.
+    let session_ids: Vec<Id> = sessions.iter().map(|s| s.id).collect();
+    let views = batch_load_views(db, &session_ids, user_id).await?;
+
     // Early return if no includes requested
     if !options.includes.needs_relationships()
         && !options.includes.goal
@@ -595,7 +604,12 @@ pub async fn find_by_user_with_includes(
     {
         return Ok(sessions
             .into_iter()
-            .map(EnrichedSession::from_session)
+            .map(|session| {
+                let marker = views.get(&session.id).copied();
+                let mut enriched = EnrichedSession::from_session(session);
+                enriched.viewer_last_viewed_at = marker;
+                enriched
+            })
             .collect());
     }
 
@@ -605,7 +619,7 @@ pub async fn find_by_user_with_includes(
     // Assemble enriched sessions
     Ok(sessions
         .into_iter()
-        .map(|session| assemble_enriched_session(session, &related_data, options.includes))
+        .map(|session| assemble_enriched_session(session, &related_data, options.includes, &views))
         .collect())
 }
 
@@ -782,6 +796,28 @@ async fn batch_load_agreements(
         .collect())
 }
 
+/// Batch load this viewer's view markers by session id (session_id -> last_viewed_at).
+async fn batch_load_views(
+    db: &impl ConnectionTrait,
+    session_ids: &[Id],
+    viewer_id: Id,
+) -> Result<HashMap<Id, DateTimeWithTimeZone>, Error> {
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    Ok(coaching_session_views::Entity::find()
+        .filter(
+            coaching_session_views::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
+        )
+        .filter(coaching_session_views::Column::UserId.eq(viewer_id))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|v| (v.coaching_session_id, v.last_viewed_at))
+        .collect())
+}
+
 /// Assemble an enriched session from base session and related data.
 ///
 /// `includes` is needed to distinguish "not requested" (`None`) from
@@ -791,6 +827,7 @@ fn assemble_enriched_session(
     session: Model,
     related: &RelatedData,
     includes: IncludeOptions,
+    views: &HashMap<Id, DateTimeWithTimeZone>,
 ) -> EnrichedSession {
     let relationship = related
         .relationships
@@ -819,6 +856,8 @@ fn assemble_enriched_session(
 
     let agreement = related.agreements.get(&session.id).cloned();
 
+    let viewer_last_viewed_at = views.get(&session.id).copied();
+
     EnrichedSession {
         session,
         relationship,
@@ -827,6 +866,7 @@ fn assemble_enriched_session(
         organization,
         goals,
         agreement,
+        viewer_last_viewed_at,
     }
 }
 
@@ -841,6 +881,7 @@ impl EnrichedSession {
             organization: None,
             goals: None,
             agreement: None,
+            viewer_last_viewed_at: None,
         }
     }
 }
@@ -1153,6 +1194,7 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
             .into_connection();
 
         let results =
@@ -1164,6 +1206,66 @@ mod tests {
         assert!(results[0].organization.is_none());
         assert!(results[0].goals.is_none());
         assert!(results[0].agreement.is_none());
+        assert!(results[0].viewer_last_viewed_at.is_none());
+
+        Ok(())
+    }
+
+    // Guards the early-return (no-includes) path: the view marker must populate
+    // even when no related data is requested, and stay None when no row exists.
+    #[tokio::test]
+    async fn find_by_user_populates_viewer_last_viewed_at() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let viewed_at: DateTimeWithTimeZone =
+            chrono::DateTime::parse_from_rfc3339("2026-06-01T12:00:00Z").unwrap();
+
+        let session = Model {
+            id: session_id,
+            coaching_relationship_id: Id::new_v4(),
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+        };
+
+        let view = coaching_session_views::Model {
+            id: Id::new_v4(),
+            user_id,
+            coaching_session_id: session_id,
+            last_viewed_at: viewed_at,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Populated case: a marker row maps to the session.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![view.clone()]])
+            .into_connection();
+
+        let results =
+            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].viewer_last_viewed_at, Some(viewed_at));
+
+        // Empty case: no marker row leaves the field None.
+        let db_empty = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .into_connection();
+
+        let results_empty =
+            find_by_user_with_includes(&db_empty, user_id, SessionQueryOptions::default()).await?;
+
+        assert_eq!(results_empty.len(), 1);
+        assert!(results_empty[0].viewer_last_viewed_at.is_none());
 
         Ok(())
     }
@@ -1191,6 +1293,7 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
             .into_connection();
 
         let results = find_by_user_with_includes(
@@ -1207,6 +1310,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session.id);
         assert_eq!(results[0].session.date, from_date.into());
+        assert!(results[0].viewer_last_viewed_at.is_none());
 
         Ok(())
     }
@@ -1442,7 +1546,8 @@ mod tests {
             ..IncludeOptions::none()
         };
 
-        let enriched = assemble_enriched_session(session, &related, includes);
+        let views = HashMap::new();
+        let enriched = assemble_enriched_session(session, &related, includes, &views);
 
         // Must be Some(empty vec), not None — otherwise the frontend
         // can't distinguish "no goals" from "data not loaded yet".
@@ -1468,7 +1573,8 @@ mod tests {
         let related = RelatedData::default();
         let includes = IncludeOptions::none();
 
-        let enriched = assemble_enriched_session(session, &related, includes);
+        let views = HashMap::new();
+        let enriched = assemble_enriched_session(session, &related, includes, &views);
 
         assert!(enriched.goals.is_none());
     }
