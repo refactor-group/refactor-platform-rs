@@ -46,6 +46,7 @@ use utoipa_rapidoc::RapiDoc;
             agreement_controller::delete,
             coaching_session_controller::index,
             coaching_session_controller::read,
+            coaching_session_controller::view,
             coaching_session_controller::create,
             coaching_session_controller::create_recurring,
             coaching_session_controller::update,
@@ -140,6 +141,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_relationships::Model,
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
+                domain::coaching_session_view::MarkViewed,
                 domain::coaching_sessions::Model,
                 domain::coaching_sessions_goals::Model,
                 domain::goals::Model,
@@ -284,6 +286,13 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             Router::new().route(
                 "/coaching_sessions/:id",
                 get(coaching_session_controller::read),
+            ),
+        )
+        .merge(
+            // POST /coaching_sessions/:coaching_session_id/view
+            Router::new().route(
+                "/coaching_sessions/:coaching_session_id/view",
+                post(coaching_session_controller::view),
             ),
         )
         .merge(
