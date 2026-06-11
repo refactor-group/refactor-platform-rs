@@ -7,10 +7,12 @@ pub struct Migration;
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // Optional human-authored session title. Nullable, no default.
+        // Bounded to 500 chars to match the sibling meeting_url column and
+        // guard against runaway input at the DB layer.
         manager
             .get_connection()
             .execute_unprepared(
-                "ALTER TABLE refactor_platform.coaching_sessions ADD COLUMN title VARCHAR",
+                "ALTER TABLE refactor_platform.coaching_sessions ADD COLUMN title VARCHAR(500)",
             )
             .await?;
 
