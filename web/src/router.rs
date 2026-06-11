@@ -13,9 +13,10 @@ use tower_http::services::ServeDir;
 
 use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
-    goal_controller, jwt_controller, magic_link_controller, note_controller, oauth_controller,
-    organization, organization_controller, password_reset_controller, tiptap_metrics_controller,
-    user, user_controller, user_session_controller, webhook_controller,
+    coaching_session_series_controller, goal_controller, jwt_controller, magic_link_controller,
+    note_controller, oauth_controller, organization, organization_controller,
+    password_reset_controller, tiptap_metrics_controller, user, user_controller,
+    user_session_controller, webhook_controller,
 };
 use crate::sse;
 
@@ -47,9 +48,13 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_controller::index,
             coaching_session_controller::read,
             coaching_session_controller::create,
-            coaching_session_controller::create_recurring,
             coaching_session_controller::update,
             coaching_session_controller::delete,
+            coaching_session_series_controller::create,
+            coaching_session_series_controller::read,
+            coaching_session_series_controller::index,
+            coaching_session_series_controller::update,
+            coaching_session_series_controller::delete,
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
@@ -117,6 +122,7 @@ use utoipa_rapidoc::RapiDoc;
             schemas(
                 crate::controller::action_controller::ActionRequest,
                 crate::controller::coaching_session::meeting_recording_controller::StartRecordingParams,
+                crate::controller::coaching_session_series_controller::SeriesWithSessions,
                 crate::controller::oauth_controller::ConnectionResponse,
                 crate::controller::password_reset_controller::ValidateParams,
                 crate::controller::password_reset_controller::ValidateResponse,
@@ -126,7 +132,8 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::coaching_relationship::goal_progress::SortField,
                 crate::params::coaching_session::SortField,
                 crate::params::coaching_session::goal::LinkParams,
-                crate::params::coaching_session::recurring::CreateRecurringParams,
+                crate::params::coaching_session_series::CreateParams,
+                crate::params::coaching_session_series::RescheduleParams,
                 crate::params::goal::SortField,
                 crate::params::sort::SortOrder,
                 crate::params::user::CompleteSetupParams,
@@ -211,6 +218,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
+        .merge(coaching_session_series_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         .merge(tiptap_metrics_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
@@ -263,10 +271,6 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             "/coaching_sessions",
             post(coaching_session_controller::create),
         )
-        .route(
-            "/coaching_sessions/recurring",
-            post(coaching_session_controller::create_recurring),
-        )
         .merge(
             // Get /coaching_sessions
             Router::new()
@@ -309,6 +313,33 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                     app_state.clone(),
                     protect::coaching_sessions::delete,
                 )),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for the recurring-series entity.
+pub fn coaching_session_series_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_session_series",
+            post(coaching_session_series_controller::create),
+        )
+        .route(
+            "/coaching_session_series",
+            get(coaching_session_series_controller::index),
+        )
+        .route(
+            "/coaching_session_series/:id",
+            get(coaching_session_series_controller::read),
+        )
+        .route(
+            "/coaching_session_series/:id",
+            put(coaching_session_series_controller::update),
+        )
+        .route(
+            "/coaching_session_series/:id",
+            delete(coaching_session_series_controller::delete),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

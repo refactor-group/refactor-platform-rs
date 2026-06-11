@@ -20,9 +20,7 @@ use log::*;
 /// Extracts a coaching session series and verifies the authenticated user is
 /// a participant (coach OR coachee) of its parent relationship.
 ///
-/// Used by read-only routes: `GET /coaching_session_series/:id`. Routes are
-/// wired up in a subsequent commit; the `dead_code` allow is removed there.
-#[allow(dead_code)]
+/// Used by read-only routes: `GET /coaching_session_series/:id`.
 pub(crate) struct CoachingSessionSeriesAccess(pub CoachingSessionSeriesApi::Model);
 
 #[async_trait]
@@ -45,14 +43,10 @@ where
 
 /// Extracts the coaching relationship referenced by the `coaching_relationship_id`
 /// query parameter and verifies the authenticated user is a participant
-/// (coach OR coachee). Used by `GET /coaching_session_series` (list). Routes
-/// are wired up in a subsequent commit; the `dead_code` allow is removed
-/// there.
-#[allow(dead_code)]
+/// (coach OR coachee). Used by `GET /coaching_session_series` (list).
 pub(crate) struct CoachingRelationshipQueryAccess(pub coaching_relationships::Model);
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct RelationshipIdQuery {
     coaching_relationship_id: Id,
 }
@@ -100,9 +94,7 @@ where
 }
 
 /// Coach-only variant. Used by write routes: `PUT` (reschedule) and `DELETE`
-/// on `/coaching_session_series/:id`. Routes are wired up in a subsequent
-/// commit; the `dead_code` allow is removed there.
-#[allow(dead_code)]
+/// on `/coaching_session_series/:id`.
 pub(crate) struct CoachingSessionSeriesCoachAccess(pub CoachingSessionSeriesApi::Model);
 
 #[async_trait]
@@ -126,7 +118,6 @@ where
 /// Shared lookup: extract `:id` from the path, load the series, load its
 /// parent relationship, and pull the authenticated user. The caller decides
 /// what membership rule to enforce.
-#[allow(dead_code)]
 async fn resolve<S>(
     parts: &mut Parts,
     state: &S,
