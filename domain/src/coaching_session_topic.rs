@@ -126,6 +126,9 @@ pub async fn set_status(
                 TopicApi::defer_move(&txn, id, next.id).await?,
                 Some(session.id),
             ),
+            // Already held Deferred with no next session: re-deferring would overwrite the
+            // pre-defer snapshot with a Deferred self-snapshot, stranding undo. No-op instead.
+            None if current.status == Status::Deferred => (current, None),
             None => (TopicApi::defer_hold(&txn, id).await?, None),
         }
     } else {

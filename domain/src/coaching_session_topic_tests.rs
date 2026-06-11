@@ -295,6 +295,75 @@ async fn set_status_deferred_with_no_next_session_holds() {
     assert_topics_changed(&events.lock().unwrap(), session_id);
 }
 
+/// Re-deferring an already-held Deferred topic (still no next session) is a no-op: it must NOT
+/// overwrite the original pre-defer snapshot, so undo can still reach the Open state. Guards a
+/// snapshot-clobber that would otherwise strand the topic Deferred with no undo path back.
+#[tokio::test]
+async fn set_status_deferred_again_preserves_original_snapshot() {
+    let session_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+        .unwrap()
+        .and_hms_opt(10, 0, 0)
+        .unwrap();
+
+    let topic = topic_model(session_id);
+    // The original pre-defer snapshot, captured when the topic was Open.
+    let original_snapshot = TopicSnapshot {
+        coaching_session_id: session_id,
+        body: topic.body.clone(),
+        display_order: topic.display_order,
+        priority: topic.priority.clone(),
+        status: Status::Open,
+        moved_from_session_id: None,
+        deleted_at: None,
+        updated_at: topic.updated_at,
+    };
+    let held = Model {
+        status: Status::Deferred,
+        undo_snapshot: Some(original_snapshot.clone()),
+        ..topic.clone()
+    };
+    let session = coaching_session(session_id, relationship_id, date);
+
+    let (publisher, events) = recording_publisher();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // defer path: find_by_id(topic=held) → find_by_id(session) → find_next_session (none).
+        .append_query_results(vec![vec![held.clone()]])
+        .append_query_results(vec![vec![session.clone()]])
+        .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+        // guard short-circuits before any defer_hold UPDATE; only the participant lookup remains.
+        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .into_connection();
+
+    let result = set_status(&db, &publisher, held.id, Status::Deferred)
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, Status::Deferred, "held topic stays Deferred");
+    assert_eq!(
+        result.undo_snapshot,
+        Some(original_snapshot),
+        "re-defer must preserve the original pre-defer snapshot, not overwrite it"
+    );
+
+    // Teeth: the no-op must issue no topic UPDATE (an UPDATE would clobber the snapshot).
+    let wrote_topic = db
+        .into_transaction_log()
+        .iter()
+        .flat_map(|txn| txn.statements())
+        .any(|stmt| {
+            stmt.sql.contains("UPDATE") && stmt.sql.contains(r#""coaching_session_topics""#)
+        });
+    assert!(
+        !wrote_topic,
+        "re-defer of a held topic must not write the topic row"
+    );
+
+    assert_topics_changed(&events.lock().unwrap(), session_id);
+}
+
 /// Undo a moved topic restores the PRE-defer status (not Open) at the origin and publishes
 /// TopicsChanged for the restored session (origin) first, then the old current session.
 #[tokio::test]
