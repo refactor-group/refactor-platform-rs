@@ -559,3 +559,13 @@ undo a single shared one-off mechanism, no duplicated logic, and (state-derived)
   faithful (id/status=Discussed/priority/created_at preserved, `updated_at`==pre-delete, JSONB snapshot
   round-trips, soft-deleted hidden from GET) AND defer→undo via the same `/undo`. Contract
   `CoachingSessionTopics` **v6** posted; `topic_delete_undo_not_faithful` answered.
+
+### Coach can delete any topic [DONE]
+
+Delete authz widened from author-only to **author OR the session's coach** [commit `f307086c`, PR #353].
+A coach may delete any topic in the session (incl. a coachee's); a coachee may delete only their own
+(deleting the coach's topic still 404s). Extractor `CoachingSessionTopicAuthorAccess` renamed →
+`CoachingSessionTopicDeleteAccess`; on the non-author path it loads the relationship and allows iff
+`relationship.coach_id == caller`. Verified: 4 extractor tests, both directions of the coach guard
+mutation-tested, and a **live round-trip** on real Postgres (coach→coachee's topic 200; coachee→coach's
+topic 404). Board decision `topic_delete_coach_can_delete_any` posted (no wire-shape change).
