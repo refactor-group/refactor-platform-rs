@@ -302,7 +302,9 @@ pub async fn set_status(
 /// a deleted topic is un-deleted in place, a deferred or moved topic is returned to
 /// the session it came from, and a topic with nothing pending yields 422. Takes no
 /// request body. The caller must be a participant of the topic's session; undoing a
-/// deletion additionally requires that the caller authored the topic.
+/// deletion additionally requires that the caller authored the topic. After a defer-move
+/// the topic lives in the destination session, so undo must be requested under that
+/// session's URL (the origin session no longer contains the topic).
 #[utoipa::path(
     post,
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/undo",

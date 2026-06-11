@@ -118,6 +118,10 @@ where
 /// topic INCLUDING soft-deleted, and confirms it belongs to the path session. Undoing a delete
 /// (the topic is soft-deleted) additionally requires the caller to be the author. Any failure
 /// collapses to 404 so an inaccessible topic is never revealed.
+///
+/// Note: the session-match check is against the topic's CURRENT session. After a defer-move the
+/// topic lives in the destination session, so undo must be called under the destination session's
+/// URL; calling it under the origin's (where the topic no longer appears) yields 404.
 pub(crate) struct CoachingSessionTopicUndoAccess(pub coaching_session_topics::Model);
 
 #[async_trait]

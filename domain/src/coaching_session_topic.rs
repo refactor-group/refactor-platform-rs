@@ -14,25 +14,33 @@ pub use entity_api::coaching_session_topic::{
     find_by_coaching_session_id, find_by_id, find_including_deleted_by_id,
 };
 
-/// Best-effort SSE notify. The DB write is the contract; a failure to resolve
-/// participants must NOT fail the mutation — log and continue (mirrors bot_status.rs).
+/// Best-effort SSE notify for one or more sessions of the SAME coaching relationship
+/// (e.g. origin + destination of a move). They share a participant set, so it is resolved
+/// once from the first id and reused for every event — one round-trip, no second silent-miss.
+/// The DB write is the contract; a failed lookup must NOT fail the mutation — log and continue
+/// (mirrors bot_status.rs).
 async fn publish_topics_changed(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
-    coaching_session_id: Id,
+    session_ids: &[Id],
 ) {
-    match coaching_session::find_participant_ids(db, coaching_session_id).await {
-        Ok(notify_user_ids) => {
-            event_publisher
-                .publish(DomainEvent::TopicsChanged {
-                    coaching_session_id,
-                    notify_user_ids,
-                })
-                .await;
+    let Some(&primary) = session_ids.first() else {
+        return;
+    };
+    let notify_user_ids = match coaching_session::find_participant_ids(db, primary).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("TopicsChanged: failed to resolve participants for session {primary}: {e:?}");
+            return;
         }
-        Err(e) => error!(
-            "TopicsChanged: failed to resolve participants for session {coaching_session_id}: {e:?}"
-        ),
+    };
+    for &coaching_session_id in session_ids {
+        event_publisher
+            .publish(DomainEvent::TopicsChanged {
+                coaching_session_id,
+                notify_user_ids: notify_user_ids.clone(),
+            })
+            .await;
     }
 }
 
@@ -45,7 +53,7 @@ pub async fn create(
     priority: Option<Priority>,
 ) -> Result<Model, Error> {
     let topic = TopicApi::create(db, coaching_session_id, body, user_id, priority).await?;
-    publish_topics_changed(db, event_publisher, coaching_session_id).await;
+    publish_topics_changed(db, event_publisher, &[coaching_session_id]).await;
     Ok(topic)
 }
 
@@ -56,7 +64,7 @@ pub async fn update(
     body: String,
 ) -> Result<Model, Error> {
     let topic = TopicApi::update(db, id, body).await?;
-    publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
+    publish_topics_changed(db, event_publisher, &[topic.coaching_session_id]).await;
     Ok(topic)
 }
 
@@ -68,7 +76,7 @@ pub async fn delete(
     // Capture the session id BEFORE deletion (the row is gone after).
     let coaching_session_id = TopicApi::find_by_id(db, id).await?.coaching_session_id;
     TopicApi::delete(db, id).await?;
-    publish_topics_changed(db, event_publisher, coaching_session_id).await;
+    publish_topics_changed(db, event_publisher, &[coaching_session_id]).await;
     Ok(())
 }
 
@@ -79,7 +87,7 @@ pub async fn reorder(
     ordered_ids: Vec<Id>,
 ) -> Result<Vec<Model>, Error> {
     let topics = TopicApi::reorder(db, coaching_session_id, ordered_ids).await?;
-    publish_topics_changed(db, event_publisher, coaching_session_id).await;
+    publish_topics_changed(db, event_publisher, &[coaching_session_id]).await;
     Ok(topics)
 }
 
@@ -90,7 +98,7 @@ pub async fn set_priority(
     priority: Option<Priority>,
 ) -> Result<Model, Error> {
     let topic = TopicApi::set_priority(db, id, priority).await?;
-    publish_topics_changed(db, event_publisher, topic.coaching_session_id).await;
+    publish_topics_changed(db, event_publisher, &[topic.coaching_session_id]).await;
     Ok(topic)
 }
 
@@ -126,11 +134,11 @@ pub async fn set_status(
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    // result.coaching_session_id is the destination (move) or the in-place session (hold/other).
-    publish_topics_changed(db, event_publisher, result.coaching_session_id).await;
-    if let Some(origin) = notify_origin {
-        publish_topics_changed(db, event_publisher, origin).await;
-    }
+    // result.coaching_session_id is the destination (move) or the in-place session (hold/other);
+    // the origin (move only) shares the same relationship, so both notify from one participant lookup.
+    let mut sessions = vec![result.coaching_session_id];
+    sessions.extend(notify_origin);
+    publish_topics_changed(db, event_publisher, &sessions).await;
     Ok(result)
 }
 
@@ -154,10 +162,12 @@ pub async fn undo(
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    publish_topics_changed(db, event_publisher, restored.coaching_session_id).await;
+    // A move-back affects both sessions (same relationship -> one participant lookup serves both).
+    let mut sessions = vec![restored.coaching_session_id];
     if old_session != restored.coaching_session_id {
-        publish_topics_changed(db, event_publisher, old_session).await;
+        sessions.push(old_session);
     }
+    publish_topics_changed(db, event_publisher, &sessions).await;
     Ok(restored)
 }
 

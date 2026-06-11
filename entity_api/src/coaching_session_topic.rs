@@ -90,7 +90,8 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
         priority: Unchanged(topic.priority),
         status: Unchanged(topic.status),
         moved_from_session_id: Unchanged(topic.moved_from_session_id),
-        // Deliberate non-defer write settles the undo window.
+        // A body edit is a deliberate re-commit, so it settles the undo window even on a
+        // deferred/moved topic: a subsequent undo then returns 422 rather than reverting the edit.
         undo_snapshot: Set(None),
         deleted_at: Unchanged(topic.deleted_at),
         created_at: Unchanged(topic.created_at),
@@ -270,6 +271,9 @@ pub async fn move_deferred_to_session(
         active.status = Set(Status::Open);
         active.moved_from_session_id = Set(Some(source_session_id));
         active.display_order = Set(base + offset as i32);
+        // Hydration batch moves are non-undoable: clear any snapshot left by a prior
+        // defer_hold so undo returns 422 instead of time-traveling to the pre-defer state.
+        active.undo_snapshot = Set(None);
         active.updated_at = Set(chrono::Utc::now().into());
         moved.push(active.update(db).await?.try_into_model()?);
     }
