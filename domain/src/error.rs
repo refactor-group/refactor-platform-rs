@@ -126,6 +126,17 @@ impl From<EntityApiError> for Error {
     }
 }
 
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Self {
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "JSON serialization error".to_string(),
+            )),
+        }
+    }
+}
+
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         // Errors that result from issues building the reqwest::Client instance. This

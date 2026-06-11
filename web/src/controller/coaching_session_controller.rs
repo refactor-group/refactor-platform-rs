@@ -14,7 +14,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::{
     coaching_relationship as CoachingRelationshipApi, coaching_session as CoachingSessionApi,
-    emails as EmailsApi, Id,
+    coaching_session_series as CoachingSessionSeriesApi, emails as EmailsApi, Id,
 };
 use service::config::ApiVersion;
 
@@ -193,8 +193,6 @@ pub async fn create_recurring(
 
     let db = app_state.db_conn_ref();
 
-    let dates = CoachingSessionApi::expand_recurrence(params.start_at, &params.recurrence)?;
-
     let relationship =
         CoachingRelationshipApi::find_by_id(db, params.coaching_relationship_id).await?;
     if relationship.coach_id != user.id {
@@ -204,11 +202,13 @@ pub async fn create_recurring(
     // Validate duration at the wire boundary (see `create` above).
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
-    let sessions = CoachingSessionApi::bulk_create_recurring(
+    let (_series, sessions) = CoachingSessionSeriesApi::create_with_sessions(
         db,
         params.coaching_relationship_id,
         relationship.coach_id,
-        dates,
+        user.id,
+        params.start_at,
+        params.recurrence,
         requested_duration,
     )
     .await?;

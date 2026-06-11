@@ -100,8 +100,10 @@ pub async fn create(
 }
 
 /// Bulk-insert a recurring series of coaching sessions in a single round-trip.
-/// All lazy fields (`provider`, `collab_document_name`, `meeting_url`,
-/// `hydrated_at`) are NULL; population happens on first read.
+/// Every materialized recurring session belongs to a parent
+/// `coaching_session_series` row (`series_id`). All lazy fields (`provider`,
+/// `collab_document_name`, `meeting_url`, `hydrated_at`) are NULL; population
+/// happens on first read.
 ///
 /// `requested_duration` resolves once via the cascade and applies to every
 /// materialized session.
@@ -109,13 +111,15 @@ pub async fn bulk_create_recurring(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     coach_id: Id,
+    series_id: Id,
     dates: Vec<chrono::NaiveDateTime>,
     requested_duration: Option<Duration>,
 ) -> Result<Vec<Model>, Error> {
     debug!(
-        "Bulk-creating {} recurring sessions on relationship {}",
+        "Bulk-creating {} recurring sessions on relationship {} for series {}",
         dates.len(),
-        coaching_relationship_id
+        coaching_relationship_id,
+        series_id,
     );
 
     if dates.is_empty() {
@@ -129,6 +133,7 @@ pub async fn bulk_create_recurring(
         .into_iter()
         .map(|date| ActiveModel {
             coaching_relationship_id: Set(coaching_relationship_id),
+            coaching_session_series_id: Set(Some(series_id)),
             date: Set(date),
             duration_minutes: Set(duration_minutes_i16),
             collab_document_name: Set(None),
@@ -151,6 +156,18 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// Returns every coaching session linked to the given series, ordered by date ascending.
+pub async fn find_by_series_id(
+    db: &impl ConnectionTrait,
+    series_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingSessionSeriesId.eq(series_id))
+        .order_by_asc(Column::Date)
+        .all(db)
+        .await?)
 }
 
 /// Returns the coach and coachee user IDs for a coaching session.
@@ -860,6 +877,7 @@ mod tests {
     #[tokio::test]
     async fn bulk_create_recurring_inserts_all_rows_with_lazy_fields_null() -> Result<(), Error> {
         let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
         let now = chrono::Utc::now();
         let dates = vec![
             chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
@@ -874,7 +892,7 @@ mod tests {
         let session1 = Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
-            coaching_session_series_id: None,
+            coaching_session_series_id: Some(series_id),
             date: dates[0],
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
@@ -899,6 +917,7 @@ mod tests {
             &db,
             relationship_id,
             Id::new_v4(),
+            series_id,
             dates,
             Some(Duration::default()),
         )
@@ -908,6 +927,9 @@ mod tests {
         assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
         assert!(inserted.iter().all(|s| s.meeting_url.is_none()));
         assert!(inserted.iter().all(|s| s.hydrated_at.is_none()));
+        assert!(inserted
+            .iter()
+            .all(|s| s.coaching_session_series_id == Some(series_id)));
         Ok(())
     }
 
@@ -915,7 +937,9 @@ mod tests {
     async fn bulk_create_recurring_returns_empty_for_no_dates() -> Result<(), Error> {
         // No mock query expected — the function short-circuits before touching the DB.
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let result = bulk_create_recurring(&db, Id::new_v4(), Id::new_v4(), vec![], None).await?;
+        let result =
+            bulk_create_recurring(&db, Id::new_v4(), Id::new_v4(), Id::new_v4(), vec![], None)
+                .await?;
         assert!(result.is_empty());
         Ok(())
     }

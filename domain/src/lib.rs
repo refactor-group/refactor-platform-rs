@@ -22,6 +22,7 @@ pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
 pub(crate) mod coaching_session_goal;
+pub mod coaching_session_series;
 pub mod emails;
 pub mod error;
 pub mod goal;
