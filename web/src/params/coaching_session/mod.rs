@@ -113,6 +113,29 @@ impl IntoUpdateMap for UpdateParams {
     }
 }
 
+/// Body for `PATCH /coaching_sessions/{id}/title`. Title-only so either participant can edit it,
+/// while scheduling fields (date, duration, meeting_url, provider) stay on the coach-only PUT.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct TitleUpdateParams {
+    /// Absent -> leave unchanged. Explicit null -> clear. Value -> set.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>)]
+    pub(crate) title: Option<Option<String>>,
+}
+
+impl IntoUpdateMap for TitleUpdateParams {
+    fn into_update_map(self) -> UpdateMap {
+        let mut update_map = UpdateMap::new();
+        if let Some(title) = self.title {
+            update_map.insert(
+                "title".to_string(),
+                Some(Value::String(title.map(Box::new))),
+            );
+        }
+        update_map
+    }
+}
+
 /// Request body for `POST /coaching_sessions`. Decoupled from the entity
 /// `Model` so `duration_minutes` can be optional on the wire (omission
 /// triggers the BE defaulting cascade — see
