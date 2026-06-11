@@ -70,12 +70,14 @@ where
     }
 }
 
-/// `CoachingSessionTopicAccess` plus author-only: the topic's `user_id` must equal the
-/// authenticated user's id, else 404.
-pub(crate) struct CoachingSessionTopicAuthorAccess(pub coaching_session_topics::Model);
+/// Authorizes a topic delete. Composes `CoachingSessionTopicAccess` (participant + topic belongs
+/// to the path session), then allows the caller only if they are the topic's author OR the coach
+/// of the session's relationship. So a coach may delete any topic in the session (including a
+/// coachee's), while a coachee may delete only their own. Any failure collapses to 404.
+pub(crate) struct CoachingSessionTopicDeleteAccess(pub coaching_session_topics::Model);
 
 #[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionTopicAuthorAccess
+impl<S> FromRequestParts<S> for CoachingSessionTopicDeleteAccess
 where
     AppState: FromRef<S>,
     S: Send + Sync,
@@ -91,11 +93,24 @@ where
         let AuthenticatedUser(user) =
             AuthenticatedUser::from_request_parts(parts, &app_state).await?;
 
-        if topic.user_id != user.id {
-            return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
+        // The author may delete their own topic.
+        if topic.user_id == user.id {
+            return Ok(CoachingSessionTopicDeleteAccess(topic));
         }
 
-        Ok(CoachingSessionTopicAuthorAccess(topic))
+        // Otherwise only the coach of the session's relationship may delete it.
+        let (_session, relationship) = coaching_session::find_by_id_with_coaching_relationship(
+            app_state.db_conn_ref(),
+            topic.coaching_session_id,
+        )
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "NOT FOUND".to_string()))?;
+
+        if relationship.coach_id == user.id {
+            return Ok(CoachingSessionTopicDeleteAccess(topic));
+        }
+
+        Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()))
     }
 }
 
@@ -366,10 +381,10 @@ mod tests {
         }
     }
 
-    // Mounts the author extractor behind require_auth so a logged-in DELETE exercises the
-    // full composed chain (session participant -> topic-belongs-to-session -> author).
-    async fn author_route(
-        CoachingSessionTopicAuthorAccess(_topic): CoachingSessionTopicAuthorAccess,
+    // Mounts the delete extractor behind require_auth so a logged-in DELETE exercises the full
+    // composed chain (session participant -> topic-belongs-to-session -> author-or-coach).
+    async fn delete_route(
+        CoachingSessionTopicDeleteAccess(_topic): CoachingSessionTopicDeleteAccess,
     ) -> &'static str {
         "extracted_success"
     }
@@ -417,7 +432,7 @@ mod tests {
                 Router::new()
                     .route(
                         "/coaching_sessions/:coaching_session_id/topics/:topic_id",
-                        delete(author_route),
+                        delete(delete_route),
                     )
                     .route(
                         "/coaching_sessions/:coaching_session_id/topics/:topic_id/rating",
@@ -450,7 +465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn author_extractor_ok_when_user_is_author() {
+    async fn delete_extractor_ok_when_author() {
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
         let topic_id = Id::new_v4();
@@ -484,14 +499,16 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    // A coachee deleting the coach's topic: not the author, not the coach -> 404.
     #[tokio::test]
-    async fn author_extractor_404_when_user_is_not_author() {
+    async fn delete_extractor_404_when_coachee_deletes_coachs_topic() {
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
         let topic_id = Id::new_v4();
-        let other_user_id = Id::new_v4();
-        let user = create_test_user();
+        let coach_id = Id::new_v4();
+        let user = create_test_user(); // caller acts as the coachee
         let role = test_role(user.id);
+        let relationship = test_relationship_with_coach(relationship_id, coach_id, user.id);
 
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
@@ -499,11 +516,15 @@ mod tests {
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 .append_query_results(vec![vec![(
                     test_session(session_id, relationship_id),
-                    test_relationship(relationship_id, user.id),
+                    relationship.clone(),
                 )]])
-                // Topic authored by someone else -> author guard fails closed to 404.
-                .append_query_results(vec![vec![test_topic(topic_id, session_id, other_user_id)]])
-                .append_query_results([vec![(user.clone(), role.clone())]])
+                // Topic authored by the coach -> caller is not the author.
+                .append_query_results(vec![vec![test_topic(topic_id, session_id, coach_id)]])
+                // Coach check: caller is the coachee, not the coach -> 404.
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    relationship.clone(),
+                )]])
                 .into_connection(),
         );
 
@@ -521,8 +542,51 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    // A coach deleting the coachee's topic: not the author, but is the coach -> allowed.
     #[tokio::test]
-    async fn author_extractor_404_when_topic_belongs_to_other_session() {
+    async fn delete_extractor_ok_when_coach_deletes_coachees_topic() {
+        let session_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let topic_id = Id::new_v4();
+        let coachee_id = Id::new_v4();
+        let user = create_test_user(); // caller acts as the coach
+        let role = test_role(user.id);
+        let relationship = test_relationship_with_coach(relationship_id, user.id, coachee_id);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    relationship.clone(),
+                )]])
+                // Topic authored by the coachee -> caller (coach) is not the author.
+                .append_query_results(vec![vec![test_topic(topic_id, session_id, coachee_id)]])
+                // Coach check: caller IS the coach of the relationship -> allowed.
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    relationship.clone(),
+                )]])
+                .into_connection(),
+        );
+
+        let app = build_app(Arc::clone(&db));
+        let cookie = do_login(&app).await;
+
+        let req = Request::builder()
+            .uri(format!("/coaching_sessions/{session_id}/topics/{topic_id}"))
+            .method("DELETE")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn delete_extractor_404_when_topic_belongs_to_other_session() {
         let session_id = Id::new_v4();
         let other_session_id = Id::new_v4();
         let relationship_id = Id::new_v4();

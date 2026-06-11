@@ -3,8 +3,8 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser,
     coaching_session_access::CoachingSessionAccess,
     coaching_session_topic_access::{
-        CoachingSessionTopicAccess, CoachingSessionTopicAuthorAccess,
-        CoachingSessionTopicCoacheeAccess, CoachingSessionTopicUndoAccess,
+        CoachingSessionTopicAccess, CoachingSessionTopicCoacheeAccess,
+        CoachingSessionTopicDeleteAccess, CoachingSessionTopicUndoAccess,
     },
     compare_api_version::CompareApiVersion,
 };
@@ -184,7 +184,7 @@ pub async fn reorder(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), topics)))
 }
 
-/// DELETE a topic (author only)
+/// DELETE a topic (the author or the session's coach)
 #[utoipa::path(
     delete,
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}",
@@ -196,13 +196,13 @@ pub async fn reorder(
     responses(
         (status = 200, description = "Topic deleted"),
         (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Topic not found in this session or not authored by the caller"),
+        (status = 404, description = "Topic not found in this session, or the caller may not delete it"),
     ),
     security(("cookie_auth" = []))
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
-    CoachingSessionTopicAuthorAccess(topic): CoachingSessionTopicAuthorAccess,
+    CoachingSessionTopicDeleteAccess(topic): CoachingSessionTopicDeleteAccess,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("DELETE topic {}", topic.id);
