@@ -197,6 +197,65 @@ pub async fn reschedule(
     Ok((updated_series, new_sessions))
 }
 
+/// Delete the series row and its future sessions. Past sessions survive as
+/// orphan one-offs: the FK's `ON DELETE SET NULL` clears
+/// `coaching_session_series_id` for every row that the explicit future
+/// delete didn't touch, so their notes / meeting URLs / collab docs stay
+/// intact.
+///
+pub async fn delete_with_future_sessions(
+    db: &DatabaseConnection,
+    config: &Config,
+    series_id: Id,
+) -> Result<(), Error> {
+    let now_naive = chrono::Utc::now().naive_utc();
+    let future_sessions =
+        entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
+            .await?;
+
+    let doc_names_to_cleanup: Vec<String> = future_sessions
+        .iter()
+        .filter_map(|s| s.collab_document_name.clone())
+        .collect();
+    let future_ids: Vec<Id> = future_sessions.iter().map(|s| s.id).collect();
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    for id in &future_ids {
+        entity_api::coaching_session::acquire_advisory_lock(&txn, *id).await?;
+    }
+
+    entity_api::coaching_session::bulk_delete_by_ids(&txn, &future_ids).await?;
+
+    coaching_session_series::delete(&txn, series_id).await?;
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    if !doc_names_to_cleanup.is_empty() {
+        match TiptapDocument::new(config).await {
+            Ok(tiptap) => {
+                for name in &doc_names_to_cleanup {
+                    if let Err(err) = tiptap.delete(name).await {
+                        warn!(
+                            "Tiptap cleanup failed for orphaned doc {name:?} after series \
+                             delete {series_id}: {err}"
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Could not construct Tiptap client to clean up {} orphaned doc(s) \
+                     after series delete {series_id}: {err}",
+                    doc_names_to_cleanup.len()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
@@ -445,9 +504,74 @@ mod tests {
         Ok(())
     }
 
+    /// Series delete: future sessions are loaded, locked, bulk-deleted, and
+    /// then the series row itself is removed. Past sessions are not touched.
+    /// Tiptap is never reached because no future session has a
+    /// collab doc.
+    #[tokio::test]
+    async fn delete_with_future_sessions_clears_future_and_series_rows() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let make_session = |date: NaiveDateTime| coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
+            collab_document_name: None,
+            date,
+            duration_minutes: 60,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+
+        let future_sessions = vec![
+            make_session(start() + chrono::Duration::days(7)),
+            make_session(start() + chrono::Duration::days(14)),
+        ];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // find_future_sessions_by_series_id → 2 future rows
+            .append_query_results(vec![future_sessions.clone()])
+            // BEGIN
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // acquire_advisory_lock × 2
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // bulk_delete_by_ids → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 2,
+            }])
+            // coaching_session_series::delete → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // COMMIT
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete_with_future_sessions(&db, &test_config(), series_id).await?;
+        Ok(())
+    }
+
     fn test_config() -> Config {
-        // Tiptap is never reached in the unhydrated-reschedule path; a
-        // dummy localhost URL is enough to satisfy the type.
         Config::from_args([
             "test",
             "--tiptap-auth-key=test-auth-key",
