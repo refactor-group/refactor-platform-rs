@@ -1769,4 +1769,34 @@ mod tests {
         assert_eq!(result, None);
         Ok(())
     }
+
+    // Guards the batch list path's soft-delete filter. MockDatabase doesn't evaluate WHERE,
+    // so we assert the generated SELECT carries `deleted_at IS NULL` rather than the returned
+    // rows (mirrors the single-finder guard in coaching_session_topic_tests.rs).
+    #[tokio::test]
+    async fn batch_load_topics_filters_out_soft_deleted() {
+        let session_id = Id::new_v4();
+        let empty: Vec<Vec<coaching_session_topics::Model>> = vec![vec![]];
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(empty)
+            .into_connection();
+
+        let _ = batch_load_topics(&db, &[session_id]).await;
+
+        let log = db.into_transaction_log();
+        let topic_select = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .find(|stmt| {
+                stmt.sql.contains("SELECT") && stmt.sql.contains(r#""coaching_session_topics""#)
+            })
+            .expect("expected a SELECT against coaching_session_topics");
+        assert!(
+            topic_select
+                .sql
+                .contains(r#""coaching_session_topics"."deleted_at" IS NULL"#),
+            "batch_load_topics must exclude soft-deleted rows; SQL was: {}",
+            topic_select.sql
+        );
+    }
 }
