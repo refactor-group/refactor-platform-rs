@@ -311,6 +311,7 @@ pub async fn update(
     // the right place to re-check (1..=480).
     coaching_session::validate_duration_in_update_map(&update_map, "duration_minutes")?;
     coaching_session::normalize_title_in_update_map(&mut update_map);
+    coaching_session::validate_title_length_in_update_map(&update_map)?;
 
     let coaching_session = coaching_session::find_by_id(db, id).await?;
     debug!(

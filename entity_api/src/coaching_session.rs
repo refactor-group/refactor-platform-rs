@@ -64,6 +64,36 @@ pub fn validate_duration_in_update_map(
     Duration::try_from(*n).map(Some).map_err(Error::from)
 }
 
+/// Maximum length of a human-authored session title, in characters. Mirrors the
+/// `coaching_sessions.title VARCHAR(500)` column bound so over-long input fails
+/// as a 422 validation error rather than a Postgres 22001 at write time.
+pub const MAX_TITLE_LEN: usize = 500;
+
+/// Reject a title longer than `MAX_TITLE_LEN` characters. `None` and shorter
+/// titles pass. Counts characters (not bytes) to match the `VARCHAR(n)` bound.
+pub fn validate_title_length(title: Option<&str>) -> Result<(), Error> {
+    match title {
+        Some(s) if s.chars().count() > MAX_TITLE_LEN => Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::TitleTooLong {
+                max: MAX_TITLE_LEN,
+                actual: s.chars().count(),
+            },
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Validate the update-map `title` length when a non-null value is present.
+/// Absent key and explicit-null (clear) pass. Run after normalization so the
+/// bound applies to the trimmed value.
+pub fn validate_title_length_in_update_map(update_map: &UpdateMap) -> Result<(), Error> {
+    match update_map.get_value("title") {
+        Some(Value::String(Some(s))) => validate_title_length(Some(s.as_str())),
+        _ => Ok(()),
+    }
+}
+
 /// Empty or whitespace-only title normalizes to `None` (no empty titles stored).
 pub fn normalize_title(title: Option<String>) -> Option<String> {
     title
@@ -104,13 +134,15 @@ pub async fn create(
     debug!("New Coaching Session Model to be inserted: {coaching_session_model:?}");
 
     let duration = resolve_duration(db, coach_id, requested_duration).await?;
+    let title = normalize_title(coaching_session_model.title);
+    validate_title_length(title.as_deref())?;
     let now = chrono::Utc::now();
 
     let coaching_session_active_model: ActiveModel = ActiveModel {
         coaching_relationship_id: Set(coaching_session_model.coaching_relationship_id),
         date: Set(coaching_session_model.date),
         duration_minutes: Set(duration.minutes()),
-        title: Set(normalize_title(coaching_session_model.title)),
+        title: Set(title),
         collab_document_name: Set(coaching_session_model.collab_document_name),
         meeting_url: Set(coaching_session_model.meeting_url),
         provider: Set(coaching_session_model.provider),
