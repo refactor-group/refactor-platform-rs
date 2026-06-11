@@ -11,10 +11,10 @@ pub use entity_api::{
 
 // Re-exports from `entity` crate via `entity_api`
 pub use entity_api::{
-    actions, agreements, coachees, coaches, coaching_relationships, coaching_sessions,
-    coaching_sessions_goals, duration, goals, jwts, magic_link_tokens, notes, oauth_connections,
-    organizations, password_reset_attempts, provider, query::QuerySort, status, token_purpose,
-    user_roles, users, Id,
+    actions, agreements, coachees, coaches, coaching_relationships, coaching_session_views,
+    coaching_sessions, coaching_sessions_goals, duration, goals, jwts, magic_link_tokens, notes,
+    oauth_connections, organizations, password_reset_attempts, provider, query::QuerySort, status,
+    token_purpose, user_roles, users, Id,
 };
 
 pub mod action;
