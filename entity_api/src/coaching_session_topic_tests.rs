@@ -435,10 +435,13 @@ async fn move_deferred_to_session_moves_only_deferred() {
     );
 }
 
-/// move_deferred_to_session (hydration) re-parents a held Deferred topic forward but PRESERVES
-/// its existing snapshot: the snapshot field is never re-set, so undo still reaches the origin.
+/// move_deferred_to_session (hydration) re-parents a held Deferred topic forward and CLEARS its
+/// snapshot: a batch hydration move is non-undoable, so any snapshot left by a prior defer_hold is
+/// wiped (undo then returns 422 rather than time-traveling to the pre-defer state). Asserts on the
+/// bound UPDATE values, not the canned Mock row, since MockDatabase echoes the row verbatim and
+/// would mask a missing Set(None).
 #[tokio::test]
-async fn move_deferred_to_session_preserves_snapshot() {
+async fn move_deferred_to_session_clears_snapshot() {
     let hold_id = Id::new_v4();
     let target_id = Id::new_v4();
     let origin_id = Id::new_v4();
@@ -457,7 +460,8 @@ async fn move_deferred_to_session_preserves_snapshot() {
         undo_snapshot: Some(snapshot.clone()),
         ..topic(hold_id, Id::new_v4(), 0)
     };
-    // The returned row still carries the original snapshot (field left Unchanged).
+    // The canned row still carries the snapshot to prove the assertion reads the bound write,
+    // not this echoed model.
     let moved_row = Model {
         coaching_session_id: target_id,
         status: Status::Open,
@@ -477,11 +481,24 @@ async fn move_deferred_to_session_preserves_snapshot() {
         .await
         .unwrap();
     assert_eq!(moved.len(), 1);
-    // Snapshot survives hydration so undo still reaches the original origin.
-    assert_eq!(moved[0].undo_snapshot, Some(snapshot));
+
+    // Same SET-column layout as defer_move (coaching_session_id, display_order, status,
+    // moved_from_session_id, undo_snapshot, updated_at, then WHERE id): undo_snapshot binds NULL.
+    let updates = topic_update_value_rows(&db.into_transaction_log());
+    assert_eq!(updates.len(), 1);
+    let row = &updates[0];
+    assert_eq!(row[0], Value::from(target_id)); // coaching_session_id -> target
+    assert_eq!(row[2], Value::from("open")); // status -> open
+    assert_eq!(row[3], Value::from(hold_id)); // moved_from_session_id -> source
+    assert_eq!(
+        row[4],
+        Value::Json(None),
+        "snapshot must be cleared: {row:?}"
+    );
 }
 
-/// set_status is the settle point: a deliberate non-defer write CLEARS the snapshot.
+/// set_status is the settle point: a deliberate non-defer write CLEARS the snapshot. Asserts on the
+/// bound UPDATE values, not the canned Mock row (which would echo whatever it was given).
 #[tokio::test]
 async fn set_status_clears_snapshot() {
     let session_id = Id::new_v4();
@@ -499,11 +516,8 @@ async fn set_status_clears_snapshot() {
         undo_snapshot: Some(snapshot),
         ..topic(session_id, Id::new_v4(), 0)
     };
-    let settled = Model {
-        status: Status::Open,
-        undo_snapshot: None,
-        ..with_snapshot.clone()
-    };
+    // Canned row still carries the snapshot to prove the assertion reads the bound write.
+    let settled = with_snapshot.clone();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         // find_by_id → UPDATE.
@@ -511,8 +525,18 @@ async fn set_status_clears_snapshot() {
         .append_query_results(vec![vec![settled]])
         .into_connection();
 
-    let result = set_status(&db, with_snapshot.id, Status::Open)
+    set_status(&db, with_snapshot.id, Status::Open)
         .await
         .unwrap();
-    assert_eq!(result.undo_snapshot, None);
+
+    // SET columns in entity order: status, undo_snapshot, updated_at, then WHERE id.
+    let updates = topic_update_value_rows(&db.into_transaction_log());
+    assert_eq!(updates.len(), 1);
+    let row = &updates[0];
+    assert_eq!(row[0], Value::from("open")); // status -> open
+    assert_eq!(
+        row[1],
+        Value::Json(None),
+        "snapshot must be cleared: {row:?}"
+    );
 }

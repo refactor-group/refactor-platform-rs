@@ -10,7 +10,7 @@ use domain::{coaching_session, coaching_session_topic, coaching_session_topics, 
 use crate::{
     extractors::{
         authenticated_user::AuthenticatedUser, coaching_session_access::CoachingSessionAccess,
-        RejectionType,
+        parse_path_id, RejectionType,
     },
     AppState,
 };
@@ -48,14 +48,7 @@ where
                     )
                 })?;
 
-        let topic_id: Id = path_params
-            .get("topic_id")
-            .ok_or((
-                StatusCode::BAD_REQUEST,
-                "Missing topic_id in path".to_string(),
-            ))?
-            .parse()
-            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid topic id".to_string()))?;
+        let topic_id = parse_path_id(&path_params, "topic_id")?;
 
         // Load + verify the topic belongs to THIS session (else 404 to hide existence).
         let topic = coaching_session_topic::find_by_id(app_state.db_conn_ref(), topic_id)
@@ -148,14 +141,7 @@ where
                     )
                 })?;
 
-        let topic_id: Id = path_params
-            .get("topic_id")
-            .ok_or((
-                StatusCode::BAD_REQUEST,
-                "Missing topic_id in path".to_string(),
-            ))?
-            .parse()
-            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid topic id".to_string()))?;
+        let topic_id = parse_path_id(&path_params, "topic_id")?;
 
         let topic =
             coaching_session_topic::find_including_deleted_by_id(app_state.db_conn_ref(), topic_id)
@@ -194,60 +180,24 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
 
+        // Composes the participant + topic-belongs-to-session check (collapses to 404), so a
+        // non-existent or out-of-session topic never reaches the coachee gate below.
+        let CoachingSessionTopicAccess(topic) =
+            CoachingSessionTopicAccess::from_request_parts(parts, state).await?;
+
         let AuthenticatedUser(user) =
             AuthenticatedUser::from_request_parts(parts, &app_state).await?;
 
-        let Path(path_params) =
-            Path::<HashMap<String, String>>::from_request_parts(parts, &app_state)
-                .await
-                .map_err(|_| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        "Invalid path parameters".to_string(),
-                    )
-                })?;
-
-        let coaching_session_id: Id = path_params
-            .get("coaching_session_id")
-            .ok_or((
-                StatusCode::BAD_REQUEST,
-                "Missing coaching_session_id in path".to_string(),
-            ))?
-            .parse()
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid coaching session id".to_string(),
-                )
-            })?;
-
-        let topic_id: Id = path_params
-            .get("topic_id")
-            .ok_or((
-                StatusCode::BAD_REQUEST,
-                "Missing topic_id in path".to_string(),
-            ))?
-            .parse()
-            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid topic id".to_string()))?;
-
-        let (session, relationship) = coaching_session::find_by_id_with_coaching_relationship(
+        // Coachee-only: a coach is a participant (so the compose above passed) but may not rate -> 403.
+        let (_session, relationship) = coaching_session::find_by_id_with_coaching_relationship(
             app_state.db_conn_ref(),
-            coaching_session_id,
+            topic.coaching_session_id,
         )
         .await
         .map_err(|_| (StatusCode::NOT_FOUND, "NOT FOUND".to_string()))?;
 
-        // Coachee-only: a coach can read the topic but not rate it -> 403.
         if relationship.coachee_id != user.id {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
-        }
-
-        let topic = coaching_session_topic::find_by_id(app_state.db_conn_ref(), topic_id)
-            .await
-            .map_err(|_| (StatusCode::NOT_FOUND, "NOT FOUND".to_string()))?;
-
-        if topic.coaching_session_id != session.id {
-            return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
         }
 
         Ok(CoachingSessionTopicCoacheeAccess(topic))
@@ -637,13 +587,17 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 .append_query_results([vec![(user.clone(), role.clone())]])
-                // Caller is the coachee of the relationship -> rating allowed.
+                // CoachingSessionTopicAccess: participant check (caller is the coachee) + topic load.
                 .append_query_results(vec![vec![(
                     test_session(session_id, relationship_id),
                     test_relationship(relationship_id, user.id),
                 )]])
                 .append_query_results(vec![vec![test_topic(topic_id, session_id, user.id)]])
-                .append_query_results([vec![(user.clone(), role.clone())]])
+                // Coachee gate: re-resolve the relationship; caller IS the coachee -> rating allowed.
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship(relationship_id, user.id),
+                )]])
                 .into_connection(),
         );
 
@@ -676,7 +630,13 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 .append_query_results([vec![(user.clone(), role.clone())]])
-                // Caller is the coach (a participant) but not the coachee -> 403.
+                // CoachingSessionTopicAccess: caller is the coach (a participant) -> passes; topic loads.
+                .append_query_results(vec![vec![(
+                    test_session(session_id, relationship_id),
+                    test_relationship_with_coach(relationship_id, user.id, coachee_id),
+                )]])
+                .append_query_results(vec![vec![test_topic(topic_id, session_id, coachee_id)]])
+                // Coachee gate: re-resolve the relationship; caller is the coach, not the coachee -> 403.
                 .append_query_results(vec![vec![(
                     test_session(session_id, relationship_id),
                     test_relationship_with_coach(relationship_id, user.id, coachee_id),
