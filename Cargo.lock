@@ -1095,6 +1095,7 @@ dependencies = [
  "chrono",
  "sea-orm",
  "serde",
+ "serde_json",
  "sqlx",
  "utoipa",
  "uuid",

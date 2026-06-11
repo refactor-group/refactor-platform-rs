@@ -223,6 +223,7 @@ pub async fn mark_hydrated(txn: &impl ConnectionTrait, target: &Model) -> Result
     let active_model = ActiveModel {
         id: Unchanged(target.id),
         coaching_relationship_id: Unchanged(target.coaching_relationship_id),
+        coaching_session_series_id: Unchanged(target.coaching_session_series_id),
         date: Unchanged(target.date),
         duration_minutes: Unchanged(target.duration_minutes),
         collab_document_name: Set(target.collab_document_name.clone()),

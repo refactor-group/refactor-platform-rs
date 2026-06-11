@@ -14,6 +14,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: Id,
     pub coaching_relationship_id: Id,
+    pub coaching_session_series_id: Option<Id>,
     #[serde(skip_deserializing)]
     pub collab_document_name: Option<String>,
     pub date: DateTime,
@@ -47,6 +48,14 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     CoachingRelationships,
+    #[sea_orm(
+        belongs_to = "super::coaching_session_series::Entity",
+        from = "Column::CoachingSessionSeriesId",
+        to = "super::coaching_session_series::Column::Id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    CoachingSessionSeries,
     #[sea_orm(has_many = "super::notes::Entity")]
     Notes,
     #[sea_orm(has_many = "super::goals::Entity")]
@@ -70,6 +79,12 @@ impl Related<super::agreements::Entity> for Entity {
 impl Related<super::coaching_relationships::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::CoachingRelationships.def()
+    }
+}
+
+impl Related<super::coaching_session_series::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CoachingSessionSeries.def()
     }
 }
 

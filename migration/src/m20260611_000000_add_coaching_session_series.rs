@@ -85,9 +85,7 @@ impl MigrationTrait for Migration {
 
         manager
             .get_connection()
-            .execute_unprepared(
-                "DROP TABLE IF EXISTS refactor_platform.coaching_session_series",
-            )
+            .execute_unprepared("DROP TABLE IF EXISTS refactor_platform.coaching_session_series")
             .await?;
 
         Ok(())
