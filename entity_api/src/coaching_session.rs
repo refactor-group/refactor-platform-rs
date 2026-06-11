@@ -170,6 +170,36 @@ pub async fn find_by_series_id(
         .await?)
 }
 
+/// Returns sessions for the given series whose `date` is greater than or
+/// equal to `boundary`, ordered ascending. Used by reschedule and delete
+/// flows to identify the rows that still represent future work.
+pub async fn find_future_sessions_by_series_id(
+    db: &impl ConnectionTrait,
+    series_id: Id,
+    boundary: chrono::NaiveDateTime,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingSessionSeriesId.eq(series_id))
+        .filter(Column::Date.gte(boundary))
+        .order_by_asc(Column::Date)
+        .all(db)
+        .await?)
+}
+
+/// Bulk-deletes coaching sessions by id. Returns the number of rows removed.
+/// FK cascades on dependent rows (goals, recordings, transcriptions) handle
+/// child cleanup.
+pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<u64, Error> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let result = Entity::delete_many()
+        .filter(Column::Id.is_in(ids.to_vec()))
+        .exec(db)
+        .await?;
+    Ok(result.rows_affected)
+}
+
 /// Returns the coach and coachee user IDs for a coaching session.
 ///
 /// Used by webhook handlers to determine which users to notify via SSE when
