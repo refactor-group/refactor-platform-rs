@@ -6,7 +6,7 @@ use entity::Id;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{NotSet, Set, Unchanged},
-    DatabaseConnection, QueryOrder, TryIntoModel,
+    DatabaseConnection, QueryOrder, TransactionTrait, TryIntoModel,
 };
 use std::collections::HashSet;
 
@@ -151,7 +151,9 @@ pub async fn find_by_coaching_session_id(
 
 /// Reassign display_order from `ordered_ids` array position. Rejects unless
 /// `ordered_ids` is a permutation of the session's current topic ids. Returns
-/// the reordered, pre-sorted list. Non-transactional (see handoff).
+/// the reordered, pre-sorted list. The per-row updates run in a single
+/// transaction so a mid-loop failure rolls back rather than leaving
+/// display_order partially reassigned.
 pub async fn reorder(
     db: &DatabaseConnection,
     coaching_session_id: Id,
@@ -166,6 +168,7 @@ pub async fn reorder(
         });
     }
     let now = chrono::Utc::now();
+    let txn = db.begin().await?;
     for (index, id) in ordered_ids.iter().enumerate() {
         let active = ActiveModel {
             id: Unchanged(*id),
@@ -175,8 +178,9 @@ pub async fn reorder(
             updated_at: Set(now.into()),
             ..Default::default()
         };
-        active.update(db).await?;
+        active.update(&txn).await?;
     }
+    txn.commit().await?;
     find_by_coaching_session_id(db, coaching_session_id).await
 }
 
