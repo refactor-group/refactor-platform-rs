@@ -5,7 +5,7 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path},
     http::{request::Parts, StatusCode},
 };
-use domain::{coaching_session, coaching_session_topic, coaching_session_topics, Id};
+use domain::{coaching_session, coaching_session_topic, coaching_session_topics};
 
 use crate::{
     extractors::{
@@ -225,7 +225,7 @@ mod tests {
     use chrono::Utc;
     use domain::user::Backend;
     use domain::users;
-    use domain::{coaching_relationships, coaching_sessions, user_roles};
+    use domain::{coaching_relationships, coaching_sessions, user_roles, Id};
     use password_auth::generate_hash;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
