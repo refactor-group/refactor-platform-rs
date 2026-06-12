@@ -83,7 +83,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
     let topic = find_by_id(db, id).await?;
     let mut active: ActiveModel = topic.into();
     active.body = Set(body);
-    active.undo_snapshot = Set(None);
+    active.undo_snapshot = Set(None); // a body edit settles the undo window
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
