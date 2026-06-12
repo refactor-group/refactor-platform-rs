@@ -1,8 +1,9 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
+use chrono::NaiveDateTime;
 use entity::{
-    agreements, coaching_relationships,
+    agreements, coaching_relationships, coaching_session_topics,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals, organizations,
     provider::Provider,
@@ -211,6 +212,37 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// Most recent session in the relationship strictly before `before`. Sources
+/// topics for carry-over at the next session's hydration; `None` for the first
+/// session in a relationship.
+pub async fn find_prior_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    before: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.lt(before))
+        .order_by_desc(Column::Date)
+        .one(db)
+        .await?)
+}
+
+/// Earliest session in the relationship strictly after `after`. Used to eagerly
+/// carry a just-deferred topic into the already-existing next session.
+pub async fn find_next_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    after: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.gt(after))
+        .order_by_asc(Column::Date)
+        .one(db)
+        .await?)
 }
 
 /// Returns the coach and coachee user IDs for a coaching session.
@@ -467,6 +499,8 @@ pub struct EnrichedSession {
     pub goals: Option<Vec<goals::Model>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<coaching_session_topics::Model>>,
 }
 
 /// Configuration for which related resources to include when fetching coaching sessions.
@@ -509,6 +543,7 @@ pub struct IncludeOptions {
     pub organization: bool,
     pub goal: bool,
     pub agreements: bool,
+    pub topics: bool,
 }
 
 impl IncludeOptions {
@@ -522,6 +557,7 @@ impl IncludeOptions {
             organization: false,
             goal: false,
             agreements: false,
+            topics: false,
         }
     }
 
@@ -653,6 +689,7 @@ pub async fn find_by_user_with_includes(
     if !options.includes.needs_relationships()
         && !options.includes.goal
         && !options.includes.agreements
+        && !options.includes.topics
     {
         return Ok(sessions
             .into_iter()
@@ -687,6 +724,7 @@ struct RelatedData {
     organizations: HashMap<Id, organizations::Model>,
     goals: HashMap<Id, Vec<goals::Model>>,
     agreements: HashMap<Id, agreements::Model>,
+    topics: HashMap<Id, Vec<coaching_session_topics::Model>>,
 }
 
 /// Load all requested related data in efficient batches
@@ -736,6 +774,11 @@ async fn load_related_data(
     // Load agreements by session_id
     if includes.agreements {
         data.agreements = batch_load_agreements(db, &session_ids).await?;
+    }
+
+    // Load topics by session_id
+    if includes.topics {
+        data.topics = batch_load_topics(db, &session_ids).await?;
     }
 
     Ok(data)
@@ -843,6 +886,32 @@ async fn batch_load_agreements(
         .collect())
 }
 
+/// Batch load topics by session IDs, pre-sorted by display_order then created_at.
+async fn batch_load_topics(
+    db: &impl ConnectionTrait,
+    session_ids: &[Id],
+) -> Result<HashMap<Id, Vec<coaching_session_topics::Model>>, Error> {
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut map: HashMap<Id, Vec<coaching_session_topics::Model>> = HashMap::new();
+    for topic in coaching_session_topics::Entity::find()
+        .filter(
+            coaching_session_topics::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
+        )
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
+        .order_by_asc(coaching_session_topics::Column::DisplayOrder)
+        .order_by_asc(coaching_session_topics::Column::CreatedAt)
+        .all(db)
+        .await?
+    {
+        map.entry(topic.coaching_session_id)
+            .or_default()
+            .push(topic);
+    }
+    Ok(map)
+}
+
 /// Assemble an enriched session from base session and related data.
 ///
 /// `includes` is needed to distinguish "not requested" (`None`) from
@@ -880,6 +949,12 @@ fn assemble_enriched_session(
 
     let agreement = related.agreements.get(&session.id).cloned();
 
+    let topics = if includes.topics {
+        Some(related.topics.get(&session.id).cloned().unwrap_or_default())
+    } else {
+        None
+    };
+
     EnrichedSession {
         session,
         relationship,
@@ -888,6 +963,7 @@ fn assemble_enriched_session(
         organization,
         goals,
         agreement,
+        topics,
     }
 }
 
@@ -902,6 +978,7 @@ impl EnrichedSession {
             organization: None,
             goals: None,
             agreement: None,
+            topics: None,
         }
     }
 }
@@ -1036,6 +1113,70 @@ mod tests {
                 r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_prior_session_filters_relationship_and_date_orders_desc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let before = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_prior_session(&db, relationship_id, before).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    before.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_next_session_filters_relationship_and_date_orders_asc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let after = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_next_session(&db, relationship_id, after).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    after.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
                 ]
             )]
@@ -1551,6 +1692,7 @@ mod tests {
             organization: true,
             goal: false,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1562,6 +1704,7 @@ mod tests {
             organization: true,
             goal: false,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_err());
     }
@@ -1573,6 +1716,7 @@ mod tests {
             organization: false,
             goal: true,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1584,6 +1728,7 @@ mod tests {
             organization: true,
             goal: true,
             agreements: true,
+            topics: true,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1697,5 +1842,35 @@ mod tests {
 
         assert_eq!(result, None);
         Ok(())
+    }
+
+    // Guards the batch list path's soft-delete filter. MockDatabase doesn't evaluate WHERE,
+    // so we assert the generated SELECT carries `deleted_at IS NULL` rather than the returned
+    // rows (mirrors the single-finder guard in coaching_session_topic_tests.rs).
+    #[tokio::test]
+    async fn batch_load_topics_filters_out_soft_deleted() {
+        let session_id = Id::new_v4();
+        let empty: Vec<Vec<coaching_session_topics::Model>> = vec![vec![]];
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(empty)
+            .into_connection();
+
+        let _ = batch_load_topics(&db, &[session_id]).await;
+
+        let log = db.into_transaction_log();
+        let topic_select = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .find(|stmt| {
+                stmt.sql.contains("SELECT") && stmt.sql.contains(r#""coaching_session_topics""#)
+            })
+            .expect("expected a SELECT against coaching_session_topics");
+        assert!(
+            topic_select
+                .sql
+                .contains(r#""coaching_session_topics"."deleted_at" IS NULL"#),
+            "batch_load_topics must exclude soft-deleted rows; SQL was: {}",
+            topic_select.sql
+        );
     }
 }

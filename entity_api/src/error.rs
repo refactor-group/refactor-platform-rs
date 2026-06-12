@@ -45,6 +45,8 @@ pub enum EntityApiErrorKind {
     // 1..=480). Maps to 422 in domain (distinct from `ValidationError`,
     // which is for 409 state conflicts like cap violations).
     OutOfRange(OutOfRange),
+    // Reorder request whose id set is not a permutation of the session's current topics.
+    TopicReorderMismatch,
     // A text field exceeded its maximum length. Maps to 422 in domain (a
     // value-validation failure, distinct from `ValidationError` → 409 state
     // conflicts). `max`/`actual` are character counts, matching the column bound.

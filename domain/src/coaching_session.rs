@@ -1,6 +1,9 @@
 pub(crate) mod recurrence;
 
 use crate::coaching_relationships;
+use crate::coaching_session_hydration::{
+    run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
+};
 use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
@@ -9,8 +12,7 @@ use crate::provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions, mutate,
-    organization, query,
+    coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
@@ -18,8 +20,8 @@ use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    find_by_id, find_by_user_with_includes, find_counts_by_month_for_user, find_participant_ids,
-    CountByMonth, EnrichedSession, IncludeOptions, SessionQueryOptions,
+    find_by_id, find_by_user_with_includes, find_counts_by_month_for_user, find_next_session,
+    find_participant_ids, CountByMonth, EnrichedSession, IncludeOptions, SessionQueryOptions,
 };
 
 use crate::duration::Duration;
@@ -96,39 +98,28 @@ pub async fn create(
     // succeed or fail atomically. If the transaction fails, compensate by
     // deleting the Tiptap document we just created.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let result: Result<(Model, Vec<Id>), Error> = async {
+    let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         let session =
             coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
                 .await?;
 
-        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
-            &txn,
-            session.coaching_relationship_id,
-            session.id,
-        )
-        .await?;
-        debug!(
-            "Linked {} in-progress goal(s) to session {}",
-            linked_goal_ids.len(),
-            session.id
-        );
+        let ctx = CoachingSessionHydrationContext {
+            txn: &txn,
+            session: &session,
+            relationship: &coaching_relationship,
+        };
+        let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok((session, linked_goal_ids))
+        Ok((session, events))
     }
     .await;
 
     // Publish after commit so subscribers never refetch against goal links
     // that a rolled-back transaction never persisted.
     match result {
-        Ok((session, linked_goal_ids)) => {
-            publish_goals_linked(
-                event_publisher,
-                &coaching_relationship,
-                session.id,
-                &linked_goal_ids,
-            )
-            .await;
+        Ok((session, events)) => {
+            publish_events(event_publisher, events).await;
             Ok(session)
         }
         Err(e) => {
@@ -206,7 +197,7 @@ pub async fn ensure_hydrated(
     let tiptap = TiptapDocument::new(config).await?;
 
     let coach_id = coaching_relationship.coach_id;
-    let result: Result<(Model, Vec<Id>), Error> = async {
+    let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
 
@@ -215,36 +206,24 @@ pub async fn ensure_hydrated(
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
         }
 
-        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
-            &txn,
-            session.coaching_relationship_id,
-            session.id,
-        )
-        .await?;
-
-        debug!(
-            "Linked {} in-progress goal(s) to session {}",
-            linked_goal_ids.len(),
-            session.id
-        );
+        let ctx = CoachingSessionHydrationContext {
+            txn: &txn,
+            session: &session,
+            relationship: &coaching_relationship,
+        };
+        let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
         let updated = coaching_session::mark_hydrated(&txn, &session).await?;
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok((updated, linked_goal_ids))
+        Ok((updated, events))
     }
     .await;
 
     // Publish after commit so subscribers never refetch against goal links
     // that a rolled-back transaction never persisted.
     match result {
-        Ok((updated, linked_goal_ids)) => {
-            publish_goals_linked(
-                event_publisher,
-                &coaching_relationship,
-                updated.id,
-                &linked_goal_ids,
-            )
-            .await;
+        Ok((updated, events)) => {
+            publish_events(event_publisher, events).await;
             Ok(updated)
         }
         Err(e) => {
@@ -258,36 +237,13 @@ pub async fn ensure_hydrated(
     }
 }
 
-/// Publishes a `CoachingSessionGoalCreated` event for each goal newly linked to
-/// a session during create/hydration, so connected clients refresh the session's
-/// goal list. Mirrors the manual link path's notification contract; a no-op when
-/// no new links were inserted.
-async fn publish_goals_linked(
-    event_publisher: &EventPublisher,
-    relationship: &coaching_relationships::Model,
-    coaching_session_id: Id,
-    goal_ids: &[Id],
-) {
-    if goal_ids.is_empty() {
-        return;
+/// Publishes each event produced by the hydration tasks after the transaction
+/// commits, so subscribers never refetch against writes a rolled-back txn never
+/// persisted. A no-op when no task produced events.
+async fn publish_events(event_publisher: &EventPublisher, events: Vec<DomainEvent>) {
+    for event in events {
+        event_publisher.publish(event).await;
     }
-
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
-    for goal_id in goal_ids {
-        event_publisher
-            .publish(DomainEvent::CoachingSessionGoalCreated {
-                coaching_relationship_id: relationship.id,
-                coaching_session_id,
-                goal_id: *goal_id,
-                notify_user_ids: notify_user_ids.clone(),
-            })
-            .await;
-    }
-
-    debug!(
-        "Published {} CoachingSessionGoalCreated event(s) for session {coaching_session_id}",
-        goal_ids.len()
-    );
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -583,6 +539,8 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![vec![link.clone()]])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -616,6 +574,102 @@ mod tests {
         Ok(())
     }
 
+    /// A prior session with a Deferred topic carries that topic forward at create
+    /// and publishes a `TopicsChanged` scoped to coach + coachee, alongside the
+    /// usual (here empty) goal events.
+    #[tokio::test]
+    async fn create_carries_over_prior_session_deferred_topics_and_publishes_topics_changed(
+    ) -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        let now = chrono::Utc::now();
+        let prior = coaching_sessions::Model {
+            id: Id::new_v4(),
+            date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
+            ..session.clone()
+        };
+        let deferred_topic = crate::coaching_session_topics::Model {
+            id: Id::new_v4(),
+            coaching_session_id: prior.id,
+            body: "Deferred topic".to_string(),
+            user_id: Id::new_v4(),
+            display_order: 0,
+            priority: Some(crate::topic_priority::Priority::High),
+            status: crate::topic_status::Status::Deferred,
+            moved_from_session_id: None,
+            undo_snapshot: None,
+            deleted_at: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let moved_topic = crate::coaching_session_topics::Model {
+            coaching_session_id: session.id,
+            status: crate::topic_status::Status::Open,
+            moved_from_session_id: Some(prior.id),
+            display_order: 0,
+            ..deferred_topic.clone()
+        };
+
+        // relationship → organization → session INSERT → in-progress goals SELECT
+        // (empty, no goal event) → find_prior_session (returns prior) →
+        // move_deferred_to_session source SELECT (one Deferred topic) → target SELECT
+        // (empty, for base) → UPDATE (the moved topic).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![vec![prior.clone()]])
+            .append_query_results(vec![vec![deferred_topic.clone()]])
+            .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
+            .append_query_results(vec![vec![moved_topic.clone()]])
+            .into_connection();
+
+        let config = test_config(&server.url());
+        let (publisher, recorded) = recording_publisher();
+        create(
+            &db,
+            &config,
+            &publisher,
+            session.clone(),
+            Some(Duration::default()),
+        )
+        .await?;
+
+        let events = recorded.lock().unwrap();
+        // The move announces both sessions: this session (dest) then the prior (origin).
+        let topics_changed: Vec<Id> = events
+            .iter()
+            .filter_map(|e| match e {
+                DomainEvent::TopicsChanged {
+                    coaching_session_id,
+                    notify_user_ids,
+                } => {
+                    assert_eq!(notify_user_ids, &vec![coach_id, relationship.coachee_id]);
+                    Some(*coaching_session_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            topics_changed,
+            vec![session.id, prior.id],
+            "expected TopicsChanged for this session then the prior, got {events:?}"
+        );
+
+        Ok(())
+    }
+
     /// When no provider is set, the oauth credentials lookup is skipped entirely.
     #[tokio::test]
     async fn create_without_provider_skips_oauth_lookup() -> Result<(), Error> {
@@ -640,6 +694,8 @@ mod tests {
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -710,6 +766,8 @@ mod tests {
             .append_query_results(vec![vec![existing_session_with_url]])
             .append_query_results(vec![vec![saved_session]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -762,6 +820,8 @@ mod tests {
             )
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
