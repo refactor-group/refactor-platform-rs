@@ -20,6 +20,7 @@ use service::config::Config;
 
 pub use coaching_session::{Frequency, Recurrence, RecurrenceError};
 pub use entity::coaching_session_series::Model;
+pub use entity_api::coaching_session_series::find_by_id;
 
 /// Typed shape of the JSONB `rule` column on `coaching_session_series`.
 /// Stored at create time and re-read at reschedule time, which is why
@@ -89,17 +90,6 @@ pub async fn create_with_sessions(
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    Ok((series, sessions))
-}
-
-/// Read a series row by id alongside every coaching_session linked to it,
-/// ordered by `date ASC`.
-pub async fn find_by_id_with_sessions(
-    db: &DatabaseConnection,
-    id: Id,
-) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
-    let series = coaching_session_series::find_by_id(db, id).await?;
-    let sessions = coaching_session::find_by_series_id(db, id).await?;
     Ok((series, sessions))
 }
 

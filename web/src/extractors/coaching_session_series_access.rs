@@ -158,13 +158,12 @@ where
 
     debug!("Checking coaching_session_series access for series_id={series_id}");
 
-    let (series, _sessions) =
-        CoachingSessionSeriesApi::find_by_id_with_sessions(state.db_conn_ref(), series_id)
-            .await
-            .map_err(|e| {
-                error!("Error finding coaching_session_series {series_id}: {e:?}");
-                (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
-            })?;
+    let series = CoachingSessionSeriesApi::find_by_id(state.db_conn_ref(), series_id)
+        .await
+        .map_err(|e| {
+            error!("Error finding coaching_session_series {series_id}: {e:?}");
+            (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
+        })?;
 
     let relationship =
         CoachingRelationshipApi::find_by_id(state.db_conn_ref(), series.coaching_relationship_id)
@@ -352,9 +351,8 @@ mod tests {
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 // require_auth: load again on the protected request
                 .append_query_results([vec![(user.clone(), role.clone())]])
-                // find_by_id_with_sessions: series row, then its sessions list (empty)
+                // find_by_id: series row
                 .append_query_results(vec![vec![series.clone()]])
-                .append_query_results::<domain::coaching_sessions::Model, _, _>(vec![vec![]])
                 // Relationship lookup
                 .append_query_results(vec![vec![relationship.clone()]])
                 .into_connection(),
@@ -386,7 +384,6 @@ mod tests {
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 .append_query_results(vec![vec![series.clone()]])
-                .append_query_results::<domain::coaching_sessions::Model, _, _>(vec![vec![]])
                 .append_query_results(vec![vec![relationship.clone()]])
                 .into_connection(),
         );
@@ -422,7 +419,6 @@ mod tests {
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 .append_query_results([vec![(user.clone(), role.clone())]])
                 .append_query_results(vec![vec![series.clone()]])
-                .append_query_results::<domain::coaching_sessions::Model, _, _>(vec![vec![]])
                 .append_query_results(vec![vec![relationship.clone()]])
                 .into_connection(),
         );
