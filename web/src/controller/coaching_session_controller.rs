@@ -59,6 +59,37 @@ pub async fn read(
     )))
 }
 
+/// Mark a coaching session viewed by the caller, returning the prior marker.
+///
+/// Upserts the authenticated caller's view marker for this session to now() and returns the
+/// value it had immediately before, so the caller can compute what is new since their last view.
+/// Idempotent. Participant-only (same access as reading the session).
+#[utoipa::path(
+    post,
+    path = "/coaching_sessions/{coaching_session_id}/view",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+    ),
+    responses(
+        (status = 200, description = "Marker advanced; prior value returned", body = domain::coaching_session_view::MarkViewed),
+        (status = 401, description = "Unauthorized or not a participant"),
+        (status = 404, description = "Coaching session not found"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn view(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionAccess(session): CoachingSessionAccess,
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    let result =
+        domain::coaching_session_view::mark_viewed(app_state.db_conn_ref(), session.id, user.id)
+            .await?;
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), result)))
+}
+
 #[utoipa::path(
     get,
     path = "/coaching_sessions",

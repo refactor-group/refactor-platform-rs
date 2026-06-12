@@ -19,6 +19,11 @@ pub(crate) mod user_controller;
 pub(crate) mod user_session_controller;
 pub(crate) mod webhook_controller;
 
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_view_tests.rs"]
+mod coaching_session_view_tests;
+
 #[derive(Debug, Serialize)]
 struct ApiResponse<T: Serialize> {
     status_code: u16,
