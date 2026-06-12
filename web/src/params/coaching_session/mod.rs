@@ -78,6 +78,17 @@ where
     Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
+/// Insert the clearable `title` entry when present: a value sets it, an explicit
+/// null clears it to NULL, an absent field leaves the column untouched.
+fn insert_title_update(update_map: &mut UpdateMap, title: Option<Option<String>>) {
+    if let Some(title) = title {
+        update_map.insert(
+            "title".to_string(),
+            Some(Value::String(title.map(Box::new))),
+        );
+    }
+}
+
 impl IntoUpdateMap for UpdateParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
@@ -103,12 +114,7 @@ impl IntoUpdateMap for UpdateParams {
                 Some(Value::String(Some(Box::new(provider.to_value())))),
             );
         }
-        if let Some(title) = self.title {
-            update_map.insert(
-                "title".to_string(),
-                Some(Value::String(title.map(Box::new))),
-            );
-        }
+        insert_title_update(&mut update_map, self.title);
         update_map
     }
 }
@@ -126,12 +132,7 @@ pub(crate) struct TitleUpdateParams {
 impl IntoUpdateMap for TitleUpdateParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
-        if let Some(title) = self.title {
-            update_map.insert(
-                "title".to_string(),
-                Some(Value::String(title.map(Box::new))),
-            );
-        }
+        insert_title_update(&mut update_map, self.title);
         update_map
     }
 }

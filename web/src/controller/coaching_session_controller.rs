@@ -491,9 +491,7 @@ mod tests {
         )
         .await;
 
-        if let Err(e) = result {
-            panic!("participant title update should succeed, got: {e:?}");
-        }
+        result.expect("participant title update should succeed");
     }
 
     // Title-only map: a value sets it, explicit null clears it, absence leaves it untouched.

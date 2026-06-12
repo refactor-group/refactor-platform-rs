@@ -105,18 +105,9 @@ pub fn normalize_title(title: Option<String>) -> Option<String> {
 /// Normalize an update-map `title` to NULL when empty/whitespace. Explicit
 /// null (clear) and an absent key are left unchanged.
 pub fn normalize_title_in_update_map(update_map: &mut UpdateMap) {
-    let normalized = match update_map.get_value("title") {
-        Some(Value::String(Some(s))) => {
-            let trimmed = s.trim();
-            Some(if trimmed.is_empty() {
-                None
-            } else {
-                Some(Box::new(trimmed.to_string()))
-            })
-        }
-        _ => None,
-    };
-    if let Some(value) = normalized {
+    if let Some(Value::String(Some(s))) = update_map.get_value("title") {
+        let trimmed = s.trim();
+        let value = (!trimmed.is_empty()).then(|| Box::new(trimmed.to_string()));
         update_map.insert("title".to_string(), Some(Value::String(value)));
     }
 }
