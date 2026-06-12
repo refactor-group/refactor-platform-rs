@@ -115,7 +115,15 @@ pub async fn reschedule(
     new_recurrence: Recurrence,
     new_requested_duration: Option<Duration>,
 ) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
-    // Validate new inputs before any DB write.
+    // Validate new inputs before any DB write. A reschedule only ever touches
+    // future sessions (past sessions are left untouched), so a past
+    // `new_start_at` would re-materialize the past on top of surviving history
+    // — reject it up front rather than corrupt the timeline.
+    let now_naive = chrono::Utc::now().naive_utc();
+    if new_start_at < now_naive {
+        return Err(RecurrenceError::StartAtInPast.into());
+    }
+
     let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence)?;
     let resolved_duration =
         entity_api::coaching_session::resolve_duration(db, coach_id, new_requested_duration)
@@ -128,7 +136,6 @@ pub async fn reschedule(
     };
     let new_rule = serde_json::to_value(&new_rule)?;
 
-    let now_naive = chrono::Utc::now().naive_utc();
     let future_sessions =
         entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
             .await?;
@@ -492,6 +499,38 @@ mod tests {
             .iter()
             .all(|s| s.coaching_session_series_id == Some(series_id)));
         Ok(())
+    }
+
+    /// A reschedule with a `start_at` in the past is rejected before any DB
+    /// access — re-materializing the past on top of surviving past sessions
+    /// would corrupt the series timeline.
+    #[tokio::test]
+    async fn reschedule_rejects_past_start_at() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let past = NaiveDate::from_ymd_opt(2000, 1, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let result = reschedule(
+            &db,
+            &test_config(),
+            Id::new_v4(),
+            Id::new_v4(),
+            past,
+            weekly_rule_count(3),
+            None,
+        )
+        .await;
+
+        let err = result.expect_err("a past start_at must be rejected");
+        assert!(
+            matches!(
+                err.error_kind,
+                crate::error::DomainErrorKind::Validation(ref m) if m.contains("past")
+            ),
+            "expected a past-start validation error, got {err:?}"
+        );
     }
 
     /// Series delete: future sessions are loaded, locked, bulk-deleted, and
