@@ -60,6 +60,7 @@ fn test_session(session_id: Id, relationship_id: Id) -> coaching_sessions::Model
         collab_document_name: None,
         date: Utc::now().naive_utc(),
         duration_minutes: domain::duration::Duration::default_minutes(),
+        title: None,
         meeting_url: None,
         provider: None,
         created_at: now.into(),

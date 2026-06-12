@@ -20,6 +20,8 @@ pub struct Model {
     /// Session duration in minutes. Validated `1..=480` via
     /// `entity::duration::Duration` on every write.
     pub duration_minutes: i16,
+    /// Optional human-authored title. Accepted on writes; `null` when unset.
+    pub title: Option<String>,
     pub meeting_url: Option<String>,
     pub provider: Option<Provider>,
     #[serde(skip_deserializing)]
@@ -49,6 +51,8 @@ pub enum Relation {
     CoachingRelationships,
     #[sea_orm(has_many = "super::notes::Entity")]
     Notes,
+    #[sea_orm(has_many = "super::coaching_session_topics::Entity")]
+    CoachingSessionTopics,
     #[sea_orm(has_many = "super::goals::Entity")]
     Goals,
     #[sea_orm(has_many = "super::coaching_sessions_goals::Entity")]
@@ -76,6 +80,12 @@ impl Related<super::coaching_relationships::Entity> for Entity {
 impl Related<super::notes::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Notes.def()
+    }
+}
+
+impl Related<super::coaching_session_topics::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CoachingSessionTopics.def()
     }
 }
 
