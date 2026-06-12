@@ -199,7 +199,29 @@ from CRUD/reorder logic, and a focused migration commit is trivial to review and
   the guard. Gates reproduced: 173/194/83 (no new tests — mirrors untested sibling loaders). 4
   `IncludeOptions` test literals got the new field. Scope: 3 files, no out-of-scope.
 - **✅ Epic Phase 1 (P1–P5) COMPLETE** — Title (rs#346, PR #349) + Topics CRUD/reorder/authz/include
-  (rs#347). P6–P7 (rating, rs#348, epic Phase 2) not started.
+  (rs#347, PR #350).
+- **P6 — Rating schema + enums — ✅ APPROVED** (overseer-reviewed 2026-06-07). Branch
+  `feat/348-topic-rating` (off feat/347; stacked), commit `c30a9bd`. Migration
+  `m20260607_000002_add_topic_rating_enums`: `CREATE TYPE topic_relevance`/`topic_immediacy` (each
+  `+ OWNER TO refactor`), columns `NOT NULL DEFAULT 'neutral'`, `down` drops cols then types. Entity
+  enums `Relevance` (neutral/peripheral/worth_exploring/central) + `Immediacy`
+  (neutral/can_wait/soon/pressing), serde = PascalCase variant on the wire (like `status`). `update`
+  preserves rating via `Unchanged`; `create`/`reorder` unchanged (DB default applies). Frozen test
+  re-frozen: asserts relevance+immediacy serialized, display_order not, ORDER BY unchanged; SQL now
+  has `CAST(... AS "text")` enum cols. Enums re-exported `entity_api`→`domain` (VERIFIED correct:
+  web has no `entity` dep; `domain::<enum>::Type` is the established pattern, mirrors provider/status;
+  utoipa `body = entity::...` annotations are macro schema-name refs, not a real entity dep). Gates
+  173/194/83. **Pre-merge:** run migration up/down on live PG (PG enum + OWNER TO).
+- **P7 — Rating endpoint + coachee authz — ✅ APPROVED** (overseer-reviewed 2026-06-07). Branch
+  `feat/348-topic-rating`, commit `d57cc03`. `entity_api::set_rating` (via `topic.into()` + `Set`,
+  stamps `updated_at`); domain re-export; route `PATCH /coaching_sessions/:id/topics/:topic_id/rating`;
+  new `CoachingSessionTopicCoacheeAccess` extractor — **coachee-only (403 for a coach), topic-in-session
+  (404)**. 2 HTTP integration tests (coachee→200, coach→403). Gates reproduced: clippy/fmt clean, web
+  **85** (+2). **Coachee guard MUTATION-TESTED:** defeating it fails the 403 test — real teeth. Scope:
+  5 files, no migration/enum/entity change. **Pre-merge:** live-PG migration check (P6 enums).
+- **✅✅ ENTIRE BUILD COMPLETE (P1–P7).** Title (rs#346, PR #349) · Topics CRUD/reorder/authz/include
+  (rs#347, PR #350) · rating (rs#348, PR pending). Every phase independently reviewed; reorder guard,
+  both topic authz guards, and the coachee guard all mutation-tested.
 
 ---
 
@@ -399,3 +421,151 @@ rejection on an isolated setup.
 - **Cross-repo wire agreement** is part of epic DoD: Title `Option<string>`; topics returned
   pre-sorted; non-null topic enums with `Neutral` default; no FE tolerance hacks. Coordinate
   via the shared blackboard at each phase boundary that changes the wire.
+
+## 9. v4 Redesign — priority + status lifecycle (decided 2026-06-09)
+
+Supersedes the relevance/immediacy 2×2 rating (P6/P7). Driven by FE board proposal
+`topic_priority_status_redesign`. **Nothing shipped** (PRs draft), so we modify in place rather
+than ship-then-revert. The epic's Phase-3 2×2 priority matrix (#416) is **dropped**.
+
+**Decisions:**
+- **Change A — single `priority`** (`topic_priority` ∈ `Low | Medium | High`, **nullable/Option**,
+  unset by default — cleaner than the always-`Neutral` two-enum shape). Drops
+  `relevance`/`immediacy` entirely. Rating endpoint stays coachee-only, body `{ priority? }`.
+  Create accepts optional `priority` (restore fidelity).
+- **Change B — `status` lifecycle** (`topic_status` ∈ `Open | Discussed | Deferred`, `NOT NULL
+  DEFAULT 'open'`). **Authz: either participant** (reuses `CoachingSessionTopicAccess`); rating
+  stays coachee-only (`CoachingSessionTopicCoacheeAccess`). New `PATCH .../status` endpoint.
+- **Change C — carry-over on defer = Q1 option (b)**: a `Deferred` topic copies forward into the
+  **next session at session-create/hydration time** (mirrors goals' `link_in_progress_goals`),
+  setting `carried_from_topic_id` (nullable self-FK). Source stays `Deferred` in its session.
+  Handles "no next session yet" for free (waits); robust to rescheduling.
+- **`CoachingSessionHydrationTask` registry** (full, loosely-coupled): a trait + registry +
+  runner that de-dups the inline task sequence in `create`/`ensure_hydrated`. Context
+  `CoachingSessionHydrationContext { txn, db, config, &mut session, relationship }`. Existing work
+  becomes `MeetingUrlHandler` + `GoalsCarryForwardHandler`; new `TopicsCarryOverHandler`. **Tiptap
+  doc stays the external-resource bracket** (needs delete-on-failure compensation; don't fold it
+  into the trait). Named for `CoachingSession` (not `Session` — user/auth sessions exist) and
+  `Hydration` (consistent with `ensure_hydrated`/`hydrated_at`/`mark_hydrated`, the `hydrated_at`
+  flag is the single source of truth for "has this run").
+- **Version `CoachingSessionTopics` v4** (breaking). SSE `topics_changed` unchanged (still fires
+  on every mutation incl. the new status writes + carry-over).
+
+**Branch:** `feat/topic-priority-lifecycle` off `feat/topic-sse-events` (keeps table/CRUD/reorder/
+authz/include/SSE; the redesign commits replace rating + add status/carry-over/hydration). Will
+**supersede #351 (rating) + #352 (SSE)** into one PR (base `feat/347` = #350); close those when the
+replacement PR is up. Dev DB already rolled back past the topics+rating migrations (2026-06-09).
+
+**Phases (executed shape — R1 merged schema+data-layer+web-DTOs into one compiling vertical):**
+- **R1 — Data-model swap [DONE, commit `31fe0b6`].** Migration `m20260607_000002_add_topic_priority_status`:
+  `topic_priority` (nullable enum low/medium/high) + `topic_status` (NOT NULL default `open`) +
+  `carried_from_topic_id` (nullable self-FK `ON DELETE SET NULL`), both types `OWNER TO refactor`.
+  Replaced `topic_relevance`/`topic_immediacy` entity enums with `topic_priority`/`topic_status`;
+  Model `priority: Option<Priority>`, `status: Status`, `carried_from_topic_id: Option<Id>`
+  (`#[serde(skip_deserializing)]`). Data layer: `create(priority?)`, `set_rating`→`set_priority`,
+  new `set_status`. Domain wrappers + web `CreateParams`/`RatingParams` → `{ priority? }`; rating
+  endpoint sets priority. Frozen tests updated + re-frozen. **Overseer-verified:** all gates green
+  (mock 176/194/85, fmt, clippy); migration up/down + `ON DELETE SET NULL` + `status` default
+  proven against real Postgres (scratch schema). NOT in R1: status endpoint, carry-over logic.
+- **R2 — `CoachingSessionHydrationTask` registry (HIGH BLAST RADIUS) [DONE, commit `b52922a`].**
+  New `domain/src/coaching_session_hydration.rs`: trait + `CoachingSessionHydrationContext { txn,
+  session, relationship }` + registry + runner + `GoalsCarryForwardTask` (combinator form).
+  `create`/`ensure_hydrated` route the goal tail through the runner, publish via generic
+  `publish_events`; `publish_goals_linked` deleted. **Pure behavior-preserving refactor**:
+  overseer-verified zero test changes (test module byte-identical), exact mock query sequences +
+  events unchanged (domain 176/0), non-mock build + live boot HTTP 200. Reserved: full goals
+  carry-forward e2e (disproportionate given exact-sequence mock coverage). Context deliberately
+  minimal (`db`/`config`/`organization` added per-task later).
+- **R2b — `TopicsCarryOverTask` [DONE, commit `46939ad`].** Policy = **Deferred-only** (user chose
+  Option B, not Open+Deferred; board decision `topics_carry_over_policy` corrected). `entity_api`:
+  `coaching_session::find_prior_session` (relationship + `date < before`, desc, one);
+  `coaching_session_topic::carry_over` (filters `Deferred` **in Rust** to dodge the enum-in-WHERE
+  42804 trap; copy resets status→Open, preserves body/priority/user_id, appends order, stamps
+  `carried_from_topic_id`); `find_by_coaching_session_id` widened to `&impl ConnectionTrait`.
+  `TopicsCarryOverTask` registered 2nd; **context UNCHANGED, `create`/`ensure_hydrated` bodies
+  UNCHANGED** (seam paid off). Emits `topics_changed` only when ≥1 carried. Overseer-verified:
+  gates green (entity_api 198 / domain 177), Deferred-only filter **mutation-tested (test fails when
+  guard defeated)**, frozen test re-frozen. Real-PG write primitives (enum INSERT via ActiveModel+Set,
+  self-FK) already proven in R1; fresh full carry-over e2e reserved as disproportionate.
+- **R3 — Status endpoint + OpenAPI [DONE, commit `23c7a78`].** `PATCH .../topics/{id}/status`
+  (either-participant via `CoachingSessionTopicAccess` — no 403; required `StatusParams { status }`)
+  calls `TopicApi::set_status` (publishes `topics_changed`); route + OpenAPI `paths`/`schemas` wired.
+  Overseer-verified: gates green (web 85), and **live** — booted the binary, new route returns 401
+  (auth chain runs ⇒ wired) vs an unregistered subpath that never reaches auth; served OpenAPI
+  (`/api-docs/openapi2.json`) advertises the path + `StatusParams`. No web handler test (sibling
+  `set_rating` has none; authz covered by extractor tests, behavior by domain `set_status` test).
+
+- **R4 — late-defer carry-over fix [DONE, commit `98f7af1`].** Bug (FE board question
+  `topic_carryover_misses_late_defer`): carry-over only ran as a once-per-session hydration task, so a
+  defer set *after* the next session already hydrated was silently lost (the common case). Fix (option
+  b): domain `set_status` transactionally triggers a **defer-time** carry-over into the already-existing
+  next session (`coaching_session::find_next_session`), and `carry_over` is now **idempotent** (dedup on
+  `carried_from_topic_id`, reusing its single target fetch) so defer-time + hydration compose without
+  double-copying. Publishes `topics_changed` for source AND next on copy. Hydration task unchanged
+  (inherits dedup). Overseer-verified: gates green (entity_api 200/domain 178), both new guards
+  mutation-tested, **exact FE bug reproduced live → fixed** (ceff71c6, June 10→11 both pre-hydrated).
+  Pushed to PR #353; FE board question answered.
+
+### v5 — Deferral becomes a MOVE (re-parent), not a copy [DONE]
+
+FE found a 2nd copy-model bug (un-defer leaves an orphaned copy). Decision: defer = MOVE one
+canonical row (stable id). Contract `CoachingSessionTopics` v5 posted; supersedes v4 copy carry-over
++ R4. Two phases, both overseer-verified, on PR #353:
+- **v5-P1 — defer = move [commit `840a61e`].** Migration `000002` revised (`carried_from_topic_id`
+  self-FK → `moved_from_session_id` FK to `coaching_sessions`, `ON DELETE SET NULL`); entity field
+  renamed; entity_api `carry_over` (copy) → `move_topic` + `move_deferred_to_session` (re-parent);
+  domain `set_status` moves on Deferred+next / holds otherwise (publishes dest+origin); hydration
+  `TopicsCarryOverTask` → `TopicsMoveForwardTask` (moves, not copies). Verified: gates green, both
+  guards mutation-tested, migration FK→coaching_sessions/SET NULL proven on real PG.
+- **v5-P2 — undefer [commit `c8ebd02`].** `POST .../topics/{id}/undefer` (either participant):
+  moved topic → re-parent back to `moved_from_session_id` (status Open, pointer cleared); held
+  Deferred → Open in place; else → 422. Verified: gates green, branch mutation-tested, and the **full
+  live round-trip** (defer A→B moves the one row; undefer returns it to A; settled→422) on real PG.
+- **v5-P3 — faithful undefer [commits `0cf115d` + `a5e76d3`].** FE bug: undefer hardcoded `Open`, lost
+  pre-defer status + bumped `updated_at`. Fix (user-chosen Option A): a typed, server-only, disposable
+  **defer snapshot** — new additive migration `m20260610_000000` adds `pre_defer_snapshot` JSONB
+  (`Option<TopicDeferSnapshot>` via SeaORM `JsonBinary`+`FromJsonQueryResult`, `#[serde(skip)]`).
+  `defer_move`/`defer_hold` snapshot the pre-defer row; `undefer_restore` restores all 5 fields
+  (location/status/order/moved_from/updated_at) + clears the buffer; hydration move preserves it;
+  edits/settles clear it. Verified: gates green, guards mutation-tested, and the **live faithful
+  round-trip** on real PG (Discussed→defer→undo→Discussed, `updated_at` restored). Review catch: the
+  mock write-tests initially asserted the canned MockDB return (no teeth); hardened to `into_transaction_log`.
+
+**Topics redesign feature-complete (R1–R5 + R4 + v5 incl. faithful undefer), all on PR #353.**
+Remaining: when #350 merges, retarget/ready #353; FE refactors against `CoachingSessionTopics` v5 (board).
+- **R5 — Contract v4 + board [DONE].** Posted `CoachingSessionTopics` v4 + answered the proposal's
+  3 asks (Q1→b, status authz→either-participant, version→v4).
+
+### v6 — Unified undo (defer + delete) via soft-delete + one restore engine [DONE]
+
+FE found delete-undo was unfaithful (re-create lost `id`/`created_at`/`status`). User directive: make
+undo a single shared one-off mechanism, no duplicated logic, and (state-derived) a **single endpoint**
+(testability of the security constraint belongs at the BE, not split across two routes). Built on PR
+#353 [commit `f218ec14`]:
+- **Enabler: soft-delete.** New additive migration `m20260611_000000` adds `deleted_at TIMESTAMPTZ`;
+  `delete` snapshots then sets `deleted_at` (row survives, `updated_at` untouched). All four topic
+  reads filter `deleted_at IS NULL` (the two in `coaching_session_topic.rs`, the create-count query,
+  and `batch_load_topics` for `include=topics`); `find_including_deleted_by_id` serves undo.
+- **One engine.** `pre_defer_snapshot`/`TopicDeferSnapshot` generalized → `undo_snapshot`/`TopicSnapshot`
+  (full prior-row state; migration `000010` renamed in place since unmerged). `snapshot_for_undo` +
+  `restore_from_snapshot` are shared by `defer_move`/`defer_hold`/`delete`; deliberate writes clear the
+  buffer (settle the window). Full-row capture is safe because any content write settles the window.
+- **One state-derived endpoint.** `POST .../undefer` → `POST .../topics/{id}/undo` (no body/param).
+  New `CoachingSessionTopicUndoAccess` extractor: participant + path-session, loads including-deleted,
+  and requires AUTHOR only when `deleted_at.is_some()` (fail-closed 404). Single security chokepoint.
+- Verified: gates green (entity_api 203/domain 182/web 89), all **three guards mutation-tested**
+  (read-filter, faithful restore `deleted_at→NULL`, author-only-on-delete), **from-scratch migration**
+  clean on a scratch DB, and the **full live HTTP round-trip** on real PG (ceff71c6): delete→undo
+  faithful (id/status=Discussed/priority/created_at preserved, `updated_at`==pre-delete, JSONB snapshot
+  round-trips, soft-deleted hidden from GET) AND defer→undo via the same `/undo`. Contract
+  `CoachingSessionTopics` **v6** posted; `topic_delete_undo_not_faithful` answered.
+
+### Coach can delete any topic [DONE]
+
+Delete authz widened from author-only to **author OR the session's coach** [commit `f307086c`, PR #353].
+A coach may delete any topic in the session (incl. a coachee's); a coachee may delete only their own
+(deleting the coach's topic still 404s). Extractor `CoachingSessionTopicAuthorAccess` renamed →
+`CoachingSessionTopicDeleteAccess`; on the non-author path it loads the relationship and allows iff
+`relationship.coach_id == caller`. Verified: 4 extractor tests, both directions of the coach guard
+mutation-tested, and a **live round-trip** on real Postgres (coach→coachee's topic 200; coachee→coach's
+topic 404). Board decision `topic_delete_coach_can_delete_any` posted (no wire-shape change).

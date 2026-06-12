@@ -1,6 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
+use chrono::NaiveDateTime;
 use entity::{
     agreements, coaching_relationships, coaching_session_topics,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
@@ -151,6 +152,37 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// Most recent session in the relationship strictly before `before`. Sources
+/// topics for carry-over at the next session's hydration; `None` for the first
+/// session in a relationship.
+pub async fn find_prior_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    before: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.lt(before))
+        .order_by_desc(Column::Date)
+        .one(db)
+        .await?)
+}
+
+/// Earliest session in the relationship strictly after `after`. Used to eagerly
+/// carry a just-deferred topic into the already-existing next session.
+pub async fn find_next_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    after: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.gt(after))
+        .order_by_asc(Column::Date)
+        .one(db)
+        .await?)
 }
 
 /// Returns the coach and coachee user IDs for a coaching session.
@@ -806,6 +838,7 @@ async fn batch_load_topics(
         .filter(
             coaching_session_topics::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
         )
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
         .order_by_asc(coaching_session_topics::Column::DisplayOrder)
         .order_by_asc(coaching_session_topics::Column::CreatedAt)
         .all(db)
@@ -1013,6 +1046,70 @@ mod tests {
                 r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_prior_session_filters_relationship_and_date_orders_desc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let before = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_prior_session(&db, relationship_id, before).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    before.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_next_session_filters_relationship_and_date_orders_asc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let after = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_next_session(&db, relationship_id, after).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    after.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
                 ]
             )]
@@ -1671,5 +1768,35 @@ mod tests {
 
         assert_eq!(result, None);
         Ok(())
+    }
+
+    // Guards the batch list path's soft-delete filter. MockDatabase doesn't evaluate WHERE,
+    // so we assert the generated SELECT carries `deleted_at IS NULL` rather than the returned
+    // rows (mirrors the single-finder guard in coaching_session_topic_tests.rs).
+    #[tokio::test]
+    async fn batch_load_topics_filters_out_soft_deleted() {
+        let session_id = Id::new_v4();
+        let empty: Vec<Vec<coaching_session_topics::Model>> = vec![vec![]];
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(empty)
+            .into_connection();
+
+        let _ = batch_load_topics(&db, &[session_id]).await;
+
+        let log = db.into_transaction_log();
+        let topic_select = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .find(|stmt| {
+                stmt.sql.contains("SELECT") && stmt.sql.contains(r#""coaching_session_topics""#)
+            })
+            .expect("expected a SELECT against coaching_session_topics");
+        assert!(
+            topic_select
+                .sql
+                .contains(r#""coaching_session_topics"."deleted_at" IS NULL"#),
+            "batch_load_topics must exclude soft-deleted rows; SQL was: {}",
+            topic_select.sql
+        );
     }
 }

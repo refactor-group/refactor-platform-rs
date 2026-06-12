@@ -32,6 +32,9 @@ mod m20260514_000000_add_password_reset_attempts;
 mod m20260515_000000_add_duration_minutes_to_coaching_sessions;
 mod m20260515_000001_add_default_coaching_session_duration_minutes_to_users;
 mod m20260607_000001_create_coaching_session_topics;
+mod m20260607_000002_add_topic_priority_status;
+mod m20260610_000000_add_topic_undo_snapshot;
+mod m20260611_000000_add_topic_deleted_at;
 
 pub struct Migrator;
 
@@ -73,6 +76,9 @@ impl MigratorTrait for Migrator {
                 m20260515_000001_add_default_coaching_session_duration_minutes_to_users::Migration,
             ),
             Box::new(m20260607_000001_create_coaching_session_topics::Migration),
+            Box::new(m20260607_000002_add_topic_priority_status::Migration),
+            Box::new(m20260610_000000_add_topic_undo_snapshot::Migration),
+            Box::new(m20260611_000000_add_topic_deleted_at::Migration),
         ]
     }
 }
