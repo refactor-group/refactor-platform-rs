@@ -81,22 +81,10 @@ pub async fn find_including_deleted_by_id(
 
 pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Model, Error> {
     let topic = find_by_id(db, id).await?;
-    let active = ActiveModel {
-        id: Unchanged(topic.id),
-        coaching_session_id: Unchanged(topic.coaching_session_id),
-        user_id: Unchanged(topic.user_id),
-        body: Set(body),
-        display_order: Unchanged(topic.display_order),
-        priority: Unchanged(topic.priority),
-        status: Unchanged(topic.status),
-        moved_from_session_id: Unchanged(topic.moved_from_session_id),
-        // A body edit is a deliberate re-commit, so it settles the undo window even on a
-        // deferred/moved topic: a subsequent undo then returns 422 rather than reverting the edit.
-        undo_snapshot: Set(None),
-        deleted_at: Unchanged(topic.deleted_at),
-        created_at: Unchanged(topic.created_at),
-        updated_at: Set(chrono::Utc::now().into()),
-    };
+    let mut active: ActiveModel = topic.into();
+    active.body = Set(body);
+    active.undo_snapshot = Set(None);
+    active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
 

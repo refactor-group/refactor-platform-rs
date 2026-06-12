@@ -16,7 +16,10 @@ mod session_renewal_tests;
 #[path = "organization_user_access_tests.rs"]
 mod organization_user_access_tests;
 
-use axum::http::StatusCode;
+use axum::{
+    extract::{FromRequestParts, Path},
+    http::{request::Parts, StatusCode},
+};
 use domain::Id;
 use std::collections::HashMap;
 
@@ -33,4 +36,26 @@ pub(crate) fn parse_path_id(
         .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("Missing {key} in path")))?
         .parse::<Id>()
         .map_err(|_| (StatusCode::BAD_REQUEST, format!("Invalid {key}")))
+}
+
+/// Resolves the request's `Path` map then parses `key` as a UUID, mapping any
+/// failure to a 400. `Path` reads from request extensions, so the state is unused.
+pub(crate) async fn parse_path_id_from_parts(
+    parts: &mut Parts,
+    key: &str,
+) -> Result<Id, RejectionType> {
+    let Path(path_params) = Path::<HashMap<String, String>>::from_request_parts(parts, &())
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid path parameters".to_string(),
+            )
+        })?;
+    parse_path_id(&path_params, key)
+}
+
+/// The uniform 404 rejection: an inaccessible resource looks identical to a missing one.
+pub(crate) fn not_found() -> RejectionType {
+    (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
 }
