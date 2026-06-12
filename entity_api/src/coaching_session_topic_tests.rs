@@ -238,12 +238,10 @@ async fn defer_move_snapshots_and_reparents() {
         serde_json::Value::Null
     );
     assert_eq!(snapshot_json["deleted_at"], serde_json::Value::Null);
-    assert_eq!(
-        snapshot_json["updated_at"],
-        original
-            .updated_at
-            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
-    );
+    // Compare as instants: clock sub-microsecond precision is platform-dependent.
+    let snapshot_updated_at: chrono::DateTime<chrono::FixedOffset> =
+        serde_json::from_value(snapshot_json["updated_at"].clone()).unwrap();
+    assert_eq!(snapshot_updated_at, original.updated_at);
 }
 
 /// restore_from_snapshot writes the FULL captured prior row back (location, status, position,
