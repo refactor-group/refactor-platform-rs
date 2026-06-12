@@ -261,11 +261,13 @@ pub async fn update(
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
-    let update_map = params.into_update_map();
+    let mut update_map = params.into_update_map();
     // Validate `duration_minutes` if it appears in the patch. The
     // IntoUpdateMap pattern erased its type, so the entity_api boundary is
     // the right place to re-check (1..=480).
     coaching_session::validate_duration_in_update_map(&update_map, "duration_minutes")?;
+    coaching_session::normalize_title_in_update_map(&mut update_map);
+    coaching_session::validate_title_length_in_update_map(&update_map)?;
 
     let coaching_session = coaching_session::find_by_id(db, id).await?;
     debug!(
@@ -471,6 +473,7 @@ mod tests {
             collab_document_name: None,
             date: chrono::Local::now().naive_utc(),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider,
             created_at: now.into(),
@@ -734,6 +737,7 @@ mod tests {
             collab_document_name: Some("old-doc".to_string()),
             date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: Some("https://meet.google.com/existing-url".to_string()),
             provider: Some(Provider::Google),
             created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),

@@ -113,6 +113,16 @@ impl From<EntityApiError> for Error {
                     ),
                 };
             }
+            // Over-long text field → 422 `validation_error`, same path as
+            // `OutOfRange`. The variant carries the bound and the offending
+            // length as context for the message.
+            EntityApiErrorKind::TitleTooLong { max, actual } => {
+                let message = format!("title must be at most {max} characters (got {actual})");
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
             EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,

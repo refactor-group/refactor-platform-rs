@@ -275,6 +275,7 @@ mod tests {
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             hydrated_at: None,

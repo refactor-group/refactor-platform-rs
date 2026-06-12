@@ -250,6 +250,7 @@ mod integration_tests {
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),

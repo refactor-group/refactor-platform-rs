@@ -49,6 +49,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_controller::create,
             coaching_session_controller::create_recurring,
             coaching_session_controller::update,
+            coaching_session_controller::update_title,
             coaching_session_controller::delete,
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
@@ -312,6 +313,14 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                     app_state.clone(),
                     protect::coaching_sessions::update,
                 )),
+        )
+        .merge(
+            // PATCH /coaching_sessions/:id/title — either participant (authz via the
+            // CoachingSessionAccess extractor); the coach-only PUT keeps the scheduling fields.
+            Router::new().route(
+                "/coaching_sessions/:id/title",
+                patch(coaching_session_controller::update_title),
+            ),
         )
         .merge(
             // DELETE /coaching_sessions
