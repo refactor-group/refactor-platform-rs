@@ -195,11 +195,15 @@ Note on Phase 1 merging standalone: the core builder has no consumers until Phas
 `#[cfg_attr(not(test), allow(dead_code))]` (or equivalent) until Phase 4 wires it in. Its tests prove
 it works, so it's a safe, reviewable merge on its own.
 
-### Phase 0 — `VTIMEZONE` splice spike (BLOCKING, throwaway) — mechanism ✅, human import test ⏳
+### Phase 0 — `VTIMEZONE` splice spike (BLOCKING, throwaway) — Apple+Google ✅, Outlook deferred to pre-Phase-4
 Status: spike built + overseer-verified (commit `6ab4f587`); confirmed mechanism recorded under the
 `VTIMEZONE decision` section above. Emitted `.ics` reproducible via `cargo run -p domain --example
-ics_spike` → `target/ics-spike/invite.ics`. **Awaiting Jim's Google + Apple + Outlook-desktop import
-go/no-go before any Phase 1+ production code merges.**
+ics_spike` → `target/ics-spike/invite.ics`.
+Human import test (2026-06-14): **Apple Calendar and Google Calendar PASS** — event anchored to 15:00
+EDT rendered correctly as 14:00 in a US Central (CDT) device on both clients (DST-aware TZID anchoring
+confirmed; Apple even annotated "(15:00 EDT)"). **Outlook desktop NOT tested (no access).** Decision:
+proceed to Phases 1-2 (non-user-facing, standalone-mergeable); **Outlook verification is a required gate
+before Phase 4 merges** (first phase where an `.ics` reaches a real inbox).
 
 - Scratch branch: add `icalendar = { version = "0.17", features = ["recurrence", "chrono-tz"] }` and `vtimezones-rs = "0.3"` to `domain/Cargo.toml`.
 - Prototype the splice: serialize an `icalendar::Calendar`, inject `VTIMEZONES["America/New_York"]` after `PRODID`/`VERSION`.
