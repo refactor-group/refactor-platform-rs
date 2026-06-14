@@ -129,9 +129,24 @@ is GPL-3.0-or-later — fully compatible. It exposes `VTIMEZONES: phf::Map<IANA 
 value is a complete, build-time-generated `VTIMEZONE` block (full `RRULE`-based DST rules; bundled TZDB
 2025b). More correct and far less code than deriving transitions from `chrono-tz`.
 
-**Integration friction (the real Phase 0 risk):** `vtimezones-rs` returns a raw string and `icalendar`
-has no API to inject a foreign component, so the builder serializes the `Calendar` and splices the
-`VTIMEZONE` string in after `PRODID`/`VERSION`.
+**Integration friction (the real Phase 0 risk):** `icalendar` has no API to inject a foreign
+component, so the builder serializes the `Calendar` and splices the `VTIMEZONE` string in before the
+first `BEGIN:VEVENT` (which places it after the `VERSION`/`PRODID`/`METHOD` header).
+
+**Phase 0 confirmed mechanism (resolved, commit `6ab4f587`, throwaway spike `domain/examples/ics_spike.rs`):**
+Resolved crate versions `icalendar 0.17.11` + `vtimezones-rs 0.3.1`. Mechanical splice verified to emit
+a single, correctly nested, CRLF-clean `VCALENDAR` with TZID-anchored `DTSTART`/`DTEND` (human
+calendar-import test still pending). Two facts the real Phase 1 builder must honor:
+- **TZID anchoring:** `icalendar 0.17` does NOT implement `From<DateTime<Tz>>`. Build a zoned value via
+  `CalendarDateTime::from((naive_local, tz))` (the `(NaiveDateTime, Tz)` tuple impl, gated on the
+  `chrono-tz` feature). This yields `CalendarDateTime::WithTimezone`, which serializes as
+  `DTSTART;TZID=America/New_York:20260915T150000` (local wall time, no `Z`, not floating).
+- **`vtimezones-rs` value is NOT a bare `VTIMEZONE` block (plan was wrong here):** in 0.3.1,
+  `VTIMEZONES.get("America/New_York")` returns a value wrapped in a full `BEGIN:VCALENDAR … END:VCALENDAR`
+  envelope. Splicing it verbatim produces a malformed file (a stray `END:VCALENDAR` before the `VEVENT`).
+  The builder MUST slice out the inner `BEGIN:VTIMEZONE..END:VTIMEZONE` span (and normalize it to CRLF)
+  before splicing. The spike's `extract_vtimezone` + `splice_vtimezone` helpers are the reference impl to
+  port into `ical.rs`.
 
 **Edge case:** a `users.timezone` missing from the map — define the fallback (skip-attachment-and-log,
 or UTC `Z` encoding for that send). See Open Questions.
@@ -180,7 +195,12 @@ Note on Phase 1 merging standalone: the core builder has no consumers until Phas
 `#[cfg_attr(not(test), allow(dead_code))]` (or equivalent) until Phase 4 wires it in. Its tests prove
 it works, so it's a safe, reviewable merge on its own.
 
-### Phase 0 — `VTIMEZONE` splice spike (BLOCKING, throwaway)
+### Phase 0 — `VTIMEZONE` splice spike (BLOCKING, throwaway) — mechanism ✅, human import test ⏳
+Status: spike built + overseer-verified (commit `6ab4f587`); confirmed mechanism recorded under the
+`VTIMEZONE decision` section above. Emitted `.ics` reproducible via `cargo run -p domain --example
+ics_spike` → `target/ics-spike/invite.ics`. **Awaiting Jim's Google + Apple + Outlook-desktop import
+go/no-go before any Phase 1+ production code merges.**
+
 - Scratch branch: add `icalendar = { version = "0.17", features = ["recurrence", "chrono-tz"] }` and `vtimezones-rs = "0.3"` to `domain/Cargo.toml`.
 - Prototype the splice: serialize an `icalendar::Calendar`, inject `VTIMEZONES["America/New_York"]` after `PRODID`/`VERSION`.
 - **Acceptance:** the emitted `VCALENDAR` (TZID-anchored `VEVENT` + spliced `VTIMEZONE`) imports cleanly into Google + Apple + **Outlook desktop** at correct local time. No production code merges until green. Record the confirmed splice mechanism in this doc.
