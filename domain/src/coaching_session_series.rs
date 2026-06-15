@@ -599,6 +599,64 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn delete_swallows_tiptap_cleanup_failure() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        // One future session carrying a collab doc → cleanup is attempted.
+        let future_session = coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
+            collab_document_name: Some("doc-to-clean-up".to_string()),
+            date: start() + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // find_future_sessions_by_series_id → 1 future row (with a doc)
+            .append_query_results(vec![vec![future_session.clone()]])
+            // BEGIN
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // acquire_advisory_lock × 1
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // bulk_delete_by_ids → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // coaching_session_series::delete → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // COMMIT
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        // Tiptap is unreachable, so cleanup fails internally — but the call
+        // returns Ok, proving the failure is swallowed rather than propagated.
+        delete_with_future_sessions(&db, &test_config(), series_id).await?;
+        Ok(())
+    }
+
     fn test_config() -> Config {
         Config::from_args([
             "test",
