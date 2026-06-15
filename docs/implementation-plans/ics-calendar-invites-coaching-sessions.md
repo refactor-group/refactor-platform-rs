@@ -209,18 +209,28 @@ before Phase 4 merges** (first phase where an `.ics` reaches a real inbox).
 - Prototype the splice: serialize an `icalendar::Calendar`, inject `VTIMEZONES["America/New_York"]` after `PRODID`/`VERSION`.
 - **Acceptance:** the emitted `VCALENDAR` (TZID-anchored `VEVENT` + spliced `VTIMEZONE`) imports cleanly into Google + Apple + **Outlook desktop** at correct local time. No production code merges until green. Record the confirmed splice mechanism in this doc.
 
-### Phase 1 — CORE: reusable `.ics` builder (foundation)
+### Phase 1 — CORE: reusable `.ics` builder (foundation) — DONE ✅ (commit `22863616`, overseer-verified)
+Status: built + overseer-verified. `domain/src/gateway/ical.rs` + frozen tests in
+`domain/src/gateway/ical_tests.rs` (8 tests, all pass; clippy/fmt clean). Module dead-code-gated
+(`#[cfg_attr(not(test), allow(dead_code))]`) until Phase 4 wires it in. Decisions locked this phase:
+(1) `IcsInvite` gained an explicit `dtstamp: NaiveDateTime` field so `build` stays pure/clock-free;
+(2) the composer (`compose_description` + `DescriptionParts`/`OpenAction`) takes PLAIN data
+(`title: Option<&str>`, `topics: &[String]`, `goal_titles: &[String]`, `open_actions`), NOT entity
+models, because `coaching_sessions.title` and a topics entity do not exist yet on the #356 branch (the
+Phase 4 caller extracts/passes the data); (3) RRULE mirrors the series materializer (Biweekly →
+`FREQ=WEEKLY;INTERVAL=2`, effective interval = base × `recurrence.interval`); (4) builder output is
+RFC-5545 line-folded (tests unfold before asserting logical content).
 - `domain/src/gateway/ical.rs`: `IcsInvite<'a>` (organizer/attendee as `&users::Model`), `Method`, `EventStatus`, `build()`, and the pure description-composer fn. Add the two crates (lock-in from Phase 0).
 - Implement single vs. recurring (`RRULE`), METHOD/STATUS, TZID anchoring + `VTIMEZONE` splice, UID/SEQUENCE pass-through, and the **UTC fallback** when the coach's zone is absent from the `VTIMEZONES` map (emit `DTSTART`/`DTEND` as UTC `Z` with no `VTIMEZONE`/TZID; log a warning).
 - Derive participant `CN` from `display_name` else `first_name last_name`, and `mailto:` from `email`.
 - Frozen-test discipline: tests in `domain/src/gateway/ical_tests.rs`, wired via `#[cfg(test)] #[path = "ical_tests.rs"] mod tests;`.
 - **Acceptance (the six shapes as input permutations):**
-  - [ ] `VTIMEZONE` present with TZID == coach zone for a known zone; UID/SEQUENCE/METHOD/STATUS correct per shape.
-  - [ ] An unknown coach zone falls back to UTC `Z` encoding with no `VTIMEZONE` and logs a warning.
-  - [ ] `RRULE` shape correct per `Frequency` (incl. `Biweekly` → `FREQ=WEEKLY;INTERVAL=2`).
-  - [ ] Single-session `DESCRIPTION` includes title/topics/goals/actions sections, each omitted when empty.
-  - [ ] Series `DESCRIPTION` includes only the in-app link + first-session goals; omits title/topics/actions.
-  - [ ] CANCEL shape emits `METHOD:CANCEL` + `STATUS:CANCELLED`.
+  - [x] `VTIMEZONE` present with TZID == coach zone for a known zone; UID/SEQUENCE/METHOD/STATUS correct per shape.
+  - [x] An unknown coach zone (and UTC) falls back to UTC `Z` encoding with no `VTIMEZONE`; warns when a non-UTC zone is absent.
+  - [x] `RRULE` shape correct per `Frequency` (incl. `Biweekly` → `FREQ=WEEKLY;INTERVAL=2`).
+  - [x] Single-session `DESCRIPTION` includes title/topics/goals/actions sections, each omitted when empty.
+  - [x] Series `DESCRIPTION` includes only the in-app link + first-session goals; omits title/topics/actions.
+  - [x] CANCEL shape emits `METHOD:CANCEL` + `STATUS:CANCELLED`.
 
 ### Phase 2 — Resend attachment plumbing
 - `domain/src/gateway/resend.rs`: add `Attachment { filename, content_type, content }` (base64-inline) and `attachments: Option<Vec<Attachment>>` on `SendEmailRequest` (`skip_serializing_if = "Option::is_none"`).
