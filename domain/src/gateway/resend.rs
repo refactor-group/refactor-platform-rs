@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use email_address::EmailAddress;
 use log::*;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::gateway::ical::Method;
 
 /// Path appended to the configured base URL when sending emails.
 const SEND_EMAIL_PATH: &str = "/emails";
@@ -150,6 +153,16 @@ pub struct SendEmailRequest {
     pub subject: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template: Option<TemplateRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
+}
+
+/// A base64-inline email attachment for the Resend payload.
+#[derive(Debug, Serialize, Eq, PartialEq)]
+pub struct Attachment {
+    pub filename: String,
+    pub content_type: String,
+    pub content: String,
 }
 
 /// Builder for constructing SendEmailRequest with fluent API
@@ -158,6 +171,7 @@ pub struct SendEmailRequestBuilder {
     to: Vec<EmailRecipient>,
     template_id: Option<String>,
     variables: HashMap<String, serde_json::Value>,
+    attachments: Vec<Attachment>,
 }
 
 /// Response from Resend's `POST /emails` endpoint.
@@ -179,6 +193,7 @@ impl SendEmailRequestBuilder {
             to: Vec::new(),
             template_id: None,
             variables: HashMap::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -228,6 +243,23 @@ impl SendEmailRequestBuilder {
         self
     }
 
+    /// Attach an .ics calendar invite (base64-inline). filename is always
+    /// invite.ics; the content_type carries the iCal METHOD so clients treat
+    /// it as an invite/cancellation.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn add_ics_attachment(mut self, ics_body: &str, method: &Method) -> Self {
+        let m = match method {
+            Method::Request => "REQUEST",
+            Method::Cancel => "CANCEL",
+        };
+        self.attachments.push(Attachment {
+            filename: "invite.ics".to_string(),
+            content_type: format!("text/calendar; method={m}; charset=UTF-8"),
+            content: STANDARD.encode(ics_body.as_bytes()),
+        });
+        self
+    }
+
     /// Build the SendEmailRequest with validation.
     pub async fn build(self) -> Result<SendEmailRequest, Error> {
         let from = self.from.ok_or_else(|| Error {
@@ -259,11 +291,18 @@ impl SendEmailRequestBuilder {
             None => None,
         };
 
+        let attachments = if self.attachments.is_empty() {
+            None
+        } else {
+            Some(self.attachments)
+        };
+
         Ok(SendEmailRequest {
             from,
             to: self.to,
             subject: None,
             template,
+            attachments,
         })
     }
 }
@@ -610,6 +649,65 @@ mod tests {
         assert!(
             format!("{err:?}").contains("Invalid email address"),
             "expected an invalid-email error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ics_attachment_request_serializes_base64_and_content_type() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Test Recipient")
+            .template_id("t")
+            .add_ics_attachment("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", &Method::Request)
+            .build()
+            .await
+            .unwrap();
+
+        let actual: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(actual["attachments"][0]["filename"], "invite.ics");
+        assert_eq!(
+            actual["attachments"][0]["content_type"],
+            "text/calendar; method=REQUEST; charset=UTF-8"
+        );
+        let expected_content = STANDARD.encode("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".as_bytes());
+        assert_eq!(actual["attachments"][0]["content"], expected_content);
+    }
+
+    #[tokio::test]
+    async fn test_ics_attachment_cancel_method_in_content_type() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Test Recipient")
+            .template_id("t")
+            .add_ics_attachment("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", &Method::Cancel)
+            .build()
+            .await
+            .unwrap();
+
+        let actual: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(
+            actual["attachments"][0]["content_type"],
+            "text/calendar; method=CANCEL; charset=UTF-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_without_attachment_omits_key() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Test Recipient")
+            .template_id("t")
+            .build()
+            .await
+            .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert!(
+            json.get("attachments").is_none(),
+            "attachments must be omitted from JSON when none set, got: {json}"
         );
     }
 
