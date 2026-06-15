@@ -36,8 +36,8 @@ mod m20260607_000001_create_coaching_session_topics;
 mod m20260607_000002_add_topic_priority_status;
 mod m20260610_000000_add_topic_undo_snapshot;
 mod m20260610_000000_create_coaching_session_views;
-mod m20260611_000000_add_topic_deleted_at;
 mod m20260611_000000_add_coaching_session_series;
+mod m20260611_000000_add_topic_deleted_at;
 
 pub struct Migrator;
 

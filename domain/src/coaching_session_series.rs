@@ -272,10 +272,9 @@ mod tests {
     }
 
     fn start() -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 6, 15)
-            .unwrap()
-            .and_hms_opt(10, 0, 0)
-            .unwrap()
+        // Relative to now so `reschedule`'s past-guard (and date rollover)
+        // can't make this flaky; a fixed calendar date eventually goes stale.
+        (chrono::Utc::now() + chrono::Duration::days(7)).naive_utc()
     }
 
     #[tokio::test]
