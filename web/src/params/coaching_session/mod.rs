@@ -3,7 +3,7 @@ pub(crate) mod goal;
 use chrono::{NaiveDate, NaiveDateTime};
 use domain::provider::Provider;
 use sea_orm::{ActiveEnum, Order, Value};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use utoipa::{IntoParams, ToSchema};
 
 use super::sort::SortOrder;
@@ -62,6 +62,30 @@ pub(crate) struct UpdateParams {
     pub(crate) duration_minutes: Option<i16>,
     pub(crate) meeting_url: Option<String>,
     pub(crate) provider: Option<Provider>,
+    /// Absent -> leave unchanged. Explicit null -> clear. Value -> set.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>)]
+    pub(crate) title: Option<Option<String>>,
+}
+
+/// Distinguish an omitted field (`None`) from an explicit JSON null
+/// (`Some(None)`) so updates can clear the column to NULL.
+fn deserialize_clearable<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
+}
+
+/// Insert the clearable `title` entry when present: a value sets it, an explicit
+/// null clears it to NULL, an absent field leaves the column untouched.
+fn insert_title_update(update_map: &mut UpdateMap, title: Option<Option<String>>) {
+    if let Some(title) = title {
+        update_map.insert(
+            "title".to_string(),
+            Some(Value::String(title.map(Box::new))),
+        );
+    }
 }
 
 impl IntoUpdateMap for UpdateParams {
@@ -89,6 +113,25 @@ impl IntoUpdateMap for UpdateParams {
                 Some(Value::String(Some(Box::new(provider.to_value())))),
             );
         }
+        insert_title_update(&mut update_map, self.title);
+        update_map
+    }
+}
+
+/// Body for `PATCH /coaching_sessions/{id}/title`. Title-only so either participant can edit it,
+/// while scheduling fields (date, duration, meeting_url, provider) stay on the coach-only PUT.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct TitleUpdateParams {
+    /// Absent -> leave unchanged. Explicit null -> clear. Value -> set.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>)]
+    pub(crate) title: Option<Option<String>>,
+}
+
+impl IntoUpdateMap for TitleUpdateParams {
+    fn into_update_map(self) -> UpdateMap {
+        let mut update_map = UpdateMap::new();
+        insert_title_update(&mut update_map, self.title);
         update_map
     }
 }
@@ -106,6 +149,8 @@ pub(crate) struct CreateParams {
     pub(crate) duration_minutes: Option<i16>,
     pub(crate) meeting_url: Option<String>,
     pub(crate) provider: Option<Provider>,
+    /// Optional human-authored title. Omit or null to leave unset.
+    pub(crate) title: Option<String>,
 }
 
 impl CreateParams {
@@ -124,6 +169,7 @@ impl CreateParams {
             collab_document_name: None,
             date: self.date,
             duration_minutes: domain::duration::Duration::default_minutes(),
+            title: self.title,
             meeting_url: self.meeting_url,
             provider: self.provider,
             created_at: now.into(),
@@ -153,3 +199,7 @@ impl QuerySort<coaching_sessions::Column> for IndexParams {
 impl WithSortDefaults for IndexParams {
     type SortField = SortField;
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

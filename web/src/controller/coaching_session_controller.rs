@@ -3,7 +3,9 @@ use crate::extractors::coaching_session_access::CoachingSessionAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::coaching_session::{CreateParams, IndexParams, SortField, UpdateParams};
+use crate::params::coaching_session::{
+    CreateParams, IndexParams, SortField, TitleUpdateParams, UpdateParams,
+};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
@@ -50,6 +52,37 @@ pub async fn read(
         StatusCode::OK.into(),
         coaching_session,
     )))
+}
+
+/// Mark a coaching session viewed by the caller, returning the prior marker.
+///
+/// Upserts the authenticated caller's view marker for this session to now() and returns the
+/// value it had immediately before, so the caller can compute what is new since their last view.
+/// Idempotent. Participant-only (same access as reading the session).
+#[utoipa::path(
+    post,
+    path = "/coaching_sessions/{coaching_session_id}/view",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+    ),
+    responses(
+        (status = 200, description = "Marker advanced; prior value returned", body = domain::coaching_session_view::MarkViewed),
+        (status = 401, description = "Unauthorized or not a participant"),
+        (status = 404, description = "Coaching session not found"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn view(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionAccess(session): CoachingSessionAccess,
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    let result =
+        domain::coaching_session_view::mark_viewed(app_state.db_conn_ref(), session.id, user.id)
+            .await?;
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), result)))
 }
 
 #[utoipa::path(
@@ -183,6 +216,40 @@ pub async fn update(
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
 
+/// PATCH update only the title of a Coaching Session.
+///
+/// Either participant (coach or coachee) may edit the title; the scheduling fields stay on the
+/// coach-only `PUT /coaching_sessions/{id}`. Authorization is the `CoachingSessionAccess`
+/// extractor (participant-gated). Returns the updated session.
+#[utoipa::path(
+    patch,
+    path = "/coaching_sessions/{id}/title",
+    params(
+        ApiVersion,
+        ("id" = Id, Path, description = "Coaching Session ID to Update")
+    ),
+    request_body = TitleUpdateParams,
+    responses(
+        (status = 200, description = "Successfully updated the title", body = coaching_sessions::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 422, description = "Title exceeds the maximum length"),
+        (status = 503, description = "Service temporarily unavailable"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn update_title(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionAccess(coaching_session): CoachingSessionAccess,
+    State(app_state): State<AppState>,
+    Json(params): Json<TitleUpdateParams>,
+) -> Result<impl IntoResponse, Error> {
+    let updated =
+        CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session.id, params).await?;
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
+}
+
 /// DELETE a Coaching Session
 #[utoipa::path(
     delete,
@@ -211,4 +278,102 @@ pub async fn delete(
     .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use chrono::Utc;
+    use sea_orm::{DatabaseBackend, MockDatabase};
+    use service::config::Config;
+    use std::sync::Arc;
+
+    fn test_app_state(db: Arc<sea_orm::DatabaseConnection>) -> AppState {
+        AppState::new(
+            service::AppState::new(Config::default(), &db),
+            Arc::new(sse::Manager::default()),
+            domain::events::EventPublisher::default(),
+            None,
+            None,
+        )
+    }
+
+    fn test_session(id: Id, relationship_id: Id) -> domain::coaching_sessions::Model {
+        let now = Utc::now();
+        domain::coaching_sessions::Model {
+            id,
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            collab_document_name: None,
+            date: now.naive_utc(),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        }
+    }
+
+    // The participant gate lives in CoachingSessionAccess (tested there); here we assert the
+    // handler wires a participant-authorized request through to a title update and returns the
+    // updated session. Constructing the extractor directly stands in for a passed gate.
+    #[tokio::test]
+    async fn update_title_updates_and_returns_session() {
+        let session = test_session(Id::new_v4(), Id::new_v4());
+        let updated = domain::coaching_sessions::Model {
+            title: Some("New title".to_string()),
+            ..session.clone()
+        };
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![session.clone()]]) // domain update: find_by_id
+                .append_query_results(vec![vec![updated.clone()]]) // UPDATE ... RETURNING
+                .into_connection(),
+        );
+
+        let result = update_title(
+            CompareApiVersion(HeaderValue::from_static("1.0.0")),
+            CoachingSessionAccess(session.clone()),
+            State(test_app_state(db)),
+            Json(TitleUpdateParams {
+                title: Some(Some("New title".to_string())),
+            }),
+        )
+        .await;
+
+        result.expect("participant title update should succeed");
+    }
+
+    // Title-only map: a value sets it, explicit null clears it, absence leaves it untouched.
+    #[tokio::test]
+    async fn title_update_params_build_a_title_only_map() {
+        use domain::IntoUpdateMap;
+        use sea_orm::Value;
+
+        let set = TitleUpdateParams {
+            title: Some(Some("Hi".to_string())),
+        }
+        .into_update_map();
+        assert!(matches!(
+            set.get_value("title"),
+            Some(Value::String(Some(_)))
+        ));
+
+        let clear = TitleUpdateParams { title: Some(None) }.into_update_map();
+        assert!(matches!(
+            clear.get_value("title"),
+            Some(Value::String(None))
+        ));
+
+        let absent = TitleUpdateParams { title: None }.into_update_map();
+        assert!(
+            absent.get_value("title").is_none(),
+            "absent title is a no-op"
+        );
+    }
 }

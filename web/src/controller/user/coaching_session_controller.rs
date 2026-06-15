@@ -36,7 +36,7 @@ use utoipa::ToSchema;
         ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive). Evaluated in `tz` if supplied; otherwise UTC."),
         ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive at calendar-day precision). Evaluated in `tz` if supplied; otherwise UTC."),
         ("tz" = Option<String>, Query, description = "Optional IANA timezone identifier (e.g. 'America/Los_Angeles'). Interprets `from_date`/`to_date` as local-day boundaries in that zone. Invalid value → 400 invalid_timezone."),
-        ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements'. Example: 'relationship,organization,goal'"),
+        ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements', 'topics'. Example: 'relationship,organization,goal'"),
         ("sort_by" = Option<crate::params::coaching_session::SortField>, Query, description = "Sort by field. Valid values: 'date', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "date"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
@@ -86,6 +86,7 @@ pub async fn index(
         organization: params.include.contains(&IncludeParam::Organization),
         goal: params.include.contains(&IncludeParam::Goal),
         agreements: params.include.contains(&IncludeParam::Agreements),
+        topics: params.include.contains(&IncludeParam::Topics),
     };
     let sort_column = params.get_sort_column();
     let sort_order = params.get_sort_order();

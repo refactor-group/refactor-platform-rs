@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{
     middleware::{from_fn, from_fn_with_state},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::services::ServeDir;
@@ -47,8 +47,10 @@ use utoipa_rapidoc::RapiDoc;
             agreement_controller::delete,
             coaching_session_controller::index,
             coaching_session_controller::read,
+            coaching_session_controller::view,
             coaching_session_controller::create,
             coaching_session_controller::update,
+            coaching_session_controller::update_title,
             coaching_session_controller::delete,
             coaching_session_series_controller::create,
             coaching_session_series_controller::read,
@@ -58,6 +60,14 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
+            coaching_session::topic_controller::index,
+            coaching_session::topic_controller::create,
+            coaching_session::topic_controller::update,
+            coaching_session::topic_controller::reorder,
+            coaching_session::topic_controller::delete,
+            coaching_session::topic_controller::set_rating,
+            coaching_session::topic_controller::set_status,
+            coaching_session::topic_controller::undo,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
@@ -123,6 +133,11 @@ use utoipa_rapidoc::RapiDoc;
                 crate::controller::action_controller::ActionRequest,
                 crate::controller::coaching_session::meeting_recording_controller::StartRecordingParams,
                 crate::controller::coaching_session_series_controller::SeriesWithSessions,
+                crate::controller::coaching_session::topic_controller::CreateParams,
+                crate::controller::coaching_session::topic_controller::UpdateParams,
+                crate::controller::coaching_session::topic_controller::ReorderParams,
+                crate::controller::coaching_session::topic_controller::RatingParams,
+                crate::controller::coaching_session::topic_controller::StatusParams,
                 crate::controller::oauth_controller::ConnectionResponse,
                 crate::controller::password_reset_controller::ValidateParams,
                 crate::controller::password_reset_controller::ValidateResponse,
@@ -147,6 +162,8 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_relationships::Model,
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
+                domain::coaching_session_topics::Model,
+                domain::coaching_session_view::MarkViewed,
                 domain::coaching_sessions::Model,
                 domain::coaching_sessions_goals::Model,
                 domain::goals::Model,
@@ -200,6 +217,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(goal_routes(app_state.clone()))
         .merge(coaching_session_goal_routes(app_state.clone()))
         .merge(coaching_session_meeting_recording_routes(app_state.clone()))
+        .merge(coaching_session_topic_routes(app_state.clone()))
         .merge(coaching_session_transcription_routes(app_state.clone()))
         .merge(coaching_session_transcription_segment_routes(
             app_state.clone(),
@@ -291,6 +309,13 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             ),
         )
         .merge(
+            // POST /coaching_sessions/:coaching_session_id/view
+            Router::new().route(
+                "/coaching_sessions/:coaching_session_id/view",
+                post(coaching_session_controller::view),
+            ),
+        )
+        .merge(
             // PUT /coaching_sessions/:id
             Router::new()
                 .route(
@@ -301,6 +326,14 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                     app_state.clone(),
                     protect::coaching_sessions::update,
                 )),
+        )
+        .merge(
+            // PATCH /coaching_sessions/:id/title — either participant (authz via the
+            // CoachingSessionAccess extractor); the coach-only PUT keeps the scheduling fields.
+            Router::new().route(
+                "/coaching_sessions/:id/title",
+                patch(coaching_session_controller::update_title),
+            ),
         )
         .merge(
             // DELETE /coaching_sessions
@@ -784,6 +817,38 @@ fn coaching_session_meeting_recording_routes(app_state: AppState) -> Router {
             get(coaching_session::meeting_recording_controller::read)
                 .post(coaching_session::meeting_recording_controller::create)
                 .delete(coaching_session::meeting_recording_controller::delete),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_topic_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics",
+            get(coaching_session::topic_controller::index)
+                .post(coaching_session::topic_controller::create),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/reorder",
+            patch(coaching_session::topic_controller::reorder),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id",
+            put(coaching_session::topic_controller::update)
+                .delete(coaching_session::topic_controller::delete),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id/rating",
+            patch(coaching_session::topic_controller::set_rating),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id/status",
+            patch(coaching_session::topic_controller::set_status),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id/undo",
+            post(coaching_session::topic_controller::undo),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

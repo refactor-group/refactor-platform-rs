@@ -808,6 +808,7 @@ mod tests {
                 .and_hms_opt(15, 0, 0)
                 .unwrap(),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: chrono::Utc::now().fixed_offset(),
@@ -1495,6 +1496,7 @@ mod tests {
             collab_document_name: None,
             date: date.and_hms_opt(15, 0, 0).unwrap(),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: chrono::Utc::now().fixed_offset(),

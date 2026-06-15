@@ -82,6 +82,10 @@ pub enum Event {
     #[serde(rename = "meeting_recording_updated")]
     MeetingRecordingUpdated { coaching_session_id: String },
 
+    // Topic events (session-scoped, coarse: refetch on receipt)
+    #[serde(rename = "topics_changed")]
+    TopicsChanged { coaching_session_id: String },
+
     // Transcription events (session-scoped)
     #[serde(rename = "transcription_updated")]
     TranscriptionUpdated { coaching_session_id: String },
@@ -103,6 +107,7 @@ impl EventType for Event {
             Event::CoachingSessionGoalDeleted { .. } => "coaching_session_goal_deleted",
             Event::ForceLogout { .. } => "force_logout",
             Event::MeetingRecordingUpdated { .. } => "meeting_recording_updated",
+            Event::TopicsChanged { .. } => "topics_changed",
             Event::TranscriptionUpdated { .. } => "transcription_updated",
         }
     }
