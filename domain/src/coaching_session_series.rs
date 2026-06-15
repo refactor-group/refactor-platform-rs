@@ -125,9 +125,20 @@ pub async fn reschedule(
     }
 
     let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence)?;
-    let resolved_duration =
-        entity_api::coaching_session::resolve_duration(db, coach_id, new_requested_duration)
-            .await?;
+
+    // Resolve the duration for the re-materialized sessions. A reschedule moves
+    // the meetings; it must not silently restretch them. So when the caller
+    // omits a duration, reuse the value persisted on the existing series rule
+    // rather than re-deriving the coach's *current* default (which may have
+    // changed since the series was created). An explicit request still wins.
+    let resolved_duration = match new_requested_duration {
+        Some(duration) => duration,
+        None => {
+            let existing = coaching_session_series::find_by_id(db, series_id).await?;
+            let existing_rule: SeriesRule = serde_json::from_value(existing.rule)?;
+            Duration::from_minutes_unchecked(existing_rule.duration_minutes)
+        }
+    };
 
     let new_rule = SeriesRule {
         start_at: new_start_at,
@@ -382,9 +393,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Happy-path reschedule over unhydrated future sessions:
-    /// validates inputs, deletes the old future rows, rewrites the rule,
-    /// and bulk-inserts the new schedule — all in one transaction. Tiptap
+    /// Happy-path reschedule over unhydrated future sessions, with the duration
+    /// omitted: validates inputs, reuses the duration persisted on the existing
+    /// series rule (no coach lookup), deletes the old future rows, rewrites the
+    /// rule, and bulk-inserts the new schedule — all in one transaction. Tiptap
     /// is never contacted because no future session has a collab doc.
     #[tokio::test]
     async fn reschedule_replaces_future_unhydrated_sessions() -> Result<(), Error> {
@@ -393,20 +405,17 @@ mod tests {
         let series_id = Id::new_v4();
         let now = chrono::Utc::now();
 
-        let coach = entity::users::Model {
-            id: coach_id,
-            email: "coach@example.com".into(),
-            first_name: "Coach".into(),
-            last_name: "One".into(),
-            display_name: None,
-            password: None,
-            github_username: None,
-            github_profile_url: None,
-            timezone: "UTC".into(),
-            default_coaching_session_duration_minutes: 60,
-            role: Default::default(),
-            roles: vec![],
-            invite_status: None,
+        // The series as it currently exists: its rule carries the duration the
+        // None-path reschedule must reuse instead of re-deriving a default.
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: relationship_id,
+            rule: serde_json::to_value(SeriesRule {
+                start_at: start(),
+                recurrence: weekly_rule_count(3),
+                duration_minutes: 60,
+            })?,
+            created_by_user_id: Id::new_v4(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -451,10 +460,8 @@ mod tests {
         ];
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // 1. resolve_duration → user::find_by_id with related user_roles
-            .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
-                vec![vec![(coach, None)]],
-            )
+            // 1. duration omitted → find_by_id on the series to read its stored rule
+            .append_query_results(vec![vec![existing_series.clone()]])
             // 2. find_future_sessions_by_series_id → 2 future rows
             .append_query_results(vec![future_sessions.clone()])
             // 3. BEGIN
