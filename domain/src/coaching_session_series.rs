@@ -169,27 +169,7 @@ pub async fn reschedule(
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    if !doc_names_to_cleanup.is_empty() {
-        match TiptapDocument::new(config).await {
-            Ok(tiptap) => {
-                for name in &doc_names_to_cleanup {
-                    if let Err(err) = tiptap.delete(name).await {
-                        warn!(
-                            "Tiptap cleanup failed for orphaned doc {name:?} after series \
-                             reschedule {series_id}: {err}"
-                        );
-                    }
-                }
-            }
-            Err(err) => {
-                warn!(
-                    "Could not construct Tiptap client to clean up {} orphaned doc(s) \
-                     after series reschedule {series_id}: {err}",
-                    doc_names_to_cleanup.len()
-                );
-            }
-        }
-    }
+    cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names_to_cleanup).await;
 
     Ok((updated_series, new_sessions))
 }
@@ -228,29 +208,39 @@ pub async fn delete_with_future_sessions(
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    if !doc_names_to_cleanup.is_empty() {
-        match TiptapDocument::new(config).await {
-            Ok(tiptap) => {
-                for name in &doc_names_to_cleanup {
-                    if let Err(err) = tiptap.delete(name).await {
-                        warn!(
-                            "Tiptap cleanup failed for orphaned doc {name:?} after series \
-                             delete {series_id}: {err}"
-                        );
-                    }
-                }
-            }
-            Err(err) => {
-                warn!(
-                    "Could not construct Tiptap client to clean up {} orphaned doc(s) \
-                     after series delete {series_id}: {err}",
-                    doc_names_to_cleanup.len()
-                );
-            }
-        }
-    }
+    cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
 
     Ok(())
+}
+
+async fn cleanup_orphaned_docs(
+    config: &Config,
+    series_id: Id,
+    operation: &str,
+    doc_names: &[String],
+) {
+    if doc_names.is_empty() {
+        return;
+    }
+    match TiptapDocument::new(config).await {
+        Ok(tiptap) => {
+            for name in doc_names {
+                if let Err(err) = tiptap.delete(name).await {
+                    warn!(
+                        "Tiptap cleanup failed for orphaned doc {name:?} after series \
+                         {operation} {series_id}: {err}"
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            warn!(
+                "Could not construct Tiptap client to clean up {} orphaned doc(s) \
+                 after series {operation} {series_id}: {err}",
+                doc_names.len()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
