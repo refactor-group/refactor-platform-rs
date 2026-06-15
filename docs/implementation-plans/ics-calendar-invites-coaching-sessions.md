@@ -232,12 +232,18 @@ RFC-5545 line-folded (tests unfold before asserting logical content).
   - [x] Series `DESCRIPTION` includes only the in-app link + first-session goals; omits title/topics/actions.
   - [x] CANCEL shape emits `METHOD:CANCEL` + `STATUS:CANCELLED`.
 
-### Phase 2 — Resend attachment plumbing
+### Phase 2 — Resend attachment plumbing — DONE ✅ (commit `ed23fdbd`, overseer-verified)
+Status: built + overseer-verified. `Attachment` + `attachments: Option<Vec<Attachment>>` (omit-when-none)
++ builder `add_ics_attachment(&str, &ical::Method)` (base64 via `base64 0.22` STANDARD engine). Resend
+JSON keys `filename`/`content`/`content_type` confirmed against Resend docs (snake_case, no rename). New
+method dead-code-gated (`#[cfg_attr(not(test), allow(dead_code))]`) until Phase 4. 19 resend tests pass
+(16 existing unchanged + 3 new); teeth-check confirmed the omit-when-none guard (removing
+`skip_serializing_if` breaks both the new test and the existing full-shape regression test). clippy/fmt clean.
 - `domain/src/gateway/resend.rs`: add `Attachment { filename, content_type, content }` (base64-inline) and `attachments: Option<Vec<Attachment>>` on `SendEmailRequest` (`skip_serializing_if = "Option::is_none"`).
 - Builder method `add_ics_attachment(ics_body, method)`: `filename = "invite.ics"`, `content_type = "text/calendar; method=REQUEST|CANCEL; charset=UTF-8"`, base64-encoded body.
 - **Acceptance:**
-  - [ ] `attachments` serializes with base64-encoded content and the correct `content_type` per METHOD.
-  - [ ] `attachments` is omitted from the payload when `None` (no regression to existing emails).
+  - [x] `attachments` serializes with base64-encoded content and the correct `content_type` per METHOD.
+  - [x] `attachments` is omitted from the payload when `None` (no regression to existing emails).
 
 ### Phase 3 — Data layer: sequence columns + open-actions query
 - Migration (after #356's series migration): add `ical_sequence INTEGER NOT NULL DEFAULT 0` to **both** `coaching_sessions` **and** `coaching_session_series` (singles use the session column for UID `<session_id>`; series use the series column for UID `<series_id>`). Update both entities (`ical_sequence: i32`).
