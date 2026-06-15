@@ -148,6 +148,7 @@ pub async fn index(
 )]
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     CoachingSessionSeriesCoachAccess(series): CoachingSessionSeriesCoachAccess,
     Json(params): Json<RescheduleParams>,
@@ -158,15 +159,13 @@ pub async fn update(
     );
 
     let db = app_state.db_conn_ref();
-    let relationship =
-        domain::coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
     let (updated_series, new_sessions) = CoachingSessionSeriesApi::reschedule(
         db,
         &app_state.config,
         series.id,
-        relationship.coach_id,
+        user.id,
         params.start_at,
         params.recurrence,
         requested_duration,
