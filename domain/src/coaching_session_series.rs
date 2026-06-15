@@ -8,7 +8,7 @@
 use crate::coaching_session;
 use crate::coaching_sessions;
 use crate::duration::Duration;
-use crate::error::Error;
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
 use chrono::NaiveDateTime;
@@ -36,11 +36,15 @@ pub struct SeriesRule {
 
 /// Create a series and materialize its sessions in a single transaction.
 ///
-/// 1. Expands and validates the recurrence rule.
-/// 2. Resolves the coach's effective duration via the defaulting cascade.
-/// 3. Inserts the series row with the resolved rule (including the resolved
+/// 1. Authorizes the caller: `acting_user_id` must be the coach on the target
+///    relationship (the relationship id arrives in the request body, so this
+///    coach-only gate lives here rather than in a `FromRequestParts` extractor
+///    like the path/query-keyed series routes).
+/// 2. Expands and validates the recurrence rule.
+/// 3. Resolves the coach's effective duration via the defaulting cascade.
+/// 4. Inserts the series row with the resolved rule (including the resolved
 ///    `duration_minutes`) serialized to JSONB.
-/// 4. Bulk-inserts the materialized sessions linked back to the series via
+/// 5. Bulk-inserts the materialized sessions linked back to the series via
 ///    `coaching_session_series_id`.
 ///
 /// Returns `(series, sessions)`. Tiptap docs, meeting URLs, and goal links
@@ -49,12 +53,23 @@ pub struct SeriesRule {
 pub async fn create_with_sessions(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
-    coach_id: Id,
-    created_by_user_id: Id,
+    acting_user_id: Id,
     start_at: NaiveDateTime,
     recurrence: Recurrence,
     requested_duration: Option<Duration>,
 ) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
+    let relationship =
+        entity_api::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
+    if relationship.coach_id != acting_user_id {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Unauthenticated,
+            )),
+        });
+    }
+    let coach_id = relationship.coach_id;
+
     let dates = coaching_session::expand_recurrence(start_at, &recurrence)?;
     let resolved_duration =
         entity_api::coaching_session::resolve_duration(db, coach_id, requested_duration).await?;
@@ -72,7 +87,7 @@ pub async fn create_with_sessions(
         id: Id::nil(),
         coaching_relationship_id,
         rule: rule_json,
-        created_by_user_id,
+        created_by_user_id: acting_user_id,
         created_at: chrono::Utc::now().into(),
         updated_at: chrono::Utc::now().into(),
     };
@@ -283,15 +298,25 @@ mod tests {
     ) -> Result<(), Error> {
         let relationship_id = Id::new_v4();
         let coach_id = Id::new_v4();
-        let created_by = Id::new_v4();
         let now = chrono::Utc::now();
         let rule = weekly_rule_count(3);
+
+        // The acting user is the coach on this relationship, so authz passes.
+        let relationship = entity::coaching_relationships::Model {
+            id: relationship_id,
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id: Id::new_v4(),
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
 
         let series = Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
             rule: serde_json::json!({}),
-            created_by_user_id: created_by,
+            created_by_user_id: coach_id,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -336,6 +361,9 @@ mod tests {
         ];
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // 1. authz → coaching_relationship::find_by_id
+            .append_query_results(vec![vec![relationship.clone()]])
+            // 2. resolve_duration → user::find_by_id with related user_roles
             .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
                 vec![vec![(coach, None)]],
             )
@@ -351,16 +379,8 @@ mod tests {
             }])
             .into_connection();
 
-        let (returned_series, returned_sessions) = create_with_sessions(
-            &db,
-            relationship_id,
-            coach_id,
-            created_by,
-            start(),
-            rule,
-            None,
-        )
-        .await?;
+        let (returned_series, returned_sessions) =
+            create_with_sessions(&db, relationship_id, coach_id, start(), rule, None).await?;
 
         assert_eq!(returned_series.id, series.id);
         assert_eq!(returned_sessions.len(), 3);
@@ -372,7 +392,22 @@ mod tests {
 
     #[tokio::test]
     async fn create_with_sessions_rejects_invalid_recurrence() {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let coach_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        // Authz must pass first, so the failure is attributable to the rule.
+        let relationship = entity::coaching_relationships::Model {
+            id: relationship_id,
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id: Id::new_v4(),
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship]])
+            .into_connection();
         let bad_rule = Recurrence {
             frequency: Frequency::Weekly,
             interval: 1,
@@ -382,9 +417,8 @@ mod tests {
         };
         let result = create_with_sessions(
             &db,
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
+            relationship_id,
+            coach_id,
             start(),
             bad_rule,
             Some(Duration::default()),

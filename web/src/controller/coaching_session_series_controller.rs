@@ -53,20 +53,11 @@ pub async fn create(
 
     let db = app_state.db_conn_ref();
 
-    // Inline coach-only AuthZ — body-bearing routes parse the body in the
-    // controller (matching the existing create_recurring pattern).
-    let relationship =
-        domain::coaching_relationship::find_by_id(db, params.coaching_relationship_id).await?;
-    if relationship.coach_id != user.id {
-        return Err(Error::Web(crate::error::WebErrorKind::Auth));
-    }
-
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
     let (series, sessions) = CoachingSessionSeriesApi::create_with_sessions(
         db,
         params.coaching_relationship_id,
-        relationship.coach_id,
         user.id,
         params.start_at,
         params.recurrence,
@@ -317,8 +308,19 @@ mod tests {
             .err()
             .expect("expected the handler to reject a non-coach caller");
         assert!(
-            matches!(err, Error::Web(crate::error::WebErrorKind::Auth)),
-            "expected Err(Web(Auth)), got {err:?}"
+            matches!(
+                err,
+                Error::Domain(ref e)
+                    if matches!(
+                        e.error_kind,
+                        domain::error::DomainErrorKind::Internal(
+                            domain::error::InternalErrorKind::Entity(
+                                domain::error::EntityErrorKind::Unauthenticated
+                            )
+                        )
+                    )
+            ),
+            "expected Err(Domain(Unauthenticated)), got {err:?}"
         );
     }
 }
