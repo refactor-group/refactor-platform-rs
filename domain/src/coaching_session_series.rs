@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use service::config::Config;
 
 pub use coaching_session::{Frequency, Recurrence, RecurrenceError};
-pub use entity::coaching_session_series::Model;
+pub use entity_api::coaching_session_series::Model;
 pub use entity_api::coaching_session_series::find_by_id;
 
 /// Typed shape of the JSONB `rule` column on `coaching_session_series`.
