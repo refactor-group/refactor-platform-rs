@@ -124,7 +124,7 @@ async fn resolve<S>(
 ) -> Result<
     (
         CoachingSessionSeriesApi::Model,
-        domain::coaching_relationships::Model,
+        coaching_relationships::Model,
         domain::users::Model,
     ),
     RejectionType,
