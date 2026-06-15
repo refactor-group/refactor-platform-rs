@@ -85,12 +85,15 @@ Table refactor_platform.coaching_sessions {
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'The last date and time fields were changed']
   hydrated_at timestamptz
+  duration_minutes int2 [not null, default: 60]
+  coaching_session_series_id uuid
 
   Indexes {
     (coaching_relationship_id, date) [name: "coaching_sessions_relationship_date", note: "Optimizes queries filtering by relationship and sorting by date"]
     date [name: "coaching_sessions_date", note: "Supports sorting by session date"]
     created_at [name: "coaching_sessions_created_at", note: "Supports sorting by creation time"]
     updated_at [name: "coaching_sessions_updated_at", note: "Supports sorting by update time"]
+    coaching_session_series_id [name: "coaching_sessions_series_idx"]
   }
 }
 
@@ -126,6 +129,19 @@ Table refactor_platform.coaching_sessions_goals {
   Indexes {
     (coaching_session_id, goal_id) [unique, name: "coaching_sessions_goals_session_goal_unique"]
     goal_id [name: "coaching_sessions_goals_goal_id_idx"]
+  }
+}
+
+Table refactor_platform.coaching_session_series {
+  id uuid [pk, not null, default: `gen_random_uuid()`]
+  coaching_relationship_id uuid [not null]
+  rule jsonb [not null]
+  created_by_user_id uuid [not null]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    coaching_relationship_id [name: "coaching_session_series_relationship_idx"]
   }
 }
 
@@ -326,6 +342,11 @@ Ref: refactor_platform.goals.created_in_session_id > refactor_platform.coaching_
 // coaching_sessions_goals relationships (many-to-many join table)
 Ref: refactor_platform.coaching_sessions_goals.coaching_session_id > refactor_platform.coaching_sessions.id
 Ref: refactor_platform.coaching_sessions_goals.goal_id > refactor_platform.goals.id
+
+// coaching_session_series relationships
+Ref: refactor_platform.coaching_session_series.coaching_relationship_id > refactor_platform.coaching_relationships.id [delete: cascade]
+Ref: refactor_platform.coaching_session_series.created_by_user_id > refactor_platform.users.id [delete: restrict]
+Ref: refactor_platform.coaching_sessions.coaching_session_series_id > refactor_platform.coaching_session_series.id [delete: set null]
 
 // notes relationships
 Ref: refactor_platform.notes.coaching_session_id > refactor_platform.coaching_sessions.id
