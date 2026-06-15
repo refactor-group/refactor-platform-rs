@@ -246,7 +246,7 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
         return Ok(0);
     }
     let result = Entity::delete_many()
-        .filter(Column::Id.is_in(ids.to_vec()))
+        .filter(Column::Id.is_in(ids.iter().copied()))
         .exec(db)
         .await?;
     Ok(result.rows_affected)
