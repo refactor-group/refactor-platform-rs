@@ -1,7 +1,7 @@
 use super::error::{EntityApiErrorKind, Error};
+pub use entity::coaching_session_series::Model;
 use entity::coaching_session_series::{ActiveModel, Column, Entity};
 use entity::Id;
-pub use entity::coaching_session_series::Model;
 use log::debug;
 use sea_orm::{
     entity::prelude::*,

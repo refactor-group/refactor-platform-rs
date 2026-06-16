@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use service::config::Config;
 
 pub use coaching_session::{Frequency, Recurrence, RecurrenceError};
-pub use entity_api::coaching_session_series::Model;
 pub use entity_api::coaching_session_series::find_by_id;
+pub use entity_api::coaching_session_series::Model;
 
 /// Typed shape of the JSONB `rule` column on `coaching_session_series`.
 /// Stored at create time and re-read at reschedule time, which is why
@@ -499,19 +499,34 @@ mod tests {
             // 2. find_future_sessions_by_series_id → 2 future rows
             .append_query_results(vec![future_sessions.clone()])
             // 3. BEGIN
-            .append_exec_results(vec![MockExecResult { last_insert_id: 0, rows_affected: 1 }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             // 4. acquire_advisory_lock × 2 (one exec per session)
-            .append_exec_results(vec![MockExecResult { last_insert_id: 0, rows_affected: 1 }])
-            .append_exec_results(vec![MockExecResult { last_insert_id: 0, rows_affected: 1 }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             // 5. bulk_delete_by_ids → DELETE
-            .append_exec_results(vec![MockExecResult { last_insert_id: 0, rows_affected: 2 }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 2,
+            }])
             // 6. update_rule → internal find_by_id (SELECT) → UPDATE ... RETURNING
             .append_query_results(vec![vec![updated_series.clone()]])
             .append_query_results(vec![vec![updated_series.clone()]])
             // 7. bulk_create_recurring → INSERT ... RETURNING
             .append_query_results(vec![new_sessions.clone()])
             // 8. COMMIT
-            .append_exec_results(vec![MockExecResult { last_insert_id: 0, rows_affected: 1 }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             .into_connection();
 
         let (returned_series, returned_sessions) = reschedule(
