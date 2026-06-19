@@ -57,6 +57,7 @@ fn test_session(session_id: Id, relationship_id: Id) -> coaching_sessions::Model
     coaching_sessions::Model {
         id: session_id,
         coaching_relationship_id: relationship_id,
+        coaching_session_series_id: None,
         collab_document_name: None,
         date: Utc::now().naive_utc(),
         duration_minutes: domain::duration::Duration::default_minutes(),

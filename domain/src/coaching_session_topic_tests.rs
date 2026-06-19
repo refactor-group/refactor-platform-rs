@@ -33,6 +33,7 @@ fn session_with_relationship(
     let session = coaching_sessions::Model {
         id: coaching_session_id,
         coaching_relationship_id: relationship_id,
+        coaching_session_series_id: None,
         collab_document_name: None,
         date: now.naive_utc(),
         duration_minutes: 60,
@@ -65,6 +66,7 @@ fn coaching_session(
     coaching_sessions::Model {
         id: coaching_session_id,
         coaching_relationship_id: relationship_id,
+        coaching_session_series_id: None,
         collab_document_name: None,
         date,
         duration_minutes: 60,

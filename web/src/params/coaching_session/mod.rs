@@ -1,5 +1,4 @@
 pub(crate) mod goal;
-pub(crate) mod recurring;
 
 use chrono::{NaiveDate, NaiveDateTime};
 use domain::provider::Provider;
@@ -166,6 +165,7 @@ impl CreateParams {
         coaching_sessions::Model {
             id: Id::nil(),
             coaching_relationship_id: self.coaching_relationship_id,
+            coaching_session_series_id: None,
             collab_document_name: None,
             date: self.date,
             duration_minutes: domain::duration::Duration::default_minutes(),

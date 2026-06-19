@@ -62,6 +62,7 @@ fn test_session(session_id: Id, relationship_id: Id) -> coaching_sessions::Model
     coaching_sessions::Model {
         id: session_id,
         coaching_relationship_id: relationship_id,
+        coaching_session_series_id: None,
         title: None,
         collab_document_name: None,
         date: now.naive_utc(),

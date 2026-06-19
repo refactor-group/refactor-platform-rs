@@ -20,8 +20,9 @@ use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    find_by_id, find_by_user_with_includes, find_counts_by_month_for_user, find_next_session,
-    find_participant_ids, CountByMonth, EnrichedSession, IncludeOptions, SessionQueryOptions,
+    find_by_id, find_by_series_id, find_by_user_with_includes, find_counts_by_month_for_user,
+    find_next_session, find_participant_ids, CountByMonth, EnrichedSession, IncludeOptions,
+    SessionQueryOptions,
 };
 
 use crate::duration::Duration;
@@ -134,10 +135,16 @@ pub async fn create(
 /// Bulk-creates a series of coaching sessions. Provider is intentionally not
 /// captured here — every row's `provider` stays NULL until [`ensure_hydrated`]
 /// fills it in on first read, using the coach's then-current OAuth connection.
+///
+/// Every materialized recurring session belongs to a parent
+/// `coaching_session_series` row (`series_id`); the [`crate::coaching_session_series`]
+/// orchestration module is the only call-site that should reach this helper
+/// directly.
 pub async fn bulk_create_recurring(
-    db: &DatabaseConnection,
+    db: &impl sea_orm::ConnectionTrait,
     coaching_relationship_id: Id,
     coach_id: Id,
+    series_id: Id,
     dates: Vec<NaiveDateTime>,
     requested_duration: Option<Duration>,
 ) -> Result<Vec<Model>, Error> {
@@ -150,6 +157,7 @@ pub async fn bulk_create_recurring(
         db,
         coaching_relationship_id,
         coach_id,
+        series_id,
         truncated,
         requested_duration,
     )
@@ -470,6 +478,7 @@ mod tests {
         coaching_sessions::Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             collab_document_name: None,
             date: chrono::Local::now().naive_utc(),
             duration_minutes: crate::duration::Duration::default_minutes(),
@@ -734,6 +743,7 @@ mod tests {
         let existing_session_with_url = coaching_sessions::Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship.id,
+            coaching_session_series_id: None,
             collab_document_name: Some("old-doc".to_string()),
             date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
             duration_minutes: crate::duration::Duration::default_minutes(),
@@ -990,6 +1000,7 @@ mod tests {
         let inserted = bulk_create_recurring(
             &db,
             relationship_id,
+            Id::new_v4(),
             Id::new_v4(),
             dates,
             Some(Duration::default()),

@@ -23,6 +23,7 @@ pub mod coaching_relationship;
 pub mod coaching_session;
 pub(crate) mod coaching_session_goal;
 mod coaching_session_hydration;
+pub mod coaching_session_series;
 pub mod coaching_session_topic;
 pub mod coaching_session_view;
 pub mod emails;

@@ -247,6 +247,7 @@ mod integration_tests {
         coaching_sessions::Model {
             id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: crate::duration::Duration::default_minutes(),

@@ -9,6 +9,7 @@ pub mod agreements;
 pub mod coachees;
 pub mod coaches;
 pub mod coaching_relationships;
+pub mod coaching_session_series;
 pub mod coaching_session_topics;
 pub mod coaching_session_views;
 pub mod coaching_sessions;
