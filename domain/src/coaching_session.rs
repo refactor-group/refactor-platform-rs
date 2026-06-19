@@ -22,7 +22,7 @@ use service::config::Config;
 pub use entity_api::coaching_session::{
     find_by_id, find_by_series_id, find_by_user_with_includes, find_counts_by_month_for_user,
     find_next_session, find_participant_ids, CountByMonth, EnrichedSession, IncludeOptions,
-    SessionQueryOptions,
+    SessionQueryOptions, SessionWithDisplayTitle,
 };
 
 use crate::duration::Duration;
@@ -262,6 +262,35 @@ where
         query::find_by::<coaching_sessions::Entity, coaching_sessions::Column, P>(db, params)
             .await?;
     Ok(coaching_sessions)
+}
+
+/// Like [`find_by`], but enriches each session with its server-composed
+/// `display_title` (title -> first topic body -> first goal title; null when
+/// none). Used by the relationship-scoped list so every list surface derives an
+/// identical title without re-running the chain client-side.
+pub async fn find_by_with_display_title<P>(
+    db: &DatabaseConnection,
+    params: P,
+) -> Result<Vec<SessionWithDisplayTitle>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
+{
+    let sessions =
+        query::find_by::<coaching_sessions::Entity, coaching_sessions::Column, P>(db, params)
+            .await?;
+    let display_titles =
+        entity_api::coaching_session_display_title::batch_load_display_titles(db, &sessions)
+            .await?;
+    Ok(sessions
+        .into_iter()
+        .map(|session| {
+            let display_title = display_titles.get(&session.id).cloned().flatten();
+            SessionWithDisplayTitle {
+                session,
+                display_title,
+            }
+        })
+        .collect())
 }
 
 pub async fn update(

@@ -162,6 +162,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_relationships::Model,
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
+                domain::coaching_session::SessionWithDisplayTitle,
                 domain::coaching_session_topics::Model,
                 domain::coaching_session_view::MarkViewed,
                 domain::coaching_sessions::Model,

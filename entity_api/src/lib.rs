@@ -15,6 +15,7 @@ pub mod actions_user;
 pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
+pub mod coaching_session_display_title;
 pub mod coaching_session_goal;
 pub mod coaching_session_series;
 pub mod coaching_session_topic;
