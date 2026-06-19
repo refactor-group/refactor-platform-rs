@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 89152a6c1e934607a9e590bf8ab9f34a63bf5e8cc4be313ecff0f680d7d2de57 # shrinks to name = "a", body = SyncStep2([])
