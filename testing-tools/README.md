@@ -90,8 +90,18 @@ cargo run -p testing-tools --bin sse-test-client -- \
 - `action-create` - Tests SSE events for action creation (uses existing coaching relationship or creates one)
 - `action-update` - Tests SSE events for action updates (uses existing coaching relationship or creates one)
 - `action-delete` - Tests SSE events for action deletion (uses existing coaching relationship or creates one)
+- `topic-create` - Tests `topics_changed` when a topic is created (coach acts, coachee receives)
+- `topic-update` - Tests `topics_changed` when a topic body is edited (coach acts, coachee receives)
+- `topic-priority` - Tests `topics_changed` when the coachee sets priority (coachee acts, coach receives)
+- `topic-status` - Tests `topics_changed` when status is set to Discussed (coach acts, coachee receives)
+- `topic-delete` - Tests `topics_changed` when a topic is deleted (author acts, coachee receives)
 - `force-logout-test` - Tests SSE events for force logout (NOT YET IMPLEMENTED)
 - `all` - Runs all test scenarios sequentially
+
+> **Topic scenarios note:** the backend emits a single *coarse* `topics_changed` event (payload is
+> only `{ coaching_session_id }`) on every topic mutation, delivered to both participants. The tool
+> validates the non-acting user receives it; because the event type is identical across operations,
+> each scenario drains buffered events before triggering so it asserts the frame the mutation caused.
 
 ### Command-Line Arguments
 

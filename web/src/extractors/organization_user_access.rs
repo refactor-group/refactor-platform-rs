@@ -5,9 +5,12 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path},
     http::{request::Parts, StatusCode},
 };
-use domain::{user as UserApi, users, Id};
+use domain::{user as UserApi, users};
 
-use crate::{extractors::RejectionType, AppState};
+use crate::{
+    extractors::{parse_path_id, RejectionType},
+    AppState,
+};
 use log::*;
 
 /// Authorizes that the target user named by the `{user_id}` path segment is a
@@ -62,12 +65,4 @@ where
             .map(OrganizationUserAccess)
             .ok_or((StatusCode::NOT_FOUND, "NOT FOUND".to_string()))
     }
-}
-
-fn parse_path_id(params: &HashMap<String, String>, key: &str) -> Result<Id, RejectionType> {
-    params
-        .get(key)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("Missing {key} in path")))?
-        .parse::<Id>()
-        .map_err(|_| (StatusCode::BAD_REQUEST, format!("Invalid {key}")))
 }

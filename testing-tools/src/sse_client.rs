@@ -79,6 +79,14 @@ impl Connection {
         })
     }
 
+    /// Discards any buffered events. Call right before triggering a mutation so a
+    /// subsequent `wait_for_event` can only match the event THIS mutation caused.
+    /// Necessary for coarse events (e.g. `topics_changed`) where every operation
+    /// emits the same event type and a stale frame would otherwise satisfy the wait.
+    pub fn drain(&mut self) {
+        while self.event_rx.try_recv().is_ok() {}
+    }
+
     pub async fn wait_for_event(&mut self, event_type: &str, timeout: Duration) -> Result<Event> {
         let deadline = Instant::now() + timeout;
 

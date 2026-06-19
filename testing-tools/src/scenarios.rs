@@ -316,3 +316,242 @@ pub async fn test_connection(
         duration: start.elapsed(),
     })
 }
+
+// ---- Coaching session Topics ----
+// The backend emits ONE coarse `topics_changed` event (data: { coaching_session_id })
+// on every topic mutation, to BOTH participants. These scenarios prove the NON-acting
+// user receives it for each operation. Because the event type is identical across
+// operations, each scenario drains the observer first so the awaited frame is the one
+// the mutation under test caused (the same discipline the frontend needs).
+
+/// Waits for `observer` to receive a `topics_changed` event for `expected_session_id`.
+async fn expect_topics_changed(
+    observer: &mut Connection,
+    expected_session_id: &str,
+    scenario: &str,
+    start: Instant,
+) -> TestResult {
+    match observer
+        .wait_for_event("topics_changed", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_event(&observer.user_label, &event);
+            let got = event.data["data"]["coaching_session_id"]
+                .as_str()
+                .unwrap_or_default();
+            if got == expected_session_id {
+                println!(
+                    "{} {} received topics_changed (session {})",
+                    "✓".green(),
+                    observer.user_label,
+                    got
+                );
+                TestResult {
+                    scenario: scenario.to_string(),
+                    passed: true,
+                    message: None,
+                    duration: start.elapsed(),
+                }
+            } else {
+                TestResult {
+                    scenario: scenario.to_string(),
+                    passed: false,
+                    message: Some(format!(
+                        "session_id mismatch: expected {expected_session_id}, got {got}"
+                    )),
+                    duration: start.elapsed(),
+                }
+            }
+        }
+        Err(e) => TestResult {
+            scenario: scenario.to_string(),
+            passed: false,
+            message: Some(format!("Timeout waiting for topics_changed: {e}")),
+            duration: start.elapsed(),
+        },
+    }
+}
+
+pub async fn test_topic_create(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!("\n{}", "=== TEST: Topic Create ===".bright_cyan().bold());
+
+    sse2.drain();
+    println!("{} User 1 (coach) creating topic...", "→".blue());
+    let topic = api_client
+        .create_topic(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "SSE test topic - create",
+        )
+        .await?;
+    let topic_id = topic["id"].as_str().unwrap_or_default().to_string();
+    println!("{} Topic created (ID: {})", "✓".green(), topic_id);
+
+    let result = expect_topics_changed(sse2, &test_env.session_id, "topic_create", start).await;
+    let _ = api_client
+        .delete_topic(&user1.session_cookie, &test_env.session_id, &topic_id)
+        .await;
+    Ok(result)
+}
+
+pub async fn test_topic_update(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!(
+        "\n{}",
+        "=== TEST: Topic Update (body edit) ==="
+            .bright_cyan()
+            .bold()
+    );
+
+    let topic = api_client
+        .create_topic(&user1.session_cookie, &test_env.session_id, "original body")
+        .await?;
+    let topic_id = topic["id"].as_str().unwrap_or_default().to_string();
+
+    sse2.drain(); // discard the create event
+    println!("{} User 1 (coach) editing topic body...", "→".blue());
+    api_client
+        .update_topic(
+            &user1.session_cookie,
+            &test_env.session_id,
+            &topic_id,
+            "edited body",
+        )
+        .await?;
+
+    let result = expect_topics_changed(sse2, &test_env.session_id, "topic_update", start).await;
+    let _ = api_client
+        .delete_topic(&user1.session_cookie, &test_env.session_id, &topic_id)
+        .await;
+    Ok(result)
+}
+
+pub async fn test_topic_priority(
+    user1: &AuthenticatedUser,
+    user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    sse1: &mut Connection,
+    _sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!(
+        "\n{}",
+        "=== TEST: Topic Priority (coachee sets, coach observes) ==="
+            .bright_cyan()
+            .bold()
+    );
+
+    // Coach creates the topic; the COACHEE (user2) sets priority (coachee-only
+    // endpoint); we assert the COACH (user1, the non-actor) receives the event.
+    let topic = api_client
+        .create_topic(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "priority topic",
+        )
+        .await?;
+    let topic_id = topic["id"].as_str().unwrap_or_default().to_string();
+
+    sse1.drain(); // discard the create event on the coach's stream
+    println!("{} User 2 (coachee) setting priority=High...", "→".blue());
+    api_client
+        .set_topic_priority(
+            &user2.session_cookie,
+            &test_env.session_id,
+            &topic_id,
+            "High",
+        )
+        .await?;
+
+    let result = expect_topics_changed(sse1, &test_env.session_id, "topic_priority", start).await;
+    let _ = api_client
+        .delete_topic(&user1.session_cookie, &test_env.session_id, &topic_id)
+        .await;
+    Ok(result)
+}
+
+pub async fn test_topic_status(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!(
+        "\n{}",
+        "=== TEST: Topic Status = Discussed (coach sets, coachee observes) ==="
+            .bright_cyan()
+            .bold()
+    );
+
+    let topic = api_client
+        .create_topic(&user1.session_cookie, &test_env.session_id, "status topic")
+        .await?;
+    let topic_id = topic["id"].as_str().unwrap_or_default().to_string();
+
+    sse2.drain();
+    println!("{} User 1 (coach) setting status=Discussed...", "→".blue());
+    api_client
+        .set_topic_status(
+            &user1.session_cookie,
+            &test_env.session_id,
+            &topic_id,
+            "Discussed",
+        )
+        .await?;
+
+    let result = expect_topics_changed(sse2, &test_env.session_id, "topic_status", start).await;
+    let _ = api_client
+        .delete_topic(&user1.session_cookie, &test_env.session_id, &topic_id)
+        .await;
+    Ok(result)
+}
+
+pub async fn test_topic_delete(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!(
+        "\n{}",
+        "=== TEST: Topic Delete (author deletes, coachee observes) ==="
+            .bright_cyan()
+            .bold()
+    );
+
+    let topic = api_client
+        .create_topic(&user1.session_cookie, &test_env.session_id, "delete topic")
+        .await?;
+    let topic_id = topic["id"].as_str().unwrap_or_default().to_string();
+
+    sse2.drain();
+    println!("{} User 1 (author) deleting topic...", "→".blue());
+    api_client
+        .delete_topic(&user1.session_cookie, &test_env.session_id, &topic_id)
+        .await?;
+
+    Ok(expect_topics_changed(sse2, &test_env.session_id, "topic_delete", start).await)
+}
