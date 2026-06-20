@@ -236,22 +236,17 @@ pub async fn ensure_hydrated(
     }
     .await;
 
-    // Publish after commit so subscribers never refetch against goal links
-    // that a rolled-back transaction never persisted.
-    match result {
-        Ok((updated, events)) => {
-            publish_events(event_publisher, events).await;
-            Ok(updated)
-        }
-        Err(e) => {
-            if let Err(cleanup_err) = tiptap.delete(&document_name).await {
-                warn!(
-                    "Failed to clean up Tiptap document '{document_name}' after hydration error: {cleanup_err}"
-                );
-            }
-            Err(e)
-        }
-    }
+    // No compensating delete on failure. The name is derived from the immutable
+    // session id, so a failed attempt leaves the session's own (empty) document
+    // for the next attempt to adopt via Tiptap's 409-as-success. Deleting here
+    // would be unsafe: the advisory lock is already released, so a concurrent
+    // attempt may have adopted and committed this same document.
+    //
+    // Publish after commit so subscribers never refetch against goal links that a
+    // rolled-back transaction never persisted.
+    let (updated, events) = result?;
+    publish_events(event_publisher, events).await;
+    Ok(updated)
 }
 
 /// Publishes each event produced by the hydration tasks after the transaction
@@ -931,8 +926,12 @@ mod tests {
         Ok(())
     }
 
+    /// A post-create failure surfaces the error but must NOT delete the document.
+    /// The name is the session's permanent id-derived name, so the doc is left for
+    /// the next attempt to adopt (409-as-success). Deleting it would be unsafe: a
+    /// concurrent attempt may have already adopted and committed the same doc.
     #[tokio::test]
-    async fn ensure_hydrated_deletes_tiptap_doc_when_post_create_step_fails() {
+    async fn ensure_hydrated_keeps_tiptap_doc_when_post_create_step_fails() {
         let mut server = Server::new_async().await;
         let config = test_config(&server.url());
 
@@ -946,7 +945,7 @@ mod tests {
         let delete_mock = server
             .mock("DELETE", doc_path)
             .with_status(204)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
 
@@ -960,7 +959,7 @@ mod tests {
 
         // Sequence: advisory_lock exec → re-fetch (not yet hydrated) → relationship
         // → organization → tiptap POST (200) → oauth_connection::find_by_user
-        // returns an error → cleanup DELETE fires.
+        // returns an error → error surfaced, NO cleanup DELETE.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
