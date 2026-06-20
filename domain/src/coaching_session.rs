@@ -275,18 +275,18 @@ pub async fn find_by_with_display_title<P>(
 where
     P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
 {
-    let sessions =
-        query::find_by::<coaching_sessions::Entity, coaching_sessions::Column, P>(db, params)
-            .await?;
-    let display_titles =
-        entity_api::coaching_session_display_title::batch_load_display_titles(db, &sessions)
-            .await?;
-    Ok(sessions
+    let coaching_sessions = find_by(db, params).await?;
+    let display_titles = entity_api::coaching_session_display_title::batch_load_display_titles(
+        db,
+        &coaching_sessions,
+    )
+    .await?;
+    Ok(coaching_sessions
         .into_iter()
-        .map(|session| {
-            let display_title = display_titles.get(&session.id).cloned().flatten();
+        .map(|coaching_session| {
+            let display_title = display_titles.get(&coaching_session.id).cloned().flatten();
             SessionWithDisplayTitle {
-                session,
+                session: coaching_session,
                 display_title,
             }
         })
