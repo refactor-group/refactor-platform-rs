@@ -85,7 +85,11 @@ pub async fn create(
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
 
-    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    let document_name = generate_document_name(
+        &organization.slug,
+        &coaching_relationship.slug,
+        Id::new_v4(),
+    );
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
     coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
@@ -201,7 +205,11 @@ pub async fn ensure_hydrated(
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
 
-    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    // Derive the name from the immutable session id so a retried hydration
+    // (after a prior attempt failed post-create) reuses the same document
+    // instead of orphaning one and minting another.
+    let document_name =
+        generate_document_name(&organization.slug, &coaching_relationship.slug, session_id);
     let tiptap = TiptapDocument::new(config).await?;
 
     let coach_id = coaching_relationship.coach_id;
@@ -426,13 +434,16 @@ async fn create_meeting_url(
     }
 }
 
-fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> String {
-    format!(
-        "{}.{}.{}-v0",
-        organization_slug,
-        relationship_slug,
-        Id::new_v4()
-    )
+/// Formats a collab-document name as `{org}.{rel}.{unique_id}-v0`. The suffix is
+/// supplied by the caller, not minted here: the deferred path passes the stable
+/// session id so repeated hydration attempts converge on one document, while the
+/// eager create path passes a fresh id (its row id is not yet known pre-insert).
+fn generate_document_name(
+    organization_slug: &str,
+    relationship_slug: &str,
+    unique_id: Id,
+) -> String {
+    format!("{organization_slug}.{relationship_slug}.{unique_id}-v0")
 }
 
 #[cfg(test)]
@@ -848,8 +859,12 @@ mod tests {
         Ok(())
     }
 
+    /// Covers the post-lock re-check branch: when the re-fetch under the lock
+    /// returns an already-hydrated row, hydration commits and returns without
+    /// touching Tiptap. Does not exercise lock contention itself (MockDatabase
+    /// has no advisory-lock semantics); true concurrency is an integration test.
     #[tokio::test]
-    async fn ensure_hydrated_short_circuits_after_lock_when_row_hydrated_concurrently(
+    async fn ensure_hydrated_short_circuits_when_refetch_under_lock_finds_row_hydrated(
     ) -> Result<(), Error> {
         let mut server = Server::new_async().await;
         let config = test_config(&server.url());
@@ -1044,5 +1059,87 @@ mod tests {
 
         tiptap_mock.assert_async().await;
         Ok(())
+    }
+
+    /// The deferred-doc formatter is a pure function of its inputs: identical
+    /// inputs yield an identical name and distinct ids never collide. The
+    /// id-bearing suffix carries no '.', so the collab-token scope split
+    /// (`{org}.{rel}.*`) still recovers the prefix intact.
+    #[test]
+    fn generate_document_name_is_pure_shaped_and_jwt_compatible() {
+        let id = Id::new_v4();
+        let name = generate_document_name("test-org", "test-slug", id);
+
+        assert_eq!(name, format!("test-org.test-slug.{id}-v0"));
+        assert_eq!(name, generate_document_name("test-org", "test-slug", id));
+        assert_ne!(
+            name,
+            generate_document_name("test-org", "test-slug", Id::new_v4())
+        );
+
+        let parts: Vec<&str> = name.rsplitn(2, '.').collect();
+        assert_eq!(parts[1], "test-org.test-slug");
+    }
+
+    /// Regression: two hydration attempts on the same still-unhydrated row must
+    /// target the SAME Tiptap document. The deferred path derives the doc name
+    /// from the immutable session id, so a first attempt that fails after
+    /// creating the doc cannot strand an orphan and mint a fresh random doc on
+    /// retry. Asserts the exact document URL is POSTed twice.
+    #[tokio::test]
+    async fn ensure_hydrated_reuses_same_doc_name_when_retried_after_failure() {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            ..test_session(relationship.id, None)
+        };
+
+        let expected_doc = format!("test-org.test-slug.{}-v0", session.id);
+        let post_mock = server
+            .mock(
+                "POST",
+                mockito::Matcher::Exact(format!("/api/documents/{expected_doc}")),
+            )
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .expect(2)
+            .create_async()
+            .await;
+        // Cleanup DELETE fires after each failed attempt; count not constrained.
+        let _delete_mock = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .create_async()
+            .await;
+
+        // Per attempt: lock exec -> refetch (unhydrated) -> relationship -> org
+        // -> POST 200 -> oauth lookup errors -> rollback + cleanup. Twice.
+        let mut builder = MockDatabase::new(DatabaseBackend::Postgres);
+        for _ in 0..2 {
+            builder = builder
+                .append_exec_results(vec![sea_orm::MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                }])
+                .append_query_results(vec![vec![session.clone()]])
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results(vec![vec![org.clone()]])
+                .append_query_errors(vec![sea_orm::DbErr::Custom(
+                    "simulated oauth lookup failure".to_string(),
+                )]);
+        }
+        let db = builder.into_connection();
+
+        let first = ensure_hydrated(&db, &config, &EventPublisher::new(), session.clone()).await;
+        let second = ensure_hydrated(&db, &config, &EventPublisher::new(), session.clone()).await;
+
+        assert!(first.is_err(), "first attempt should surface the failure");
+        assert!(second.is_err(), "second attempt should surface the failure");
+        post_mock.assert_async().await;
     }
 }

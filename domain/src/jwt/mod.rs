@@ -58,13 +58,7 @@ pub async fn generate_collab_token(
         }
     })?;
 
-    // Remove the timestamp and add wildcard
-    // a document name like "refactor-coaching.jim-caleb.1747304040-v0"
-    // becomes "refactor-coaching.jim-caleb/*""
-    let allowed_document_name_str = {
-        let parts: Vec<&str> = collab_document_name.rsplitn(2, '.').collect();
-        format!("{}.*", parts[1])
-    };
+    let allowed_document_name_str = allowed_documents_scope(&collab_document_name);
     let tiptap_jwt_signing_key = config.tiptap_jwt_signing_key().ok_or_else(|| {
         warn!("Failed to get a useable Tiptap JWT signing key from config");
         Error {
@@ -105,4 +99,30 @@ pub async fn generate_collab_token(
         token,
         sub: collab_document_name,
     })
+}
+
+/// Derives the collab-token document scope from a doc name by replacing its
+/// unique suffix with a wildcard: `{org}.{rel}.{suffix}-v0` becomes
+/// `{org}.{rel}.*`, authorizing every document in the relationship. Splits on
+/// the last '.', so the suffix must not contain one.
+fn allowed_documents_scope(collab_document_name: &str) -> String {
+    let parts: Vec<&str> = collab_document_name.rsplitn(2, '.').collect();
+    format!("{}.*", parts[1])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The collab-token scope strips the unique doc suffix and authorizes the
+    /// whole relationship via `{org}.{rel}.*`. Pins the parse against doc-name
+    /// shape changes (the deferred path derives the suffix from session id).
+    #[test]
+    fn allowed_documents_scope_wildcards_the_suffix() {
+        let id = Id::new_v4();
+        assert_eq!(
+            allowed_documents_scope(&format!("test-org.test-slug.{id}-v0")),
+            "test-org.test-slug.*"
+        );
+    }
 }

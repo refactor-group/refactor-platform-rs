@@ -112,3 +112,38 @@ impl TiptapDocument {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::Server;
+    use service::config::Config;
+
+    fn test_config(url: &str) -> Config {
+        Config::from_args([
+            "test",
+            "--tiptap-auth-key=test-auth-key",
+            &format!("--tiptap-url={url}"),
+        ])
+    }
+
+    /// A 409 from Tiptap means the document already exists. The gateway treats
+    /// that as success so a retried hydration converges on the existing doc
+    /// rather than erroring. This is the idempotency primitive the deferred-doc
+    /// fix relies on: same name + already-created doc -> Ok.
+    #[tokio::test]
+    async fn create_treats_existing_document_409_as_success() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(409)
+            .create_async()
+            .await;
+
+        let tiptap = TiptapDocument::new(&test_config(&server.url()))
+            .await
+            .expect("client builds from test config");
+
+        assert!(tiptap.create("test-org.test-slug.doc-v0").await.is_ok());
+    }
+}
