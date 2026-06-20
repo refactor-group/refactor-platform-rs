@@ -402,18 +402,10 @@ pub async fn find_meeting_url_by_relationship_and_provider(
         .and_then(|session| session.meeting_url))
 }
 
+/// All of a user's coaching sessions (coach or coachee), unfiltered and unsorted.
+/// Thin convenience over [`find_by_user_filtered`] with default options.
 pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
-    let sessions = Entity::find()
-        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
-        .all(db)
-        .await?;
-
-    Ok(sessions)
+    find_by_user_filtered(db, user_id, SessionQueryOptions::default()).await
 }
 
 /// One row of the monthly count aggregation for the user's coaching sessions.
@@ -638,10 +630,9 @@ impl IncludeOptions {
         Ok(())
     }
 }
-/// Query options for finding coaching sessions by user.
-///
-/// Groups filtering, sorting, and include parameters into a single argument
-/// to keep the `find_by_user_with_includes` function signature clean.
+/// Filtering and sorting options for a user's coaching-session query. Excludes
+/// related-data includes, which the enriching wrapper takes as a separate argument
+/// (see [`find_by_user_with_includes`]).
 #[derive(Debug, Default)]
 pub struct SessionQueryOptions {
     /// Filter sessions to only those in this coaching relationship
@@ -660,19 +651,17 @@ pub struct SessionQueryOptions {
     pub sort_column: Option<coaching_sessions::Column>,
     /// Sort direction (ascending or descending)
     pub sort_order: Option<sea_orm::Order>,
-    /// Which related resources to include in the response
-    pub includes: IncludeOptions,
 }
 
-/// Find sessions by user with optional date filtering, sorting, and related data includes
-pub async fn find_by_user_with_includes(
+/// Base query for a user's coaching sessions: the optional tz-aware date window,
+/// relationship, and sort filters applied to the sessions where the user is coach
+/// or coachee. Returns plain models (no enrichment). The shared base for
+/// [`find_by_user`] (no filters) and the enriching [`find_by_user_with_includes`].
+async fn find_by_user_filtered(
     db: &impl ConnectionTrait,
     user_id: Id,
     options: SessionQueryOptions,
-) -> Result<Vec<EnrichedSession>, Error> {
-    // Validate include options
-    options.includes.validate()?;
-
+) -> Result<Vec<Model>, Error> {
     // Build the optional date-bound filters up-front so the query chain can
     // stay a single fluent `apply_if` pipeline. When `tz` is supplied, each
     // bound is wrapped in an `AT TIME ZONE` shift, mirroring the expression
@@ -727,55 +716,41 @@ pub async fn find_by_user_with_includes(
             |q: Select<Entity>, (col, ord)| q.order_by(col, ord),
         );
 
-    // Execute query to load base sessions
-    let sessions = query.all(db).await?;
+    Ok(query.all(db).await?)
+}
 
-    // Load the caller's view markers unconditionally so `viewer_last_viewed_at`
-    // is present on every response (null when never viewed), not gated by an
-    // include. The marker reflects the path user (`user_id`), who is the viewer
-    // for all first-party reads of this list.
+/// Find a user's sessions, then enrich with view markers and any requested related
+/// data (relationship, organization, goals, agreements, topics). Filtering and
+/// sorting are delegated to [`find_by_user_filtered`]; this wrapper layers
+/// enrichment on top.
+pub async fn find_by_user_with_includes(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    options: SessionQueryOptions,
+    includes: IncludeOptions,
+) -> Result<Vec<EnrichedSession>, Error> {
+    includes.validate()?;
+
+    let sessions = find_by_user_filtered(db, user_id, options).await?;
+
+    // View markers load unconditionally so `viewer_last_viewed_at` is present on
+    // every response (null when never viewed); the path user is the viewer.
     let session_ids: Vec<Id> = sessions.iter().map(|s| s.id).collect();
     let views = batch_load_views(db, &session_ids, user_id).await?;
 
+    // `load_related_data` runs no queries for an unset include, so one assembly
+    // pass covers both the bare and fully-included cases.
+    let related_data = load_related_data(db, &sessions, includes).await?;
+
     // Compose `display_title` unconditionally (like the view markers) so every
-    // response carries one canonical title (null when nothing derives),
-    // independent of which includes were requested.
+    // response carries one canonical title (null when nothing derives).
     let display_titles =
         super::coaching_session_display_title::batch_load_display_titles(db, &sessions).await?;
 
-    // Early return if no includes requested
-    if !options.includes.needs_relationships()
-        && !options.includes.goal
-        && !options.includes.agreements
-        && !options.includes.topics
-    {
-        return Ok(sessions
-            .into_iter()
-            .map(|session| {
-                let marker = views.get(&session.id).copied();
-                let display_title = display_titles.get(&session.id).cloned().flatten();
-                let mut enriched = EnrichedSession::from_session(session);
-                enriched.viewer_last_viewed_at = marker;
-                enriched.display_title = display_title;
-                enriched
-            })
-            .collect());
-    }
-
-    // Load all related data in efficient batches
-    let related_data = load_related_data(db, &sessions, options.includes).await?;
-
-    // Assemble enriched sessions
     Ok(sessions
         .into_iter()
         .map(|session| {
-            assemble_enriched_session(
-                session,
-                &related_data,
-                options.includes,
-                &views,
-                &display_titles,
-            )
+            assemble_enriched_session(session, &related_data, includes, &views, &display_titles)
         })
         .collect())
 }
@@ -1067,24 +1042,6 @@ fn assemble_enriched_session(
         viewer_last_viewed_at,
         display_title,
         topics,
-    }
-}
-
-impl EnrichedSession {
-    /// Create an enriched session from just the base session model
-    fn from_session(session: Model) -> Self {
-        Self {
-            session,
-            relationship: None,
-            coach: None,
-            coachee: None,
-            organization: None,
-            goals: None,
-            agreement: None,
-            viewer_last_viewed_at: None,
-            display_title: None,
-            topics: None,
-        }
     }
 }
 
@@ -1482,8 +1439,13 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let results =
-            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session_id);
@@ -1538,8 +1500,13 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let results =
-            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].viewer_last_viewed_at, Some(viewed_at));
@@ -1552,8 +1519,13 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let results_empty =
-            find_by_user_with_includes(&db_empty, user_id, SessionQueryOptions::default()).await?;
+        let results_empty = find_by_user_with_includes(
+            &db_empty,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results_empty.len(), 1);
         assert!(results_empty[0].viewer_last_viewed_at.is_none());
@@ -1591,8 +1563,13 @@ mod tests {
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let results =
-            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(
@@ -1641,6 +1618,7 @@ mod tests {
                 to_date: Some(to_date),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1676,6 +1654,7 @@ mod tests {
                 tz: Some("America/Los_Angeles".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1724,6 +1703,7 @@ mod tests {
                 tz: None,
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1765,6 +1745,7 @@ mod tests {
                 tz: Some("Europe/Berlin".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1810,6 +1791,7 @@ mod tests {
                 tz: Some("Europe/Berlin".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
