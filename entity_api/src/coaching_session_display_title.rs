@@ -53,7 +53,9 @@ async fn batch_load_first_topic_bodies(
         .all(db)
         .await?
     {
-        // Keep only the first (canonical-order) topic per session.
+        // Keep only the first (canonical-order) topic per session. Bodies are
+        // stored raw (even if empty/whitespace); compose_display_title is the
+        // single authority on emptiness and trims/falls through as needed.
         map.entry(topic.coaching_session_id).or_insert(topic.body);
     }
     Ok(map)
@@ -72,10 +74,13 @@ async fn batch_load_first_goal_titles(
     Ok(grouped
         .into_iter()
         .filter_map(|(session_id, goals)| {
+            // First goal that actually has a title (a leading title-less goal must
+            // not drop the tier). Goals arrive in deterministic order from
+            // find_goals_grouped_by_session_ids. compose_display_title trims any
+            // blank result, so emptiness policy stays in one place.
             goals
                 .into_iter()
-                .next()
-                .and_then(|g| g.title)
+                .find_map(|g| g.title)
                 .map(|title| (session_id, title))
         })
         .collect())
@@ -108,3 +113,7 @@ pub async fn batch_load_display_titles(
 #[cfg(test)]
 #[path = "coaching_session_display_title_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "mock"))]
+#[path = "coaching_session_display_title_mock_tests.rs"]
+mod mock_tests;
