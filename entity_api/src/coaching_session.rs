@@ -532,6 +532,10 @@ pub struct EnrichedSession {
     pub agreement: Option<agreements::Model>,
     // Caller-scoped read receipt: when the path user last marked this session viewed; null if never.
     pub viewer_last_viewed_at: Option<DateTimeWithTimeZone>,
+    // Server-composed fallback title: human title -> first topic body -> first goal title;
+    // null when none derive. Always present (serialized as null, never omitted), so consumers
+    // get one canonical title without re-deriving the chain.
+    pub display_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<coaching_session_topics::Model>>,
 }
@@ -738,9 +742,16 @@ pub async fn find_by_user_with_includes(
     // pass covers both the bare and fully-included cases.
     let related_data = load_related_data(db, &sessions, includes).await?;
 
+    // Compose `display_title` unconditionally (like the view markers) so every
+    // response carries one canonical title (null when nothing derives).
+    let display_titles =
+        super::coaching_session_display_title::batch_load_display_titles(db, &sessions).await?;
+
     Ok(sessions
         .into_iter()
-        .map(|session| assemble_enriched_session(session, &related_data, includes, &views))
+        .map(|session| {
+            assemble_enriched_session(session, &related_data, includes, &views, &display_titles)
+        })
         .collect())
 }
 
@@ -981,6 +992,7 @@ fn assemble_enriched_session(
     related: &RelatedData,
     includes: IncludeOptions,
     views: &HashMap<Id, DateTimeWithTimeZone>,
+    display_titles: &HashMap<Id, Option<String>>,
 ) -> EnrichedSession {
     let relationship = related
         .relationships
@@ -1011,6 +1023,8 @@ fn assemble_enriched_session(
 
     let viewer_last_viewed_at = views.get(&session.id).copied();
 
+    let display_title = display_titles.get(&session.id).cloned().flatten();
+
     let topics = if includes.topics {
         Some(related.topics.get(&session.id).cloned().unwrap_or_default())
     } else {
@@ -1026,6 +1040,7 @@ fn assemble_enriched_session(
         goals,
         agreement,
         viewer_last_viewed_at,
+        display_title,
         topics,
     }
 }
@@ -1420,6 +1435,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
         let results = find_by_user_with_includes(
@@ -1479,6 +1496,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![view.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
         let results = find_by_user_with_includes(
@@ -1496,6 +1515,8 @@ mod tests {
         let db_empty = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
         let results_empty = find_by_user_with_includes(
@@ -1508,6 +1529,53 @@ mod tests {
 
         assert_eq!(results_empty.len(), 1);
         assert!(results_empty[0].viewer_last_viewed_at.is_none());
+
+        Ok(())
+    }
+
+    // Guards that display_title is composed end-to-end and lands on the
+    // EnrichedSession (the title tier wins; topics/goals empty). Precedence
+    // itself is covered by the compose_display_title unit tests.
+    #[tokio::test]
+    async fn find_by_user_populates_display_title_from_title() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+
+        let session = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: Some("Quarterly Review".to_string()),
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].display_title.as_deref(),
+            Some("Quarterly Review")
+        );
 
         Ok(())
     }
@@ -1538,6 +1606,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
         let results = find_by_user_with_includes(
@@ -1798,7 +1868,9 @@ mod tests {
         };
 
         let views = HashMap::new();
-        let enriched = assemble_enriched_session(session, &related, includes, &views);
+        let display_titles = HashMap::new();
+        let enriched =
+            assemble_enriched_session(session, &related, includes, &views, &display_titles);
 
         // Must be Some(empty vec), not None — otherwise the frontend
         // can't distinguish "no goals" from "data not loaded yet".
@@ -1827,7 +1899,9 @@ mod tests {
         let includes = IncludeOptions::none();
 
         let views = HashMap::new();
-        let enriched = assemble_enriched_session(session, &related, includes, &views);
+        let display_titles = HashMap::new();
+        let enriched =
+            assemble_enriched_session(session, &related, includes, &views, &display_titles);
 
         assert!(enriched.goals.is_none());
     }
