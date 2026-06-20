@@ -733,31 +733,15 @@ pub async fn find_by_user_with_includes(
 
     let sessions = find_by_user_filtered(db, user_id, options).await?;
 
-    // Load the caller's view markers unconditionally so `viewer_last_viewed_at`
-    // is present on every response (null when never viewed), not gated by an
-    // include. The marker reflects the path user (`user_id`), who is the viewer
-    // for all first-party reads of this list.
+    // View markers load unconditionally so `viewer_last_viewed_at` is present on
+    // every response (null when never viewed); the path user is the viewer.
     let session_ids: Vec<Id> = sessions.iter().map(|s| s.id).collect();
     let views = batch_load_views(db, &session_ids, user_id).await?;
 
-    // Early return if no includes requested
-    if !includes.needs_relationships() && !includes.goal && !includes.agreements && !includes.topics
-    {
-        return Ok(sessions
-            .into_iter()
-            .map(|session| {
-                let marker = views.get(&session.id).copied();
-                let mut enriched = EnrichedSession::from_session(session);
-                enriched.viewer_last_viewed_at = marker;
-                enriched
-            })
-            .collect());
-    }
-
-    // Load all related data in efficient batches
+    // `load_related_data` runs no queries for an unset include, so one assembly
+    // pass covers both the bare and fully-included cases.
     let related_data = load_related_data(db, &sessions, includes).await?;
 
-    // Assemble enriched sessions
     Ok(sessions
         .into_iter()
         .map(|session| assemble_enriched_session(session, &related_data, includes, &views))
@@ -1047,23 +1031,6 @@ fn assemble_enriched_session(
         agreement,
         viewer_last_viewed_at,
         topics,
-    }
-}
-
-impl EnrichedSession {
-    /// Create an enriched session from just the base session model
-    fn from_session(session: Model) -> Self {
-        Self {
-            session,
-            relationship: None,
-            coach: None,
-            coachee: None,
-            organization: None,
-            goals: None,
-            agreement: None,
-            viewer_last_viewed_at: None,
-            topics: None,
-        }
     }
 }
 
