@@ -264,10 +264,10 @@ where
     Ok(coaching_sessions)
 }
 
-/// Like [`find_by`], but enriches each session with its server-composed
-/// `display_title` (title -> first topic body -> first goal title; null when
-/// none). Used by the relationship-scoped list so every list surface derives an
-/// identical title without re-running the chain client-side.
+/// [`find_by`] plus a per-session `display_title`. Distinct from the stored
+/// `title` column (a user-set name, often null): `display_title` is the
+/// server-composed fallback `title -> first topic body -> first goal title`
+/// (null when none), so list surfaces render a consistent name without deriving it.
 pub async fn find_by_with_display_title<P>(
     db: &DatabaseConnection,
     params: P,
