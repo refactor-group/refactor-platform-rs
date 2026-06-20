@@ -22,8 +22,9 @@ use service::config::Config;
 pub use entity_api::coaching_session::{
     find_by_id, find_by_series_id, find_by_user_with_includes, find_counts_by_month_for_user,
     find_next_session, find_participant_ids, CountByMonth, EnrichedSession, IncludeOptions,
-    SessionQueryOptions, SessionWithDisplayTitle,
+    SessionQueryOptions,
 };
+pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
 use crate::duration::Duration;
 pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};

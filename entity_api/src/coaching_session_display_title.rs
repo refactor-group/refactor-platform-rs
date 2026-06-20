@@ -10,6 +10,19 @@ use super::error::Error;
 use entity::{coaching_session_topics, coaching_sessions, Id};
 use sea_orm::{entity::prelude::*, ConnectionTrait, QueryOrder};
 use std::collections::HashMap;
+use utoipa::ToSchema;
+
+/// Relationship-scoped list read shape: a base session plus its composed
+/// `display_title`. Unlike the enriched read it carries no caller-scoped fields
+/// (e.g. `viewer_last_viewed_at`), so it is safe on the participant-shared list.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[schema(as = domain::coaching_session::SessionWithDisplayTitle)]
+pub struct SessionWithDisplayTitle {
+    #[serde(flatten)]
+    pub session: coaching_sessions::Model,
+    // Composed fallback title; null when none derive. Always present.
+    pub display_title: Option<String>,
+}
 
 /// Compose a session's display title from the fallback chain:
 /// human title -> first topic body -> first goal title. Empty / whitespace-only

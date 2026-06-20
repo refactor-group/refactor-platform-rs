@@ -548,19 +548,6 @@ pub struct EnrichedSession {
     pub topics: Option<Vec<coaching_session_topics::Model>>,
 }
 
-/// Relationship-scoped list read shape: the base session plus the server-composed
-/// `display_title`. Unlike [`EnrichedSession`], it carries no caller-scoped fields
-/// (e.g. `viewer_last_viewed_at`), so it is safe on the relationship list, which is
-/// shared by both participants.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
-#[schema(as = domain::coaching_session::SessionWithDisplayTitle)]
-pub struct SessionWithDisplayTitle {
-    #[serde(flatten)]
-    pub session: Model,
-    // Server-composed fallback title; null when none derive. Always present.
-    pub display_title: Option<String>,
-}
-
 /// Configuration for which related resources to include when fetching coaching sessions.
 ///
 /// # Purpose
