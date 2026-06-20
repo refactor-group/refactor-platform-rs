@@ -24,6 +24,7 @@ pub use entity_api::coaching_session::{
     find_next_session, find_participant_ids, CountByMonth, EnrichedSession, IncludeOptions,
     SessionQueryOptions,
 };
+pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
 use crate::duration::Duration;
 pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};
@@ -270,6 +271,35 @@ where
         query::find_by::<coaching_sessions::Entity, coaching_sessions::Column, P>(db, params)
             .await?;
     Ok(coaching_sessions)
+}
+
+/// [`find_by`] plus a per-session `display_title`. Distinct from the stored
+/// `title` column (a user-set name, often null): `display_title` is the
+/// server-composed fallback `title -> first topic body -> first goal title`
+/// (null when none), so list surfaces render a consistent name without deriving it.
+pub async fn find_by_with_display_title<P>(
+    db: &DatabaseConnection,
+    params: P,
+) -> Result<Vec<SessionWithDisplayTitle>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
+{
+    let coaching_sessions = find_by(db, params).await?;
+    let display_titles = entity_api::coaching_session_display_title::batch_load_display_titles(
+        db,
+        &coaching_sessions,
+    )
+    .await?;
+    Ok(coaching_sessions
+        .into_iter()
+        .map(|coaching_session| {
+            let display_title = display_titles.get(&coaching_session.id).cloned().flatten();
+            SessionWithDisplayTitle {
+                session: coaching_session,
+                display_title,
+            }
+        })
+        .collect())
 }
 
 pub async fn update(
