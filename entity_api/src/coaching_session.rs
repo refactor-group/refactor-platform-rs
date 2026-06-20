@@ -626,10 +626,9 @@ impl IncludeOptions {
         Ok(())
     }
 }
-/// Query options for finding coaching sessions by user.
-///
-/// Groups filtering, sorting, and include parameters into a single argument
-/// to keep the `find_by_user_with_includes` function signature clean.
+/// Filtering and sorting options for a user's coaching-session query. Excludes
+/// related-data includes, which the enriching wrapper takes as a separate argument
+/// (see [`find_by_user_with_includes`]).
 #[derive(Debug, Default)]
 pub struct SessionQueryOptions {
     /// Filter sessions to only those in this coaching relationship
@@ -648,15 +647,12 @@ pub struct SessionQueryOptions {
     pub sort_column: Option<coaching_sessions::Column>,
     /// Sort direction (ascending or descending)
     pub sort_order: Option<sea_orm::Order>,
-    /// Which related resources to include in the response
-    pub includes: IncludeOptions,
 }
 
 /// Base query for a user's coaching sessions: the optional tz-aware date window,
 /// relationship, and sort filters applied to the sessions where the user is coach
-/// or coachee. Returns plain models; `options.includes` is not consulted here. The
-/// shared base for [`find_by_user`] (no filters) and the enriching
-/// [`find_by_user_with_includes`].
+/// or coachee. Returns plain models (no enrichment). The shared base for
+/// [`find_by_user`] (no filters) and the enriching [`find_by_user_with_includes`].
 async fn find_by_user_filtered(
     db: &impl ConnectionTrait,
     user_id: Id,
@@ -727,8 +723,8 @@ pub async fn find_by_user_with_includes(
     db: &impl ConnectionTrait,
     user_id: Id,
     options: SessionQueryOptions,
+    includes: IncludeOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
-    let includes = options.includes;
     includes.validate()?;
 
     let sessions = find_by_user_filtered(db, user_id, options).await?;
@@ -1426,8 +1422,13 @@ mod tests {
             .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
             .into_connection();
 
-        let results =
-            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session_id);
@@ -1480,8 +1481,13 @@ mod tests {
             .append_query_results(vec![vec![view.clone()]])
             .into_connection();
 
-        let results =
-            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].viewer_last_viewed_at, Some(viewed_at));
@@ -1492,8 +1498,13 @@ mod tests {
             .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
             .into_connection();
 
-        let results_empty =
-            find_by_user_with_includes(&db_empty, user_id, SessionQueryOptions::default()).await?;
+        let results_empty = find_by_user_with_includes(
+            &db_empty,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results_empty.len(), 1);
         assert!(results_empty[0].viewer_last_viewed_at.is_none());
@@ -1537,6 +1548,7 @@ mod tests {
                 to_date: Some(to_date),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1572,6 +1584,7 @@ mod tests {
                 tz: Some("America/Los_Angeles".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1620,6 +1633,7 @@ mod tests {
                 tz: None,
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1661,6 +1675,7 @@ mod tests {
                 tz: Some("Europe/Berlin".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1706,6 +1721,7 @@ mod tests {
                 tz: Some("Europe/Berlin".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
