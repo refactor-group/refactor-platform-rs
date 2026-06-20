@@ -402,18 +402,10 @@ pub async fn find_meeting_url_by_relationship_and_provider(
         .and_then(|session| session.meeting_url))
 }
 
+/// All of a user's coaching sessions (coach or coachee), unfiltered and unsorted.
+/// Thin convenience over [`find_by_user_filtered`] with default options.
 pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
-    let sessions = Entity::find()
-        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
-        .all(db)
-        .await?;
-
-    Ok(sessions)
+    find_by_user_filtered(db, user_id, SessionQueryOptions::default()).await
 }
 
 /// One row of the monthly count aggregation for the user's coaching sessions.
@@ -660,15 +652,16 @@ pub struct SessionQueryOptions {
     pub includes: IncludeOptions,
 }
 
-/// Find sessions by user with optional date filtering, sorting, and related data includes
-pub async fn find_by_user_with_includes(
+/// Base query for a user's coaching sessions: the optional tz-aware date window,
+/// relationship, and sort filters applied to the sessions where the user is coach
+/// or coachee. Returns plain models; `options.includes` is not consulted here. The
+/// shared base for [`find_by_user`] (no filters) and the enriching
+/// [`find_by_user_with_includes`].
+async fn find_by_user_filtered(
     db: &impl ConnectionTrait,
     user_id: Id,
     options: SessionQueryOptions,
-) -> Result<Vec<EnrichedSession>, Error> {
-    // Validate include options
-    options.includes.validate()?;
-
+) -> Result<Vec<Model>, Error> {
     // Build the optional date-bound filters up-front so the query chain can
     // stay a single fluent `apply_if` pipeline. When `tz` is supplied, each
     // bound is wrapped in an `AT TIME ZONE` shift, mirroring the expression
@@ -723,8 +716,22 @@ pub async fn find_by_user_with_includes(
             |q: Select<Entity>, (col, ord)| q.order_by(col, ord),
         );
 
-    // Execute query to load base sessions
-    let sessions = query.all(db).await?;
+    Ok(query.all(db).await?)
+}
+
+/// Find a user's sessions, then enrich with view markers and any requested related
+/// data (relationship, organization, goals, agreements, topics). Filtering and
+/// sorting are delegated to [`find_by_user_filtered`]; this wrapper layers
+/// enrichment on top.
+pub async fn find_by_user_with_includes(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    options: SessionQueryOptions,
+) -> Result<Vec<EnrichedSession>, Error> {
+    let includes = options.includes;
+    includes.validate()?;
+
+    let sessions = find_by_user_filtered(db, user_id, options).await?;
 
     // Load the caller's view markers unconditionally so `viewer_last_viewed_at`
     // is present on every response (null when never viewed), not gated by an
@@ -734,10 +741,7 @@ pub async fn find_by_user_with_includes(
     let views = batch_load_views(db, &session_ids, user_id).await?;
 
     // Early return if no includes requested
-    if !options.includes.needs_relationships()
-        && !options.includes.goal
-        && !options.includes.agreements
-        && !options.includes.topics
+    if !includes.needs_relationships() && !includes.goal && !includes.agreements && !includes.topics
     {
         return Ok(sessions
             .into_iter()
@@ -751,12 +755,12 @@ pub async fn find_by_user_with_includes(
     }
 
     // Load all related data in efficient batches
-    let related_data = load_related_data(db, &sessions, options.includes).await?;
+    let related_data = load_related_data(db, &sessions, includes).await?;
 
     // Assemble enriched sessions
     Ok(sessions
         .into_iter()
-        .map(|session| assemble_enriched_session(session, &related_data, options.includes, &views))
+        .map(|session| assemble_enriched_session(session, &related_data, includes, &views))
         .collect())
 }
 
