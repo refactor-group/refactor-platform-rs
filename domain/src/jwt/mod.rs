@@ -58,13 +58,7 @@ pub async fn generate_collab_token(
         }
     })?;
 
-    // Remove the timestamp and add wildcard
-    // a document name like "refactor-coaching.jim-caleb.1747304040-v0"
-    // becomes "refactor-coaching.jim-caleb/*""
-    let allowed_document_name_str = {
-        let parts: Vec<&str> = collab_document_name.rsplitn(2, '.').collect();
-        format!("{}.*", parts[1])
-    };
+    let allowed_document_name_str = allowed_documents_scope(&collab_document_name)?;
     let tiptap_jwt_signing_key = config.tiptap_jwt_signing_key().ok_or_else(|| {
         warn!("Failed to get a useable Tiptap JWT signing key from config");
         Error {
@@ -105,4 +99,48 @@ pub async fn generate_collab_token(
         token,
         sub: collab_document_name,
     })
+}
+
+/// Derives the collab-token document scope from a doc name by replacing its
+/// unique suffix with a wildcard: `{org}.{rel}.{suffix}-v0` becomes
+/// `{org}.{rel}.*`, authorizing every document in the relationship. Splits on
+/// the last '.'. A name with no '.' (corrupt or manually-edited row) has no
+/// derivable relationship scope, so this fails closed rather than minting a
+/// token for an underivable scope.
+fn allowed_documents_scope(collab_document_name: &str) -> Result<String, Error> {
+    let (prefix, _suffix) = collab_document_name.rsplit_once('.').ok_or_else(|| {
+        warn!("Collab document name '{collab_document_name}' has no '.' separator; cannot derive token scope");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Malformed collab document name: missing '.' separator".to_string(),
+            )),
+        }
+    })?;
+    Ok(format!("{prefix}.*"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The collab-token scope strips the unique doc suffix and authorizes the
+    /// whole relationship via `{org}.{rel}.*`. Pins the parse against doc-name
+    /// shape changes (the deferred path derives the suffix from session id).
+    #[test]
+    fn allowed_documents_scope_wildcards_the_suffix() {
+        let id = Id::new_v4();
+        assert_eq!(
+            allowed_documents_scope(&format!("test-org.test-slug.{id}-v0"))
+                .expect("a well-formed name yields a scope"),
+            "test-org.test-slug.*"
+        );
+    }
+
+    /// A name with no '.' has no derivable relationship scope: fail closed
+    /// instead of panicking on a corrupt or manually-edited row.
+    #[test]
+    fn allowed_documents_scope_errors_on_name_without_separator() {
+        assert!(allowed_documents_scope("no-dots-here").is_err());
+    }
 }
