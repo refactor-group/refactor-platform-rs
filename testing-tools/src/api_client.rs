@@ -365,6 +365,37 @@ impl ApiClient {
         Ok(())
     }
 
+    /// PATCH the session title (either participant). Makes the backend publish a coarse
+    /// `coaching_session_title_updated` SSE event to BOTH relationship participants.
+    pub async fn update_session_title(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        title: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/coaching_sessions/{}/title",
+            self.base_url, coaching_session_id
+        );
+        let response = self
+            .client
+            .patch(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "title": title }))
+            .send()
+            .await
+            .context("Failed to update session title")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to update session title: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
     // --- Coaching session Topics ---
     // Every mutation below makes the backend publish a single coarse `topics_changed`
     // SSE event (data: { coaching_session_id }) to BOTH relationship participants.
