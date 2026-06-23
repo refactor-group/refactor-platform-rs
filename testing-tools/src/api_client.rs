@@ -292,9 +292,8 @@ impl ApiClient {
             .header("x-version", "1.0.0-beta1")
             .json(&json!({
                 "coaching_session_id": coaching_session_id,
-                "title": title,
-                "description": "Created by SSE test tool",
-                "status": "not_started",
+                "body": title,
+                "status": "NotStarted",
             }))
             .send()
             .await
@@ -316,6 +315,7 @@ impl ApiClient {
     pub async fn update_action(
         &self,
         session_cookie: &str,
+        coaching_session_id: &str,
         action_id: &str,
         title: &str,
     ) -> Result<Value> {
@@ -327,7 +327,9 @@ impl ApiClient {
             .header("Cookie", format!("id={}", session_cookie))
             .header("x-version", "1.0.0-beta1")
             .json(&json!({
-                "title": title,
+                "coaching_session_id": coaching_session_id,
+                "body": title,
+                "status": "NotStarted",
             }))
             .send()
             .await

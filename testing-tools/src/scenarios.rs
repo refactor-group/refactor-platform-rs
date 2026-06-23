@@ -112,7 +112,12 @@ pub async fn test_action_update(
     // Now update the action
     println!("{} User 1 updating action...", "→".blue());
     api_client
-        .update_action(&user1.session_cookie, action_id, "Updated Title")
+        .update_action(
+            &user1.session_cookie,
+            &test_env.session_id,
+            action_id,
+            "Updated Title",
+        )
         .await?;
 
     println!(
@@ -127,9 +132,9 @@ pub async fn test_action_update(
         Ok(event) => {
             print_event(&sse2.user_label, &event);
 
-            let received_title = event.data["data"]["action"]["title"].as_str().unwrap();
+            let received_body = event.data["data"]["action"]["body"].as_str().unwrap();
 
-            if received_title == "Updated Title" {
+            if received_body == "Updated Title" {
                 println!("{} Event data verified correctly", "✓".green());
                 Ok(TestResult {
                     scenario: "action_update".to_string(),
@@ -141,7 +146,7 @@ pub async fn test_action_update(
                 Ok(TestResult {
                     scenario: "action_update".to_string(),
                     passed: false,
-                    message: Some(format!("Title mismatch: {}", received_title)),
+                    message: Some(format!("Body mismatch: {}", received_body)),
                     duration: start.elapsed(),
                 })
             }
