@@ -326,6 +326,45 @@ pub async fn update(
     )
 }
 
+/// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
+/// contract; a failed participant lookup must NOT fail the mutation, so log and continue
+/// (mirrors the topics notify helper).
+async fn publish_coaching_session_title_updated(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    coaching_session_id: Id,
+) {
+    let notify_user_ids = match coaching_session::find_participant_ids(db, coaching_session_id)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("CoachingSessionTitleUpdated: failed to resolve participants for session {coaching_session_id}: {e:?}");
+            return;
+        }
+    };
+    event_publisher
+        .publish(DomainEvent::CoachingSessionTitleUpdated {
+            coaching_session_id,
+            notify_user_ids,
+        })
+        .await;
+}
+
+/// Updates only the session title (the participant-gated title endpoint) and emits a coarse
+/// `CoachingSessionTitleUpdated` to both participants. Scheduling-field edits go through
+/// [`update`], which intentionally emits no event.
+pub async fn update_title(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+    params: impl mutate::IntoUpdateMap + std::fmt::Debug,
+) -> Result<Model, Error> {
+    let coaching_session = update(db, id, params).await?;
+    publish_coaching_session_title_updated(db, event_publisher, coaching_session.id).await;
+    Ok(coaching_session)
+}
+
 pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
     let coaching_session = find_by_id(db, id).await?;
     debug!(
@@ -533,6 +572,63 @@ mod tests {
             "--tiptap-auth-key=test-auth-key",
             &format!("--tiptap-url={tiptap_url}"),
         ])
+    }
+
+    /// Editing a title via [`update_title`] publishes exactly one coarse
+    /// `CoachingSessionTitleUpdated`, scoped to the relationship's coach + coachee.
+    #[tokio::test]
+    async fn update_title_publishes_title_updated_event() -> Result<(), Error> {
+        // Test-only IntoUpdateMap wrapper (the web layer's TitleUpdateParams implements this).
+        #[derive(Debug)]
+        struct TestParams(mutate::UpdateMap);
+        impl mutate::IntoUpdateMap for TestParams {
+            fn into_update_map(self) -> mutate::UpdateMap {
+                self.0
+            }
+        }
+
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+        let updated = coaching_sessions::Model {
+            title: Some("Renamed".to_string()),
+            ..session.clone()
+        };
+
+        let (publisher, events) = recording_publisher();
+
+        // update: find_by_id → UPDATE ... RETURNING; then the participant lookup (find_also_related).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
+            .into_connection();
+
+        let mut map = mutate::UpdateMap::new();
+        map.insert(
+            "title".into(),
+            Some(sea_orm::Value::String(Some(Box::new("Renamed".into())))),
+        );
+
+        let result = update_title(&db, &publisher, session.id, TestParams(map)).await;
+        assert!(result.is_ok());
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "expected exactly one published event");
+        match &recorded[0] {
+            DomainEvent::CoachingSessionTitleUpdated {
+                coaching_session_id,
+                notify_user_ids,
+            } => {
+                assert_eq!(*coaching_session_id, session.id);
+                assert_eq!(notify_user_ids.len(), 2, "coach + coachee");
+                assert!(notify_user_ids.contains(&relationship.coach_id));
+                assert!(notify_user_ids.contains(&relationship.coachee_id));
+            }
+            other => panic!("expected CoachingSessionTitleUpdated, got {other:?}"),
+        }
+        Ok(())
     }
 
     /// Creating a session links the relationship's in-progress goals and
