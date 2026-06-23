@@ -365,6 +365,78 @@ impl ApiClient {
         Ok(())
     }
 
+    // --- Agreements (session-scoped) ---
+    // Each mutation makes the backend publish an `agreement_{created,updated,deleted}` SSE event
+    // (data: { coaching_session_id, agreement | agreement_id }) to BOTH relationship participants.
+
+    pub async fn create_agreement(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        body: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/agreements", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "coaching_session_id": coaching_session_id, "body": body }))
+            .send()
+            .await
+            .context("Failed to create agreement")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to create agreement: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    pub async fn update_agreement(
+        &self,
+        session_cookie: &str,
+        agreement_id: &str,
+        body: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/agreements/{}", self.base_url, agreement_id);
+        let response = self
+            .client
+            .put(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "body": body }))
+            .send()
+            .await
+            .context("Failed to update agreement")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to update agreement: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    pub async fn delete_agreement(&self, session_cookie: &str, agreement_id: &str) -> Result<()> {
+        let url = format!("{}/agreements/{}", self.base_url, agreement_id);
+        let response = self
+            .client
+            .delete(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .send()
+            .await
+            .context("Failed to delete agreement")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to delete agreement: {}", response.status());
+        }
+        Ok(())
+    }
+
     // --- Coaching session Topics ---
     // Every mutation below makes the backend publish a single coarse `topics_changed`
     // SSE event (data: { coaching_session_id }) to BOTH relationship participants.

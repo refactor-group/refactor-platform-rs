@@ -555,3 +555,182 @@ pub async fn test_topic_delete(
 
     Ok(expect_topics_changed(sse2, &test_env.session_id, "topic_delete", start).await)
 }
+
+// --- Agreements (session-scoped, entity-in-payload) ---
+
+pub async fn test_agreement_create(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!(
+        "\n{}",
+        "=== TEST: Agreement Create ===".bright_cyan().bold()
+    );
+
+    println!("{} User 1 creating agreement...", "→".blue());
+    let agreement = api_client
+        .create_agreement(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "Test Agreement - Create",
+        )
+        .await?;
+    let agreement_id = agreement["id"].as_str().unwrap();
+    println!("{} Agreement created (ID: {})", "✓".green(), agreement_id);
+
+    println!(
+        "{} Waiting for User 2 to receive agreement_created event...",
+        "→".blue()
+    );
+    match sse2
+        .wait_for_event("agreement_created", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_event(&sse2.user_label, &event);
+            let received_id = event.data["data"]["agreement"]["id"].as_str().unwrap();
+            let received_session_id = event.data["data"]["coaching_session_id"].as_str().unwrap();
+            let passed = received_id == agreement_id && received_session_id == test_env.session_id;
+            Ok(TestResult {
+                scenario: "agreement_create".to_string(),
+                passed,
+                message: (!passed).then(|| {
+                    format!(
+                        "Expected agreement_id={}, session_id={}; got agreement_id={}, session_id={}",
+                        agreement_id, test_env.session_id, received_id, received_session_id
+                    )
+                }),
+                duration: start.elapsed(),
+            })
+        }
+        Err(e) => Ok(TestResult {
+            scenario: "agreement_create".to_string(),
+            passed: false,
+            message: Some(format!("Timeout: {}", e)),
+            duration: start.elapsed(),
+        }),
+    }
+}
+
+pub async fn test_agreement_update(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!(
+        "\n{}",
+        "=== TEST: Agreement Update ===".bright_cyan().bold()
+    );
+
+    let agreement = api_client
+        .create_agreement(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "Test Agreement - Update",
+        )
+        .await?;
+    let agreement_id = agreement["id"].as_str().unwrap().to_string();
+    let _ = sse2
+        .wait_for_event("agreement_created", Duration::from_secs(5))
+        .await?;
+
+    println!("{} User 1 updating agreement...", "→".blue());
+    api_client
+        .update_agreement(&user1.session_cookie, &agreement_id, "Updated body")
+        .await?;
+
+    println!(
+        "{} Waiting for User 2 to receive agreement_updated event...",
+        "→".blue()
+    );
+    match sse2
+        .wait_for_event("agreement_updated", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_event(&sse2.user_label, &event);
+            let received_id = event.data["data"]["agreement"]["id"].as_str().unwrap();
+            let passed = received_id == agreement_id;
+            Ok(TestResult {
+                scenario: "agreement_update".to_string(),
+                passed,
+                message: (!passed).then(|| format!("Agreement ID mismatch: {}", received_id)),
+                duration: start.elapsed(),
+            })
+        }
+        Err(e) => Ok(TestResult {
+            scenario: "agreement_update".to_string(),
+            passed: false,
+            message: Some(format!("Timeout: {}", e)),
+            duration: start.elapsed(),
+        }),
+    }
+}
+
+pub async fn test_agreement_delete(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!(
+        "\n{}",
+        "=== TEST: Agreement Delete ===".bright_cyan().bold()
+    );
+
+    let agreement = api_client
+        .create_agreement(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "Test Agreement - Delete",
+        )
+        .await?;
+    let agreement_id = agreement["id"].as_str().unwrap().to_string();
+    let _ = sse2
+        .wait_for_event("agreement_created", Duration::from_secs(5))
+        .await?;
+
+    println!("{} User 1 deleting agreement...", "→".blue());
+    api_client
+        .delete_agreement(&user1.session_cookie, &agreement_id)
+        .await?;
+
+    println!(
+        "{} Waiting for User 2 to receive agreement_deleted event...",
+        "→".blue()
+    );
+    match sse2
+        .wait_for_event("agreement_deleted", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_event(&sse2.user_label, &event);
+            let received_id = event.data["data"]["agreement_id"].as_str().unwrap();
+            let passed = received_id == agreement_id;
+            Ok(TestResult {
+                scenario: "agreement_delete".to_string(),
+                passed,
+                message: (!passed).then(|| format!("Agreement ID mismatch: {}", received_id)),
+                duration: start.elapsed(),
+            })
+        }
+        Err(e) => Ok(TestResult {
+            scenario: "agreement_delete".to_string(),
+            passed: false,
+            message: Some(format!("Timeout: {}", e)),
+            duration: start.elapsed(),
+        }),
+    }
+}
