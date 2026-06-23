@@ -171,6 +171,7 @@ pub async fn delete_by_id(
 }
 
 #[cfg(test)]
+#[cfg(feature = "mock")]
 mod tests {
     use super::*;
     use crate::test_support::recording_publisher;
