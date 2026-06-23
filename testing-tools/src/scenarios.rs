@@ -645,7 +645,12 @@ pub async fn test_agreement_update(
 
     println!("{} User 1 updating agreement...", "→".blue());
     api_client
-        .update_agreement(&user1.session_cookie, &agreement_id, "Updated body")
+        .update_agreement(
+            &user1.session_cookie,
+            &test_env.session_id,
+            &agreement_id,
+            "Updated body",
+        )
         .await?;
 
     println!(

@@ -398,6 +398,7 @@ impl ApiClient {
     pub async fn update_agreement(
         &self,
         session_cookie: &str,
+        coaching_session_id: &str,
         agreement_id: &str,
         body: &str,
     ) -> Result<Value> {
@@ -407,7 +408,7 @@ impl ApiClient {
             .put(&url)
             .header("Cookie", format!("id={}", session_cookie))
             .header("x-version", "1.0.0-beta1")
-            .json(&json!({ "body": body }))
+            .json(&json!({ "coaching_session_id": coaching_session_id, "body": body }))
             .send()
             .await
             .context("Failed to update agreement")?;
