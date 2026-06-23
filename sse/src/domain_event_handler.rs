@@ -112,6 +112,45 @@ impl EventHandler for SseDomainEventHandler {
                 self.send_to_users(sse_event, notify_user_ids);
             }
 
+            DomainEvent::AgreementCreated {
+                coaching_session_id,
+                agreement,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::AgreementCreated {
+                    coaching_session_id: coaching_session_id.to_string(),
+                    agreement: agreement.clone(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
+            DomainEvent::AgreementUpdated {
+                coaching_session_id,
+                agreement,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::AgreementUpdated {
+                    coaching_session_id: coaching_session_id.to_string(),
+                    agreement: agreement.clone(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
+            DomainEvent::AgreementDeleted {
+                coaching_session_id,
+                agreement_id,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::AgreementDeleted {
+                    coaching_session_id: coaching_session_id.to_string(),
+                    agreement_id: agreement_id.to_string(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
             DomainEvent::MeetingRecordingUpdated {
                 coaching_session_id,
                 notify_user_ids,
