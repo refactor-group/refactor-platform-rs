@@ -490,6 +490,8 @@ mod tests {
             slug: "test-org".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
         }
     }
 

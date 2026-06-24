@@ -39,6 +39,8 @@ pub async fn update(db: &impl ConnectionTrait, id: Id, model: Model) -> Result<M
         slug: Unchanged(organization.slug),
         updated_at: Unchanged(organization.updated_at),
         created_at: Unchanged(organization.created_at),
+        archived_at: Unchanged(organization.archived_at),
+        archived_by: Unchanged(organization.archived_by),
     };
     Ok(active_model.update(db).await?.try_into_model()?)
 }
@@ -134,6 +136,8 @@ mod tests {
                 created_at: now.into(),
                 updated_at: now.into(),
                 logo: None,
+                archived_at: None,
+                archived_by: None,
             },
             organizations::Model {
                 id: Id::new_v4(),
@@ -142,6 +146,8 @@ mod tests {
                 created_at: now.into(),
                 updated_at: now.into(),
                 logo: None,
+                archived_at: None,
+                archived_by: None,
             },
         ]];
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -175,7 +181,7 @@ mod tests {
                 ),
                 Transaction::from_sql_and_values(
                     DatabaseBackend::Postgres,
-                    r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."user_roles" ON "organizations"."id" = "user_roles"."organization_id" WHERE "user_roles"."user_id" = $1"#,
+                    r#"SELECT DISTINCT "organizations"."id", "organizations"."name", "organizations"."logo", "organizations"."slug", "organizations"."created_at", "organizations"."updated_at", "organizations"."archived_at", "organizations"."archived_by" FROM "refactor_platform"."organizations" INNER JOIN "refactor_platform"."user_roles" ON "organizations"."id" = "user_roles"."organization_id" WHERE "user_roles"."user_id" = $1"#,
                     [user_id.into()]
                 )
             ]

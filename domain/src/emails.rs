@@ -825,6 +825,8 @@ mod tests {
             slug: "acme-corp".to_string(),
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
+            archived_at: None,
+            archived_by: None,
         }
     }
 
