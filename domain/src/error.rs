@@ -51,6 +51,15 @@ pub enum EntityErrorKind {
     },
     CannotLinkCompletedGoal,
     GoalAlreadyLinkedToSession,
+    OrganizationNotEmpty {
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+        member_count: u64,
+    },
+    OrganizationNameTaken {
+        name: String,
+    },
+    OrganizationArchived,
     /// Token missing, expired, or has wrong purpose. Collapsed deliberately
     /// for password-reset endpoints so attackers can't distinguish these
     /// three cases via the response.
@@ -134,6 +143,19 @@ impl From<EntityApiError> for Error {
             EntityApiErrorKind::GoalAlreadyLinkedToSession => {
                 EntityErrorKind::GoalAlreadyLinkedToSession
             }
+            EntityApiErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count,
+                coaching_session_count,
+                member_count,
+            } => EntityErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count: *coaching_relationship_count,
+                coaching_session_count: *coaching_session_count,
+                member_count: *member_count,
+            },
+            EntityApiErrorKind::OrganizationNameTaken { name } => {
+                EntityErrorKind::OrganizationNameTaken { name: name.clone() }
+            }
+            EntityApiErrorKind::OrganizationArchived => EntityErrorKind::OrganizationArchived,
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
