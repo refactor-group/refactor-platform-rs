@@ -29,16 +29,18 @@ pub async fn create(
     let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
     let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
 
-    let coach_organization_ids = organization::find_by_user(db, coach.id)
-        .await?
-        .iter()
-        .map(|org| org.id)
-        .collect::<Vec<Id>>();
-    let coachee_organization_ids = organization::find_by_user(db, coachee.id)
-        .await?
-        .iter()
-        .map(|org| org.id)
-        .collect::<Vec<Id>>();
+    let coach_organization_ids =
+        organization::find_by_user(db, coach.id, organization::StatusFilter::Active)
+            .await?
+            .iter()
+            .map(|org| org.id)
+            .collect::<Vec<Id>>();
+    let coachee_organization_ids =
+        organization::find_by_user(db, coachee.id, organization::StatusFilter::Active)
+            .await?
+            .iter()
+            .map(|org| org.id)
+            .collect::<Vec<Id>>();
 
     // Check that the coach and coachee belong to the correct organization
     if !coach_organization_ids.contains(&organization_id)
