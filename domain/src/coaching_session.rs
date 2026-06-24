@@ -5,7 +5,7 @@ use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
 };
 use crate::coaching_sessions::Model;
-use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::provider::MeetingProperties;
@@ -82,6 +82,14 @@ pub async fn create(
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived,
+            )),
+        });
+    }
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
@@ -619,6 +627,39 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Creating a session under an archived org fails with `OrganizationArchived`
+    /// before any Tiptap/meeting side effects run.
+    #[tokio::test]
+    async fn create_rejects_archived_organization() {
+        let now = chrono::Utc::now();
+        let org = organizations::Model {
+            archived_at: Some(now.into()),
+            archived_by: Some(Id::new_v4()),
+            ..test_organization()
+        };
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        // Only relationship + org are queried; guard returns before any insert.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .into_connection();
+
+        let config = test_config("http://unused.test");
+        let (publisher, _recorded) = recording_publisher();
+        let result = create(&db, &config, &publisher, session, Some(Duration::default())).await;
+
+        let err = result.expect_err("expected archived-org rejection");
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived
+            ))
+        ));
     }
 
     /// A prior session with a Deferred topic carries that topic forward at create
