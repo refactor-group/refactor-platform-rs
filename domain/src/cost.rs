@@ -1,4 +1,5 @@
 use crate::cost_metric::Metric;
+use crate::cost_unit::Unit;
 use crate::error::Error;
 use crate::pipeline_provider::Provider;
 use crate::Id;
@@ -14,61 +15,8 @@ use sea_orm::DatabaseConnection;
 /// value written by `try_claim_completed`. No-ops with a warning if no pricing
 /// row is configured.
 pub async fn record_bot_minutes(db: &DatabaseConnection, recording_id: Id) -> Result<(), Error> {
-    let rate =
-        match cost_pricing_config::find_current_rate(db, Provider::RecallAi, Metric::BotMinutes)
-            .await?
-        {
-            Some(r) => r,
-            None => {
-                warn!(
-                    "cost: no pricing config for (RecallAi, BotMinutes) — skipping recording {}",
-                    recording_id
-                );
-                return Ok(());
-            }
-        };
-
-    let recording = match recording_api::find_by_id(db, recording_id).await? {
-        Some(r) => r,
-        None => {
-            warn!(
-                "cost: recording {} not found — skipping bot minutes cost",
-                recording_id
-            );
-            return Ok(());
-        }
-    };
-
-    let duration_seconds = match recording.duration_seconds {
-        Some(d) => d,
-        None => {
-            warn!(
-                "cost: recording {} has no duration_seconds — skipping bot minutes cost",
-                recording_id
-            );
-            return Ok(());
-        }
-    };
-
-    let quantity = Decimal::from(duration_seconds) / Decimal::from(60);
-
-    platform_cost_metrics::create(
-        db,
-        CostMetricsModel {
-            id: Id::new_v4(),
-            provider: Provider::RecallAi,
-            metric: Metric::BotMinutes,
-            coaching_session_id: Some(recording.coaching_session_id),
-            source_record_id: recording_id,
-            cost_low: quantity * rate.cost_per_unit_low,
-            cost_high: quantity * rate.cost_per_unit_high,
-            cost_avg: quantity * rate.cost_per_unit_avg,
-            created_at: chrono::Utc::now().fixed_offset(),
-        },
-    )
-    .await?;
-
-    Ok(())
+    // The recording is both the cost source record and the duration source.
+    record(db, Metric::BotMinutes, recording_id, recording_id).await
 }
 
 /// Records the Recall.ai transcription-hours cost for a completed transcription.
@@ -80,55 +28,68 @@ pub async fn record_transcription_hours(
     transcription_id: Id,
     meeting_recording_id: Id,
 ) -> Result<(), Error> {
-    let rate = match cost_pricing_config::find_current_rate(
+    // Cost is attributed to the transcription, but duration comes from the recording.
+    record(
         db,
-        Provider::RecallAi,
         Metric::TranscriptionHours,
+        transcription_id,
+        meeting_recording_id,
     )
-    .await?
-    {
-        Some(r) => r,
-        None => {
-            warn!(
-                "cost: no pricing config for (RecallAi, TranscriptionHours) — skipping transcription {}",
-                transcription_id
-            );
-            return Ok(());
-        }
+    .await
+}
+
+/// Shared cost-recording path for the duration-derived Recall.ai metrics.
+///
+/// Looks up the current rate, fetches the recording that carries the billable
+/// duration, derives the quantity in the rate's unit, and writes one cost row.
+/// No-ops with a warning at each missing-data gate (no rate, no recording, no
+/// duration, or a unit not derivable from a duration) rather than writing a
+/// misleading `$0.00` row. The rate lookup runs first so a missing rate skips
+/// the recording fetch entirely.
+async fn record(
+    db: &DatabaseConnection,
+    metric: Metric,
+    source_record_id: Id,
+    meeting_recording_id: Id,
+) -> Result<(), Error> {
+    let Some(rate) = cost_pricing_config::find_current_rate(db, Provider::RecallAi, metric).await?
+    else {
+        warn!("cost: no pricing config for (RecallAi, {metric:?}) — skipping {source_record_id}");
+        return Ok(());
     };
 
-    let recording = match recording_api::find_by_id(db, meeting_recording_id).await? {
-        Some(r) => r,
-        None => {
-            warn!(
-                "cost: recording {} not found — skipping transcription hours cost",
-                meeting_recording_id
-            );
-            return Ok(());
-        }
+    let Some(recording) = recording_api::find_by_id(db, meeting_recording_id).await? else {
+        warn!(
+            "cost: recording {} not found — skipping {:?} cost for {}",
+            meeting_recording_id, metric, source_record_id
+        );
+        return Ok(());
     };
 
-    let duration_seconds = match recording.duration_seconds {
-        Some(d) => d,
-        None => {
-            warn!(
-                "cost: recording {} has no duration_seconds — skipping transcription hours cost for transcription {}",
-                meeting_recording_id, transcription_id
-            );
-            return Ok(());
-        }
+    let Some(duration_seconds) = recording.duration_seconds else {
+        warn!(
+            "cost: recording {} has no duration_seconds — skipping {:?} cost for {}",
+            meeting_recording_id, metric, source_record_id
+        );
+        return Ok(());
     };
 
-    let quantity = Decimal::from(duration_seconds) / Decimal::from(3600);
+    let Some(quantity) = quantity_from_seconds(rate.unit, duration_seconds) else {
+        warn!(
+            "cost: rate unit {:?} for {:?} is not derivable from a recording duration — skipping {}",
+            rate.unit, metric, source_record_id
+        );
+        return Ok(());
+    };
 
     platform_cost_metrics::create(
         db,
         CostMetricsModel {
             id: Id::new_v4(),
             provider: Provider::RecallAi,
-            metric: Metric::TranscriptionHours,
+            metric,
             coaching_session_id: Some(recording.coaching_session_id),
-            source_record_id: transcription_id,
+            source_record_id,
             cost_low: quantity * rate.cost_per_unit_low,
             cost_high: quantity * rate.cost_per_unit_high,
             cost_avg: quantity * rate.cost_per_unit_avg,
@@ -138,6 +99,19 @@ pub async fn record_transcription_hours(
     .await?;
 
     Ok(())
+}
+
+/// Converts a recording duration into a billable quantity expressed in `unit`.
+///
+/// Returns `None` for units that cannot be derived from a wall-clock duration
+/// (e.g. `Tokens`), so the caller skips recording rather than billing nonsense.
+fn quantity_from_seconds(unit: Unit, duration_seconds: i32) -> Option<Decimal> {
+    let seconds_per_unit = match unit {
+        Unit::Minutes => 60,
+        Unit::Hours => 3600,
+        Unit::Tokens => return None,
+    };
+    Some(Decimal::from(duration_seconds) / Decimal::from(seconds_per_unit))
 }
 
 #[cfg(test)]
@@ -155,11 +129,16 @@ mod tests {
     use std::sync::Arc;
 
     fn test_rate(metric: Metric) -> RateModel {
+        let unit = match metric {
+            Metric::BotMinutes => Unit::Minutes,
+            Metric::TranscriptionHours => Unit::Hours,
+            Metric::LlmTokens => Unit::Tokens,
+        };
         RateModel {
             id: Id::new_v4(),
             provider: Provider::RecallAi,
             metric,
-            unit: Unit::Minutes,
+            unit,
             cost_per_unit_low: Decimal::new(1, 3),
             cost_per_unit_high: Decimal::new(5, 3),
             cost_per_unit_avg: Decimal::new(3, 3),
