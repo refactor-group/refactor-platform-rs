@@ -38,7 +38,18 @@ pub async fn record_bot_minutes(db: &DatabaseConnection, recording_id: Id) -> Re
         }
     };
 
-    let quantity = recording.duration_seconds.unwrap_or(0) as f64 / 60.0;
+    let duration_seconds = match recording.duration_seconds {
+        Some(d) => d,
+        None => {
+            warn!(
+                "cost: recording {} has no duration_seconds — skipping bot minutes cost",
+                recording_id
+            );
+            return Ok(());
+        }
+    };
+
+    let quantity = duration_seconds as f64 / 60.0;
 
     platform_cost_metrics::create(
         db,
@@ -96,7 +107,18 @@ pub async fn record_transcription_hours(
         }
     };
 
-    let quantity = recording.duration_seconds.unwrap_or(0) as f64 / 3600.0;
+    let duration_seconds = match recording.duration_seconds {
+        Some(d) => d,
+        None => {
+            warn!(
+                "cost: recording {} has no duration_seconds — skipping transcription hours cost for transcription {}",
+                meeting_recording_id, transcription_id
+            );
+            return Ok(());
+        }
+    };
+
+    let quantity = duration_seconds as f64 / 3600.0;
 
     platform_cost_metrics::create(
         db,
@@ -222,6 +244,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_bot_minutes_noop_when_duration_missing() {
+        let session_id = Id::new_v4();
+        let mut recording = test_recording(session_id);
+        recording.duration_seconds = None;
+        let recording_id = recording.id;
+        let rate = test_rate(Metric::BotMinutes);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![rate]])
+                .append_query_results(vec![vec![recording]])
+                .into_connection(),
+        );
+
+        let result = super::record_bot_minutes(&db, recording_id).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
     async fn record_transcription_hours_creates_cost_row_when_rate_configured() {
         let session_id = Id::new_v4();
         let recording = test_recording(session_id);
@@ -265,6 +306,26 @@ mod tests {
         );
 
         let result = super::record_transcription_hours(&db, Id::new_v4(), Id::new_v4()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn record_transcription_hours_noop_when_duration_missing() {
+        let session_id = Id::new_v4();
+        let mut recording = test_recording(session_id);
+        recording.duration_seconds = None;
+        let recording_id = recording.id;
+        let transcription_id = Id::new_v4();
+        let rate = test_rate(Metric::TranscriptionHours);
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![rate]])
+                .append_query_results(vec![vec![recording]])
+                .into_connection(),
+        );
+
+        let result = super::record_transcription_hours(&db, transcription_id, recording_id).await;
         assert!(result.is_ok());
     }
 }
