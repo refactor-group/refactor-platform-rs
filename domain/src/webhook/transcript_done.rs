@@ -68,6 +68,8 @@ pub async fn handle(
             .await;
         }
 
+        // Recorded unconditionally (outside the success branch): Recall.ai bills for
+        // the transcription attempt regardless of whether completion succeeds.
         if let Err(e) =
             crate::cost::record_transcription_hours(&db, transcription_id, meeting_recording_id)
                 .await
