@@ -10,7 +10,15 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(
-                "CREATE TYPE refactor_platform.pipeline_provider AS ENUM ('recall_ai', 'llm_gateway')",
+                // CREATE TYPE has no IF NOT EXISTS; wrap in a DO block that
+                // swallows duplicate_object so partial-failure re-runs are safe.
+                r#"
+                DO $$ BEGIN
+                    CREATE TYPE refactor_platform.pipeline_provider AS ENUM ('recall_ai', 'llm_gateway');
+                EXCEPTION
+                    WHEN duplicate_object THEN null;
+                END $$;
+                "#,
             )
             .await?;
 
@@ -23,8 +31,13 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(
-                "CREATE TYPE refactor_platform.cost_metric AS ENUM \
-                 ('bot_minutes', 'transcription_hours', 'llm_tokens')",
+                r#"
+                DO $$ BEGIN
+                    CREATE TYPE refactor_platform.cost_metric AS ENUM ('bot_minutes', 'transcription_hours', 'llm_tokens');
+                EXCEPTION
+                    WHEN duplicate_object THEN null;
+                END $$;
+                "#,
             )
             .await?;
 
@@ -37,7 +50,13 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(
-                "CREATE TYPE refactor_platform.cost_unit AS ENUM ('minutes', 'hours', 'tokens')",
+                r#"
+                DO $$ BEGIN
+                    CREATE TYPE refactor_platform.cost_unit AS ENUM ('minutes', 'hours', 'tokens');
+                EXCEPTION
+                    WHEN duplicate_object THEN null;
+                END $$;
+                "#,
             )
             .await?;
 
