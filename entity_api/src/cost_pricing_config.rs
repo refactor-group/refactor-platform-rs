@@ -1,13 +1,13 @@
 use crate::error::Error;
 use entity::{
     cost_metric::Metric,
-    cost_pricing_config::{ActiveModel, Column, Entity, Model},
+    cost_pricing_config::{Column, Entity, Model},
     pipeline_provider::Provider,
     Id,
 };
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, Order,
-    QueryFilter, QueryOrder, QuerySelect,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
+    IntoActiveModel, Order, QueryFilter, QueryOrder, QuerySelect,
 };
 
 /// Finds the most-recently effective rate for the given provider and metric as of now.
@@ -29,16 +29,10 @@ pub async fn find_current_rate(
 }
 
 pub async fn create(db: &DatabaseConnection, model: Model) -> Result<Model, Error> {
-    let active_model = ActiveModel {
-        id: Set(Id::new_v4()),
-        provider: Set(model.provider),
-        metric: Set(model.metric),
-        unit: Set(model.unit),
-        cost_per_unit_low: Set(model.cost_per_unit_low),
-        cost_per_unit_high: Set(model.cost_per_unit_high),
-        cost_per_unit_avg: Set(model.cost_per_unit_avg),
-        effective_from: Set(model.effective_from),
-    };
+    let mut active_model = model.into_active_model();
+    // Override the server-generated id; the rest (including effective_from) carry
+    // over from the caller's model.
+    active_model.id = Set(Id::new_v4());
 
     Ok(active_model.insert(db).await?)
 }

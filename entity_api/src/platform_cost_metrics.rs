@@ -1,25 +1,18 @@
 use crate::error::Error;
 use entity::{
-    platform_cost_metrics::{ActiveModel, Column, Entity, Model},
+    platform_cost_metrics::{Column, Entity, Model},
     Id,
 };
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, Order,
-    QueryFilter, QueryOrder,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
+    IntoActiveModel, Order, QueryFilter, QueryOrder,
 };
 
 pub async fn create(db: &DatabaseConnection, model: Model) -> Result<Model, Error> {
-    let active_model = ActiveModel {
-        id: Set(Id::new_v4()),
-        provider: Set(model.provider),
-        metric: Set(model.metric),
-        coaching_session_id: Set(model.coaching_session_id),
-        source_record_id: Set(model.source_record_id),
-        cost_low: Set(model.cost_low),
-        cost_high: Set(model.cost_high),
-        cost_avg: Set(model.cost_avg),
-        created_at: Set(chrono::Utc::now().fixed_offset()),
-    };
+    let mut active_model = model.into_active_model();
+    // Override server-generated fields; the rest carry over from the caller's model.
+    active_model.id = Set(Id::new_v4());
+    active_model.created_at = Set(chrono::Utc::now().fixed_offset());
 
     Ok(active_model.insert(db).await?)
 }
