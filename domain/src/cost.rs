@@ -1,12 +1,10 @@
 use crate::cost_metric::Metric;
-use crate::cost_unit::Unit;
 use crate::error::Error;
 use crate::pipeline_provider::Provider;
 use crate::Id;
 use entity::platform_cost_metrics::Model as CostMetricsModel;
 use entity_api::{cost_pricing_config, meeting_recording as recording_api, platform_cost_metrics};
 use log::warn;
-use sea_orm::prelude::Decimal;
 use sea_orm::DatabaseConnection;
 
 /// Records the Recall.ai bot-minutes cost for a completed recording.
@@ -66,18 +64,12 @@ async fn record(
         return Ok(());
     };
 
-    let Some(duration_seconds) = recording.duration_seconds else {
+    // `None` here means nothing to bill — a missing/non-positive duration or a
+    // non-duration unit — so we skip rather than write a misleading $0.00 row.
+    let Some(quantity) = rate.unit.quantity_from_seconds(recording.duration_seconds) else {
         warn!(
-            "cost: recording {} has no duration_seconds — skipping {:?} cost for {}",
-            meeting_recording_id, metric, source_record_id
-        );
-        return Ok(());
-    };
-
-    let Some(quantity) = quantity_from_seconds(rate.unit, duration_seconds) else {
-        warn!(
-            "cost: rate unit {:?} for {:?} is not derivable from a recording duration — skipping {}",
-            rate.unit, metric, source_record_id
+            "cost: no billable quantity for {:?} (recording {}, unit {:?}, duration {:?}) — skipping {}",
+            metric, meeting_recording_id, rate.unit, recording.duration_seconds, source_record_id
         );
         return Ok(());
     };
@@ -99,19 +91,6 @@ async fn record(
     .await?;
 
     Ok(())
-}
-
-/// Converts a recording duration into a billable quantity expressed in `unit`.
-///
-/// Returns `None` for units that cannot be derived from a wall-clock duration
-/// (e.g. `Tokens`), so the caller skips recording rather than billing nonsense.
-fn quantity_from_seconds(unit: Unit, duration_seconds: i32) -> Option<Decimal> {
-    let seconds_per_unit = match unit {
-        Unit::Minutes => 60,
-        Unit::Hours => 3600,
-        Unit::Tokens => return None,
-    };
-    Some(Decimal::from(duration_seconds) / Decimal::from(seconds_per_unit))
 }
 
 #[cfg(test)]
