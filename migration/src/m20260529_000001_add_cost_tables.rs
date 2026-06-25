@@ -88,7 +88,12 @@ impl MigrationTrait for Migration {
                     cost_low            NUMERIC(14, 6) NOT NULL,
                     cost_high           NUMERIC(14, 6) NOT NULL,
                     cost_avg            NUMERIC(14, 6) NOT NULL,
-                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    -- Defense-in-depth: one cost row per source record per metric.
+                    -- Idempotency normally rests on the upstream claim gates; this
+                    -- guards against double-recording if cost recording is ever
+                    -- invoked from a second path (backfill/admin).
+                    UNIQUE (source_record_id, metric)
                 )
                 "#,
             )
