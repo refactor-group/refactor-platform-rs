@@ -14,7 +14,7 @@ pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_session_topics,
     coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit,
     duration, goals, jwts, magic_link_tokens, meeting_provider, notes, oauth_connections,
-    organizations, password_reset_attempts, pipeline_provider, provider, query::QuerySort, status,
+    organizations, password_reset_attempts, pipeline_provider, query::QuerySort, status,
     token_purpose, topic_priority, topic_status, user_roles, users, Id,
 };
 

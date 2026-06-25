@@ -30,7 +30,6 @@ pub mod organizations;
 pub mod password_reset_attempts;
 pub mod pipeline_provider;
 pub mod platform_cost_metrics;
-pub mod provider;
 pub mod roles;
 pub mod status;
 pub mod token_purpose;
