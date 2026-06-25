@@ -56,9 +56,9 @@ impl MigrationTrait for Migration {
                     provider            refactor_platform.pipeline_provider NOT NULL,
                     metric              refactor_platform.cost_metric NOT NULL,
                     unit                refactor_platform.cost_unit NOT NULL,
-                    cost_per_unit_low   DOUBLE PRECISION NOT NULL,
-                    cost_per_unit_high  DOUBLE PRECISION NOT NULL,
-                    cost_per_unit_avg   DOUBLE PRECISION NOT NULL,
+                    cost_per_unit_low   NUMERIC(20, 10) NOT NULL,
+                    cost_per_unit_high  NUMERIC(20, 10) NOT NULL,
+                    cost_per_unit_avg   NUMERIC(20, 10) NOT NULL,
                     effective_from      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (provider, metric, effective_from)
                 )
@@ -85,9 +85,9 @@ impl MigrationTrait for Migration {
                     coaching_session_id UUID REFERENCES refactor_platform.coaching_sessions(id)
                                         ON DELETE SET NULL,
                     source_record_id    UUID NOT NULL,
-                    cost_low            DOUBLE PRECISION NOT NULL,
-                    cost_high           DOUBLE PRECISION NOT NULL,
-                    cost_avg            DOUBLE PRECISION NOT NULL,
+                    cost_low            NUMERIC(14, 6) NOT NULL,
+                    cost_high           NUMERIC(14, 6) NOT NULL,
+                    cost_avg            NUMERIC(14, 6) NOT NULL,
                     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 "#,

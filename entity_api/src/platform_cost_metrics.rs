@@ -39,6 +39,7 @@ pub async fn find_by_session(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
+    use sea_orm::prelude::Decimal;
     use sea_orm::{DatabaseBackend, MockDatabase};
 
     fn test_metric(session_id: Id) -> Model {
@@ -48,9 +49,9 @@ mod tests {
             metric: entity::cost_metric::Metric::BotMinutes,
             coaching_session_id: Some(session_id),
             source_record_id: Id::new_v4(),
-            cost_low: 0.10,
-            cost_high: 0.50,
-            cost_avg: 0.30,
+            cost_low: Decimal::new(10, 2),
+            cost_high: Decimal::new(50, 2),
+            cost_avg: Decimal::new(30, 2),
             created_at: chrono::Utc::now().fixed_offset(),
         }
     }

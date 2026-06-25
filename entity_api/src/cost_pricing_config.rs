@@ -48,6 +48,7 @@ pub async fn create(db: &DatabaseConnection, model: Model) -> Result<Model, Erro
 mod tests {
     use super::*;
     use entity::cost_unit::Unit;
+    use sea_orm::prelude::Decimal;
     use sea_orm::{DatabaseBackend, MockDatabase};
 
     fn test_rate() -> Model {
@@ -56,9 +57,9 @@ mod tests {
             provider: Provider::RecallAi,
             metric: Metric::BotMinutes,
             unit: Unit::Minutes,
-            cost_per_unit_low: 0.001,
-            cost_per_unit_high: 0.005,
-            cost_per_unit_avg: 0.003,
+            cost_per_unit_low: Decimal::new(1, 3),
+            cost_per_unit_high: Decimal::new(5, 3),
+            cost_per_unit_avg: Decimal::new(3, 3),
             effective_from: chrono::Utc::now().fixed_offset(),
         }
     }

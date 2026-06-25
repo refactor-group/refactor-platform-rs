@@ -2,6 +2,7 @@ use crate::cost_metric;
 use crate::pipeline_provider;
 use crate::Id;
 use sea_orm::entity::prelude::*;
+use sea_orm::prelude::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -20,9 +21,17 @@ pub struct Model {
     /// Logical FK to the source record (meeting_recordings.id or transcriptions.id).
     /// Not a DB-level FK because it can point to different tables.
     pub source_record_id: Id,
-    pub cost_low: f64,
-    pub cost_high: f64,
-    pub cost_avg: f64,
+    /// Computed cost. Stored as `NUMERIC(14, 6)` — micro-dollar precision
+    /// (standard for usage-based billing), with headroom to ~$100M per row.
+    #[sea_orm(column_type = "Decimal(Some((14, 6)))")]
+    #[schema(value_type = f64)]
+    pub cost_low: Decimal,
+    #[sea_orm(column_type = "Decimal(Some((14, 6)))")]
+    #[schema(value_type = f64)]
+    pub cost_high: Decimal,
+    #[sea_orm(column_type = "Decimal(Some((14, 6)))")]
+    #[schema(value_type = f64)]
+    pub cost_avg: Decimal,
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeWithTimeZone,

@@ -5,6 +5,7 @@ use crate::Id;
 use entity::platform_cost_metrics::Model as CostMetricsModel;
 use entity_api::{cost_pricing_config, meeting_recording as recording_api, platform_cost_metrics};
 use log::warn;
+use sea_orm::prelude::Decimal;
 use sea_orm::DatabaseConnection;
 
 /// Records the Recall.ai bot-minutes cost for a completed recording.
@@ -49,7 +50,7 @@ pub async fn record_bot_minutes(db: &DatabaseConnection, recording_id: Id) -> Re
         }
     };
 
-    let quantity = duration_seconds as f64 / 60.0;
+    let quantity = Decimal::from(duration_seconds) / Decimal::from(60);
 
     platform_cost_metrics::create(
         db,
@@ -118,7 +119,7 @@ pub async fn record_transcription_hours(
         }
     };
 
-    let quantity = duration_seconds as f64 / 3600.0;
+    let quantity = Decimal::from(duration_seconds) / Decimal::from(3600);
 
     platform_cost_metrics::create(
         db,
@@ -149,6 +150,7 @@ mod tests {
     use entity::pipeline_provider::Provider;
     use entity::platform_cost_metrics::Model as CostMetricsModel;
     use entity::Id;
+    use sea_orm::prelude::Decimal;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use std::sync::Arc;
 
@@ -158,9 +160,9 @@ mod tests {
             provider: Provider::RecallAi,
             metric,
             unit: Unit::Minutes,
-            cost_per_unit_low: 0.001,
-            cost_per_unit_high: 0.005,
-            cost_per_unit_avg: 0.003,
+            cost_per_unit_low: Decimal::new(1, 3),
+            cost_per_unit_high: Decimal::new(5, 3),
+            cost_per_unit_avg: Decimal::new(3, 3),
             effective_from: chrono::Utc::now().fixed_offset(),
         }
     }
@@ -190,9 +192,9 @@ mod tests {
             metric: Metric::BotMinutes,
             coaching_session_id: Some(session_id),
             source_record_id: Id::new_v4(),
-            cost_low: 0.005,
-            cost_high: 0.025,
-            cost_avg: 0.015,
+            cost_low: Decimal::new(5, 3),
+            cost_high: Decimal::new(25, 3),
+            cost_avg: Decimal::new(15, 3),
             created_at: chrono::Utc::now().fixed_offset(),
         }
     }

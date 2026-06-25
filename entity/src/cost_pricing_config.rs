@@ -3,6 +3,7 @@ use crate::cost_unit;
 use crate::pipeline_provider;
 use crate::Id;
 use sea_orm::entity::prelude::*;
+use sea_orm::prelude::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -15,9 +16,17 @@ pub struct Model {
     pub provider: pipeline_provider::Provider,
     pub metric: cost_metric::Metric,
     pub unit: cost_unit::Unit,
-    pub cost_per_unit_low: f64,
-    pub cost_per_unit_high: f64,
-    pub cost_per_unit_avg: f64,
+    /// Per-unit rate. Stored as `NUMERIC(20, 10)` so per-token pricing
+    /// (e.g. ~$0.0000025) keeps full fractional precision before multiplication.
+    #[sea_orm(column_type = "Decimal(Some((20, 10)))")]
+    #[schema(value_type = f64)]
+    pub cost_per_unit_low: Decimal,
+    #[sea_orm(column_type = "Decimal(Some((20, 10)))")]
+    #[schema(value_type = f64)]
+    pub cost_per_unit_high: Decimal,
+    #[sea_orm(column_type = "Decimal(Some((20, 10)))")]
+    #[schema(value_type = f64)]
+    pub cost_per_unit_avg: Decimal,
     #[schema(value_type = String, format = DateTime)]
     pub effective_from: DateTimeWithTimeZone,
 }
