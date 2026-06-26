@@ -8,7 +8,6 @@ use entity_api::status::Status;
 use entity_api::{actions, actions_user, query};
 use log::*;
 use sea_orm::DatabaseConnection;
-use serde_json::Value;
 
 // Mutations that emit SSE (create_with_assignees, update_with_assignees, update_status,
 // delete_by_id) are wrapped below; the rest are direct re-exports.
@@ -90,7 +89,15 @@ async fn publish_action_changed(
     let Some(notify_user_ids) = action_notify_user_ids(db, coaching_session_id).await else {
         return;
     };
-    let payload = serde_json::to_value(action).unwrap_or(Value::Null);
+    let payload = match serde_json::to_value(action) {
+        Ok(payload) => payload,
+        Err(e) => {
+            error!(
+                "action SSE: failed to serialize action for session {coaching_session_id}: {e:?}"
+            );
+            return;
+        }
+    };
     let event = if created {
         DomainEvent::ActionCreated {
             coaching_session_id,
@@ -142,8 +149,13 @@ pub async fn update_status(
     status: Status,
 ) -> Result<Model, Error> {
     let action = entity_api::action::update_status(db, id, status).await?;
-    if let Ok(with_assignees) = entity_api::action::find_by_id_with_assignees(db, id).await {
-        publish_action_changed(db, event_publisher, &with_assignees, false).await;
+    match entity_api::action::find_by_id_with_assignees(db, id).await {
+        Ok(with_assignees) => {
+            publish_action_changed(db, event_publisher, &with_assignees, false).await;
+        }
+        Err(e) => {
+            error!("action SSE: failed to re-read assignees for action {id} after status update; skipping ActionUpdated: {e:?}");
+        }
     }
     Ok(action)
 }
