@@ -555,3 +555,55 @@ pub async fn test_topic_delete(
 
     Ok(expect_topics_changed(sse2, &test_env.session_id, "topic_delete", start).await)
 }
+
+// --- Coaching session title (coarse, session-scoped) ---
+
+pub async fn test_title_update(
+    user1: &AuthenticatedUser,
+    _user2: &AuthenticatedUser,
+    test_env: &TestEnvironment,
+    api_client: &ApiClient,
+    _sse1: &mut Connection,
+    sse2: &mut Connection,
+) -> Result<TestResult> {
+    let start = Instant::now();
+    println!("\n{}", "=== TEST: Title Update ===".bright_cyan().bold());
+
+    println!("{} User 1 updating session title...", "→".blue());
+    api_client
+        .update_session_title(
+            &user1.session_cookie,
+            &test_env.session_id,
+            "Renamed by SSE test tool",
+        )
+        .await?;
+
+    println!(
+        "{} Waiting for User 2 to receive coaching_session_title_updated event...",
+        "→".blue()
+    );
+    match sse2
+        .wait_for_event("coaching_session_title_updated", Duration::from_secs(5))
+        .await
+    {
+        Ok(event) => {
+            print_event(&sse2.user_label, &event);
+            let got = event.data["data"]["coaching_session_id"]
+                .as_str()
+                .unwrap_or_default();
+            let passed = got == test_env.session_id;
+            Ok(TestResult {
+                scenario: "title_update".to_string(),
+                passed,
+                message: (!passed).then(|| format!("Session ID mismatch: got {}", got)),
+                duration: start.elapsed(),
+            })
+        }
+        Err(e) => Ok(TestResult {
+            scenario: "title_update".to_string(),
+            passed: false,
+            message: Some(format!("Timeout: {}", e)),
+            duration: start.elapsed(),
+        }),
+    }
+}

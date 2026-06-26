@@ -110,6 +110,14 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from the relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when a coaching session's title is set/changed via the title endpoint.
+    /// Coarse: carries no entity — participants refetch the session. Triggers SSE to coach + coachee.
+    CoachingSessionTitleUpdated {
+        /// The coaching session whose title changed.
+        coaching_session_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from the relationship).
+        notify_user_ids: Vec<Id>,
+    },
     /// Emitted when a transcription status changes (created, completed, or failed).
     /// Triggers SSE notifications so participants see the current transcription state without polling.
     TranscriptionUpdated {

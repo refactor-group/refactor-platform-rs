@@ -86,6 +86,10 @@ pub enum Event {
     #[serde(rename = "topics_changed")]
     TopicsChanged { coaching_session_id: String },
 
+    // Coaching session entity events (session-scoped, coarse: refetch on receipt)
+    #[serde(rename = "coaching_session_title_updated")]
+    CoachingSessionTitleUpdated { coaching_session_id: String },
+
     // Transcription events (session-scoped)
     #[serde(rename = "transcription_updated")]
     TranscriptionUpdated { coaching_session_id: String },
@@ -108,6 +112,7 @@ impl EventType for Event {
             Event::ForceLogout { .. } => "force_logout",
             Event::MeetingRecordingUpdated { .. } => "meeting_recording_updated",
             Event::TopicsChanged { .. } => "topics_changed",
+            Event::CoachingSessionTitleUpdated { .. } => "coaching_session_title_updated",
             Event::TranscriptionUpdated { .. } => "transcription_updated",
         }
     }
@@ -125,4 +130,26 @@ pub enum MessageScope {
     User { user_id: String },
     /// Send to all connected users
     Broadcast,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Pins the coarse session-title event wire shape consumers depend on.
+    #[test]
+    fn coaching_session_title_updated_serializes_to_expected_wire_shape() {
+        let event = Event::CoachingSessionTitleUpdated {
+            coaching_session_id: "abc-123".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "coaching_session_title_updated",
+                "data": { "coaching_session_id": "abc-123" }
+            })
+        );
+        assert_eq!(event.event_type(), "coaching_session_title_updated");
+    }
 }
