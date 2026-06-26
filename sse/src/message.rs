@@ -86,6 +86,10 @@ pub enum Event {
     #[serde(rename = "topics_changed")]
     TopicsChanged { coaching_session_id: String },
 
+    // Coaching session entity events (session-scoped, coarse: refetch on receipt)
+    #[serde(rename = "coaching_session_title_updated")]
+    CoachingSessionTitleUpdated { coaching_session_id: String },
+
     // Transcription events (session-scoped)
     #[serde(rename = "transcription_updated")]
     TranscriptionUpdated { coaching_session_id: String },
@@ -108,6 +112,7 @@ impl EventType for Event {
             Event::ForceLogout { .. } => "force_logout",
             Event::MeetingRecordingUpdated { .. } => "meeting_recording_updated",
             Event::TopicsChanged { .. } => "topics_changed",
+            Event::CoachingSessionTitleUpdated { .. } => "coaching_session_title_updated",
             Event::TranscriptionUpdated { .. } => "transcription_updated",
         }
     }
@@ -159,5 +164,52 @@ mod tests {
         );
         assert_eq!(created.event_type(), "agreement_created");
         assert_eq!(deleted.event_type(), "agreement_deleted");
+    }
+
+    // Pins the action event wire shapes consumers depend on (entity-in-payload).
+    #[test]
+    fn action_events_serialize_to_expected_wire_shape() {
+        let created = Event::ActionCreated {
+            coaching_session_id: "sess-1".to_string(),
+            action: serde_json::json!({ "id": "act-1", "body": "x" }),
+        };
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({
+                "type": "action_created",
+                "data": { "coaching_session_id": "sess-1", "action": { "id": "act-1", "body": "x" } }
+            })
+        );
+
+        let deleted = Event::ActionDeleted {
+            coaching_session_id: "sess-1".to_string(),
+            action_id: "act-1".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&deleted).unwrap(),
+            serde_json::json!({
+                "type": "action_deleted",
+                "data": { "coaching_session_id": "sess-1", "action_id": "act-1" }
+            })
+        );
+        assert_eq!(created.event_type(), "action_created");
+        assert_eq!(deleted.event_type(), "action_deleted");
+    }
+
+    // Pins the coarse session-title event wire shape consumers depend on.
+    #[test]
+    fn coaching_session_title_updated_serializes_to_expected_wire_shape() {
+        let event = Event::CoachingSessionTitleUpdated {
+            coaching_session_id: "abc-123".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "coaching_session_title_updated",
+                "data": { "coaching_session_id": "abc-123" }
+            })
+        );
+        assert_eq!(event.event_type(), "coaching_session_title_updated");
     }
 }

@@ -246,8 +246,13 @@ pub async fn update_title(
     State(app_state): State<AppState>,
     Json(params): Json<TitleUpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let updated =
-        CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session.id, params).await?;
+    let updated = CoachingSessionApi::update_title(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        coaching_session.id,
+        params,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }
 

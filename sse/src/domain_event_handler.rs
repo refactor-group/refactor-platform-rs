@@ -125,6 +125,19 @@ impl EventHandler for SseDomainEventHandler {
                 self.send_to_users(sse_event, notify_user_ids);
             }
 
+            DomainEvent::ActionCreated {
+                coaching_session_id,
+                action,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::ActionCreated {
+                    coaching_session_id: coaching_session_id.to_string(),
+                    action: action.clone(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
             DomainEvent::AgreementUpdated {
                 coaching_session_id,
                 agreement,
@@ -138,6 +151,19 @@ impl EventHandler for SseDomainEventHandler {
                 self.send_to_users(sse_event, notify_user_ids);
             }
 
+            DomainEvent::ActionUpdated {
+                coaching_session_id,
+                action,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::ActionUpdated {
+                    coaching_session_id: coaching_session_id.to_string(),
+                    action: action.clone(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
             DomainEvent::AgreementDeleted {
                 coaching_session_id,
                 agreement_id,
@@ -146,6 +172,19 @@ impl EventHandler for SseDomainEventHandler {
                 let sse_event = SseEvent::AgreementDeleted {
                     coaching_session_id: coaching_session_id.to_string(),
                     agreement_id: agreement_id.to_string(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
+            DomainEvent::ActionDeleted {
+                coaching_session_id,
+                action_id,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::ActionDeleted {
+                    coaching_session_id: coaching_session_id.to_string(),
+                    action_id: action_id.to_string(),
                 };
 
                 self.send_to_users(sse_event, notify_user_ids);
@@ -167,6 +206,17 @@ impl EventHandler for SseDomainEventHandler {
                 notify_user_ids,
             } => {
                 let sse_event = SseEvent::TopicsChanged {
+                    coaching_session_id: coaching_session_id.to_string(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
+
+            DomainEvent::CoachingSessionTitleUpdated {
+                coaching_session_id,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::CoachingSessionTitleUpdated {
                     coaching_session_id: coaching_session_id.to_string(),
                 };
 
