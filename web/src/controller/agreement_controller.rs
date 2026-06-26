@@ -44,7 +44,13 @@ pub async fn create(
 ) -> Result<impl IntoResponse, Error> {
     debug!("POST Create a New Agreement from: {agreement_model:?}");
 
-    let agreement = AgreementApi::create(app_state.db_conn_ref(), agreement_model, user.id).await?;
+    let agreement = AgreementApi::create(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        agreement_model,
+        user.id,
+    )
+    .await?;
 
     debug!("New Agreement: {agreement:?}");
 
@@ -114,7 +120,13 @@ pub async fn update(
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT Update Agreement with id: {id}");
 
-    let agreement = AgreementApi::update(app_state.db_conn_ref(), id, agreement_model).await?;
+    let agreement = AgreementApi::update(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+        agreement_model,
+    )
+    .await?;
 
     debug!("Updated Agreement: {agreement:?}");
 
@@ -188,6 +200,11 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, Error> {
     debug!("DELETE Agreement by id: {id}");
 
-    AgreementApi::delete_by_id(app_state.db_conn_ref(), id).await?;
+    AgreementApi::delete_by_id(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+    )
+    .await?;
     Ok(Json(json!({"id": id})))
 }

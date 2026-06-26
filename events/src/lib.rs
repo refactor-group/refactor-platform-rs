@@ -94,6 +94,34 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when an agreement is created within a coaching session.
+    /// Carries the full serialized agreement entity for optimistic UI updates.
+    AgreementCreated {
+        /// The coaching session the agreement belongs to.
+        coaching_session_id: Id,
+        /// Complete serialized agreement entity for the frontend cache.
+        agreement: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an agreement is modified.
+    AgreementUpdated {
+        /// The coaching session the agreement belongs to.
+        coaching_session_id: Id,
+        /// Complete updated agreement entity for the frontend cache.
+        agreement: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an agreement is removed.
+    AgreementDeleted {
+        /// The coaching session the agreement belonged to.
+        coaching_session_id: Id,
+        /// ID of the deleted agreement (full entity not included since it no longer exists).
+        agreement_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
     /// Emitted when an action is created within a coaching session.
     /// Carries the full serialized action (with assignees) for optimistic UI updates.
     ActionCreated {

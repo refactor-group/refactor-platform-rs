@@ -26,20 +26,20 @@ pub enum Event {
         action_id: String,
     },
 
-    // Agreements (relationship-scoped)
+    // Agreements (session-scoped)
     #[serde(rename = "agreement_created")]
     AgreementCreated {
-        coaching_relationship_id: String,
+        coaching_session_id: String,
         agreement: Value,
     },
     #[serde(rename = "agreement_updated")]
     AgreementUpdated {
-        coaching_relationship_id: String,
+        coaching_session_id: String,
         agreement: Value,
     },
     #[serde(rename = "agreement_deleted")]
     AgreementDeleted {
-        coaching_relationship_id: String,
+        coaching_session_id: String,
         agreement_id: String,
     },
 
@@ -135,6 +135,36 @@ pub enum MessageScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Pins the agreement event wire shapes (entity-in-payload, session-scoped).
+    #[test]
+    fn agreement_events_serialize_to_expected_wire_shape() {
+        let created = Event::AgreementCreated {
+            coaching_session_id: "sess-1".to_string(),
+            agreement: serde_json::json!({ "id": "agr-1", "body": "x" }),
+        };
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({
+                "type": "agreement_created",
+                "data": { "coaching_session_id": "sess-1", "agreement": { "id": "agr-1", "body": "x" } }
+            })
+        );
+
+        let deleted = Event::AgreementDeleted {
+            coaching_session_id: "sess-1".to_string(),
+            agreement_id: "agr-1".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&deleted).unwrap(),
+            serde_json::json!({
+                "type": "agreement_deleted",
+                "data": { "coaching_session_id": "sess-1", "agreement_id": "agr-1" }
+            })
+        );
+        assert_eq!(created.event_type(), "agreement_created");
+        assert_eq!(deleted.event_type(), "agreement_deleted");
+    }
 
     // Pins the action event wire shapes consumers depend on (entity-in-payload).
     #[test]

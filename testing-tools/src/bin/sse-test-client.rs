@@ -55,6 +55,12 @@ enum ScenarioChoice {
     TopicStatus,
     /// Test topic delete -> topics_changed (requires coaching session)
     TopicDelete,
+    /// Test agreement create -> agreement_created (requires coaching session)
+    AgreementCreate,
+    /// Test agreement update -> agreement_updated (requires coaching session)
+    AgreementUpdate,
+    /// Test agreement delete -> agreement_deleted (requires coaching session)
+    AgreementDelete,
     /// Test session title edit -> coaching_session_title_updated (requires coaching session)
     TitleUpdate,
     /// Run all tests including those requiring coaching data
@@ -294,6 +300,54 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
+        ScenarioChoice::AgreementCreate => {
+            let env = test_env
+                .as_ref()
+                .expect("Test environment required for AgreementCreate");
+            results.push(
+                scenarios::test_agreement_create(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+        }
+        ScenarioChoice::AgreementUpdate => {
+            let env = test_env
+                .as_ref()
+                .expect("Test environment required for AgreementUpdate");
+            results.push(
+                scenarios::test_agreement_update(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+        }
+        ScenarioChoice::AgreementDelete => {
+            let env = test_env
+                .as_ref()
+                .expect("Test environment required for AgreementDelete");
+            results.push(
+                scenarios::test_agreement_delete(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+        }
         ScenarioChoice::TitleUpdate => {
             let env = test_env
                 .as_ref()
@@ -398,6 +452,39 @@ async fn main() -> Result<()> {
             );
             results.push(
                 scenarios::test_topic_delete(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+            results.push(
+                scenarios::test_agreement_create(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+            results.push(
+                scenarios::test_agreement_update(
+                    &user1,
+                    &user2,
+                    env,
+                    &api_client,
+                    &mut sse1,
+                    &mut sse2,
+                )
+                .await?,
+            );
+            results.push(
+                scenarios::test_agreement_delete(
                     &user1,
                     &user2,
                     env,
