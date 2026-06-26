@@ -136,6 +136,36 @@ pub enum MessageScope {
 mod tests {
     use super::*;
 
+    // Pins the action event wire shapes consumers depend on (entity-in-payload).
+    #[test]
+    fn action_events_serialize_to_expected_wire_shape() {
+        let created = Event::ActionCreated {
+            coaching_session_id: "sess-1".to_string(),
+            action: serde_json::json!({ "id": "act-1", "body": "x" }),
+        };
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({
+                "type": "action_created",
+                "data": { "coaching_session_id": "sess-1", "action": { "id": "act-1", "body": "x" } }
+            })
+        );
+
+        let deleted = Event::ActionDeleted {
+            coaching_session_id: "sess-1".to_string(),
+            action_id: "act-1".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&deleted).unwrap(),
+            serde_json::json!({
+                "type": "action_deleted",
+                "data": { "coaching_session_id": "sess-1", "action_id": "act-1" }
+            })
+        );
+        assert_eq!(created.event_type(), "action_created");
+        assert_eq!(deleted.event_type(), "action_deleted");
+    }
+
     // Pins the coarse session-title event wire shape consumers depend on.
     #[test]
     fn coaching_session_title_updated_serializes_to_expected_wire_shape() {

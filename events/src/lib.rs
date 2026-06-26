@@ -94,6 +94,34 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when an action is created within a coaching session.
+    /// Carries the full serialized action (with assignees) for optimistic UI updates.
+    ActionCreated {
+        /// The coaching session the action belongs to.
+        coaching_session_id: Id,
+        /// Complete serialized action (with assignees) for the frontend cache.
+        action: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an action is modified (body, status, due date, assignees, etc.).
+    ActionUpdated {
+        /// The coaching session the action belongs to.
+        coaching_session_id: Id,
+        /// Complete updated action (with assignees) for the frontend cache.
+        action: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an action is removed.
+    ActionDeleted {
+        /// The coaching session the action belonged to.
+        coaching_session_id: Id,
+        /// ID of the deleted action (full entity not included since it no longer exists).
+        action_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
     /// Emitted when a meeting recording status changes (any webhook-driven transition).
     /// Triggers SSE notifications so participants see the current recording state without polling.
     MeetingRecordingUpdated {
