@@ -7,7 +7,6 @@ use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{agreements, query};
 use log::*;
 use sea_orm::DatabaseConnection;
-use serde_json::Value;
 
 // Mutations (create, update, delete_by_id) are wrapped below to emit SSE; reads re-export directly.
 pub use entity_api::agreement::find_by_id;
@@ -47,7 +46,13 @@ async fn publish_agreement_changed(
     let Some(notify_user_ids) = agreement_notify_user_ids(db, coaching_session_id).await else {
         return;
     };
-    let payload = serde_json::to_value(agreement).unwrap_or(Value::Null);
+    let payload = match serde_json::to_value(agreement) {
+        Ok(payload) => payload,
+        Err(e) => {
+            error!("agreement SSE: failed to serialize agreement for session {coaching_session_id}: {e:?}");
+            return;
+        }
+    };
     let event = if created {
         DomainEvent::AgreementCreated {
             coaching_session_id,
