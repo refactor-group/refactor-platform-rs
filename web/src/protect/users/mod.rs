@@ -30,7 +30,7 @@ pub(crate) async fn read(
             "Unauthorized: user_id {} does not match authenticated_user_id {}",
             user_id, authenticated_user.id
         );
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        (StatusCode::FORBIDDEN, "Forbidden").into_response()
     }
 }
 
@@ -51,6 +51,6 @@ pub(crate) async fn update(
             "Unauthorized: user_id {} does not match authenticated_user_id {}",
             user_id, authenticated_user.id
         );
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        (StatusCode::FORBIDDEN, "Forbidden").into_response()
     }
 }

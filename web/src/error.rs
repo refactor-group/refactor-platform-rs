@@ -111,6 +111,10 @@ impl Error {
                 );
                 (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
             }
+            EntityErrorKind::Forbidden => {
+                warn!("EntityErrorKind::Forbidden: Responding with 403 Forbidden. Error: {self:?}");
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
+            }
             EntityErrorKind::DbTransaction => {
                 warn!(
                     "EntityErrorKind::DbTransaction: Responding with 500 Internal Server Error. Error: {self:?}"
@@ -316,6 +320,31 @@ mod tests {
         assert!(
             message.contains("Not/A/Timezone"),
             "message should quote the offending value, got: {message}"
+        );
+    }
+
+    // Locks the authn/authz status-code split: an authorization failure
+    // (`Forbidden`) must map to 403, distinct from `Unauthenticated` → 401.
+    // The frontend branches on this to decide whether to re-authenticate.
+    #[test]
+    fn forbidden_maps_to_403_and_unauthenticated_to_401() {
+        let forbidden = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Forbidden,
+            )),
+        });
+        assert_eq!(forbidden.into_response().status(), StatusCode::FORBIDDEN);
+
+        let unauthenticated = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Unauthenticated,
+            )),
+        });
+        assert_eq!(
+            unauthenticated.into_response().status(),
+            StatusCode::UNAUTHORIZED
         );
     }
 }

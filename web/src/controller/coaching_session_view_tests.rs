@@ -168,9 +168,9 @@ async fn view_returns_200_for_participant() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// Non-participant gets 401 from CoachingSessionAccess (mark_viewed never runs).
+// Non-participant gets 403 from CoachingSessionAccess (mark_viewed never runs).
 #[tokio::test]
-async fn view_returns_401_for_non_participant() {
+async fn view_returns_403_for_non_participant() {
     let session_id = Id::new_v4();
     let relationship_id = Id::new_v4();
     let user = test_user();
@@ -208,5 +208,5 @@ async fn view_returns_401_for_non_participant() {
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

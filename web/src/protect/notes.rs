@@ -38,7 +38,7 @@ pub(crate) async fn index(
                 next.run(request).await
             } else {
                 // User does not have access to coaching relationship
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         Err(e) => {

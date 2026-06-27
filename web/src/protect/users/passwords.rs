@@ -25,6 +25,6 @@ pub(crate) async fn update_password(
             "Unauthorized: user_id {} does not match authenticated_user_id {} when attempting to update password",
             user_id, authenticated_user.id
         );
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        (StatusCode::FORBIDDEN, "Forbidden").into_response()
     }
 }

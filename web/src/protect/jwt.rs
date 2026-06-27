@@ -33,7 +33,7 @@ pub(crate) async fn generate_collab_token(
                 next.run(request).await
             } else {
                 // User does not have access to coaching relationship
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         Err(e) => {

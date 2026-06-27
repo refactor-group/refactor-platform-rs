@@ -68,7 +68,7 @@ where
                 })?;
 
         if !relationship.includes_user(authenticated_user.id) {
-            return Err((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()));
+            return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
         Ok(CoachingRelationshipAccess(relationship))

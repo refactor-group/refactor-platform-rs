@@ -37,7 +37,7 @@ pub(crate) async fn index(
                 next.run(request).await
             } else {
                 // User does not have access to coaching relationship
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         // coaching relationship with given ID not found
@@ -90,7 +90,7 @@ pub(crate) async fn update(
             "PUT auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
-        (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }
 
@@ -139,6 +139,6 @@ pub(crate) async fn delete(
             "DELETE auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
-        (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }
