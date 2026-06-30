@@ -163,9 +163,9 @@ mod tests {
         assert_eq!(model.timezone, "UTC");
     }
 
-    /// Explicit duration is still honored.
+    /// Explicit duration and timezone are still honored (defaults don't clobber).
     #[test]
-    fn deserialize_honors_explicit_duration() {
+    fn deserialize_honors_explicit_duration_and_timezone() {
         let model: Model = serde_json::from_value(serde_json::json!({
             "email": "coach@example.com",
             "first_name": "Co",
@@ -175,5 +175,6 @@ mod tests {
         }))
         .expect("payload with duration must deserialize");
         assert_eq!(model.default_coaching_session_duration_minutes, 90);
+        assert_eq!(model.timezone, "America/New_York");
     }
 }
