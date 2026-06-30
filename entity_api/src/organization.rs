@@ -40,10 +40,12 @@ pub async fn create(db: &impl TransactionTrait, organization_model: Model) -> Re
     let txn = db.begin().await?;
     let now = Utc::now();
     let name = organization_model.name;
+    let slug = slugify!(name.as_str());
 
-    // Name-collision pre-check.
+    // Name/slug-collision pre-check. slug derives from name but is independently
+    // unique, so distinct names can still collide on slug.
     if Entity::find()
-        .filter(Column::Name.eq(&name))
+        .filter(Column::Name.eq(&name).or(Column::Slug.eq(&slug)))
         .one(&txn)
         .await?
         .is_some()
@@ -57,7 +59,7 @@ pub async fn create(db: &impl TransactionTrait, organization_model: Model) -> Re
     let organization_active_model: ActiveModel = ActiveModel {
         logo: Set(organization_model.logo),
         name: Set(name.clone()),
-        slug: Set(slugify!(name.as_str())),
+        slug: Set(slug.clone()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -66,9 +68,9 @@ pub async fn create(db: &impl TransactionTrait, organization_model: Model) -> Re
     let inserted = match organization_active_model.insert(&txn).await {
         Ok(model) => model,
         Err(insert_err) => {
-            // Race backstop: a concurrent insert may have claimed the name.
+            // Race backstop: a concurrent insert may have claimed the name or slug.
             if Entity::find()
-                .filter(Column::Name.eq(&name))
+                .filter(Column::Name.eq(&name).or(Column::Slug.eq(&slug)))
                 .one(&txn)
                 .await?
                 .is_some()
@@ -553,6 +555,33 @@ mod tests {
             err.error_kind,
             EntityApiErrorKind::OrganizationNameTaken { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn create_pre_check_filters_on_slug_too() {
+        // Distinct names can slugify to the same value, and slug is independently
+        // unique. The create pre-check must filter on slug (not name alone), or a
+        // slug-only collision falls through to the insert and surfaces as a 503
+        // instead of OrganizationNameTaken.
+        let existing = test_org("Acme Corp", false); // slug "acme-corp"
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]]) // pre-check returns the slug-colliding row
+            .into_connection();
+
+        // "Acme Corp!" -> slug "acme-corp" (same), but a different name.
+        let result = create(&db, test_org("Acme Corp!", false)).await;
+        assert!(matches!(
+            result.unwrap_err().error_kind,
+            EntityApiErrorKind::OrganizationNameTaken { .. }
+        ));
+
+        // Teeth: the emitted pre-check SQL must carry a slug predicate, not just
+        // the slug column in the projection. (Debug-escapes quotes; unescape first.)
+        let log = format!("{:?}", db.into_transaction_log()).replace("\\\"", "\"");
+        assert!(
+            log.contains(r#"OR "organizations"."slug" ="#),
+            "create pre-check must filter on slug, not name alone; got: {log}"
+        );
     }
 
     #[tokio::test]
