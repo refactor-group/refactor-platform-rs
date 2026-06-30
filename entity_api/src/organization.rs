@@ -7,7 +7,7 @@ use entity::{
 };
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, ActiveValue::Unchanged, ConnectionTrait, JoinType,
-    QuerySelect, TransactionTrait, TryIntoModel,
+    QuerySelect, SqlErr, TransactionTrait, TryIntoModel,
 };
 use slugify::slugify;
 use std::collections::HashMap;
@@ -68,13 +68,12 @@ pub async fn create(db: &impl TransactionTrait, organization_model: Model) -> Re
     let inserted = match organization_active_model.insert(&txn).await {
         Ok(model) => model,
         Err(insert_err) => {
-            // Race backstop: a concurrent insert may have claimed the name or slug.
-            if Entity::find()
-                .filter(Column::Name.eq(&name).or(Column::Slug.eq(&slug)))
-                .one(&txn)
-                .await?
-                .is_some()
-            {
+            // Race backstop: inspect the error, not a re-query (the failed INSERT
+            // has aborted this txn, so any further query on it would error).
+            if matches!(
+                insert_err.sql_err(),
+                Some(SqlErr::UniqueConstraintViolation(_))
+            ) {
                 return Err(Error {
                     source: None,
                     error_kind: EntityApiErrorKind::OrganizationNameTaken { name },
