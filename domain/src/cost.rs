@@ -73,6 +73,8 @@ async fn record(
         return Ok(());
     };
 
+    let costs = rate.cost_for(quantity);
+
     platform_cost_metrics::create(
         db,
         platform_cost_metrics::CreateParams {
@@ -80,9 +82,9 @@ async fn record(
             metric,
             coaching_session_id: Some(recording.coaching_session_id),
             source_record_id,
-            cost_low: quantity * rate.cost_per_unit_low,
-            cost_high: quantity * rate.cost_per_unit_high,
-            cost_avg: quantity * rate.cost_per_unit_avg,
+            cost_low: costs.low,
+            cost_high: costs.high,
+            cost_avg: costs.avg,
         },
     )
     .await?;
