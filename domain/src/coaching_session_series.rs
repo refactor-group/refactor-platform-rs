@@ -64,7 +64,7 @@ pub async fn create_with_sessions(
         return Err(Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::Unauthenticated,
+                EntityErrorKind::Forbidden,
             )),
         });
     }
