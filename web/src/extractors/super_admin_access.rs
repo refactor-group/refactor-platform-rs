@@ -210,4 +210,42 @@ mod tests {
         let response = app.clone().oneshot(protected_request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
+
+    /// A SuperAdmin role scoped to an organization (organization_id = Some) is
+    /// NOT a system super admin and must be rejected. Pins the org_id.is_none()
+    /// clause of the extractor predicate.
+    #[tokio::test]
+    async fn test_extractor_returns_403_for_org_scoped_super_admin() {
+        let now = Utc::now();
+        let organization_id = Id::new_v4();
+        let test_user = create_test_user();
+
+        let test_role = user_roles::Model {
+            id: Id::new_v4(),
+            role: users::Role::SuperAdmin,
+            organization_id: Some(organization_id),
+            user_id: test_user.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let db = Arc::new(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+                .into_connection(),
+        );
+
+        let app = build_app(db);
+        let cookie = login_cookie(&app).await;
+
+        let protected_request = Request::builder()
+            .uri("/protected")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.clone().oneshot(protected_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
 }
