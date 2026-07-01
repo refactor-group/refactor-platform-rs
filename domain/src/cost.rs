@@ -2,7 +2,6 @@ use crate::cost_metric::Metric;
 use crate::error::Error;
 use crate::pipeline_provider::Provider;
 use crate::Id;
-use entity::platform_cost_metrics::Model as CostMetricsModel;
 use entity_api::{cost_pricing_config, meeting_recording as recording_api, platform_cost_metrics};
 use log::warn;
 use sea_orm::DatabaseConnection;
@@ -76,8 +75,7 @@ async fn record(
 
     platform_cost_metrics::create(
         db,
-        CostMetricsModel {
-            id: Id::new_v4(),
+        platform_cost_metrics::CreateParams {
             provider: Provider::RecallAi,
             metric,
             coaching_session_id: Some(recording.coaching_session_id),
@@ -85,7 +83,6 @@ async fn record(
             cost_low: quantity * rate.cost_per_unit_low,
             cost_high: quantity * rate.cost_per_unit_high,
             cost_avg: quantity * rate.cost_per_unit_avg,
-            created_at: chrono::Utc::now().fixed_offset(),
         },
     )
     .await?;
