@@ -14,7 +14,7 @@ use meeting_auth::{
     oauth::token::{encryption, Storage, Tokens},
 };
 
-use crate::{oauth_connections::Model, provider::Provider, Id};
+use crate::{meeting_provider::Provider, oauth_connections::Model, Id};
 
 /// Database-backed token storage that encrypts tokens at rest.
 pub struct DbOAuthTokenStorage<'db> {

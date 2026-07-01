@@ -8,7 +8,7 @@ use crate::coaching_sessions::Model;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
-use crate::provider::MeetingProperties;
+use crate::meeting_provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
@@ -433,7 +433,7 @@ async fn maybe_attach_meeting_url(
 async fn find_reusable_meeting_url(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
 ) -> Result<Option<String>, Error> {
     if !provider.has_persistent_meeting_urls() {
         return Ok(None);
@@ -459,7 +459,7 @@ async fn create_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
     coach_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
     start_time: &NaiveDateTime,
     external_account_id: Option<String>,
 ) -> Result<String, Error> {
@@ -467,7 +467,7 @@ async fn create_meeting_url(
         crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
 
     match provider {
-        crate::provider::Provider::Google => {
+        crate::meeting_provider::Provider::Google => {
             let client = crate::gateway::google_meet::Client::new(
                 &access_token,
                 config.google_meet_api_url(),
@@ -481,7 +481,7 @@ async fn create_meeting_url(
 
             Ok(space.meeting_uri)
         }
-        crate::provider::Provider::Zoom => {
+        crate::meeting_provider::Provider::Zoom => {
             let external_account_id = external_account_id.ok_or_else(|| {
                 warn!("Zoom oauth connection for does not have an external_account_id");
                 Error {
@@ -523,7 +523,10 @@ fn generate_document_name(
 mod tests {
     use super::*;
     use crate::test_support::recording_publisher;
-    use crate::{coaching_sessions, goals, oauth_connections, organizations, provider::Provider};
+    use crate::{
+        coaching_relationships, coaching_sessions, goals, meeting_provider::Provider,
+        oauth_connections, organizations,
+    };
     use mockito::Server;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;

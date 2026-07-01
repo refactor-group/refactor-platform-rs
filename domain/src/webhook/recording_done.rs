@@ -73,6 +73,18 @@ pub async fn handle(
     let recall_recording_id = recall_recording_id.to_string();
 
     tokio::spawn(async move {
+        // Record bot-minutes cost for the just-completed recording. Run inline at
+        // the top of this task (not as a second detached task) so it reuses this
+        // task's pooled connection rather than acquiring its own — avoids adding
+        // to the known pool-churn pressure. Independent of transcription outcome:
+        // the recording completed and incurred the cost regardless.
+        if let Err(e) = crate::cost::record_bot_minutes(&db, recording.id).await {
+            warn!(
+                "cost: bot minutes failed for recording {}: {:?}",
+                recording.id, e
+            );
+        }
+
         match crate::transcription::start(
             &db,
             transcription_provider.as_deref(),

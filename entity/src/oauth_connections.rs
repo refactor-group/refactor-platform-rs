@@ -1,4 +1,4 @@
-use crate::provider::Provider;
+use crate::meeting_provider::Provider;
 use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
