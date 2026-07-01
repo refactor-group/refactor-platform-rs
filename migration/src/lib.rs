@@ -40,6 +40,7 @@ mod m20260611_000000_add_coaching_session_series;
 mod m20260611_000000_add_topic_deleted_at;
 mod m20260624_000000_add_archive_to_organizations;
 mod m20260624_000001_add_organizations_name_slug_unique;
+mod m20260701_000000_user_roles_org_fk_restrict;
 
 pub struct Migrator;
 
@@ -89,6 +90,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260611_000000_add_coaching_session_series::Migration),
             Box::new(m20260624_000000_add_archive_to_organizations::Migration),
             Box::new(m20260624_000001_add_organizations_name_slug_unique::Migration),
+            Box::new(m20260701_000000_user_roles_org_fk_restrict::Migration),
         ]
     }
 }

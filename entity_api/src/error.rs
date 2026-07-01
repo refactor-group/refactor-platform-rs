@@ -53,6 +53,10 @@ pub enum EntityApiErrorKind {
     },
     // Mutation attempted under an archived organization (write-freeze).
     OrganizationArchived,
+    // Organization name failed value validation (empty/whitespace or over-length).
+    OrganizationNameInvalid {
+        message: String,
+    },
     // Range-bounded entity construction failed (e.g. `Duration` outside
     // 1..=480). Maps to 422 in domain (distinct from `ValidationError`,
     // which is for 409 state conflicts like cap violations).

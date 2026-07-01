@@ -132,6 +132,13 @@ impl From<EntityApiError> for Error {
                     error_kind: DomainErrorKind::Validation(message),
                 };
             }
+            EntityApiErrorKind::OrganizationNameInvalid { message } => {
+                let message = message.clone();
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
             EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,

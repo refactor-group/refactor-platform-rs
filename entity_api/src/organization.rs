@@ -34,13 +34,44 @@ fn apply_status_filter(
     }
 }
 
+/// Upper bound on organization name length. The column is an unbounded `varchar`,
+/// so this cap is enforced here rather than by the database.
+pub const MAX_ORG_NAME_LEN: usize = 255;
+
+/// Reject an empty/whitespace-only or over-length organization name, returning
+/// the trimmed name on success. Counts characters (not bytes) for the cap.
+fn validate_name(name: &str) -> Result<String, Error> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::OrganizationNameInvalid {
+                message: "Organization name must not be empty.".to_string(),
+            },
+        });
+    }
+    let length = trimmed.chars().count();
+    if length > MAX_ORG_NAME_LEN {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::OrganizationNameInvalid {
+                message: format!(
+                    "Organization name must be at most {MAX_ORG_NAME_LEN} characters (got {length})."
+                ),
+            },
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
 pub async fn create(db: &impl TransactionTrait, organization_model: Model) -> Result<Model, Error> {
     debug!("New Organization Model to be inserted: {organization_model:?}");
 
+    let name = validate_name(&organization_model.name)?;
+    let slug = slugify!(name.as_str());
+
     let txn = db.begin().await?;
     let now = Utc::now();
-    let name = organization_model.name;
-    let slug = slugify!(name.as_str());
 
     // Name/slug-collision pre-check. slug derives from name but is independently
     // unique, so distinct names can still collide on slug.
@@ -88,28 +119,30 @@ pub async fn create(db: &impl TransactionTrait, organization_model: Model) -> Re
 }
 
 pub async fn update(db: &impl TransactionTrait, id: Id, model: Model) -> Result<Model, Error> {
-    let txn = db.begin().await?;
-    let organization = find_by_id(&txn, id).await?;
+    let name = validate_name(&model.name)?;
     // Re-derive the slug from the new name so it never goes stale (a stale slug
     // keeps its UNIQUE index entry and would block a later create of the old name).
-    let slug = slugify!(model.name.as_str());
+    let slug = slugify!(name.as_str());
+
+    let txn = db.begin().await?;
+    let organization = find_by_id(&txn, id).await?;
 
     // Name/slug-collision pre-check against OTHER orgs (rename re-slugs, so either can collide).
     if Entity::find()
         .filter(Column::Id.ne(id))
-        .filter(Column::Name.eq(&model.name).or(Column::Slug.eq(&slug)))
+        .filter(Column::Name.eq(&name).or(Column::Slug.eq(&slug)))
         .one(&txn)
         .await?
         .is_some()
     {
         return Err(Error {
             source: None,
-            error_kind: EntityApiErrorKind::OrganizationNameTaken { name: model.name },
+            error_kind: EntityApiErrorKind::OrganizationNameTaken { name },
         });
     }
 
     let mut active_model = organization.into_active_model();
-    active_model.name = Set(model.name);
+    active_model.name = Set(name);
     active_model.logo = Set(model.logo);
     active_model.slug = Set(slug);
     active_model.updated_at = Set(Utc::now().into());
@@ -561,6 +594,43 @@ mod tests {
         assert!(matches!(
             err.error_kind,
             EntityApiErrorKind::OrganizationNameTaken { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_rejects_blank_name() {
+        // Whitespace-only name is rejected before any DB round-trip.
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let mut model = test_org("Acme", false);
+        model.name = "   ".to_string();
+        let err = create(&db, model).await.unwrap_err();
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::OrganizationNameInvalid { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_rejects_overlong_name() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let mut model = test_org("Acme", false);
+        model.name = "x".repeat(MAX_ORG_NAME_LEN + 1);
+        let err = create(&db, model).await.unwrap_err();
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::OrganizationNameInvalid { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_rejects_blank_name() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let mut model = test_org("Acme", false);
+        model.name = "".to_string();
+        let err = update(&db, model.id, model.clone()).await.unwrap_err();
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::OrganizationNameInvalid { .. }
         ));
     }
 
