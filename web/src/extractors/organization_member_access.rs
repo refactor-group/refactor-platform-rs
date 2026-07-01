@@ -171,6 +171,8 @@ mod tests {
             logo: None,
             created_at: now.into(),
             updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
         }
     }
 

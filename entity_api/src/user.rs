@@ -48,6 +48,14 @@ pub async fn create_by_organization(
 ) -> Result<Model, Error> {
     let txn = db.begin().await?;
 
+    let organization = crate::organization::find_by_id(&txn, organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::OrganizationArchived,
+        });
+    }
+
     let mut user = create(&txn, user_model).await?;
     let now = Utc::now();
 
@@ -385,6 +393,7 @@ mod test {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[test_org(organization_id, false)]])
             .append_query_results([[user_model.clone()]])
             .append_query_results([[user_role_model.clone()]])
             .into_connection();
@@ -427,11 +436,66 @@ mod test {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[test_org(organization_id, false)]])
             .append_query_errors([sea_orm::DbErr::Custom("Duplicate email".to_string())])
             .into_connection();
 
         let result = create_by_organization(&db, organization_id, user_model).await;
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    fn test_org(id: Id, archived: bool) -> entity::organizations::Model {
+        let now = chrono::Utc::now();
+        entity::organizations::Model {
+            id,
+            name: "Test Org".to_owned(),
+            logo: None,
+            slug: "test-org".to_owned(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: archived.then(|| now.into()),
+            archived_by: archived.then(Id::new_v4),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_by_organization_rejects_archived_organization() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let organization_id = Id::new_v4();
+
+        let user_model = entity::users::Model {
+            id: Id::new_v4(),
+            email: "test@test.com".to_owned(),
+            first_name: "Test".to_owned(),
+            last_name: "User".to_owned(),
+            display_name: None,
+            password: Some("password123".to_owned()),
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            role: entity::users::Role::User,
+            roles: vec![],
+            invite_status: None,
+        };
+
+        // After begin, the guard issues find_by_id(org) first; archived org
+        // returns before any user/role insert.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[test_org(organization_id, true)]])
+            .into_connection();
+
+        let result = create_by_organization(&db, organization_id, user_model).await;
+
+        let err = result.expect_err("expected archived-org rejection");
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::OrganizationArchived
+        ));
 
         Ok(())
     }
