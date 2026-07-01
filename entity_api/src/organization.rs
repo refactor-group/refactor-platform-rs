@@ -6,8 +6,8 @@ use entity::{
     user_roles, Id,
 };
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Set, ActiveValue::Unchanged, ConnectionTrait, JoinType,
-    QuerySelect, SqlErr, TransactionTrait, TryIntoModel,
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, IntoActiveModel, JoinType, QuerySelect,
+    SqlErr, TransactionTrait, TryIntoModel,
 };
 use slugify::slugify;
 use std::collections::HashMap;
@@ -90,11 +90,14 @@ pub async fn create(db: &impl TransactionTrait, organization_model: Model) -> Re
 pub async fn update(db: &impl TransactionTrait, id: Id, model: Model) -> Result<Model, Error> {
     let txn = db.begin().await?;
     let organization = find_by_id(&txn, id).await?;
+    // Re-derive the slug from the new name so it never goes stale (a stale slug
+    // keeps its UNIQUE index entry and would block a later create of the old name).
+    let slug = slugify!(model.name.as_str());
 
-    // Name-collision pre-check against other orgs.
+    // Name/slug-collision pre-check against OTHER orgs (rename re-slugs, so either can collide).
     if Entity::find()
-        .filter(Column::Name.eq(&model.name))
         .filter(Column::Id.ne(id))
+        .filter(Column::Name.eq(&model.name).or(Column::Slug.eq(&slug)))
         .one(&txn)
         .await?
         .is_some()
@@ -105,16 +108,11 @@ pub async fn update(db: &impl TransactionTrait, id: Id, model: Model) -> Result<
         });
     }
 
-    let active_model: ActiveModel = ActiveModel {
-        id: Unchanged(organization.id),
-        logo: Set(model.logo),
-        name: Set(model.name),
-        slug: Unchanged(organization.slug),
-        updated_at: Unchanged(organization.updated_at),
-        created_at: Unchanged(organization.created_at),
-        archived_at: Unchanged(organization.archived_at),
-        archived_by: Unchanged(organization.archived_by),
-    };
+    let mut active_model = organization.into_active_model();
+    active_model.name = Set(model.name);
+    active_model.logo = Set(model.logo);
+    active_model.slug = Set(slug);
+    active_model.updated_at = Set(Utc::now().into());
     let updated = active_model.update(&txn).await?.try_into_model()?;
     txn.commit().await?;
     Ok(updated)
@@ -123,83 +121,71 @@ pub async fn update(db: &impl TransactionTrait, id: Id, model: Model) -> Result<
 /// Archive an organization (idempotent). Re-archiving is a no-op that avoids
 /// timestamp churn.
 pub async fn archive(db: &impl TransactionTrait, id: Id, archived_by: Id) -> Result<Model, Error> {
-    let txn = db.begin().await?;
-    let organization = find_by_id(&txn, id).await?;
-
-    if organization.archived_at.is_some() {
-        txn.commit().await?;
-        return Ok(organization);
-    }
-
-    let now = Utc::now();
-    let active_model: ActiveModel = ActiveModel {
-        id: Unchanged(organization.id),
-        logo: Unchanged(organization.logo),
-        name: Unchanged(organization.name),
-        slug: Unchanged(organization.slug),
-        created_at: Unchanged(organization.created_at),
-        updated_at: Set(now.into()),
-        archived_at: Set(Some(now.into())),
-        archived_by: Set(Some(archived_by)),
-    };
-    let archived = active_model.update(&txn).await?.try_into_model()?;
-    txn.commit().await?;
-    Ok(archived)
+    set_archive_state(db, id, true, Some(archived_by)).await
 }
 
 /// Unarchive an organization (idempotent). Unarchiving an active org is a no-op.
 pub async fn unarchive(db: &impl TransactionTrait, id: Id) -> Result<Model, Error> {
+    set_archive_state(db, id, false, None).await
+}
+
+/// Set (archive) or clear (unarchive) the archive marker. Idempotent: returns the
+/// org untouched when already in the target state, so re-runs don't churn `updated_at`.
+async fn set_archive_state(
+    db: &impl TransactionTrait,
+    id: Id,
+    archived: bool,
+    archived_by: Option<Id>,
+) -> Result<Model, Error> {
     let txn = db.begin().await?;
     let organization = find_by_id(&txn, id).await?;
 
-    if organization.archived_at.is_none() {
+    if organization.archived_at.is_some() == archived {
         txn.commit().await?;
         return Ok(organization);
     }
 
     let now = Utc::now();
-    let active_model: ActiveModel = ActiveModel {
-        id: Unchanged(organization.id),
-        logo: Unchanged(organization.logo),
-        name: Unchanged(organization.name),
-        slug: Unchanged(organization.slug),
-        created_at: Unchanged(organization.created_at),
-        updated_at: Set(now.into()),
-        archived_at: Set(None),
-        archived_by: Set(None),
-    };
-    let unarchived = active_model.update(&txn).await?.try_into_model()?;
+    let mut active_model = organization.into_active_model();
+    active_model.updated_at = Set(now.into());
+    active_model.archived_at = Set(archived.then(|| now.into()));
+    active_model.archived_by = Set(archived_by);
+    let updated = active_model.update(&txn).await?.try_into_model()?;
     txn.commit().await?;
-    Ok(unarchived)
+    Ok(updated)
 }
 
 pub async fn delete_by_id(db: &impl TransactionTrait, id: Id) -> Result<(), Error> {
     let txn = db.begin().await?;
     let organization_model = find_by_id(&txn, id).await?;
 
-    let coaching_relationship_count = coaching_relationships::Entity::find()
+    // An org is deletable only when empty of BOTH coaching relationships AND members
+    // (user_roles). Members alone must block: their rows are ON DELETE CASCADE, so
+    // deleting an org that still has members would silently drop their role grants.
+    let relationship_ids: Vec<Id> = coaching_relationships::Entity::find()
+        .select_only()
+        .column(coaching_relationships::Column::Id)
         .filter(coaching_relationships::Column::OrganizationId.eq(id))
+        .into_tuple()
+        .all(&txn)
+        .await?;
+    let coaching_relationship_count = relationship_ids.len() as u64;
+
+    let member_count = user_roles::Entity::find()
+        .filter(user_roles::Column::OrganizationId.eq(id))
         .count(&txn)
         .await?;
 
-    if coaching_relationship_count > 0 {
-        let relationship_ids: Vec<Id> = coaching_relationships::Entity::find()
-            .select_only()
-            .column(coaching_relationships::Column::Id)
-            .filter(coaching_relationships::Column::OrganizationId.eq(id))
-            .into_tuple()
-            .all(&txn)
-            .await?;
-
-        let coaching_session_count = coaching_sessions::Entity::find()
-            .filter(coaching_sessions::Column::CoachingRelationshipId.is_in(relationship_ids))
-            .count(&txn)
-            .await?;
-
-        let member_count = user_roles::Entity::find()
-            .filter(user_roles::Column::OrganizationId.eq(id))
-            .count(&txn)
-            .await?;
+    if coaching_relationship_count > 0 || member_count > 0 {
+        // Sessions hang off relationships, so only worth counting when there are any.
+        let coaching_session_count = if coaching_relationship_count == 0 {
+            0
+        } else {
+            coaching_sessions::Entity::find()
+                .filter(coaching_sessions::Column::CoachingRelationshipId.is_in(relationship_ids))
+                .count(&txn)
+                .await?
+        };
 
         return Err(Error {
             source: None,
@@ -506,10 +492,9 @@ mod tests {
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![org.clone()]]) // find_by_id
-            .append_query_results(vec![vec![maplike_count(1)]]) // rel count
-            .append_query_results(vec![vec![relationship.clone()]]) // rel ids
-            .append_query_results(vec![vec![maplike_count(2)]]) // session count
+            .append_query_results(vec![vec![relationship.clone()]]) // rel ids (len = 1)
             .append_query_results(vec![vec![maplike_count(3)]]) // member count
+            .append_query_results(vec![vec![maplike_count(2)]]) // session count
             .into_connection();
 
         let result = delete_by_id(&db, org.id).await;
@@ -525,11 +510,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_by_id_blocks_when_only_members() {
+        // An org with members but zero relationships must still block (not silently
+        // cascade-delete the user_roles).
+        let org = test_org("Acme", false);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![org.clone()]]) // find_by_id
+            .append_query_results(vec![Vec::<coaching_relationships::Model>::new()]) // no rels
+            .append_query_results(vec![vec![maplike_count(5)]]) // 5 members
+            .into_connection();
+
+        let result = delete_by_id(&db, org.id).await;
+        assert!(matches!(
+            result.unwrap_err().error_kind,
+            EntityApiErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count: 0,
+                coaching_session_count: 0,
+                member_count: 5,
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn delete_by_id_deletes_when_empty() -> Result<(), Error> {
         let org = test_org("Acme", false);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![org.clone()]]) // find_by_id
-            .append_query_results(vec![vec![maplike_count(0)]]) // rel count == 0
+            .append_query_results(vec![Vec::<coaching_relationships::Model>::new()]) // no rels
+            .append_query_results(vec![vec![maplike_count(0)]]) // no members
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -602,6 +610,47 @@ mod tests {
             err.error_kind,
             EntityApiErrorKind::OrganizationNameTaken { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn update_reslugs_on_rename() {
+        // Renaming must re-derive the slug so it can't go stale (a stale slug keeps
+        // its UNIQUE entry and would block a later create of the old name).
+        let target = test_org("Acme", false); // slug "acme"
+        let renamed_row = organizations::Model {
+            name: "Acme Corp".to_owned(),
+            slug: "acme-corp".to_owned(),
+            ..target.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![target.clone()]]) // find_by_id
+            .append_query_results(vec![Vec::<organizations::Model>::new()]) // pre-check: no collision
+            .append_query_results(vec![vec![renamed_row.clone()]]) // update RETURNING
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let renamed = organizations::Model {
+            name: "Acme Corp".to_owned(),
+            ..target.clone()
+        };
+        let _ = update(&db, target.id, renamed)
+            .await
+            .expect("rename succeeds");
+
+        // Teeth: the emitted UPDATE must re-set slug (old code left it Unchanged).
+        let log = format!("{:?}", db.into_transaction_log()).replace("\\\"", "\"");
+        let set_clause = log
+            .split("UPDATE")
+            .nth(1)
+            .and_then(|after| after.split("RETURNING").next())
+            .expect("an UPDATE ... RETURNING was issued");
+        assert!(
+            set_clause.contains(r#""slug" ="#),
+            "rename must re-slugify (UPDATE should SET slug); got: {log}"
+        );
     }
 
     // Helper to produce a `.count()` scalar result row.
