@@ -15,7 +15,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect};
 use axum::Json;
 
-use domain::{oauth_connection, oauth_connections, provider::Provider, Id};
+use domain::{meeting_provider::Provider, oauth_connection, oauth_connections, Id};
 use sea_orm::prelude::DateTimeWithTimeZone;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

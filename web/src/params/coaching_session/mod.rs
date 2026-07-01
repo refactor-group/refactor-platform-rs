@@ -1,7 +1,7 @@
 pub(crate) mod goal;
 
 use chrono::{NaiveDate, NaiveDateTime};
-use domain::provider::Provider;
+use domain::meeting_provider::Provider;
 use sea_orm::{ActiveEnum, Order, Value};
 use serde::{Deserialize, Deserializer};
 use utoipa::{IntoParams, ToSchema};

@@ -16,8 +16,8 @@ use utoipa::ToSchema;
     ToSchema,
 )]
 #[serde(rename_all = "lowercase")]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "provider")]
-#[schema(as = domain::provider::Provider)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "meeting_provider")]
+#[schema(as = domain::meeting_provider::Provider)]
 pub enum Provider {
     #[sea_orm(string_value = "google")]
     #[default]
