@@ -267,7 +267,21 @@ post-merge, so the Phase 1 composer can be fed real title/topics.
   - [x] `Status::is_completed()` exists and `goals::Model::is_completed()` delegates to it (no duplicated definition).
   - [x] `find_open_by_coaching_session_id` returns `NotStarted`/`InProgress`/`OnHold` actions and excludes `Completed`/`WontDo` (mock-DB test).
 
-### Phase 4 — Attach `.ics` to existing create emails (scenarios 1 & 2)
+### Phase 4 — Attach `.ics` to existing create emails (scenarios 1 & 2) — split into 4a (single ✅) + 4b (series, next)
+Split by overseer decision: 4b carries the wider blast radius (`notify_recurring_sessions_scheduled`
+signature change + #356 controller call site). Both merge together behind the **Outlook gate** (still owed).
+**Phase 4a DONE ✅ (commit `efb4cf60`, overseer-verified):** single-session create email now attaches a
+`METHOD:REQUEST` `.ics`, built ONCE per session and threaded to both recipients. New pure helper
+`build_session_invite_ics(organizer, attendee, session, org, description, dtstamp)` (dtstamp injected for
+deterministic structural testing); DTSTAMP=now made the mockito body non-deterministic, so structure is
+unit-tested on the pure helper and the mockito test only asserts attachment presence (filename +
+`method=REQUEST` content-type). `add_ics_attachment` dead-code gate removed (now consumed); `ical` module
+gate left (Cancel unused). Two DB-requiring email tests gated `#[cfg(feature = "mock")]` (need MockDatabase);
+teeth-check surfaced that the best-effort orchestrator swallows send errors, so the mockito test now calls
+`.assert_async()` on both mocks (else it was toothless). Known limitation: Test 2 can't wire-assert
+no-subject (mockito regex has no negative lookaround), but the builder hardcodes `subject: None` (no setter)
+so the invariant holds structurally + 6 other tests exact-match it. Tests: domain emails 24 plain / 26 mock,
+full mock suite green (222/258/113); clippy/fmt clean.
 - `notify_session_scheduled` (scenario 1): load topics/goals/open-actions, build `IcsInvite` (single, `REQUEST`, UID `<session_id>`, seq 0, anchor = coach TZ), attach via `add_ics_attachment` in `send_session_email_to_recipient`. Build the `.ics` **once** per session (same VEVENT for both recipients).
 - `notify_recurring_sessions_scheduled` (scenario 2): build `IcsInvite` with `recurrence = Some(series.rule.recurrence)`, UID `<series_id>`, seq 0. This requires the function to also receive the `coaching_session_series` model (id + rule); it currently takes only `&[sessions]`, so change the signature and update the #356 series-create controller call site to pass the series.
 - **Acceptance:**
