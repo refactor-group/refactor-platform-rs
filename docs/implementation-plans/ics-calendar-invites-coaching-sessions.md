@@ -245,7 +245,10 @@ method dead-code-gated (`#[cfg_attr(not(test), allow(dead_code))]`) until Phase 
   - [x] `attachments` serializes with base64-encoded content and the correct `content_type` per METHOD.
   - [x] `attachments` is omitted from the payload when `None` (no regression to existing emails).
 
-### Phase 3 — Data layer: sequence columns + open-actions query
+### Phase 3 — Data layer: sequence columns + open-actions query — IN PROGRESS (unblocked)
+Status: #356 merged 2026-06-19 (`0ffafb66`); `main` merged into `feat/ics-calendar-invites`
+(`19c89215`). Post-integration verified: `cargo check -p domain` clean, all Phase 1 (8) + Phase 2 (19)
+tests pass on the integrated tree. First #356-dependent phase; now active.
 - Migration (after #356's series migration): add `ical_sequence INTEGER NOT NULL DEFAULT 0` to **both** `coaching_sessions` **and** `coaching_session_series` (singles use the session column for UID `<session_id>`; series use the series column for UID `<series_id>`). Update both entities (`ical_sequence: i32`).
 - `entity_api/src/action.rs`: `find_by_coaching_session_id(db, session_id)` returning open actions. "Open" reuses the existing shared status definition: `goals::Model::is_completed()` (`entity/src/goals.rs:87`) defines completed as `Completed | WontDo`. Promote that to a `Status` method (e.g. `Status::is_completed()` in `entity/src/status.rs`) and have both goals and actions use it; the query filters `!status.is_completed()`. Do **not** hand-roll a new `status != Completed` predicate.
 - **Acceptance:**
