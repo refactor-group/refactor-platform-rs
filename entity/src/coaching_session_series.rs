@@ -17,6 +17,8 @@ pub struct Model {
     #[sea_orm(column_type = "JsonBinary")]
     #[schema(value_type = Object)]
     pub rule: serde_json::Value,
+    #[serde(skip_deserializing)]
+    pub ical_sequence: i32,
     pub created_by_user_id: Id,
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)]

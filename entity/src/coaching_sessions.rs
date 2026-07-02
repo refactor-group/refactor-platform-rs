@@ -16,6 +16,8 @@ pub struct Model {
     pub coaching_relationship_id: Id,
     pub coaching_session_series_id: Option<Id>,
     #[serde(skip_deserializing)]
+    pub ical_sequence: i32,
+    #[serde(skip_deserializing)]
     pub collab_document_name: Option<String>,
     pub date: DateTime,
     /// Session duration in minutes. Validated `1..=480` via

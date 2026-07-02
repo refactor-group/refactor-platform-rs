@@ -62,6 +62,7 @@ pub async fn update_rule(
     let active_model = ActiveModel {
         id: Unchanged(existing.id),
         coaching_relationship_id: Unchanged(existing.coaching_relationship_id),
+        ical_sequence: Unchanged(existing.ical_sequence),
         rule: Set(rule),
         created_by_user_id: Unchanged(existing.created_by_user_id),
         created_at: Unchanged(existing.created_at),
@@ -87,6 +88,7 @@ mod tests {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
             rule: serde_json::json!({"frequency": "weekly", "interval": 1}),
+            ical_sequence: 0,
             created_by_user_id: Id::new_v4(),
             created_at: now.into(),
             updated_at: now.into(),

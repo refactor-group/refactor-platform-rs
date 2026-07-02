@@ -85,7 +85,7 @@ impl Model {
 
     /// Returns `true` if this goal is in a completed status (`Completed` or `WontDo`).
     pub fn is_completed(&self) -> bool {
-        matches!(self.status, Status::Completed | Status::WontDo)
+        self.status.is_completed()
     }
 }
 

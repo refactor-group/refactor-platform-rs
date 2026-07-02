@@ -166,6 +166,7 @@ impl CreateParams {
             id: Id::nil(),
             coaching_relationship_id: self.coaching_relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
             collab_document_name: None,
             date: self.date,
             duration_minutes: domain::duration::Duration::default_minutes(),

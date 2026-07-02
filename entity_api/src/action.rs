@@ -154,6 +154,23 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     })
 }
 
+/// Open (not-completed) actions for a coaching session.
+/// "Open" reuses the shared `Status::is_completed()` definition; `Completed`
+/// and `WontDo` are excluded.
+pub async fn find_open_by_coaching_session_id(
+    db: &DatabaseConnection,
+    session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    let actions = actions::Entity::find()
+        .filter(actions::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await?;
+    Ok(actions
+        .into_iter()
+        .filter(|a| !a.status.is_completed())
+        .collect())
+}
+
 /// Creates a new action with optional assignees.
 ///
 /// # Arguments
@@ -1830,6 +1847,53 @@ mod tests {
         let coachee_side = result.get(&user_id).expect("coachee-side entry");
         assert_eq!(coachee_side.len(), 1);
         assert_eq!(coachee_side[0].action.id, action_in_b_user_assigned);
+
+        Ok(())
+    }
+
+    /// Open-actions query drops `Completed` and `WontDo`, keeps the rest.
+    #[tokio::test]
+    async fn test_find_open_by_coaching_session_id_excludes_completed_and_wont_do(
+    ) -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let session_id = Id::new_v4();
+
+        let action_for = |status: Status| Model {
+            id: Id::new_v4(),
+            user_id: Id::new_v4(),
+            coaching_session_id: session_id,
+            goal_id: None,
+            body: None,
+            due_by: None,
+            status_changed_at: now.into(),
+            status,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let rows = vec![
+            action_for(Status::NotStarted),
+            action_for(Status::InProgress),
+            action_for(Status::OnHold),
+            action_for(Status::Completed),
+            action_for(Status::WontDo),
+        ];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![rows])
+            .into_connection();
+
+        let result = find_open_by_coaching_session_id(&db, session_id)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().all(|a| !a.status.is_completed()));
+
+        let statuses: Vec<Status> = result.iter().map(|a| a.status.clone()).collect();
+        assert!(statuses.contains(&Status::NotStarted));
+        assert!(statuses.contains(&Status::InProgress));
+        assert!(statuses.contains(&Status::OnHold));
 
         Ok(())
     }

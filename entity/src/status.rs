@@ -30,6 +30,13 @@ pub enum Status {
     WontDo,
 }
 
+impl Status {
+    /// Returns `true` for the completed statuses (`Completed` or `WontDo`).
+    pub fn is_completed(&self) -> bool {
+        matches!(self, Status::Completed | Status::WontDo)
+    }
+}
+
 impl From<&str> for Status {
     fn from(value: &str) -> Self {
         match value {
@@ -54,3 +61,7 @@ impl std::fmt::Display for Status {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "status_tests.rs"]
+mod tests;

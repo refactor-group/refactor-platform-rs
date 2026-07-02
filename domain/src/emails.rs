@@ -802,6 +802,7 @@ mod tests {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
             coaching_session_series_id: None,
+            ical_sequence: 0,
             collab_document_name: None,
             date: NaiveDate::from_ymd_opt(2026, 3, 4)
                 .unwrap()
@@ -1495,6 +1496,7 @@ mod tests {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
             coaching_session_series_id: None,
+            ical_sequence: 0,
             collab_document_name: None,
             date: date.and_hms_opt(15, 0, 0).unwrap(),
             duration_minutes: crate::duration::Duration::default_minutes(),
