@@ -65,7 +65,7 @@ pub async fn create(
     )
     .await?;
 
-    EmailsApi::notify_recurring_sessions_scheduled(db, &app_state.config, &sessions).await;
+    EmailsApi::notify_recurring_sessions_scheduled(db, &app_state.config, &series, &sessions).await;
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),

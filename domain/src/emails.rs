@@ -5,7 +5,9 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_session, coaching_sessions,
+    actions, coaching_relationship, coaching_session, coaching_session_series,
+    coaching_session_series::SeriesRule,
+    coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::ical::{self, DescriptionParts, OpenAction},
@@ -630,6 +632,7 @@ async fn send_recurring_series_email_to_recipient(
     other_user_role: &str,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
+    ics_body: &str,
 ) -> Result<(), Error> {
     let first = sessions.first().ok_or_else(|| Error {
         source: None,
@@ -666,15 +669,52 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("last_session_date", last_session_date.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
+        .add_ics_attachment(ics_body, &ical::Method::Request)
         .build()
         .await?;
 
     email_config.client.send_email(email_request).await
 }
 
+/// Build the series invite `.ics` body (VEVENT + RRULE). Pure: `dtstamp` injected.
+fn build_series_invite_ics(
+    organizer: &users::Model,
+    attendee: &users::Model,
+    first_session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    series: &coaching_session_series::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = organizer
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .unwrap_or(chrono_tz::UTC);
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
+    let invite = ical::IcsInvite {
+        uid: format!("{}@myrefactor.com", series.id),
+        sequence: series.ical_sequence,
+        method: ical::Method::Request,
+        status: ical::EventStatus::Confirmed,
+        summary: format!("Coaching Session: {}", organization.name),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: first_session.date,
+        duration_minutes: first_session.duration_minutes,
+        organizer,
+        attendee,
+        location_url: first_session.meeting_url.clone(),
+        recurrence: Some(rule.recurrence),
+    };
+    ical::build(&invite)
+}
+
 /// Send recurring-sessions-scheduled notification emails to both coach and coachee.
 async fn send_recurring_sessions_scheduled_email(
+    db: &DatabaseConnection,
     config: &Config,
+    series: &coaching_session_series::Model,
     coach: &users::Model,
     coachee: &users::Model,
     sessions: &[coaching_sessions::Model],
@@ -689,6 +729,46 @@ async fn send_recurring_sessions_scheduled_email(
 
     let email_config = ResolvedEmailConfig::new::<RecurringSessionsScheduled>(config).await?;
 
+    let first = sessions.first().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            "Cannot send recurring sessions email: sessions slice is empty".to_string(),
+        )),
+    })?;
+
+    // Series description links to the first session and lists only its in-progress goals.
+    let first_goal_titles =
+        entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+            db, first.id,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|g| g.title)
+        .collect::<Vec<String>>();
+
+    let anchor_tz = coach
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .unwrap_or(chrono_tz::UTC);
+    let description = ical::compose_description(&DescriptionParts {
+        session_url: email_config.build_session_url(&first.id)?,
+        title: None,
+        topics: &[],
+        goal_titles: &first_goal_titles,
+        open_actions: &[],
+        anchor_tz,
+    });
+
+    let ics_body = build_series_invite_ics(
+        coach,
+        coachee,
+        first,
+        organization,
+        series,
+        description,
+        chrono::Utc::now().naive_utc(),
+    )?;
+
     if let Err(e) = send_recurring_series_email_to_recipient(
         &email_config,
         coachee,
@@ -696,6 +776,7 @@ async fn send_recurring_sessions_scheduled_email(
         "coach",
         sessions,
         organization,
+        &ics_body,
     )
     .await
     {
@@ -712,6 +793,7 @@ async fn send_recurring_sessions_scheduled_email(
         "coachee",
         sessions,
         organization,
+        &ics_body,
     )
     .await
     {
@@ -734,6 +816,7 @@ async fn send_recurring_sessions_scheduled_email(
 pub async fn notify_recurring_sessions_scheduled(
     db: &DatabaseConnection,
     config: &Config,
+    series: &coaching_session_series::Model,
     sessions: &[coaching_sessions::Model],
 ) {
     if sessions.is_empty() {
@@ -747,7 +830,10 @@ pub async fn notify_recurring_sessions_scheduled(
         let coachee = user::find_by_id(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_recurring_sessions_scheduled_email(config, &coach, &coachee, sessions, &org).await
+        send_recurring_sessions_scheduled_email(
+            db, config, series, &coach, &coachee, sessions, &org,
+        )
+        .await
     }
     .await;
 
@@ -1675,14 +1761,80 @@ mod tests {
         }
     }
 
+    fn create_test_series() -> coaching_session_series::Model {
+        coaching_session_series::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            rule: serde_json::json!({
+                "start_at": "2026-09-15T15:00:00",
+                "recurrence": { "frequency": "weekly", "interval": 1 },
+                "duration_minutes": 60,
+            }),
+            ical_sequence: 0,
+            created_by_user_id: Id::new_v4(),
+            created_at: chrono::Utc::now().fixed_offset(),
+            updated_at: chrono::Utc::now().fixed_offset(),
+        }
+    }
+
+    #[test]
+    fn test_build_series_invite_ics_structure() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let mut first = create_test_session();
+        first.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(19, 0, 0)
+            .unwrap();
+        first.duration_minutes = 60;
+        first.meeting_url = Some("https://meet.example/xyz".into());
+        let mut org = create_test_organization();
+        org.name = "Acme".to_string();
+        let series = create_test_series();
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let ics = build_series_invite_ics(
+            &coach,
+            &coachee,
+            &first,
+            &org,
+            &series,
+            "View this session: https://app/x".into(),
+            dtstamp,
+        )
+        .unwrap();
+
+        assert!(ics.contains(&format!("UID:{}@myrefactor.com", series.id)));
+        assert!(ics.contains("METHOD:REQUEST"));
+        assert!(ics.contains("STATUS:CONFIRMED"));
+        assert!(ics.contains("SEQUENCE:0"));
+        assert!(ics.contains("RRULE:FREQ=WEEKLY"));
+        assert!(ics.contains("BEGIN:VTIMEZONE"));
+        assert!(ics.contains("TZID:America/New_York"));
+        assert!(ics.contains("DTSTART;TZID=America/New_York:20260915T150000"));
+        assert!(ics.contains("View this session: https://app/x"));
+    }
+
+    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn test_send_recurring_sessions_scheduled_email_personalization() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
+
+        // Series description loads only the first session's in-progress goals.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .into_connection();
 
         let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
         let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
         let org = create_test_organization();
+        let series = create_test_series();
 
         let sessions = vec![
             create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
@@ -1696,10 +1848,10 @@ mod tests {
         );
 
         // Email to coachee — other_user is the coach. Body-match per recipient
-        // proves the role swap.
-        let _mock_coachee = server
+        // proves the role swap; the `.ics` attachment must be present.
+        let mock_coachee = server
             .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "template": {
@@ -1725,29 +1877,46 @@ mod tests {
             .create_async()
             .await;
 
-        // Email to coach — only verify it was sent.
-        let _mock_coach = server
+        // Email to coach — require the `.ics` attachment too.
+        let mock_coach = server
             .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
+                "template": { "id": "recurring_template_xyz" }
+            })))
             .with_status(200)
             .with_body(r#"{"id":"email_test"}"#)
             .expect(1)
             .create_async()
             .await;
 
-        let result =
-            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
-                .await;
+        let result = send_recurring_sessions_scheduled_email(
+            &db, &config, &series, &coach, &coachee, &sessions, &org,
+        )
+        .await;
         assert!(result.is_ok());
+
+        // Sends are best-effort (errors are swallowed), so assert the mocks
+        // matched to prove the attachment-bearing bodies actually went out.
+        mock_coachee.assert_async().await;
+        mock_coach.assert_async().await;
     }
 
+    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn test_send_recurring_sessions_scheduled_email_single_session() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .into_connection();
 
         let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
         let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
         let org = create_test_organization();
+        let series = create_test_series();
 
         let sessions = vec![create_test_session_on(
             NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
@@ -1779,14 +1948,19 @@ mod tests {
             .create_async()
             .await;
 
-        let result =
-            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
-                .await;
+        let result = send_recurring_sessions_scheduled_email(
+            &db, &config, &series, &coach, &coachee, &sessions, &org,
+        )
+        .await;
         assert!(result.is_ok());
     }
 
+    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
         let server = setup_test_server().await;
         let config = Config::from_args([
             "test",
@@ -1798,13 +1972,15 @@ mod tests {
         let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
         let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
         let org = create_test_organization();
+        let series = create_test_series();
         let sessions = vec![create_test_session_on(
             NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
         )];
 
-        let result =
-            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
-                .await;
+        let result = send_recurring_sessions_scheduled_email(
+            &db, &config, &series, &coach, &coachee, &sessions, &org,
+        )
+        .await;
 
         assert!(result.is_err());
         if let Err(e) = result {
@@ -1838,6 +2014,7 @@ mod tests {
             "coach",
             &[],
             &org,
+            "",
         )
         .await;
 
