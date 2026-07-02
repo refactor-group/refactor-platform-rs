@@ -5,10 +5,10 @@ use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
 };
 use crate::coaching_sessions::Model;
-use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
-use crate::provider::MeetingProperties;
+use crate::meeting_provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
@@ -82,6 +82,14 @@ pub async fn create(
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived,
+            )),
+        });
+    }
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
@@ -425,7 +433,7 @@ async fn maybe_attach_meeting_url(
 async fn find_reusable_meeting_url(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
 ) -> Result<Option<String>, Error> {
     if !provider.has_persistent_meeting_urls() {
         return Ok(None);
@@ -451,7 +459,7 @@ async fn create_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
     coach_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
     start_time: &NaiveDateTime,
     external_account_id: Option<String>,
 ) -> Result<String, Error> {
@@ -459,7 +467,7 @@ async fn create_meeting_url(
         crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
 
     match provider {
-        crate::provider::Provider::Google => {
+        crate::meeting_provider::Provider::Google => {
             let client = crate::gateway::google_meet::Client::new(
                 &access_token,
                 config.google_meet_api_url(),
@@ -473,7 +481,7 @@ async fn create_meeting_url(
 
             Ok(space.meeting_uri)
         }
-        crate::provider::Provider::Zoom => {
+        crate::meeting_provider::Provider::Zoom => {
             let external_account_id = external_account_id.ok_or_else(|| {
                 warn!("Zoom oauth connection for does not have an external_account_id");
                 Error {
@@ -515,7 +523,10 @@ fn generate_document_name(
 mod tests {
     use super::*;
     use crate::test_support::recording_publisher;
-    use crate::{coaching_sessions, goals, oauth_connections, organizations, provider::Provider};
+    use crate::{
+        coaching_relationships, coaching_sessions, goals, meeting_provider::Provider,
+        oauth_connections, organizations,
+    };
     use mockito::Server;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
@@ -529,6 +540,8 @@ mod tests {
             slug: "test-org".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
         }
     }
 
@@ -713,6 +726,39 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Creating a session under an archived org fails with `OrganizationArchived`
+    /// before any Tiptap/meeting side effects run.
+    #[tokio::test]
+    async fn create_rejects_archived_organization() {
+        let now = chrono::Utc::now();
+        let org = organizations::Model {
+            archived_at: Some(now.into()),
+            archived_by: Some(Id::new_v4()),
+            ..test_organization()
+        };
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        // Only relationship + org are queried; guard returns before any insert.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .into_connection();
+
+        let config = test_config("http://unused.test");
+        let (publisher, _recorded) = recording_publisher();
+        let result = create(&db, &config, &publisher, session, Some(Duration::default())).await;
+
+        let err = result.expect_err("expected archived-org rejection");
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived
+            ))
+        ));
     }
 
     /// A prior session with a Deferred topic carries that topic forward at create

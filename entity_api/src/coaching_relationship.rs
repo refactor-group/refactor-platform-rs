@@ -26,19 +26,30 @@ pub async fn create(
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
     debug!("New Coaching Relationship Model to be inserted: {coaching_relationship_model:?}");
 
+    let organization = organization::find_by_id(db, organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::OrganizationArchived,
+        });
+    }
+
     let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
     let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
 
-    let coach_organization_ids = organization::find_by_user(db, coach.id)
-        .await?
-        .iter()
-        .map(|org| org.id)
-        .collect::<Vec<Id>>();
-    let coachee_organization_ids = organization::find_by_user(db, coachee.id)
-        .await?
-        .iter()
-        .map(|org| org.id)
-        .collect::<Vec<Id>>();
+    let coach_organization_ids =
+        // membership is independent of archive state
+        organization::find_by_user(db, coach.id, organization::StatusFilter::All)
+            .await?
+            .iter()
+            .map(|org| org.id)
+            .collect::<Vec<Id>>();
+    let coachee_organization_ids =
+        organization::find_by_user(db, coachee.id, organization::StatusFilter::All)
+            .await?
+            .iter()
+            .map(|org| org.id)
+            .collect::<Vec<Id>>();
 
     // Check that the coach and coachee belong to the correct organization
     if !coach_organization_ids.contains(&organization_id)
@@ -610,5 +621,45 @@ mod tests {
 
         assert!(!result);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_rejects_archived_organization() {
+        let now = Utc::now();
+        let organization_id = Id::new_v4();
+        let archived_org = entity::organizations::Model {
+            id: organization_id,
+            name: "Archived Org".to_string(),
+            logo: None,
+            slug: "archived-org".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: Some(now.into()),
+            archived_by: Some(Id::new_v4()),
+        };
+
+        // create issues find_by_id(org) first; archived org short-circuits before
+        // the coach/coachee lookups.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![archived_org]])
+            .into_connection();
+
+        let model = Model {
+            id: Id::new_v4(),
+            organization_id,
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            slug: String::new(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let result = create(&db, organization_id, model).await;
+
+        let err = result.expect_err("expected archived-org rejection");
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::OrganizationArchived
+        ));
     }
 }

@@ -87,6 +87,8 @@ use utoipa_rapidoc::RapiDoc;
             organization_controller::create,
             organization_controller::update,
             organization_controller::delete,
+            organization_controller::archive,
+            organization_controller::unarchive,
             organization::coaching_relationship_controller::create,
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
@@ -171,7 +173,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::jwts::Jwt,
                 domain::notes::Model,
                 domain::organizations::Model,
-                domain::provider::Provider,
+                domain::meeting_provider::Provider,
                 domain::status::Status,
                 domain::user::Credentials,
                 domain::users::Model,
@@ -532,6 +534,14 @@ pub fn organization_routes(app_state: AppState) -> Router {
         .route(
             "/organizations/:id",
             delete(organization_controller::delete),
+        )
+        .route(
+            "/organizations/:id/archive",
+            post(organization_controller::archive),
+        )
+        .route(
+            "/organizations/:id/unarchive",
+            post(organization_controller::unarchive),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

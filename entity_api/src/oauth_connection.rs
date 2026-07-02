@@ -1,6 +1,6 @@
 use super::error::{EntityApiErrorKind, Error};
+use entity::meeting_provider::Provider;
 use entity::oauth_connections::{ActiveModel, Column, Entity, Model};
-use entity::provider::Provider;
 use entity::Id;
 use log::debug;
 use sea_orm::{
