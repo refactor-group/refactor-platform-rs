@@ -21,7 +21,7 @@ pub(crate) async fn index(
         next.run(request).await
     } else {
         error!(
-            "Unauthorized: user_id {} does not match authenticated_user_id {}",
+            "Forbidden: user_id {} does not match authenticated_user_id {}",
             user_id, authenticated_user.id
         );
         (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()

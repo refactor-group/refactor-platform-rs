@@ -50,7 +50,7 @@ pub(crate) async fn index(
     }
 
     error!(
-        "Unauthorized: user {} cannot access actions for user {}",
+        "Forbidden: user {} cannot access actions for user {}",
         authenticated_user.id, user_id
     );
     (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
