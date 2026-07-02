@@ -267,9 +267,18 @@ post-merge, so the Phase 1 composer can be fed real title/topics.
   - [x] `Status::is_completed()` exists and `goals::Model::is_completed()` delegates to it (no duplicated definition).
   - [x] `find_open_by_coaching_session_id` returns `NotStarted`/`InProgress`/`OnHold` actions and excludes `Completed`/`WontDo` (mock-DB test).
 
-### Phase 4 — Attach `.ics` to existing create emails (scenarios 1 & 2) — split into 4a (single ✅) + 4b (series, next)
+### Phase 4 — Attach `.ics` to existing create emails (scenarios 1 & 2) — DONE ✅ (4a `efb4cf60` + 4b `0899df82`, overseer-verified)
 Split by overseer decision: 4b carries the wider blast radius (`notify_recurring_sessions_scheduled`
 signature change + #356 controller call site). Both merge together behind the **Outlook gate** (still owed).
+**Phase 4b DONE ✅ (commit `0899df82`, overseer-verified):** series create email attaches a recurring
+`.ics` (`VEVENT` + `RRULE`, UID `<series_id>@myrefactor.com`, `SEQUENCE = series.ical_sequence`). Signature
+`notify_recurring_sessions_scheduled(db, config, series, sessions)` + the one #356 controller call site
+(`coaching_session_series_controller.rs`) updated (series already in scope from `create_with_sessions`).
+Pure helper `build_series_invite_ics(...)` deserializes `SeriesRule` from `series.rule` (`?` works via
+existing `From<serde_json::Error>`); series description = link + first-session in-progress goals only.
+Test 1 asserts SERIES UID + `RRULE:FREQ=WEEKLY`; Test 2 (mock-gated) asserts attachment + `.assert_async()`
+teeth. domain emails 27 mock; web compiles; full mock suite green (223/258/113); clippy/fmt clean.
+
 **Phase 4a DONE ✅ (commit `efb4cf60`, overseer-verified):** single-session create email now attaches a
 `METHOD:REQUEST` `.ics`, built ONCE per session and threaded to both recipients. New pure helper
 `build_session_invite_ics(organizer, attendee, session, org, description, dtstamp)` (dtstamp injected for
