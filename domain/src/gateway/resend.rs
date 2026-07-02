@@ -246,7 +246,6 @@ impl SendEmailRequestBuilder {
     /// Attach an .ics calendar invite (base64-inline). filename is always
     /// invite.ics; the content_type carries the iCal METHOD so clients treat
     /// it as an invite/cancellation.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn add_ics_attachment(mut self, ics_body: &str, method: &Method) -> Self {
         let m = match method {
             Method::Request => "REQUEST",

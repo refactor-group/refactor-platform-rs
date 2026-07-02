@@ -8,6 +8,7 @@ use crate::{
     actions, coaching_relationship, coaching_session, coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
+    gateway::ical::{self, DescriptionParts, OpenAction},
     gateway::resend::{Client as ResendClient, SendEmailRequestBuilder},
     goal, organization, organizations, user, users, Id,
 };
@@ -352,6 +353,7 @@ async fn send_session_email_to_recipient(
     other_user_role: &str,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
+    ics_body: &str,
 ) -> Result<(), Error> {
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&session.id)?;
@@ -374,14 +376,49 @@ async fn send_session_email_to_recipient(
         .add_variable("session_time", session_time.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
+        .add_ics_attachment(ics_body, &ical::Method::Request)
         .build()
         .await?;
 
     email_config.client.send_email(email_request).await
 }
 
+/// Build the single-session invite `.ics` body. Pure: `dtstamp` is injected so the
+/// output is deterministic for a given input.
+fn build_session_invite_ics(
+    organizer: &users::Model,
+    attendee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = organizer
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .unwrap_or(chrono_tz::UTC);
+    let invite = ical::IcsInvite {
+        uid: format!("{}@myrefactor.com", session.id),
+        sequence: session.ical_sequence,
+        method: ical::Method::Request,
+        status: ical::EventStatus::Confirmed,
+        summary: format!("Coaching Session: {}", organization.name),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: session.date,
+        duration_minutes: session.duration_minutes,
+        organizer,
+        attendee,
+        location_url: session.meeting_url.clone(),
+        recurrence: None,
+    };
+    ical::build(&invite)
+}
+
 /// Send session-scheduled notification emails to both coach and coachee.
 async fn send_session_scheduled_email(
+    db: &DatabaseConnection,
     config: &Config,
     coach: &users::Model,
     coachee: &users::Model,
@@ -395,6 +432,53 @@ async fn send_session_scheduled_email(
 
     let email_config = ResolvedEmailConfig::new::<SessionScheduled>(config).await?;
 
+    // Same VEVENT for both recipients (organizer = coach, attendee = coachee).
+    let topics = entity_api::coaching_session_topic::find_by_coaching_session_id(db, session.id)
+        .await?
+        .into_iter()
+        .map(|t| t.body)
+        .collect::<Vec<String>>();
+    let goal_titles =
+        entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+            db, session.id,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|g| g.title)
+        .collect::<Vec<String>>();
+    let open_actions = entity_api::action::find_open_by_coaching_session_id(db, session.id)
+        .await?
+        .into_iter()
+        .filter_map(|a| {
+            a.body.map(|body| OpenAction {
+                body,
+                due_by: a.due_by.map(|d| d.naive_utc()),
+            })
+        })
+        .collect::<Vec<OpenAction>>();
+
+    let anchor_tz = coach
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .unwrap_or(chrono_tz::UTC);
+    let description = ical::compose_description(&DescriptionParts {
+        session_url: email_config.build_session_url(&session.id)?,
+        title: session.title.as_deref(),
+        topics: &topics,
+        goal_titles: &goal_titles,
+        open_actions: &open_actions,
+        anchor_tz,
+    });
+
+    let ics_body = build_session_invite_ics(
+        coach,
+        coachee,
+        session,
+        organization,
+        description,
+        chrono::Utc::now().naive_utc(),
+    )?;
+
     // Email to coachee: "Your coach, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
@@ -403,6 +487,7 @@ async fn send_session_scheduled_email(
         "coach",
         session,
         organization,
+        &ics_body,
     )
     .await
     {
@@ -420,6 +505,7 @@ async fn send_session_scheduled_email(
         "coachee",
         session,
         organization,
+        &ics_body,
     )
     .await
     {
@@ -522,7 +608,7 @@ pub async fn notify_session_scheduled(
         let coachee = user::find_by_id(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_session_scheduled_email(config, &coach, &coachee, session, &org).await
+        send_session_scheduled_email(db, config, &coach, &coachee, session, &org).await
     }
     .await;
 
@@ -750,6 +836,24 @@ mod tests {
             "test bug: expected body must not include `subject`",
         );
         mockito::Matcher::Json(expected)
+    }
+
+    /// Body matcher for a Resend request that also carries an `.ics` attachment:
+    /// partial-JSON on the template vars plus regexes requiring the `invite.ics`
+    /// REQUEST attachment. The base64 `content` is intentionally not asserted
+    /// (dtstamp is `now`).
+    fn expect_resend_body_with_ics(expected: serde_json::Value) -> mockito::Matcher {
+        assert!(
+            expected.get("subject").is_none(),
+            "test bug: expected body must not include `subject`",
+        );
+        mockito::Matcher::AllOf(vec![
+            mockito::Matcher::PartialJson(expected),
+            mockito::Matcher::Regex(r#""filename":"invite\.ics""#.to_string()),
+            mockito::Matcher::Regex(
+                r#""content_type":"text/calendar; method=REQUEST; charset=UTF-8""#.to_string(),
+            ),
+        ])
     }
 
     fn create_test_user() -> users::Model {
@@ -1063,10 +1167,60 @@ mod tests {
 
     // ── Session Scheduled Email Tests ──────────────────────────────────
 
+    #[test]
+    fn test_build_session_invite_ics_structure() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let mut session = create_test_session();
+        session.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(19, 0, 0)
+            .unwrap();
+        session.duration_minutes = 60;
+        session.ical_sequence = 0;
+        session.meeting_url = Some("https://meet.example/xyz".into());
+        let mut org = create_test_organization();
+        org.name = "Acme".to_string();
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let ics = build_session_invite_ics(
+            &coach,
+            &coachee,
+            &session,
+            &org,
+            "View this session: https://app/x".into(),
+            dtstamp,
+        )
+        .unwrap();
+
+        assert!(ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+        assert!(ics.contains("METHOD:REQUEST"));
+        assert!(ics.contains("STATUS:CONFIRMED"));
+        assert!(ics.contains("SEQUENCE:0"));
+        assert!(ics.contains("SUMMARY:Coaching Session: Acme"));
+        assert!(ics.contains("BEGIN:VTIMEZONE"));
+        assert!(ics.contains("TZID:America/New_York"));
+        assert!(ics.contains("DTSTART;TZID=America/New_York:20260915T150000"));
+        assert!(ics.contains("View this session: https://app/x"));
+    }
+
+    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn test_send_session_scheduled_email_variables() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
+
+        // Description loaders return empty sets; the `.ics` content is not asserted here.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+            .into_connection();
 
         // Coach and coachee in different timezones so a single body-match per
         // recipient proves BOTH the role swap (coach <-> coachee) AND that each
@@ -1081,9 +1235,9 @@ mod tests {
         let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
 
         // Email to coachee — other_user is the coach, formatted in NY time.
-        let _mock_coachee = server
+        let mock_coachee = server
             .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Jane Doe\" <jane@example.com>"],
                 "template": {
@@ -1109,9 +1263,9 @@ mod tests {
 
         // Email to coach — other_user is the coachee, formatted in Tokyo time
         // (the session date rolls forward a day).
-        let _mock_coach = server
+        let mock_coach = server
             .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
                 "from": FROM_ADDRESS,
                 "to": ["\"Alex Smith\" <alex@example.com>"],
                 "template": {
@@ -1135,14 +1289,25 @@ mod tests {
             .create_async()
             .await;
 
-        let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
+        let result =
+            send_session_scheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
         assert!(result.is_ok());
+
+        // Sends are best-effort (errors are swallowed), so assert the mocks
+        // matched to prove the attachment-bearing bodies actually went out.
+        mock_coachee.assert_async().await;
+        mock_coach.assert_async().await;
     }
 
+    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn test_send_session_scheduled_email_missing_template_id() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
         // Config has an API key and frontend base URL but no session-scheduled
         // template id — mirrors the welcome/action missing-template-id tests.
+        // Fails at config resolution, before any loader query runs.
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
         let server = setup_test_server().await;
         let config = Config::from_args([
             "test",
@@ -1156,7 +1321,8 @@ mod tests {
         let session = create_test_session();
         let org = create_test_organization();
 
-        let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
+        let result =
+            send_session_scheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
 
         assert!(result.is_err());
         if let Err(e) = result {
