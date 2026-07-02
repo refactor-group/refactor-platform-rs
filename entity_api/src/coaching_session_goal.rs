@@ -13,7 +13,7 @@ use sea_orm::{
     entity::prelude::*,
     sea_query::OnConflict,
     ActiveValue::{Set, Unchanged},
-    ConnectionTrait, DatabaseConnection, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, QueryOrder, TryIntoModel,
 };
 
 use log::*;
@@ -367,9 +367,13 @@ pub async fn find_goals_grouped_by_session_ids(
         return Ok(HashMap::new());
     }
 
+    // Deterministic order so callers that take "the first goal" (e.g. the
+    // display_title goal tier) get a stable, reproducible result across requests.
     let links_with_goals = Entity::find()
         .filter(Column::CoachingSessionId.is_in(session_ids.iter().copied()))
         .find_also_related(goals::Entity)
+        .order_by_asc(goals::Column::CreatedAt)
+        .order_by_asc(goals::Column::Id)
         .all(db)
         .await?;
 

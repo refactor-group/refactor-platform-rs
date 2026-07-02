@@ -24,6 +24,11 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
+    #[serde(skip_deserializing)]
+    #[schema(value_type = String, format = DateTime)]
+    pub archived_at: Option<DateTimeWithTimeZone>,
+    #[serde(skip_deserializing)]
+    pub archived_by: Option<Id>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -10,7 +10,7 @@ use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect};
 
-use domain::provider::Provider;
+use domain::meeting_provider::Provider;
 use domain::{oauth_connection, Id};
 use serde::Deserialize;
 

@@ -1,6 +1,7 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    super_admin_access::SuperAdminAccess,
 };
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
@@ -21,7 +22,8 @@ use log::debug;
     path = "/organizations",
     params(
         ApiVersion,
-        ("user_id" = Option<String>, Query, description = "Filter by user_id")
+        ("user_id" = Option<String>, Query, description = "Filter by user_id"),
+        ("status" = Option<String>, Query, description = "active|archived|all (default active)")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Organizations", body = [organizations::Model]),
@@ -103,6 +105,7 @@ pub async fn read(
     )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
     State(app_state): State<AppState>,
     Json(organization_model): Json<organizations::Model>,
 ) -> Result<impl IntoResponse, Error> {
@@ -141,6 +144,7 @@ pub async fn create(
 )]
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
     Json(organization_model): Json<organizations::Model>,
@@ -180,6 +184,7 @@ pub async fn update(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
@@ -187,4 +192,63 @@ pub async fn delete(
 
     OrganizationApi::delete_by_id(app_state.db_conn_ref(), id).await?;
     Ok(Json(json!({"id": id})))
+}
+
+/// ARCHIVE an Organization (idempotent).
+///
+/// Marks the organization archived; it drops out of default reads. SuperAdmin only.
+#[utoipa::path(
+    post,
+    path = "/organizations/{id}/archive",
+    params(ApiVersion, ("id" = String, Path, description = "Organization id to archive")),
+    responses(
+        (status = 200, description = "Organization archived", body = [organizations::Model]),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden (not a SuperAdmin)"),
+        (status = 404, description = "Organization not found"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn archive(
+    CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { authenticated_user }: SuperAdminAccess,
+    State(app_state): State<AppState>,
+    Path(id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("ARCHIVE Organization by id: {id}");
+
+    let organization =
+        OrganizationApi::archive(app_state.db_conn_ref(), id, authenticated_user.id).await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), organization)))
+}
+
+/// UNARCHIVE an Organization (idempotent).
+///
+/// Clears the archived marker; the organization reappears in default reads. SuperAdmin only.
+#[utoipa::path(
+    post,
+    path = "/organizations/{id}/unarchive",
+    params(ApiVersion, ("id" = String, Path, description = "Organization id to unarchive")),
+    responses(
+        (status = 200, description = "Organization unarchived", body = [organizations::Model]),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden (not a SuperAdmin)"),
+        (status = 404, description = "Organization not found"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn unarchive(
+    CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
+    State(app_state): State<AppState>,
+    Path(id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("UNARCHIVE Organization by id: {id}");
+
+    let organization = OrganizationApi::unarchive(app_state.db_conn_ref(), id).await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), organization)))
 }

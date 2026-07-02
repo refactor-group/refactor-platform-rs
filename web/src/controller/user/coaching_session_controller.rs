@@ -102,8 +102,8 @@ pub async fn index(
             tz: tz_name,
             sort_column,
             sort_order,
-            includes,
         },
+        includes,
     )
     .await?;
 

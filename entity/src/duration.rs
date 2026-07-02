@@ -5,8 +5,8 @@
 //! the PG `SMALLINT` column on `coaching_sessions`, which sqlx-postgres
 //! decodes as `i16`), and the human-readable formatting via `Display`.
 //!
-//! `Duration` follows the same pattern as `entity::provider::Provider`: a
-//! non-table value type that constrains the set of values for a DB column.
+//! `Duration` follows the same pattern as `entity::meeting_provider::Provider`:
+//! a non-table value type that constrains the set of values for a DB column.
 //!
 //! The inner type is `i16` rather than `u16` because PostgreSQL's `SMALLINT`
 //! is signed and sqlx-postgres has no `u16` codec. Using `i16` throughout

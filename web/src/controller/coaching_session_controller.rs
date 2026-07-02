@@ -97,7 +97,7 @@ pub async fn view(
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [coaching_sessions::Model]),
+        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [domain::coaching_session::SessionWithDisplayTitle]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -121,7 +121,8 @@ pub async fn index(
     let mut params = params;
     IndexParams::apply_sort_defaults(&mut params.sort_by, &mut params.sort_order, SortField::Date);
 
-    let coaching_sessions = CoachingSessionApi::find_by(app_state.db_conn_ref(), params).await?;
+    let coaching_sessions =
+        CoachingSessionApi::find_by_with_display_title(app_state.db_conn_ref(), params).await?;
 
     debug!("Found Coaching Sessions: {coaching_sessions:?}");
 
@@ -245,8 +246,13 @@ pub async fn update_title(
     State(app_state): State<AppState>,
     Json(params): Json<TitleUpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let updated =
-        CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session.id, params).await?;
+    let updated = CoachingSessionApi::update_title(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        coaching_session.id,
+        params,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }
 

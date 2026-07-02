@@ -5,10 +5,10 @@ use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
 };
 use crate::coaching_sessions::Model;
-use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
-use crate::provider::MeetingProperties;
+use crate::meeting_provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta};
 use entity_api::{
@@ -24,6 +24,7 @@ pub use entity_api::coaching_session::{
     find_next_session, find_participant_ids, CountByMonth, EnrichedSession, IncludeOptions,
     SessionQueryOptions,
 };
+pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
 use crate::duration::Duration;
 pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};
@@ -81,11 +82,23 @@ pub async fn create(
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived,
+            )),
+        });
+    }
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
 
-    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    let document_name = generate_document_name(
+        &organization.slug,
+        &coaching_relationship.slug,
+        Id::new_v4(),
+    );
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
     coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
@@ -201,7 +214,11 @@ pub async fn ensure_hydrated(
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
 
-    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    // Derive the name from the immutable session id so a retried hydration
+    // (after a prior attempt failed post-create) reuses the same document
+    // instead of orphaning one and minting another.
+    let document_name =
+        generate_document_name(&organization.slug, &coaching_relationship.slug, session_id);
     let tiptap = TiptapDocument::new(config).await?;
 
     let coach_id = coaching_relationship.coach_id;
@@ -227,22 +244,17 @@ pub async fn ensure_hydrated(
     }
     .await;
 
-    // Publish after commit so subscribers never refetch against goal links
-    // that a rolled-back transaction never persisted.
-    match result {
-        Ok((updated, events)) => {
-            publish_events(event_publisher, events).await;
-            Ok(updated)
-        }
-        Err(e) => {
-            if let Err(cleanup_err) = tiptap.delete(&document_name).await {
-                warn!(
-                    "Failed to clean up Tiptap document '{document_name}' after hydration error: {cleanup_err}"
-                );
-            }
-            Err(e)
-        }
-    }
+    // No compensating delete on failure. The name is derived from the immutable
+    // session id, so a failed attempt leaves the session's own (empty) document
+    // for the next attempt to adopt via Tiptap's 409-as-success. Deleting here
+    // would be unsafe: the advisory lock is already released, so a concurrent
+    // attempt may have adopted and committed this same document.
+    //
+    // Publish after commit so subscribers never refetch against goal links that a
+    // rolled-back transaction never persisted.
+    let (updated, events) = result?;
+    publish_events(event_publisher, events).await;
+    Ok(updated)
 }
 
 /// Publishes each event produced by the hydration tasks after the transaction
@@ -262,6 +274,35 @@ where
         query::find_by::<coaching_sessions::Entity, coaching_sessions::Column, P>(db, params)
             .await?;
     Ok(coaching_sessions)
+}
+
+/// [`find_by`] plus a per-session `display_title`. Distinct from the stored
+/// `title` column (a user-set name, often null): `display_title` is the
+/// server-composed fallback `title -> first topic body -> first goal title`
+/// (null when none), so list surfaces render a consistent name without deriving it.
+pub async fn find_by_with_display_title<P>(
+    db: &DatabaseConnection,
+    params: P,
+) -> Result<Vec<SessionWithDisplayTitle>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
+{
+    let coaching_sessions = find_by(db, params).await?;
+    let display_titles = entity_api::coaching_session_display_title::batch_load_display_titles(
+        db,
+        &coaching_sessions,
+    )
+    .await?;
+    Ok(coaching_sessions
+        .into_iter()
+        .map(|coaching_session| {
+            let display_title = display_titles.get(&coaching_session.id).cloned().flatten();
+            SessionWithDisplayTitle {
+                session: coaching_session,
+                display_title,
+            }
+        })
+        .collect())
 }
 
 pub async fn update(
@@ -291,6 +332,45 @@ pub async fn update(
         )
         .await?,
     )
+}
+
+/// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
+/// contract; a failed participant lookup must NOT fail the mutation, so log and continue
+/// (mirrors the topics notify helper).
+async fn publish_coaching_session_title_updated(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    coaching_session_id: Id,
+) {
+    let notify_user_ids = match coaching_session::find_participant_ids(db, coaching_session_id)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("CoachingSessionTitleUpdated: failed to resolve participants for session {coaching_session_id}: {e:?}");
+            return;
+        }
+    };
+    event_publisher
+        .publish(DomainEvent::CoachingSessionTitleUpdated {
+            coaching_session_id,
+            notify_user_ids,
+        })
+        .await;
+}
+
+/// Updates only the session title (the participant-gated title endpoint) and emits a coarse
+/// `CoachingSessionTitleUpdated` to both participants. Scheduling-field edits go through
+/// [`update`], which intentionally emits no event.
+pub async fn update_title(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+    params: impl mutate::IntoUpdateMap + std::fmt::Debug,
+) -> Result<Model, Error> {
+    let coaching_session = update(db, id, params).await?;
+    publish_coaching_session_title_updated(db, event_publisher, coaching_session.id).await;
+    Ok(coaching_session)
 }
 
 pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
@@ -353,7 +433,7 @@ async fn maybe_attach_meeting_url(
 async fn find_reusable_meeting_url(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
 ) -> Result<Option<String>, Error> {
     if !provider.has_persistent_meeting_urls() {
         return Ok(None);
@@ -379,7 +459,7 @@ async fn create_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
     coach_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
     start_time: &NaiveDateTime,
     external_account_id: Option<String>,
 ) -> Result<String, Error> {
@@ -387,7 +467,7 @@ async fn create_meeting_url(
         crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
 
     match provider {
-        crate::provider::Provider::Google => {
+        crate::meeting_provider::Provider::Google => {
             let client = crate::gateway::google_meet::Client::new(
                 &access_token,
                 config.google_meet_api_url(),
@@ -401,7 +481,7 @@ async fn create_meeting_url(
 
             Ok(space.meeting_uri)
         }
-        crate::provider::Provider::Zoom => {
+        crate::meeting_provider::Provider::Zoom => {
             let external_account_id = external_account_id.ok_or_else(|| {
                 warn!("Zoom oauth connection for does not have an external_account_id");
                 Error {
@@ -426,13 +506,16 @@ async fn create_meeting_url(
     }
 }
 
-fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> String {
-    format!(
-        "{}.{}.{}-v0",
-        organization_slug,
-        relationship_slug,
-        Id::new_v4()
-    )
+/// Formats a collab-document name as `{org}.{rel}.{unique_id}-v0`. The suffix is
+/// supplied by the caller, not minted here: the deferred path passes the stable
+/// session id so repeated hydration attempts converge on one document, while the
+/// eager create path passes a fresh id (its row id is not yet known pre-insert).
+fn generate_document_name(
+    organization_slug: &str,
+    relationship_slug: &str,
+    unique_id: Id,
+) -> String {
+    format!("{organization_slug}.{relationship_slug}.{unique_id}-v0")
 }
 
 #[cfg(test)]
@@ -440,7 +523,10 @@ fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> S
 mod tests {
     use super::*;
     use crate::test_support::recording_publisher;
-    use crate::{coaching_sessions, goals, oauth_connections, organizations, provider::Provider};
+    use crate::{
+        coaching_relationships, coaching_sessions, goals, meeting_provider::Provider,
+        oauth_connections, organizations,
+    };
     use mockito::Server;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
@@ -454,6 +540,8 @@ mod tests {
             slug: "test-org".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
         }
     }
 
@@ -497,6 +585,63 @@ mod tests {
             "--tiptap-auth-key=test-auth-key",
             &format!("--tiptap-url={tiptap_url}"),
         ])
+    }
+
+    /// Editing a title via [`update_title`] publishes exactly one coarse
+    /// `CoachingSessionTitleUpdated`, scoped to the relationship's coach + coachee.
+    #[tokio::test]
+    async fn update_title_publishes_title_updated_event() -> Result<(), Error> {
+        // Test-only IntoUpdateMap wrapper (the web layer's TitleUpdateParams implements this).
+        #[derive(Debug)]
+        struct TestParams(mutate::UpdateMap);
+        impl mutate::IntoUpdateMap for TestParams {
+            fn into_update_map(self) -> mutate::UpdateMap {
+                self.0
+            }
+        }
+
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+        let updated = coaching_sessions::Model {
+            title: Some("Renamed".to_string()),
+            ..session.clone()
+        };
+
+        let (publisher, events) = recording_publisher();
+
+        // update: find_by_id → UPDATE ... RETURNING; then the participant lookup (find_also_related).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
+            .into_connection();
+
+        let mut map = mutate::UpdateMap::new();
+        map.insert(
+            "title".into(),
+            Some(sea_orm::Value::String(Some(Box::new("Renamed".into())))),
+        );
+
+        let result = update_title(&db, &publisher, session.id, TestParams(map)).await;
+        assert!(result.is_ok());
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "expected exactly one published event");
+        match &recorded[0] {
+            DomainEvent::CoachingSessionTitleUpdated {
+                coaching_session_id,
+                notify_user_ids,
+            } => {
+                assert_eq!(*coaching_session_id, session.id);
+                assert_eq!(notify_user_ids.len(), 2, "coach + coachee");
+                assert!(notify_user_ids.contains(&relationship.coach_id));
+                assert!(notify_user_ids.contains(&relationship.coachee_id));
+            }
+            other => panic!("expected CoachingSessionTitleUpdated, got {other:?}"),
+        }
+        Ok(())
     }
 
     /// Creating a session links the relationship's in-progress goals and
@@ -581,6 +726,39 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Creating a session under an archived org fails with `OrganizationArchived`
+    /// before any Tiptap/meeting side effects run.
+    #[tokio::test]
+    async fn create_rejects_archived_organization() {
+        let now = chrono::Utc::now();
+        let org = organizations::Model {
+            archived_at: Some(now.into()),
+            archived_by: Some(Id::new_v4()),
+            ..test_organization()
+        };
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        // Only relationship + org are queried; guard returns before any insert.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .into_connection();
+
+        let config = test_config("http://unused.test");
+        let (publisher, _recorded) = recording_publisher();
+        let result = create(&db, &config, &publisher, session, Some(Duration::default())).await;
+
+        let err = result.expect_err("expected archived-org rejection");
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived
+            ))
+        ));
     }
 
     /// A prior session with a Deferred topic carries that topic forward at create
@@ -848,8 +1026,12 @@ mod tests {
         Ok(())
     }
 
+    /// Covers the post-lock re-check branch: when the re-fetch under the lock
+    /// returns an already-hydrated row, hydration commits and returns without
+    /// touching Tiptap. Does not exercise lock contention itself (MockDatabase
+    /// has no advisory-lock semantics); true concurrency is an integration test.
     #[tokio::test]
-    async fn ensure_hydrated_short_circuits_after_lock_when_row_hydrated_concurrently(
+    async fn ensure_hydrated_short_circuits_when_refetch_under_lock_finds_row_hydrated(
     ) -> Result<(), Error> {
         let mut server = Server::new_async().await;
         let config = test_config(&server.url());
@@ -886,8 +1068,12 @@ mod tests {
         Ok(())
     }
 
+    /// A post-create failure surfaces the error but must NOT delete the document.
+    /// The name is the session's permanent id-derived name, so the doc is left for
+    /// the next attempt to adopt (409-as-success). Deleting it would be unsafe: a
+    /// concurrent attempt may have already adopted and committed the same doc.
     #[tokio::test]
-    async fn ensure_hydrated_deletes_tiptap_doc_when_post_create_step_fails() {
+    async fn ensure_hydrated_keeps_tiptap_doc_when_post_create_step_fails() {
         let mut server = Server::new_async().await;
         let config = test_config(&server.url());
 
@@ -901,7 +1087,7 @@ mod tests {
         let delete_mock = server
             .mock("DELETE", doc_path)
             .with_status(204)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
 
@@ -915,7 +1101,7 @@ mod tests {
 
         // Sequence: advisory_lock exec → re-fetch (not yet hydrated) → relationship
         // → organization → tiptap POST (200) → oauth_connection::find_by_user
-        // returns an error → cleanup DELETE fires.
+        // returns an error → error surfaced, NO cleanup DELETE.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
@@ -1044,5 +1230,87 @@ mod tests {
 
         tiptap_mock.assert_async().await;
         Ok(())
+    }
+
+    /// The deferred-doc formatter is a pure function of its inputs: identical
+    /// inputs yield an identical name and distinct ids never collide. The
+    /// id-bearing suffix carries no '.', so the collab-token scope split
+    /// (`{org}.{rel}.*`) still recovers the prefix intact.
+    #[test]
+    fn generate_document_name_is_pure_shaped_and_jwt_compatible() {
+        let id = Id::new_v4();
+        let name = generate_document_name("test-org", "test-slug", id);
+
+        assert_eq!(name, format!("test-org.test-slug.{id}-v0"));
+        assert_eq!(name, generate_document_name("test-org", "test-slug", id));
+        assert_ne!(
+            name,
+            generate_document_name("test-org", "test-slug", Id::new_v4())
+        );
+
+        let parts: Vec<&str> = name.rsplitn(2, '.').collect();
+        assert_eq!(parts[1], "test-org.test-slug");
+    }
+
+    /// Regression: two hydration attempts on the same still-unhydrated row must
+    /// target the SAME Tiptap document. The deferred path derives the doc name
+    /// from the immutable session id, so a first attempt that fails after
+    /// creating the doc cannot strand an orphan and mint a fresh random doc on
+    /// retry. Asserts the exact document URL is POSTed twice.
+    #[tokio::test]
+    async fn ensure_hydrated_reuses_same_doc_name_when_retried_after_failure() {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            ..test_session(relationship.id, None)
+        };
+
+        let expected_doc = format!("test-org.test-slug.{}-v0", session.id);
+        let post_mock = server
+            .mock(
+                "POST",
+                mockito::Matcher::Exact(format!("/api/documents/{expected_doc}")),
+            )
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .expect(2)
+            .create_async()
+            .await;
+        // Cleanup DELETE fires after each failed attempt; count not constrained.
+        let _delete_mock = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .create_async()
+            .await;
+
+        // Per attempt: lock exec -> refetch (unhydrated) -> relationship -> org
+        // -> POST 200 -> oauth lookup errors -> rollback + cleanup. Twice.
+        let mut builder = MockDatabase::new(DatabaseBackend::Postgres);
+        for _ in 0..2 {
+            builder = builder
+                .append_exec_results(vec![sea_orm::MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                }])
+                .append_query_results(vec![vec![session.clone()]])
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results(vec![vec![org.clone()]])
+                .append_query_errors(vec![sea_orm::DbErr::Custom(
+                    "simulated oauth lookup failure".to_string(),
+                )]);
+        }
+        let db = builder.into_connection();
+
+        let first = ensure_hydrated(&db, &config, &EventPublisher::new(), session.clone()).await;
+        let second = ensure_hydrated(&db, &config, &EventPublisher::new(), session.clone()).await;
+
+        assert!(first.is_err(), "first attempt should surface the failure");
+        assert!(second.is_err(), "second attempt should surface the failure");
+        post_mock.assert_async().await;
     }
 }
