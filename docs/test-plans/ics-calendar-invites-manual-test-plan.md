@@ -39,16 +39,12 @@ The anchor timezone is the **coach's `users.timezone` at send time**.
 
 ## Setup / prerequisites
 
-1. **Apply migrations** (Phase 3 added `ical_sequence` to `coaching_sessions` and
-   `coaching_session_series`): rebuild the DB (`scripts/rebuild_db.sh`) or run the migrator.
-   Verify: `\d refactor_platform.coaching_sessions` shows an `ical_sequence integer not null default 0`
-   column (same on `coaching_session_series`).
-2. **Resend config** (real key so emails actually send): `--resend-api-key`,
+1. **Resend config** (real key so emails actually send): `--resend-api-key`,
    `--session-scheduled-email-template-id`, `--recurring-sessions-scheduled-email-template-id`,
    `--frontend-base-url=https://<your app>` (drives the `View this session` link).
-3. **A coaching relationship** with a coach and coachee whose email inboxes you control.
+2. **A coaching relationship** with a coach and coachee whose email inboxes you control.
    Set the **coach's timezone** to `America/New_York` for the DST/cross-zone checks.
-4. Run the backend (`cargo run`) and drive it via the frontend or `curl` (create session /
+3. Run the backend (`cargo run`) and drive it via the frontend or `curl` (create session /
    create series endpoints).
 
 **Fastest structural smoke test without email/DB** (good for the Outlook gate): run the
