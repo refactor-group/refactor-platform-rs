@@ -301,7 +301,17 @@ full mock suite green (222/258/113); clippy/fmt clean.
   - [ ] Single-session description shows title/topics/goals/actions per the composition rules; series description shows link + first-session goals only.
   - [ ] Existing `mockito` body-match tests updated to expect `attachments` + ≥1 structural `.ics` assertion (UID prefix, METHOD, SEQUENCE, `VTIMEZONE` present, TZID == coach zone). Series test asserts `RRULE` + `<series_id>` UID.
 
-### Phase 5 — Net-new update/reschedule emails (scenarios 3 & 4) — split into 5a (single) + 5b (series)
+### Phase 5 — Net-new update/reschedule emails (scenarios 3 & 4) — 5a (single) DONE ✅ / 5b (series) next
+**Phase 5a DONE ✅ (commit `4c437115`, overseer-verified):** single-session reschedule. Added shared
+`rescheduled_email_template_id` config flag (4 places); `entity_api::coaching_session::increment_ical_sequence`
+(`Set(old+1)`); pure `is_calendar_relevant_change(old,new)` over date/duration_minutes/meeting_url/title;
+threaded `&Config` through `update` + `update_title` + both PUT controllers; on a calendar-relevant change
+`update` bumps SEQUENCE and fires best-effort `notify_session_rescheduled` (same UID, `SEQUENCE` 0→1). Send
+body refactored to a generic `send_single_session_invite_email<N>` (scheduled + reschedule share it; create
+behavior unchanged); reschedule carries a `session_or_series="session"` template var (via
+`add_optional_variable`, absent on create) for Phase 7's shared template. Reuses `build_session_invite_ics`
+unchanged. Tests: pure change-detection truth table, pure bumped-`SEQUENCE:1` .ics, mock increment 4→5, mock
+reschedule email (`.assert_async()` teeth). Full mock suite green (226/259/115); clippy/fmt clean; flag in `--help`.
 Overseer scoping (from recon): `coaching_session::update` only ever touches `date`/`duration_minutes`/
 `meeting_url`/`title` (topics/goals/actions are edited via SEPARATE endpoints, not the session update),
 so **5a's change detection is bounded to those four fields**; topic/goal/action-driven re-sends are a

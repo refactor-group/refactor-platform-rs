@@ -153,12 +153,47 @@ above. Watch for: exactly one `BEGIN:VTIMEZONE` (before `BEGIN:VEVENT`), `DTSTAR
 
 ---
 
+## Reschedule — single session (Phase 5a)
+
+Editing a single session now re-sends an updated invite (`METHOD:REQUEST`, **same UID**, **bumped
+`SEQUENCE`**) so calendar clients update the event in place. Fires only when a calendar-relevant field
+changed: `date`, `duration_minutes`, `meeting_url`, or `title`.
+
+**Extra setup:** configure `--rescheduled-email-template-id=<your Resend template>` (single + series share
+this one reschedule template). Without it, the edit still succeeds but the reschedule email fails
+best-effort and is logged (see RS2).
+
+### HR1 — Edit a session's time (happy path)
+1. Create a single session (H1), import its `.ics` (note `SEQUENCE:0`).
+2. Change the session's **date/time** (or duration, or `meeting_url`) via the app.
+3. **Expect:** both coach and coachee receive a **reschedule** email with `invite.ics` whose `UID` is
+   unchanged (`<session_id>@myrefactor.com`) and `SEQUENCE:1`.
+4. Import it: the **existing** calendar event moves to the new time in place (no duplicate).
+5. Edit again → next email carries `SEQUENCE:2`, still same UID, updates in place again.
+
+### HR2 — Edit the title (description change is calendar-relevant)
+1. On an existing session, set or change the **title**.
+2. **Expect:** a reschedule email fires; the `.ics` `DESCRIPTION` shows the new title line and `SEQUENCE`
+   is bumped. (A title edit via the dedicated title field also emits the normal in-app update.)
+
+### RS1 — No-op edit sends nothing (sad path)
+1. Submit a session update that leaves `date`, `duration_minutes`, `meeting_url`, and `title` unchanged.
+2. **Expect:** **no** reschedule email is sent (nothing calendar-relevant changed); `SEQUENCE` does not bump.
+
+### RS2 — Reschedule template not configured (sad path)
+1. Run the backend **without** `--rescheduled-email-template-id`, then edit a session's time.
+2. **Expect:** the edit succeeds (session updates, `ical_sequence` bumps); the reschedule email fails
+   best-effort and is logged. No crash, no partial email.
+
+---
+
 ## Not testable yet (later phases — expect NOTHING to happen)
 
-- **Editing** a session or series sends no updated/reschedule invite (Phase 5).
+- **Editing a series** sends no reschedule invite yet (Phase 5b); single-session editing works (see HR1).
 - **Deleting** a session or series sends no cancellation `.ics` (Phase 6).
 - Cancelling **one occurrence** of a series (Phase 8).
-- Dedicated reschedule/cancel Resend templates and their env config (Phase 7).
+- The shared reschedule/cancel Resend templates + full env passthrough are finalized in Phase 7 (the
+  `--rescheduled-email-template-id` flag exists now; you supply a template to exercise HR1/HR2).
 
 ## Outlook gate (please record the result)
 
