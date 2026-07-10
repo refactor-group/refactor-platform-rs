@@ -301,7 +301,16 @@ full mock suite green (222/258/113); clippy/fmt clean.
   - [ ] Single-session description shows title/topics/goals/actions per the composition rules; series description shows link + first-session goals only.
   - [ ] Existing `mockito` body-match tests updated to expect `attachments` + ≥1 structural `.ics` assertion (UID prefix, METHOD, SEQUENCE, `VTIMEZONE` present, TZID == coach zone). Series test asserts `RRULE` + `<series_id>` UID.
 
-### Phase 5 — Net-new update/reschedule emails (scenarios 3 & 4)
+### Phase 5 — Net-new update/reschedule emails (scenarios 3 & 4) — split into 5a (single) + 5b (series)
+Overseer scoping (from recon): `coaching_session::update` only ever touches `date`/`duration_minutes`/
+`meeting_url`/`title` (topics/goals/actions are edited via SEPARATE endpoints, not the session update),
+so **5a's change detection is bounded to those four fields**; topic/goal/action-driven re-sends are a
+documented follow-on (they would hook the topic/goal/action controllers, a different surface). Single +
+series **share one `rescheduled_email_template_id` config flag** (per Phase 7) differentiated by a
+`session_or_series` template variable (added in 5a, reused by 5b). Reschedule reuses the Phase 4 `.ics`
+builders unchanged: bump `ical_sequence` in the DB first, then pass the bumped model in (same UID,
+`SEQUENCE` 0→1). 5a threads `&Config` through `update` (no `&Config` today) + its `update_title` caller +
+the PUT controller; 5b fires from the series PUT controller (which already holds old+new series).
 - **Calendar-relevant change set (decided):** re-send when **any** field that appears in the invite changes — `date`, `duration_minutes`, `meeting_url`, or description fields (`title`, topics, goals, open actions). A change to any of these produces an updated `.ics` so the calendar entry stays accurate; an edit touching none of them sends nothing.
 - **Single (scenario 3):** thread `&Config` into `coaching_session::update` + its two call sites; detect a calendar-relevant change (compare pre/post), bump `coaching_sessions.ical_sequence`, fire new `notify_session_rescheduled` (`REQUEST`, same UID, bumped SEQUENCE) with a new `SessionRescheduled` impl + template.
 - **Series (scenario 4):** hook `series::reschedule` (or its controller): bump `coaching_session_series.ical_sequence`, fire new `notify_series_rescheduled` (`REQUEST` + `RRULE`, UID `<series_id>`, bumped SEQUENCE).
