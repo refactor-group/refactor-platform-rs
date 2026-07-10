@@ -37,7 +37,7 @@ pub(crate) async fn index(
                 next.run(request).await
             } else {
                 // User does not have access to coaching relationship
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         // coaching relationship with given ID not found
@@ -57,27 +57,21 @@ pub(crate) async fn update(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let coaching_session =
-        match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
-            Ok(session) => session,
+    let (_coaching_session, coaching_relationship) =
+        match coaching_session::find_by_id_with_coaching_relationship(
+            app_state.db_conn_ref(),
+            coaching_session_id,
+        )
+        .await
+        {
+            Ok(pair) => pair,
             Err(e) => {
-                error!("Authorization error finding coaching session: {e:?}");
-                return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
+                error!(
+                    "Error resolving coaching session {coaching_session_id} for authorization: {e:?}"
+                );
+                return crate::error::domain_error_into_response(e);
             }
         };
-
-    let coaching_relationship = match coaching_relationship::find_by_id(
-        app_state.db_conn_ref(),
-        coaching_session.coaching_relationship_id,
-    )
-    .await
-    {
-        Ok(relationship) => relationship,
-        Err(e) => {
-            error!("Authorization error finding coaching relationship: {e:?}");
-            return (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response();
-        }
-    };
 
     if coaching_relationship.coach_id == user.id {
         debug!(
@@ -90,7 +84,7 @@ pub(crate) async fn update(
             "PUT auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
-        (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }
 
@@ -106,27 +100,21 @@ pub(crate) async fn delete(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let coaching_session =
-        match coaching_session::find_by_id(app_state.db_conn_ref(), coaching_session_id).await {
-            Ok(session) => session,
+    let (_coaching_session, coaching_relationship) =
+        match coaching_session::find_by_id_with_coaching_relationship(
+            app_state.db_conn_ref(),
+            coaching_session_id,
+        )
+        .await
+        {
+            Ok(pair) => pair,
             Err(e) => {
-                error!("Authorization error finding coaching session: {e:?}");
-                return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
+                error!(
+                    "Error resolving coaching session {coaching_session_id} for authorization: {e:?}"
+                );
+                return crate::error::domain_error_into_response(e);
             }
         };
-
-    let coaching_relationship = match coaching_relationship::find_by_id(
-        app_state.db_conn_ref(),
-        coaching_session.coaching_relationship_id,
-    )
-    .await
-    {
-        Ok(relationship) => relationship,
-        Err(e) => {
-            error!("Authorization error finding coaching relationship: {e:?}");
-            return (StatusCode::NOT_FOUND, "NOT FOUND").into_response();
-        }
-    };
 
     if coaching_relationship.coach_id == user.id {
         debug!(
@@ -139,6 +127,6 @@ pub(crate) async fn delete(
             "DELETE auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
-        (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }

@@ -27,10 +27,10 @@ pub(crate) async fn read(
         next.run(request).await
     } else {
         error!(
-            "Unauthorized: user_id {} does not match authenticated_user_id {}",
+            "Forbidden: user_id {} does not match authenticated_user_id {}",
             user_id, authenticated_user.id
         );
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }
 
@@ -48,9 +48,9 @@ pub(crate) async fn update(
         next.run(request).await
     } else {
         error!(
-            "Unauthorized: user_id {} does not match authenticated_user_id {}",
+            "Forbidden: user_id {} does not match authenticated_user_id {}",
             user_id, authenticated_user.id
         );
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }

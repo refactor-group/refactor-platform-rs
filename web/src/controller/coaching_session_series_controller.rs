@@ -38,6 +38,7 @@ pub struct SeriesWithSessions {
     responses(
         (status = 201, description = "Series created", body = SeriesWithSessions),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden — not the coach on the target relationship"),
         (status = 422, description = "Invalid recurrence rule"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -84,6 +85,7 @@ pub async fn create(
     responses(
         (status = 200, description = "Series", body = SeriesWithSessions),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden — not a participant of the relationship"),
         (status = 404, description = "Not found")
     ),
     security(("cookie_auth" = []))
@@ -114,7 +116,8 @@ pub async fn read(
     ),
     responses(
         (status = 200, description = "Series list", body = [CoachingSessionSeriesApi::Model]),
-        (status = 401, description = "Unauthorized")
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden — not a participant of the relationship")
     ),
     security(("cookie_auth" = []))
 )]
@@ -142,6 +145,7 @@ pub async fn index(
     responses(
         (status = 200, description = "Rescheduled", body = SeriesWithSessions),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden — not the coach on the relationship"),
         (status = 422, description = "Invalid recurrence rule")
     ),
     security(("cookie_auth" = []))
@@ -192,7 +196,8 @@ pub async fn update(
     ),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 401, description = "Unauthorized")
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden — not the coach on the relationship")
     ),
     security(("cookie_auth" = []))
 )]
@@ -314,12 +319,12 @@ mod tests {
                         e.error_kind,
                         domain::error::DomainErrorKind::Internal(
                             domain::error::InternalErrorKind::Entity(
-                                domain::error::EntityErrorKind::Unauthenticated
+                                domain::error::EntityErrorKind::Forbidden
                             )
                         )
                     )
             ),
-            "expected Err(Domain(Unauthenticated)), got {err:?}"
+            "expected Err(Domain(Forbidden)), got {err:?}"
         );
     }
 }

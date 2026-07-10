@@ -22,9 +22,9 @@ pub(crate) async fn update_password(
         next.run(request).await
     } else {
         error!(
-            "Unauthorized: user_id {} does not match authenticated_user_id {} when attempting to update password",
+            "Forbidden: user_id {} does not match authenticated_user_id {} when attempting to update password",
             user_id, authenticated_user.id
         );
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }

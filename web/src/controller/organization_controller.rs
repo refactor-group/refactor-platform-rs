@@ -114,7 +114,7 @@ pub async fn create(
     let organization: organizations::Model =
         OrganizationApi::create(app_state.db_conn_ref(), organization_model).await?;
 
-    debug!("Newly Created Organization: {:?}", &organization);
+    debug!("Newly Created Organization: {:?}", organization);
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
