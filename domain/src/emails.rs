@@ -88,6 +88,19 @@ impl EmailNotification for RecurringSessionsScheduled {
     }
 }
 
+struct SessionRescheduled;
+impl EmailNotification for SessionRescheduled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.rescheduled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "session rescheduled"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
+}
+
 struct ActionAssigned;
 impl EmailNotification for ActionAssigned {
     fn template_id(config: &Config) -> Option<String> {
@@ -348,6 +361,7 @@ impl ResolvedEmailConfig {
 
 /// Send a session-scheduled notification email to a single recipient.
 /// This is called once per recipient (coach and coachee each get their own email).
+#[allow(clippy::too_many_arguments)]
 async fn send_session_email_to_recipient(
     email_config: &ResolvedEmailConfig,
     recipient: &users::Model,
@@ -356,6 +370,7 @@ async fn send_session_email_to_recipient(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     ics_body: &str,
+    session_or_series: Option<&str>,
 ) -> Result<(), Error> {
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&session.id)?;
@@ -378,6 +393,7 @@ async fn send_session_email_to_recipient(
         .add_variable("session_time", session_time.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
+        .add_optional_variable("session_or_series", session_or_series)
         .add_ics_attachment(ics_body, &ical::Method::Request)
         .build()
         .await?;
@@ -418,21 +434,29 @@ fn build_session_invite_ics(
     ical::build(&invite)
 }
 
-/// Send session-scheduled notification emails to both coach and coachee.
-async fn send_session_scheduled_email(
+/// Send single-session invite emails to both coach and coachee. Generic over the
+/// notification type `N` so the scheduled and reschedule flows share one body; they
+/// differ only by template (via `N`) and the `session_or_series` template variable.
+/// A reschedule passes an already-bumped `session`, so the `.ics` carries the next
+/// `SEQUENCE` under a stable `UID`.
+async fn send_single_session_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
     coach: &users::Model,
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
+    session_or_series: Option<&str>,
 ) -> Result<(), Error> {
     info!(
-        "Initiating session scheduled emails for session: {} (coach: {}, coachee: {})",
-        session.id, coach.email, coachee.email
+        "Initiating {} emails for session: {} (coach: {}, coachee: {})",
+        N::notification_name(),
+        session.id,
+        coach.email,
+        coachee.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<SessionScheduled>(config).await?;
+    let email_config = ResolvedEmailConfig::new::<N>(config).await?;
 
     // Same VEVENT for both recipients (organizer = coach, attendee = coachee).
     let topics = entity_api::coaching_session_topic::find_by_coaching_session_id(db, session.id)
@@ -490,11 +514,13 @@ async fn send_session_scheduled_email(
         session,
         organization,
         &ics_body,
+        session_or_series,
     )
     .await
     {
         warn!(
-            "Failed to send session scheduled email to coachee {}: {e:?}",
+            "Failed to send {} email to coachee {}: {e:?}",
+            N::notification_name(),
             coachee.email
         );
     }
@@ -508,16 +534,62 @@ async fn send_session_scheduled_email(
         session,
         organization,
         &ics_body,
+        session_or_series,
     )
     .await
     {
         warn!(
-            "Failed to send session scheduled email to coach {}: {e:?}",
+            "Failed to send {} email to coach {}: {e:?}",
+            N::notification_name(),
             coach.email
         );
     }
 
     Ok(())
+}
+
+/// Send session-scheduled notification emails to both coach and coachee.
+async fn send_session_scheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    send_single_session_invite_email::<SessionScheduled>(
+        db,
+        config,
+        coach,
+        coachee,
+        session,
+        organization,
+        None,
+    )
+    .await
+}
+
+/// Send session-rescheduled notification emails to both coach and coachee. `session`
+/// must already carry the bumped `ical_sequence`, so the invite updates the calendar
+/// event in place (same `UID`, next `SEQUENCE`).
+async fn send_session_rescheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    send_single_session_invite_email::<SessionRescheduled>(
+        db,
+        config,
+        coach,
+        coachee,
+        session,
+        organization,
+        Some("session"),
+    )
+    .await
 }
 
 /// Context for an action-assigned email, bundling the action-specific data
@@ -617,6 +689,36 @@ pub async fn notify_session_scheduled(
     if let Err(e) = result {
         warn!(
             "Failed to send session scheduled emails for session {}: {e:?}",
+            session.id
+        );
+    }
+}
+
+/// Orchestrate sending session-rescheduled emails (best-effort).
+///
+/// `session` must already carry the bumped `ical_sequence`. Looks up the coaching
+/// relationship, both users, and the organization, then re-sends the invite to both
+/// coach and coachee so their calendar event updates in place. Errors are logged
+/// internally and never block or fail the calling operation.
+pub async fn notify_session_rescheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) {
+    let result: Result<(), Error> = async {
+        let relationship =
+            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+        send_session_rescheduled_email(db, config, &coach, &coachee, session, &org).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send session rescheduled emails for session {}: {e:?}",
             session.id
         );
     }
@@ -1038,6 +1140,7 @@ mod tests {
             "--welcome-email-template-id=template_123",
             "--session-scheduled-email-template-id=session_template_456",
             "--recurring-sessions-scheduled-email-template-id=recurring_template_xyz",
+            "--rescheduled-email-template-id=reschedule_template_abc",
             "--action-assigned-email-template-id=action_template_789",
             "--frontend-base-url=https://app.example.com",
             &format!("--resend-base-url={server_url}"),
@@ -1293,6 +1396,44 @@ mod tests {
         assert!(ics.contains("View this session: https://app/x"));
     }
 
+    /// A reschedule bumps `ical_sequence`; the invite must carry the bumped
+    /// `SEQUENCE` while keeping the same `UID` (so calendar clients update the
+    /// existing event in place rather than creating a duplicate).
+    #[test]
+    fn test_build_session_invite_ics_bumped_sequence() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let mut session = create_test_session();
+        session.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(19, 0, 0)
+            .unwrap();
+        session.duration_minutes = 60;
+        session.ical_sequence = 1;
+        session.meeting_url = Some("https://meet.example/xyz".into());
+        let mut org = create_test_organization();
+        org.name = "Acme".to_string();
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let ics = build_session_invite_ics(
+            &coach,
+            &coachee,
+            &session,
+            &org,
+            "View this session: https://app/x".into(),
+            dtstamp,
+        )
+        .unwrap();
+
+        assert!(ics.contains("SEQUENCE:1"));
+        assert!(ics.contains("METHOD:REQUEST"));
+        // UID keys off the session id, unchanged from a SEQUENCE:0 invite.
+        assert!(ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+    }
+
     #[cfg(feature = "mock")]
     #[tokio::test]
     async fn test_send_session_scheduled_email_variables() {
@@ -1381,6 +1522,78 @@ mod tests {
 
         // Sends are best-effort (errors are swallowed), so assert the mocks
         // matched to prove the attachment-bearing bodies actually went out.
+        mock_coachee.assert_async().await;
+        mock_coach.assert_async().await;
+    }
+
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_session_rescheduled_email() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        // Description loaders return empty sets; the `.ics` content is not asserted here.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+            .into_connection();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+        // Already-bumped session: a reschedule invite carries SEQUENCE:2.
+        let mut session = create_test_session();
+        session.ical_sequence = 2;
+        let org = create_test_organization();
+
+        // Both recipients target the reschedule template and carry the
+        // `session_or_series=session` discriminant plus the `.ics` attachment.
+        let mock_coachee = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_role": "coach",
+                        "session_or_series": "session",
+                    }
+                }
+            })))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mock_coach = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_role": "coachee",
+                        "session_or_series": "session",
+                    }
+                }
+            })))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let result =
+            send_session_rescheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
+        assert!(result.is_ok());
+
+        // The send swallows errors, so the mock assertions are what give this
+        // test teeth: they prove the reschedule template + attachment went out.
         mock_coachee.assert_async().await;
         mock_coach.assert_async().await;
     }

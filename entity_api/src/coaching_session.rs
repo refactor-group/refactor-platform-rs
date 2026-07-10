@@ -383,6 +383,15 @@ pub async fn update_meeting(
     Ok(active_model.save(db).await?.try_into_model()?)
 }
 
+/// Bump a session's `ical_sequence` by 1 (RFC 5545 SEQUENCE for calendar updates).
+pub async fn increment_ical_sequence(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+    let existing = find_by_id(db, id).await?;
+    let next_sequence = existing.ical_sequence + 1;
+    let mut active_model: ActiveModel = existing.into();
+    active_model.ical_sequence = Set(next_sequence);
+    Ok(active_model.update(db).await?.try_into_model()?)
+}
+
 /// Find the most recent meeting URL for a coaching relationship and provider.
 ///
 /// Searches all sessions in the given relationship for one that has a `meeting_url`
@@ -1170,6 +1179,43 @@ mod tests {
         assert_eq!(result.meeting_url, target.meeting_url);
         assert_eq!(result.provider, target.provider);
         assert!(result.hydrated_at.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_increment_ical_sequence() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let existing = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
+            ical_sequence: 4,
+            collab_document_name: None,
+            date: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+        // The DB returns the post-update row with SEQUENCE bumped 4 -> 5.
+        let bumped = Model {
+            ical_sequence: 5,
+            ..existing.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]]) // find_by_id
+            .append_query_results(vec![vec![bumped.clone()]]) // UPDATE ... RETURNING
+            .into_connection();
+
+        let result = increment_ical_sequence(&db, existing.id).await?;
+        assert_eq!(result.ical_sequence, 5);
         Ok(())
     }
 

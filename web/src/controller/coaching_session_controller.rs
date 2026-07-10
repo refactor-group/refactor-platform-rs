@@ -213,7 +213,13 @@ pub async fn update(
     Path(coaching_session_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session_id, params).await?;
+    CoachingSessionApi::update(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        coaching_session_id,
+        params,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
 
@@ -248,6 +254,7 @@ pub async fn update_title(
 ) -> Result<impl IntoResponse, Error> {
     let updated = CoachingSessionApi::update_title(
         app_state.db_conn_ref(),
+        &app_state.config,
         app_state.event_publisher.as_ref(),
         coaching_session.id,
         params,
@@ -336,10 +343,23 @@ mod tests {
             ..session.clone()
         };
 
+        let bumped = domain::coaching_sessions::Model {
+            ical_sequence: 1,
+            ..updated.clone()
+        };
+
+        // Setting the title is calendar-relevant, so update runs the reschedule
+        // path: find_by_id → UPDATE ... RETURNING → increment_ical_sequence
+        // (find_by_id → UPDATE ... RETURNING) → best-effort notify + title event,
+        // both of which short-circuit on the empty lookups below.
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results(vec![vec![session.clone()]]) // domain update: find_by_id
                 .append_query_results(vec![vec![updated.clone()]]) // UPDATE ... RETURNING
+                .append_query_results(vec![vec![session.clone()]]) // increment: find_by_id
+                .append_query_results(vec![vec![bumped.clone()]]) // increment: UPDATE ... RETURNING
+                .append_query_results::<domain::coaching_sessions::Model, Vec<domain::coaching_sessions::Model>, _>(vec![vec![]]) // notify relationship lookup: empty
+                .append_query_results::<domain::coaching_sessions::Model, Vec<domain::coaching_sessions::Model>, _>(vec![vec![]]) // participant lookup: empty
                 .into_connection(),
         );
 

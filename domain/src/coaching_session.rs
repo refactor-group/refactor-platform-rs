@@ -5,6 +5,7 @@ use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
 };
 use crate::coaching_sessions::Model;
+use crate::emails;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
@@ -305,8 +306,18 @@ where
         .collect())
 }
 
+/// True when a calendar-relevant field changed (drives a reschedule invite).
+/// Title rides in the `.ics` DESCRIPTION, so a title edit counts as calendar-relevant.
+fn is_calendar_relevant_change(old: &Model, new: &Model) -> bool {
+    old.date != new.date
+        || old.duration_minutes != new.duration_minutes
+        || old.meeting_url != new.meeting_url
+        || old.title != new.title
+}
+
 pub async fn update(
     db: &DatabaseConnection,
+    config: &Config,
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
@@ -318,20 +329,28 @@ pub async fn update(
     coaching_session::normalize_title_in_update_map(&mut update_map);
     coaching_session::validate_title_length_in_update_map(&update_map)?;
 
-    let coaching_session = coaching_session::find_by_id(db, id).await?;
+    let existing = coaching_session::find_by_id(db, id).await?;
     debug!(
         "Domain update coaching_session id={id} relationship_id={} update_map={update_map:?}",
-        coaching_session.coaching_relationship_id
+        existing.coaching_relationship_id
     );
-    let active_model = coaching_session.into_active_model();
-    Ok(
-        mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
-            db,
-            active_model,
-            update_map,
-        )
-        .await?,
+    let old = existing.clone();
+    let active_model = existing.into_active_model();
+    let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+        db,
+        active_model,
+        update_map,
     )
+    .await?;
+
+    // On a calendar-relevant change, bump the invite SEQUENCE and re-send an
+    // updated `.ics` (best-effort) so calendar clients update the event in place.
+    if is_calendar_relevant_change(&old, &updated) {
+        let bumped = coaching_session::increment_ical_sequence(db, updated.id).await?;
+        emails::notify_session_rescheduled(db, config, &bumped).await;
+        return Ok(bumped);
+    }
+    Ok(updated)
 }
 
 /// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
@@ -364,11 +383,12 @@ async fn publish_coaching_session_title_updated(
 /// [`update`], which intentionally emits no event.
 pub async fn update_title(
     db: &DatabaseConnection,
+    config: &Config,
     event_publisher: &EventPublisher,
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
-    let coaching_session = update(db, id, params).await?;
+    let coaching_session = update(db, config, id, params).await?;
     publish_coaching_session_title_updated(db, event_publisher, coaching_session.id).await;
     Ok(coaching_session)
 }
@@ -519,6 +539,73 @@ fn generate_document_name(
 }
 
 #[cfg(test)]
+mod calendar_change_tests {
+    use super::*;
+
+    fn sample_model() -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            collab_document_name: None,
+            date: chrono::NaiveDate::from_ymd_opt(2026, 3, 4)
+                .unwrap()
+                .and_hms_opt(15, 0, 0)
+                .unwrap(),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+        }
+    }
+
+    #[test]
+    fn test_is_calendar_relevant_change() {
+        let base = sample_model();
+
+        // Identical models: no calendar-relevant change.
+        assert!(!is_calendar_relevant_change(&base, &base.clone()));
+
+        // Each calendar-relevant field flips the result to true.
+        let date_changed = Model {
+            date: base.date + chrono::Duration::hours(1),
+            ..base.clone()
+        };
+        assert!(is_calendar_relevant_change(&base, &date_changed));
+
+        let duration_changed = Model {
+            duration_minutes: base.duration_minutes + 15,
+            ..base.clone()
+        };
+        assert!(is_calendar_relevant_change(&base, &duration_changed));
+
+        let url_changed = Model {
+            meeting_url: Some("https://meet.example/new".to_string()),
+            ..base.clone()
+        };
+        assert!(is_calendar_relevant_change(&base, &url_changed));
+
+        let title_changed = Model {
+            title: Some("A title".to_string()),
+            ..base.clone()
+        };
+        assert!(is_calendar_relevant_change(&base, &title_changed));
+
+        // A non-calendar field (updated_at) does not count.
+        let updated_at_changed = Model {
+            updated_at: base.updated_at + chrono::Duration::hours(2),
+            ..base.clone()
+        };
+        assert!(!is_calendar_relevant_change(&base, &updated_at_changed));
+    }
+}
+
+#[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
@@ -609,13 +696,27 @@ mod tests {
             title: Some("Renamed".to_string()),
             ..session.clone()
         };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: 1,
+            ..updated.clone()
+        };
 
         let (publisher, events) = recording_publisher();
+        let config = Config::default();
 
-        // update: find_by_id → UPDATE ... RETURNING; then the participant lookup (find_also_related).
+        // A title edit is calendar-relevant, so update runs the reschedule path:
+        // find_by_id → UPDATE ... RETURNING → increment_ical_sequence (find_by_id →
+        // UPDATE ... RETURNING) → best-effort notify whose relationship lookup
+        // returns empty (send skipped). Then the participant lookup
+        // (find_also_related) for the title-updated event.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_query_results::<coaching_relationships::Model, Vec<coaching_relationships::Model>, _>(
+                vec![vec![]],
+            )
             .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
             .into_connection();
 
@@ -625,7 +726,7 @@ mod tests {
             Some(sea_orm::Value::String(Some(Box::new("Renamed".into())))),
         );
 
-        let result = update_title(&db, &publisher, session.id, TestParams(map)).await;
+        let result = update_title(&db, &config, &publisher, session.id, TestParams(map)).await;
         assert!(result.is_ok());
 
         let recorded = events.lock().unwrap();
