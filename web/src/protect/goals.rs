@@ -35,7 +35,7 @@ pub(crate) async fn index(
             if relationship.includes_user(user.id) {
                 next.run(request).await
             } else {
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         Err(e) => {
@@ -73,7 +73,7 @@ pub(crate) async fn by_id(
             if relationship.includes_user(user.id) {
                 next.run(request).await
             } else {
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         Err(e) => {
@@ -114,7 +114,7 @@ pub(crate) async fn by_coaching_session_id(
             if relationship.includes_user(user.id) {
                 next.run(request).await
             } else {
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         Err(e) => {
@@ -163,7 +163,7 @@ pub(crate) async fn batch_by_session(
             if relationship.includes_user(user.id) {
                 next.run(request).await
             } else {
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
         }
         Err(e) => {

@@ -36,7 +36,7 @@ where
         if relationship.coach_id == user.id || relationship.coachee_id == user.id {
             Ok(CoachingSessionSeriesAccess(series))
         } else {
-            Err((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()))
+            Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
         }
     }
 }
@@ -88,7 +88,7 @@ where
         if relationship.coach_id == user.id || relationship.coachee_id == user.id {
             Ok(CoachingRelationshipQueryAccess(relationship))
         } else {
-            Err((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()))
+            Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
         }
     }
 }
@@ -110,7 +110,7 @@ where
         if relationship.coach_id == user.id {
             Ok(CoachingSessionSeriesCoachAccess(series))
         } else {
-            Err((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()))
+            Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
         }
     }
 }
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    /// Coachee hits the coach-only PUT/DELETE gate → 401.
+    /// Coachee hits the coach-only PUT/DELETE gate → 403.
     #[tokio::test]
     async fn coach_access_denies_coachee() {
         let user = test_user();
@@ -402,7 +402,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     /// Coach hits the coach-only PUT/DELETE gate → 200.
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    /// Outsider (neither coach nor coachee) on the index gate → 401.
+    /// Outsider (neither coach nor coachee) on the index gate → 403.
     #[tokio::test]
     async fn relationship_query_access_denies_outsider() {
         let user = test_user();
@@ -506,6 +506,6 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

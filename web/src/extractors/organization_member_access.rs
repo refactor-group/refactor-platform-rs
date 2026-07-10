@@ -106,7 +106,7 @@ where
 
         if !user_organization_role_exists {
             return Err((
-                StatusCode::UNAUTHORIZED,
+                StatusCode::FORBIDDEN,
                 "You are not authorized to access the organization".to_string(),
             ));
         }
@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extractor_returns_401_organization_for_regular_users_without_organization_roles()
+    async fn test_extractor_returns_403_organization_for_regular_users_without_organization_roles()
     {
         let organization_id = Id::new_v4();
         let now = Utc::now();
@@ -440,7 +440,7 @@ mod tests {
             .unwrap();
 
         let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

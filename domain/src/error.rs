@@ -45,6 +45,7 @@ pub enum EntityErrorKind {
     NotFound,
     Invalid,
     Unauthenticated,
+    Forbidden,
     Conflict {
         message: String,
         details: Option<serde_json::Value>,
