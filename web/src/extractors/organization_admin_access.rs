@@ -66,17 +66,14 @@ where
             };
         }
 
-        if user.roles.iter().any(|r| {
-            r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none()
-                || r.role == domain::users::Role::Admin
-                    && r.organization_id == Some(organization_id)
-        }) {
-            return Ok(OrganizationAdminAccess(organization_id));
-        } else {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Not authorized as admin".to_string(),
-            ));
-        }
+        user.roles
+            .iter()
+            .any(|r| {
+                r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none()
+                    || r.role == domain::users::Role::Admin
+                        && r.organization_id == Some(organization_id)
+            })
+            .then_some(OrganizationAdminAccess(organization_id))
+            .ok_or((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()))
     }
 }
