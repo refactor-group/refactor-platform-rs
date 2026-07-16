@@ -41,10 +41,35 @@ pub enum EntityApiErrorKind {
     CannotLinkCompletedGoal,
     // Attempt to link a goal that is already linked to the same coaching session.
     GoalAlreadyLinkedToSession,
+    // Organization still has coaching relationships; cannot be deleted.
+    OrganizationNotEmpty {
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+        member_count: u64,
+    },
+    // Organization name (or its derived slug) collides with an existing org.
+    OrganizationNameTaken {
+        name: String,
+    },
+    // Mutation attempted under an archived organization (write-freeze).
+    OrganizationArchived,
+    // Organization name failed value validation (empty/whitespace or over-length).
+    OrganizationNameInvalid {
+        message: String,
+    },
     // Range-bounded entity construction failed (e.g. `Duration` outside
     // 1..=480). Maps to 422 in domain (distinct from `ValidationError`,
     // which is for 409 state conflicts like cap violations).
     OutOfRange(OutOfRange),
+    // Reorder request whose id set is not a permutation of the session's current topics.
+    TopicReorderMismatch,
+    // A text field exceeded its maximum length. Maps to 422 in domain (a
+    // value-validation failure, distinct from `ValidationError` → 409 state
+    // conflicts). `max`/`actual` are character counts, matching the column bound.
+    TitleTooLong {
+        max: usize,
+        actual: usize,
+    },
     // Other errors
     Other(String),
 }

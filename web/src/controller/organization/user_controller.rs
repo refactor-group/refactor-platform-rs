@@ -1,11 +1,10 @@
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
+use crate::extractors::organization_user_access::OrganizationUserAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::{controller::ApiResponse, AppState, Error};
-use axum::extract::Path;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use domain::Id;
 use domain::{emails as EmailsAPI, user as UserApi, users};
 use service::config::ApiVersion;
 
@@ -111,10 +110,8 @@ pub(crate) async fn resend_invite(
     State(app_state): State<AppState>,
     AuthenticatedUser(authenticated_user): AuthenticatedUser,
     OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
-    Path((_org_id, user_id)): Path<(Id, Id)>,
+    OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
-    let user = UserApi::find_by_id(app_state.db_conn_ref(), user_id).await?;
-
     if user.password.is_some() {
         return Err(domain::error::Error {
             source: None,
@@ -159,10 +156,10 @@ pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
-    Path((_organization_id_1, user_id)): Path<(Id, Id)>,
+    OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
-    info!("Deleting user: {user_id:?}");
-    UserApi::delete(app_state.db_conn_ref(), user_id).await?;
+    info!("Deleting user: {:?}", user.id);
+    UserApi::delete(app_state.db_conn_ref(), user.id).await?;
     Ok(Json(ApiResponse::<()>::no_content(
         StatusCode::NO_CONTENT.into(),
     )))

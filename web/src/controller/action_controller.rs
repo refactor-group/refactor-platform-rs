@@ -69,6 +69,7 @@ pub async fn create(
 
     let action = ActionApi::create_with_assignees(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         request.action,
         user.id,
         request.assignee_ids,
@@ -199,6 +200,7 @@ pub async fn update(
 
     let action = ActionApi::update_with_assignees(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         id,
         request.action,
         request.assignee_ids,
@@ -243,8 +245,13 @@ pub async fn update_status(
 ) -> Result<impl IntoResponse, Error> {
     debug!("PUT Update Action Status with id: {id}");
 
-    let action =
-        ActionApi::update_status(app_state.db_conn_ref(), id, status.as_str().into()).await?;
+    let action = ActionApi::update_status(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+        status.as_str().into(),
+    )
+    .await?;
 
     debug!("Updated Action: {action:?}");
 
@@ -323,6 +330,11 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, Error> {
     debug!("DELETE Action by id: {id}");
 
-    ActionApi::delete_by_id(app_state.db_conn_ref(), id).await?;
+    ActionApi::delete_by_id(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+    )
+    .await?;
     Ok(Json(json!({"id": id})))
 }

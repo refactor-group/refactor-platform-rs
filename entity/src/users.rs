@@ -8,6 +8,10 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+fn default_timezone() -> String {
+    "UTC".to_string()
+}
+
 // TODO: We should find a way to centralize the users/coaches/coachees types
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = domain::users::Model)] // OpenAPI schema
@@ -25,11 +29,14 @@ pub struct Model {
     pub password: Option<String>,
     pub github_username: Option<String>,
     pub github_profile_url: Option<String>,
+    // Serde default mirrors the column's `DEFAULT 'UTC'` so it's optional on the wire.
     #[sea_orm(default = "UTC")]
+    #[serde(default = "default_timezone")]
     pub timezone: String,
     /// Per-coach default session duration in minutes. Validated `1..=480`
-    /// via `entity::duration::Duration` on every write. The migration's
-    /// `NOT NULL DEFAULT 60` provides the column default.
+    /// via `entity::duration::Duration`. Serde default mirrors the column's
+    /// `NOT NULL DEFAULT 60` so it's optional on the wire (not an invalid `0`).
+    #[serde(default = "crate::duration::Duration::default_minutes")]
     pub default_coaching_session_duration_minutes: i16,
     #[sea_orm(default = "user")]
     // This is a legacy field and will be removed in favor of roles
@@ -136,5 +143,38 @@ mod tests {
         let user_a = test_user(Uuid::new_v4(), None);
         let user_b = test_user(Uuid::new_v4(), None);
         assert_ne!(user_a.session_auth_hash(), user_b.session_auth_hash());
+    }
+
+    /// Magic-link invite path: payload omits duration AND timezone.
+    /// Both must default (60 / "UTC"), not 422.
+    #[test]
+    fn deserialize_defaults_duration_and_timezone_when_omitted() {
+        let model: Model = serde_json::from_value(serde_json::json!({
+            "email": "invite@example.com",
+            "first_name": "Inv",
+            "last_name": "Ite",
+            "display_name": "Inv Ite",
+        }))
+        .expect("invite payload without duration/timezone must deserialize");
+        assert_eq!(
+            model.default_coaching_session_duration_minutes,
+            crate::duration::Duration::default_minutes(),
+        );
+        assert_eq!(model.timezone, "UTC");
+    }
+
+    /// Explicit duration and timezone are still honored (defaults don't clobber).
+    #[test]
+    fn deserialize_honors_explicit_duration_and_timezone() {
+        let model: Model = serde_json::from_value(serde_json::json!({
+            "email": "coach@example.com",
+            "first_name": "Co",
+            "last_name": "Ach",
+            "timezone": "America/New_York",
+            "default_coaching_session_duration_minutes": 90,
+        }))
+        .expect("payload with duration must deserialize");
+        assert_eq!(model.default_coaching_session_duration_minutes, 90);
+        assert_eq!(model.timezone, "America/New_York");
     }
 }

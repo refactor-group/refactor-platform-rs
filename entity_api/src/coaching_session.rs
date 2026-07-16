@@ -1,12 +1,13 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
+use chrono::NaiveDateTime;
 use entity::{
-    agreements, coaching_relationships,
+    agreements, coaching_relationships, coaching_session_topics, coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
-    goals, organizations,
-    provider::Provider,
-    users, Id,
+    goals,
+    meeting_provider::Provider,
+    organizations, users, Id,
 };
 use log::debug;
 use sea_orm::{
@@ -64,6 +65,53 @@ pub fn validate_duration_in_update_map(
     Duration::try_from(*n).map(Some).map_err(Error::from)
 }
 
+/// Maximum length of a human-authored session title, in characters. Mirrors the
+/// `coaching_sessions.title VARCHAR(500)` column bound so over-long input fails
+/// as a 422 validation error rather than a Postgres 22001 at write time.
+pub const MAX_TITLE_LEN: usize = 500;
+
+/// Reject a title longer than `MAX_TITLE_LEN` characters. `None` and shorter
+/// titles pass. Counts characters (not bytes) to match the `VARCHAR(n)` bound.
+pub fn validate_title_length(title: Option<&str>) -> Result<(), Error> {
+    match title {
+        Some(s) if s.chars().count() > MAX_TITLE_LEN => Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::TitleTooLong {
+                max: MAX_TITLE_LEN,
+                actual: s.chars().count(),
+            },
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Validate the update-map `title` length when a non-null value is present.
+/// Absent key and explicit-null (clear) pass. Run after normalization so the
+/// bound applies to the trimmed value.
+pub fn validate_title_length_in_update_map(update_map: &UpdateMap) -> Result<(), Error> {
+    match update_map.get_value("title") {
+        Some(Value::String(Some(s))) => validate_title_length(Some(s.as_str())),
+        _ => Ok(()),
+    }
+}
+
+/// Empty or whitespace-only title normalizes to `None` (no empty titles stored).
+pub fn normalize_title(title: Option<String>) -> Option<String> {
+    title
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Normalize an update-map `title` to NULL when empty/whitespace. Explicit
+/// null (clear) and an absent key are left unchanged.
+pub fn normalize_title_in_update_map(update_map: &mut UpdateMap) {
+    if let Some(Value::String(Some(s))) = update_map.get_value("title") {
+        let trimmed = s.trim();
+        let value = (!trimmed.is_empty()).then(|| Box::new(trimmed.to_string()));
+        update_map.insert("title".to_string(), Some(Value::String(value)));
+    }
+}
+
 /// Insert a new coaching session.
 ///
 /// `requested_duration` resolves via the defaulting cascade (see
@@ -78,12 +126,15 @@ pub async fn create(
     debug!("New Coaching Session Model to be inserted: {coaching_session_model:?}");
 
     let duration = resolve_duration(db, coach_id, requested_duration).await?;
+    let title = normalize_title(coaching_session_model.title);
+    validate_title_length(title.as_deref())?;
     let now = chrono::Utc::now();
 
     let coaching_session_active_model: ActiveModel = ActiveModel {
         coaching_relationship_id: Set(coaching_session_model.coaching_relationship_id),
         date: Set(coaching_session_model.date),
         duration_minutes: Set(duration.minutes()),
+        title: Set(title),
         collab_document_name: Set(coaching_session_model.collab_document_name),
         meeting_url: Set(coaching_session_model.meeting_url),
         provider: Set(coaching_session_model.provider),
@@ -100,8 +151,10 @@ pub async fn create(
 }
 
 /// Bulk-insert a recurring series of coaching sessions in a single round-trip.
-/// All lazy fields (`provider`, `collab_document_name`, `meeting_url`,
-/// `hydrated_at`) are NULL; population happens on first read.
+/// Every materialized recurring session belongs to a parent
+/// `coaching_session_series` row (`series_id`). All lazy fields (`provider`,
+/// `collab_document_name`, `meeting_url`, `hydrated_at`) are NULL; population
+/// happens on first read.
 ///
 /// `requested_duration` resolves once via the cascade and applies to every
 /// materialized session.
@@ -109,13 +162,15 @@ pub async fn bulk_create_recurring(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     coach_id: Id,
+    series_id: Id,
     dates: Vec<chrono::NaiveDateTime>,
     requested_duration: Option<Duration>,
 ) -> Result<Vec<Model>, Error> {
     debug!(
-        "Bulk-creating {} recurring sessions on relationship {}",
+        "Bulk-creating {} recurring sessions on relationship {} for series {}",
         dates.len(),
-        coaching_relationship_id
+        coaching_relationship_id,
+        series_id,
     );
 
     if dates.is_empty() {
@@ -129,8 +184,10 @@ pub async fn bulk_create_recurring(
         .into_iter()
         .map(|date| ActiveModel {
             coaching_relationship_id: Set(coaching_relationship_id),
+            coaching_session_series_id: Set(Some(series_id)),
             date: Set(date),
             duration_minutes: Set(duration_minutes_i16),
+            title: Set(None),
             collab_document_name: Set(None),
             meeting_url: Set(None),
             provider: Set(None),
@@ -151,6 +208,79 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// Returns every coaching session linked to the given series, ordered by date ascending.
+pub async fn find_by_series_id(
+    db: &impl ConnectionTrait,
+    series_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingSessionSeriesId.eq(series_id))
+        .order_by_asc(Column::Date)
+        .all(db)
+        .await?)
+}
+
+/// Returns sessions for the given series whose `date` is greater than or
+/// equal to `boundary`, ordered ascending. Used by reschedule and delete
+/// flows to identify the rows that still represent future work.
+pub async fn find_future_sessions_by_series_id(
+    db: &impl ConnectionTrait,
+    series_id: Id,
+    boundary: chrono::NaiveDateTime,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingSessionSeriesId.eq(series_id))
+        .filter(Column::Date.gte(boundary))
+        .order_by_asc(Column::Date)
+        .all(db)
+        .await?)
+}
+
+/// Bulk-deletes coaching sessions by id. Returns the number of rows removed.
+/// FK cascades on dependent rows (goals, recordings, transcriptions) handle
+/// child cleanup.
+pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<u64, Error> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let result = Entity::delete_many()
+        .filter(Column::Id.is_in(ids.iter().copied()))
+        .exec(db)
+        .await?;
+    Ok(result.rows_affected)
+}
+
+/// Most recent session in the relationship strictly before `before`. Sources
+/// topics for carry-over at the next session's hydration; `None` for the first
+/// session in a relationship.
+pub async fn find_prior_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    before: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.lt(before))
+        .order_by_desc(Column::Date)
+        .one(db)
+        .await?)
+}
+
+/// Earliest session in the relationship strictly after `after`. Used to eagerly
+/// carry a just-deferred topic into the already-existing next session.
+pub async fn find_next_session(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    after: NaiveDateTime,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.gt(after))
+        .order_by_asc(Column::Date)
+        .one(db)
+        .await?)
 }
 
 /// Returns the coach and coachee user IDs for a coaching session.
@@ -223,8 +353,10 @@ pub async fn mark_hydrated(txn: &impl ConnectionTrait, target: &Model) -> Result
     let active_model = ActiveModel {
         id: Unchanged(target.id),
         coaching_relationship_id: Unchanged(target.coaching_relationship_id),
+        coaching_session_series_id: Unchanged(target.coaching_session_series_id),
         date: Unchanged(target.date),
         duration_minutes: Unchanged(target.duration_minutes),
+        title: Unchanged(target.title.clone()),
         collab_document_name: Set(target.collab_document_name.clone()),
         meeting_url: Set(target.meeting_url.clone()),
         provider: Set(target.provider),
@@ -270,18 +402,10 @@ pub async fn find_meeting_url_by_relationship_and_provider(
         .and_then(|session| session.meeting_url))
 }
 
+/// All of a user's coaching sessions (coach or coachee), unfiltered and unsorted.
+/// Thin convenience over [`find_by_user_filtered`] with default options.
 pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
-    let sessions = Entity::find()
-        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
-        .all(db)
-        .await?;
-
-    Ok(sessions)
+    find_by_user_filtered(db, user_id, SessionQueryOptions::default()).await
 }
 
 /// One row of the monthly count aggregation for the user's coaching sessions.
@@ -406,6 +530,14 @@ pub struct EnrichedSession {
     pub goals: Option<Vec<goals::Model>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
+    // Caller-scoped read receipt: when the path user last marked this session viewed; null if never.
+    pub viewer_last_viewed_at: Option<DateTimeWithTimeZone>,
+    // Server-composed fallback title: human title -> first topic body -> first goal title;
+    // null when none derive. Always present (serialized as null, never omitted), so consumers
+    // get one canonical title without re-deriving the chain.
+    pub display_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<coaching_session_topics::Model>>,
 }
 
 /// Configuration for which related resources to include when fetching coaching sessions.
@@ -448,6 +580,7 @@ pub struct IncludeOptions {
     pub organization: bool,
     pub goal: bool,
     pub agreements: bool,
+    pub topics: bool,
 }
 
 impl IncludeOptions {
@@ -461,6 +594,7 @@ impl IncludeOptions {
             organization: false,
             goal: false,
             agreements: false,
+            topics: false,
         }
     }
 
@@ -496,10 +630,9 @@ impl IncludeOptions {
         Ok(())
     }
 }
-/// Query options for finding coaching sessions by user.
-///
-/// Groups filtering, sorting, and include parameters into a single argument
-/// to keep the `find_by_user_with_includes` function signature clean.
+/// Filtering and sorting options for a user's coaching-session query. Excludes
+/// related-data includes, which the enriching wrapper takes as a separate argument
+/// (see [`find_by_user_with_includes`]).
 #[derive(Debug, Default)]
 pub struct SessionQueryOptions {
     /// Filter sessions to only those in this coaching relationship
@@ -518,19 +651,17 @@ pub struct SessionQueryOptions {
     pub sort_column: Option<coaching_sessions::Column>,
     /// Sort direction (ascending or descending)
     pub sort_order: Option<sea_orm::Order>,
-    /// Which related resources to include in the response
-    pub includes: IncludeOptions,
 }
 
-/// Find sessions by user with optional date filtering, sorting, and related data includes
-pub async fn find_by_user_with_includes(
+/// Base query for a user's coaching sessions: the optional tz-aware date window,
+/// relationship, and sort filters applied to the sessions where the user is coach
+/// or coachee. Returns plain models (no enrichment). The shared base for
+/// [`find_by_user`] (no filters) and the enriching [`find_by_user_with_includes`].
+async fn find_by_user_filtered(
     db: &impl ConnectionTrait,
     user_id: Id,
     options: SessionQueryOptions,
-) -> Result<Vec<EnrichedSession>, Error> {
-    // Validate include options
-    options.includes.validate()?;
-
+) -> Result<Vec<Model>, Error> {
     // Build the optional date-bound filters up-front so the query chain can
     // stay a single fluent `apply_if` pipeline. When `tz` is supplied, each
     // bound is wrapped in an `AT TIME ZONE` shift, mirroring the expression
@@ -585,27 +716,42 @@ pub async fn find_by_user_with_includes(
             |q: Select<Entity>, (col, ord)| q.order_by(col, ord),
         );
 
-    // Execute query to load base sessions
-    let sessions = query.all(db).await?;
+    Ok(query.all(db).await?)
+}
 
-    // Early return if no includes requested
-    if !options.includes.needs_relationships()
-        && !options.includes.goal
-        && !options.includes.agreements
-    {
-        return Ok(sessions
-            .into_iter()
-            .map(EnrichedSession::from_session)
-            .collect());
-    }
+/// Find a user's sessions, then enrich with view markers and any requested related
+/// data (relationship, organization, goals, agreements, topics). Filtering and
+/// sorting are delegated to [`find_by_user_filtered`]; this wrapper layers
+/// enrichment on top.
+pub async fn find_by_user_with_includes(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    options: SessionQueryOptions,
+    includes: IncludeOptions,
+) -> Result<Vec<EnrichedSession>, Error> {
+    includes.validate()?;
 
-    // Load all related data in efficient batches
-    let related_data = load_related_data(db, &sessions, options.includes).await?;
+    let sessions = find_by_user_filtered(db, user_id, options).await?;
 
-    // Assemble enriched sessions
+    // View markers load unconditionally so `viewer_last_viewed_at` is present on
+    // every response (null when never viewed); the path user is the viewer.
+    let session_ids: Vec<Id> = sessions.iter().map(|s| s.id).collect();
+    let views = batch_load_views(db, &session_ids, user_id).await?;
+
+    // `load_related_data` runs no queries for an unset include, so one assembly
+    // pass covers both the bare and fully-included cases.
+    let related_data = load_related_data(db, &sessions, includes).await?;
+
+    // Compose `display_title` unconditionally (like the view markers) so every
+    // response carries one canonical title (null when nothing derives).
+    let display_titles =
+        super::coaching_session_display_title::batch_load_display_titles(db, &sessions).await?;
+
     Ok(sessions
         .into_iter()
-        .map(|session| assemble_enriched_session(session, &related_data, options.includes))
+        .map(|session| {
+            assemble_enriched_session(session, &related_data, includes, &views, &display_titles)
+        })
         .collect())
 }
 
@@ -626,6 +772,7 @@ struct RelatedData {
     organizations: HashMap<Id, organizations::Model>,
     goals: HashMap<Id, Vec<goals::Model>>,
     agreements: HashMap<Id, agreements::Model>,
+    topics: HashMap<Id, Vec<coaching_session_topics::Model>>,
 }
 
 /// Load all requested related data in efficient batches
@@ -675,6 +822,11 @@ async fn load_related_data(
     // Load agreements by session_id
     if includes.agreements {
         data.agreements = batch_load_agreements(db, &session_ids).await?;
+    }
+
+    // Load topics by session_id
+    if includes.topics {
+        data.topics = batch_load_topics(db, &session_ids).await?;
     }
 
     Ok(data)
@@ -782,6 +934,54 @@ async fn batch_load_agreements(
         .collect())
 }
 
+/// Batch load this viewer's view markers by session id (session_id -> last_viewed_at).
+async fn batch_load_views(
+    db: &impl ConnectionTrait,
+    session_ids: &[Id],
+    viewer_id: Id,
+) -> Result<HashMap<Id, DateTimeWithTimeZone>, Error> {
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    Ok(coaching_session_views::Entity::find()
+        .filter(
+            coaching_session_views::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
+        )
+        .filter(coaching_session_views::Column::UserId.eq(viewer_id))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|v| (v.coaching_session_id, v.last_viewed_at))
+        .collect())
+}
+
+/// Batch load topics by session IDs, pre-sorted by display_order then created_at.
+async fn batch_load_topics(
+    db: &impl ConnectionTrait,
+    session_ids: &[Id],
+) -> Result<HashMap<Id, Vec<coaching_session_topics::Model>>, Error> {
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut map: HashMap<Id, Vec<coaching_session_topics::Model>> = HashMap::new();
+    for topic in coaching_session_topics::Entity::find()
+        .filter(
+            coaching_session_topics::Column::CoachingSessionId.is_in(session_ids.iter().copied()),
+        )
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
+        .order_by_asc(coaching_session_topics::Column::DisplayOrder)
+        .order_by_asc(coaching_session_topics::Column::CreatedAt)
+        .all(db)
+        .await?
+    {
+        map.entry(topic.coaching_session_id)
+            .or_default()
+            .push(topic);
+    }
+    Ok(map)
+}
+
 /// Assemble an enriched session from base session and related data.
 ///
 /// `includes` is needed to distinguish "not requested" (`None`) from
@@ -791,6 +991,8 @@ fn assemble_enriched_session(
     session: Model,
     related: &RelatedData,
     includes: IncludeOptions,
+    views: &HashMap<Id, DateTimeWithTimeZone>,
+    display_titles: &HashMap<Id, Option<String>>,
 ) -> EnrichedSession {
     let relationship = related
         .relationships
@@ -819,6 +1021,16 @@ fn assemble_enriched_session(
 
     let agreement = related.agreements.get(&session.id).cloned();
 
+    let viewer_last_viewed_at = views.get(&session.id).copied();
+
+    let display_title = display_titles.get(&session.id).cloned().flatten();
+
+    let topics = if includes.topics {
+        Some(related.topics.get(&session.id).cloned().unwrap_or_default())
+    } else {
+        None
+    };
+
     EnrichedSession {
         session,
         relationship,
@@ -827,23 +1039,15 @@ fn assemble_enriched_session(
         organization,
         goals,
         agreement,
+        viewer_last_viewed_at,
+        display_title,
+        topics,
     }
 }
 
-impl EnrichedSession {
-    /// Create an enriched session from just the base session model
-    fn from_session(session: Model) -> Self {
-        Self {
-            session,
-            relationship: None,
-            coach: None,
-            coachee: None,
-            organization: None,
-            goals: None,
-            agreement: None,
-        }
-    }
-}
+#[cfg(test)]
+#[path = "coaching_session_normalize_tests.rs"]
+mod normalize_tests;
 
 #[cfg(test)]
 // We need to gate seaORM's mock feature behind conditional compilation because
@@ -852,13 +1056,14 @@ impl EnrichedSession {
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use entity::provider::Provider;
+    use entity::meeting_provider::Provider;
     use entity::Id;
     use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
     #[tokio::test]
     async fn bulk_create_recurring_inserts_all_rows_with_lazy_fields_null() -> Result<(), Error> {
         let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
         let now = chrono::Utc::now();
         let dates = vec![
             chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
@@ -873,9 +1078,11 @@ mod tests {
         let session1 = Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
             date: dates[0],
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
@@ -897,6 +1104,7 @@ mod tests {
             &db,
             relationship_id,
             Id::new_v4(),
+            series_id,
             dates,
             Some(Duration::default()),
         )
@@ -906,6 +1114,9 @@ mod tests {
         assert!(inserted.iter().all(|s| s.collab_document_name.is_none()));
         assert!(inserted.iter().all(|s| s.meeting_url.is_none()));
         assert!(inserted.iter().all(|s| s.hydrated_at.is_none()));
+        assert!(inserted
+            .iter()
+            .all(|s| s.coaching_session_series_id == Some(series_id)));
         Ok(())
     }
 
@@ -913,7 +1124,9 @@ mod tests {
     async fn bulk_create_recurring_returns_empty_for_no_dates() -> Result<(), Error> {
         // No mock query expected — the function short-circuits before touching the DB.
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let result = bulk_create_recurring(&db, Id::new_v4(), Id::new_v4(), vec![], None).await?;
+        let result =
+            bulk_create_recurring(&db, Id::new_v4(), Id::new_v4(), Id::new_v4(), vec![], None)
+                .await?;
         assert!(result.is_empty());
         Ok(())
     }
@@ -924,12 +1137,14 @@ mod tests {
         let target = Model {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
             date: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
                 .unwrap()
                 .and_hms_opt(10, 0, 0)
                 .unwrap(),
             collab_document_name: Some("doc-name".to_string()),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: Some("https://meet.example/x".to_string()),
             provider: Some(Provider::Zoom),
             created_at: now.into(),
@@ -966,9 +1181,73 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_prior_session_filters_relationship_and_date_orders_desc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let before = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_prior_session(&db, relationship_id, before).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    before.into(),
+                    sea_orm::Value::BigUnsigned(Some(1))
+                ]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_next_session_filters_relationship_and_date_orders_asc_limit_one(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let after = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
+            .into_connection();
+
+        let result = find_next_session(&db, relationship_id, after).await?;
+        assert!(result.is_none(), "empty result yields None");
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC LIMIT $3"#,
+                [
+                    relationship_id.into(),
+                    after.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
                 ]
             )]
@@ -988,7 +1267,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."duration_minutes" AS "A_duration_minutes", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_sessions"."hydrated_at" AS "A_hydrated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."coaching_session_series_id" AS "A_coaching_session_series_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."duration_minutes" AS "A_duration_minutes", "coaching_sessions"."title" AS "A_title", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_sessions"."hydrated_at" AS "A_hydrated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -1029,7 +1308,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -1141,9 +1420,11 @@ mod tests {
         let session = Model {
             id: session_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
@@ -1153,10 +1434,18 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
-        let results =
-            find_by_user_with_includes(&db, user_id, SessionQueryOptions::default()).await?;
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session_id);
@@ -1164,6 +1453,129 @@ mod tests {
         assert!(results[0].organization.is_none());
         assert!(results[0].goals.is_none());
         assert!(results[0].agreement.is_none());
+        assert!(results[0].viewer_last_viewed_at.is_none());
+
+        Ok(())
+    }
+
+    // Guards the early-return (no-includes) path: the view marker must populate
+    // even when no related data is requested, and stay None when no row exists.
+    #[tokio::test]
+    async fn find_by_user_populates_viewer_last_viewed_at() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let viewed_at: DateTimeWithTimeZone =
+            chrono::DateTime::parse_from_rfc3339("2026-06-01T12:00:00Z").unwrap();
+
+        let session = Model {
+            id: session_id,
+            coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+        };
+
+        let view = coaching_session_views::Model {
+            id: Id::new_v4(),
+            user_id,
+            coaching_session_id: session_id,
+            last_viewed_at: viewed_at,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // Populated case: a marker row maps to the session.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![view.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].viewer_last_viewed_at, Some(viewed_at));
+
+        // Empty case: no marker row leaves the field None.
+        let db_empty = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let results_empty = find_by_user_with_includes(
+            &db_empty,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
+
+        assert_eq!(results_empty.len(), 1);
+        assert!(results_empty[0].viewer_last_viewed_at.is_none());
+
+        Ok(())
+    }
+
+    // Guards that display_title is composed end-to-end and lands on the
+    // EnrichedSession (the title tier wins; topics/goals empty). Precedence
+    // itself is covered by the compose_display_title unit tests.
+    #[tokio::test]
+    async fn find_by_user_populates_display_title_from_title() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let user_id = Id::new_v4();
+
+        let session = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
+            date: chrono::Local::now().naive_utc(),
+            collab_document_name: None,
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: Some("Quarterly Review".to_string()),
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let results = find_by_user_with_includes(
+            &db,
+            user_id,
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].display_title.as_deref(),
+            Some("Quarterly Review")
+        );
 
         Ok(())
     }
@@ -1179,9 +1591,11 @@ mod tests {
         let session = Model {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
             date: from_date.into(),
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
@@ -1191,6 +1605,9 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
             .into_connection();
 
         let results = find_by_user_with_includes(
@@ -1201,12 +1618,14 @@ mod tests {
                 to_date: Some(to_date),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session.id, session.id);
         assert_eq!(results[0].session.date, from_date.into());
+        assert!(results[0].viewer_last_viewed_at.is_none());
 
         Ok(())
     }
@@ -1235,6 +1654,7 @@ mod tests {
                 tz: Some("America/Los_Angeles".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1242,7 +1662,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC') AND ("coaching_sessions"."date" < ($5::timestamp AT TIME ZONE $6::text) AT TIME ZONE 'UTC')"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC') AND ("coaching_sessions"."date" < ($5::timestamp AT TIME ZONE $6::text) AT TIME ZONE 'UTC')"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -1283,6 +1703,7 @@ mod tests {
                 tz: None,
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1290,7 +1711,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND "coaching_sessions"."date" >= $3 AND "coaching_sessions"."date" < $4"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND "coaching_sessions"."date" >= $3 AND "coaching_sessions"."date" < $4"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -1324,6 +1745,7 @@ mod tests {
                 tz: Some("Europe/Berlin".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1331,7 +1753,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -1369,6 +1791,7 @@ mod tests {
                 tz: Some("Europe/Berlin".to_string()),
                 ..Default::default()
             },
+            IncludeOptions::default(),
         )
         .await?;
 
@@ -1376,7 +1799,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" < ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" < ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -1426,9 +1849,11 @@ mod tests {
         let session = Model {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
@@ -1442,7 +1867,10 @@ mod tests {
             ..IncludeOptions::none()
         };
 
-        let enriched = assemble_enriched_session(session, &related, includes);
+        let views = HashMap::new();
+        let display_titles = HashMap::new();
+        let enriched =
+            assemble_enriched_session(session, &related, includes, &views, &display_titles);
 
         // Must be Some(empty vec), not None — otherwise the frontend
         // can't distinguish "no goals" from "data not loaded yet".
@@ -1455,9 +1883,11 @@ mod tests {
         let session = Model {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: None,
             date: chrono::Local::now().naive_utc(),
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
@@ -1468,7 +1898,10 @@ mod tests {
         let related = RelatedData::default();
         let includes = IncludeOptions::none();
 
-        let enriched = assemble_enriched_session(session, &related, includes);
+        let views = HashMap::new();
+        let display_titles = HashMap::new();
+        let enriched =
+            assemble_enriched_session(session, &related, includes, &views, &display_titles);
 
         assert!(enriched.goals.is_none());
     }
@@ -1480,6 +1913,7 @@ mod tests {
             organization: true,
             goal: false,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1491,6 +1925,7 @@ mod tests {
             organization: true,
             goal: false,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_err());
     }
@@ -1502,6 +1937,7 @@ mod tests {
             organization: false,
             goal: true,
             agreements: false,
+            topics: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1513,6 +1949,7 @@ mod tests {
             organization: true,
             goal: true,
             agreements: true,
+            topics: true,
         };
         assert!(includes.validate().is_ok());
     }
@@ -1532,9 +1969,11 @@ mod tests {
         let _session_1 = Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: Some("https://meet.google.com/old-meet-url".to_string()),
             provider: Some(Provider::Google),
             created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
@@ -1548,9 +1987,11 @@ mod tests {
         let session_2 = Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             date: chrono::NaiveDate::from_ymd_opt(2025, 2, 1).unwrap().into(),
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: Some("https://meet.google.com/latest-meet-url".to_string()),
             provider: Some(Provider::Google),
             created_at: chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z").unwrap(),
@@ -1564,9 +2005,11 @@ mod tests {
         let _session_3 = Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             date: chrono::NaiveDate::from_ymd_opt(2025, 3, 1).unwrap().into(),
             collab_document_name: None,
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z").unwrap(),
@@ -1599,7 +2042,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "meeting_provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
                 [
                     relationship_id.into(),
                     "google".into(),
@@ -1623,5 +2066,35 @@ mod tests {
 
         assert_eq!(result, None);
         Ok(())
+    }
+
+    // Guards the batch list path's soft-delete filter. MockDatabase doesn't evaluate WHERE,
+    // so we assert the generated SELECT carries `deleted_at IS NULL` rather than the returned
+    // rows (mirrors the single-finder guard in coaching_session_topic_tests.rs).
+    #[tokio::test]
+    async fn batch_load_topics_filters_out_soft_deleted() {
+        let session_id = Id::new_v4();
+        let empty: Vec<Vec<coaching_session_topics::Model>> = vec![vec![]];
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(empty)
+            .into_connection();
+
+        let _ = batch_load_topics(&db, &[session_id]).await;
+
+        let log = db.into_transaction_log();
+        let topic_select = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .find(|stmt| {
+                stmt.sql.contains("SELECT") && stmt.sql.contains(r#""coaching_session_topics""#)
+            })
+            .expect("expected a SELECT against coaching_session_topics");
+        assert!(
+            topic_select
+                .sql
+                .contains(r#""coaching_session_topics"."deleted_at" IS NULL"#),
+            "batch_load_topics must exclude soft-deleted rows; SQL was: {}",
+            topic_select.sql
+        );
     }
 }

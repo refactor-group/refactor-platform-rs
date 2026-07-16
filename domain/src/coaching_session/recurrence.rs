@@ -71,6 +71,7 @@ pub enum RecurrenceError {
     TooManyOccurrences { count: usize },
     SpanTooLong { days: i64 },
     NoOccurrencesGenerated,
+    StartAtInPast,
 }
 
 impl From<RecurrenceError> for Error {
@@ -107,6 +108,7 @@ impl RecurrenceError {
             Self::NoOccurrencesGenerated => {
                 "recurrence rule produced no occurrences (check `until` vs. `start_at`)".into()
             }
+            Self::StartAtInPast => "`start_at` must not be in the past".into(),
         }
     }
 }

@@ -55,7 +55,7 @@ pub async fn create(
 
     debug!(
         "Newly created Coaching Relationship: {:?}",
-        &coaching_relationship
+        coaching_relationship
     );
 
     Ok(Json(ApiResponse::new(

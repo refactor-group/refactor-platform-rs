@@ -168,8 +168,10 @@ impl ApiClient {
         session_cookie: &str,
         relationship_id: &str,
     ) -> Result<Value> {
+        // GET /coaching_sessions filters by query params (relationship + date range),
+        // all required. Use a wide range so every session for the relationship returns.
         let url = format!(
-            "{}/coaching_relationships/{}/coaching_sessions",
+            "{}/coaching_sessions?coaching_relationship_id={}&from_date=2020-01-01&to_date=2035-12-31",
             self.base_url, relationship_id
         );
 
@@ -290,9 +292,8 @@ impl ApiClient {
             .header("x-version", "1.0.0-beta1")
             .json(&json!({
                 "coaching_session_id": coaching_session_id,
-                "title": title,
-                "description": "Created by SSE test tool",
-                "status": "not_started",
+                "body": title,
+                "status": "NotStarted",
             }))
             .send()
             .await
@@ -314,6 +315,7 @@ impl ApiClient {
     pub async fn update_action(
         &self,
         session_cookie: &str,
+        coaching_session_id: &str,
         action_id: &str,
         title: &str,
     ) -> Result<Value> {
@@ -325,7 +327,9 @@ impl ApiClient {
             .header("Cookie", format!("id={}", session_cookie))
             .header("x-version", "1.0.0-beta1")
             .json(&json!({
-                "title": title,
+                "coaching_session_id": coaching_session_id,
+                "body": title,
+                "status": "NotStarted",
             }))
             .send()
             .await
@@ -360,6 +364,260 @@ impl ApiClient {
             anyhow::bail!("Failed to delete action: {}", response.status());
         }
 
+        Ok(())
+    }
+
+    // --- Agreements (session-scoped) ---
+    // Each mutation makes the backend publish an `agreement_{created,updated,deleted}` SSE event
+    // (data: { coaching_session_id, agreement | agreement_id }) to BOTH relationship participants.
+
+    pub async fn create_agreement(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        body: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/agreements", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "coaching_session_id": coaching_session_id, "body": body }))
+            .send()
+            .await
+            .context("Failed to create agreement")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to create agreement: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    /// PATCH the session title (either participant). Makes the backend publish a coarse
+    /// `coaching_session_title_updated` SSE event to BOTH relationship participants.
+    pub async fn update_session_title(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        title: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/coaching_sessions/{}/title",
+            self.base_url, coaching_session_id
+        );
+        let response = self
+            .client
+            .patch(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "title": title }))
+            .send()
+            .await
+            .context("Failed to update session title")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to update session title: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    pub async fn update_agreement(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        agreement_id: &str,
+        body: &str,
+    ) -> Result<Value> {
+        let url = format!("{}/agreements/{}", self.base_url, agreement_id);
+        let response = self
+            .client
+            .put(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "coaching_session_id": coaching_session_id, "body": body }))
+            .send()
+            .await
+            .context("Failed to update agreement")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to update agreement: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    pub async fn delete_agreement(&self, session_cookie: &str, agreement_id: &str) -> Result<()> {
+        let url = format!("{}/agreements/{}", self.base_url, agreement_id);
+        let response = self
+            .client
+            .delete(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .send()
+            .await
+            .context("Failed to delete agreement")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to delete agreement: {}", response.status());
+        }
+        Ok(())
+    }
+
+    // --- Coaching session Topics ---
+    // Every mutation below makes the backend publish a single coarse `topics_changed`
+    // SSE event (data: { coaching_session_id }) to BOTH relationship participants.
+
+    pub async fn create_topic(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        body: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/coaching_sessions/{}/topics",
+            self.base_url, coaching_session_id
+        );
+        let response = self
+            .client
+            .post(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "body": body }))
+            .send()
+            .await
+            .context("Failed to create topic")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to create topic: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    pub async fn update_topic(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        topic_id: &str,
+        body: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/coaching_sessions/{}/topics/{}",
+            self.base_url, coaching_session_id, topic_id
+        );
+        let response = self
+            .client
+            .put(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "body": body }))
+            .send()
+            .await
+            .context("Failed to update topic")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to update topic: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    /// Coachee-only. Sets the topic's `priority` (Low|Medium|High).
+    pub async fn set_topic_priority(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        topic_id: &str,
+        priority: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/coaching_sessions/{}/topics/{}/rating",
+            self.base_url, coaching_session_id, topic_id
+        );
+        let response = self
+            .client
+            .patch(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "priority": priority }))
+            .send()
+            .await
+            .context("Failed to set topic priority")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to set topic priority: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    /// Either participant. Sets the topic's lifecycle `status` (Open|Discussed|Deferred).
+    pub async fn set_topic_status(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        topic_id: &str,
+        status: &str,
+    ) -> Result<Value> {
+        let url = format!(
+            "{}/coaching_sessions/{}/topics/{}/status",
+            self.base_url, coaching_session_id, topic_id
+        );
+        let response = self
+            .client
+            .patch(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .json(&json!({ "status": status }))
+            .send()
+            .await
+            .context("Failed to set topic status")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to set topic status: {}", response.status());
+        }
+        let api_response: Value = response.json().await.context("Failed to parse response")?;
+        api_response["data"]
+            .as_object()
+            .context("No data object in response")
+            .map(|obj| Value::Object(obj.clone()))
+    }
+
+    /// Author-only. Deletes the topic.
+    pub async fn delete_topic(
+        &self,
+        session_cookie: &str,
+        coaching_session_id: &str,
+        topic_id: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/coaching_sessions/{}/topics/{}",
+            self.base_url, coaching_session_id, topic_id
+        );
+        let response = self
+            .client
+            .delete(&url)
+            .header("Cookie", format!("id={}", session_cookie))
+            .header("x-version", "1.0.0-beta1")
+            .send()
+            .await
+            .context("Failed to delete topic")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to delete topic: {}", response.status());
+        }
         Ok(())
     }
 

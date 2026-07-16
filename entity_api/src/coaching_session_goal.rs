@@ -13,7 +13,7 @@ use sea_orm::{
     entity::prelude::*,
     sea_query::OnConflict,
     ActiveValue::{Set, Unchanged},
-    ConnectionTrait, DatabaseConnection, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, QueryOrder, TryIntoModel,
 };
 
 use log::*;
@@ -367,9 +367,13 @@ pub async fn find_goals_grouped_by_session_ids(
         return Ok(HashMap::new());
     }
 
+    // Deterministic order so callers that take "the first goal" (e.g. the
+    // display_title goal tier) get a stable, reproducible result across requests.
     let links_with_goals = Entity::find()
         .filter(Column::CoachingSessionId.is_in(session_ids.iter().copied()))
         .find_also_related(goals::Entity)
+        .order_by_asc(goals::Column::CreatedAt)
+        .order_by_asc(goals::Column::Id)
         .all(db)
         .await?;
 
@@ -936,9 +940,11 @@ mod tests {
         let session1 = entity::coaching_sessions::Model {
             id: session1_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: entity::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
@@ -948,9 +954,11 @@ mod tests {
         let session2 = entity::coaching_sessions::Model {
             id: session2_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: entity::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),

@@ -40,7 +40,12 @@ pub async fn index(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Organizations for User: {user_id}");
 
-    let organizations = OrganizationApi::find_by_user(app_state.db_conn_ref(), user_id).await?;
+    let organizations = OrganizationApi::find_by_user(
+        app_state.db_conn_ref(),
+        user_id,
+        OrganizationApi::StatusFilter::Active,
+    )
+    .await?;
 
     debug!(
         "Found {} organizations for user {user_id}",

@@ -7,7 +7,6 @@ use secrecy::{ExposeSecret, SecretString};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     RecallAi,
-    AssemblyAi,
 }
 
 impl Provider {
@@ -15,7 +14,6 @@ impl Provider {
     pub fn as_str(&self) -> &'static str {
         match self {
             Provider::RecallAi => "recall_ai",
-            Provider::AssemblyAi => "assemblyai",
         }
     }
 }
@@ -38,7 +36,6 @@ pub enum AuthMethod {
 ///
 /// Implementations handle provider-specific authentication patterns like:
 /// - Recall.ai: `Authorization: Token xxx`
-/// - AssemblyAI: `authorization: xxx`
 pub trait Authenticate: Send + Sync {
     /// Get the provider identifier.
     fn provider(&self) -> Provider;
@@ -63,13 +60,6 @@ pub trait Authenticate: Send + Sync {
 ///     SecretString::from("api_key_here"),
 ///     "Token",
 /// );
-///
-/// // AssemblyAI: authorization: xxx (no prefix)
-/// let auth = Auth::new(
-///     Provider::AssemblyAi,
-///     SecretString::from("api_key_here"),
-///     "",
-/// );
 /// ```
 pub struct Auth {
     provider: Provider,
@@ -89,7 +79,6 @@ impl Auth {
     pub fn new(provider: Provider, api_key: SecretString, prefix: &str) -> Self {
         let (header_name, prefix_opt) = match provider {
             Provider::RecallAi => ("Authorization".to_string(), Some(prefix.to_string())),
-            Provider::AssemblyAi => ("authorization".to_string(), None),
         };
 
         Self {
@@ -136,7 +125,6 @@ mod tests {
     #[test]
     fn test_api_key_provider_as_str() {
         assert_eq!(Provider::RecallAi.as_str(), "recall_ai");
-        assert_eq!(Provider::AssemblyAi.as_str(), "assemblyai");
     }
 
     #[test]
@@ -147,15 +135,5 @@ mod tests {
         assert_eq!(auth.provider(), Provider::RecallAi);
         assert_eq!(auth.header_name, "Authorization");
         assert_eq!(auth.prefix, Some("Token".to_string()));
-    }
-
-    #[test]
-    fn test_assemblyai_auth_no_prefix() {
-        let api_key = SecretString::from("test_key".to_string());
-        let auth = Auth::new(Provider::AssemblyAi, api_key, "");
-
-        assert_eq!(auth.provider(), Provider::AssemblyAi);
-        assert_eq!(auth.header_name, "authorization");
-        assert_eq!(auth.prefix, None);
     }
 }

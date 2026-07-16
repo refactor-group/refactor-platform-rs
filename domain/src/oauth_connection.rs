@@ -1,8 +1,8 @@
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::oauth::{self, Provider};
+use crate::meeting_provider::Provider as MeetingProvider;
 use crate::oauth_connections::Model as OauthConnectionModel;
 use crate::oauth_token_storage::DbOAuthTokenStorage;
-use crate::provider::Provider as OauthProvider;
 use crate::Id;
 use entity_api::oauth_connection;
 use log::*;
@@ -21,11 +21,11 @@ pub use entity_api::oauth_connection::{
 pub fn authorize_url(
     config: &Config,
     state: &str,
-    provider: OauthProvider,
+    provider: MeetingProvider,
 ) -> Result<String, Error> {
     let oauth_provider: Box<dyn Provider> = match provider {
-        OauthProvider::Google => Box::new(create_google_provider(config)?),
-        OauthProvider::Zoom => Box::new(create_zoom_provider(config)?),
+        MeetingProvider::Google => Box::new(create_google_provider(config)?),
+        MeetingProvider::Zoom => Box::new(create_zoom_provider(config)?),
     };
 
     let auth_request = oauth_provider.authorization_url(state, None);
@@ -41,7 +41,7 @@ pub async fn exchange_and_store_tokens(
     config: &Config,
     user_id: Id,
     authorization_code: &str,
-    provider: OauthProvider,
+    provider: MeetingProvider,
 ) -> Result<String, Error> {
     info!(
         "Processing {} OAuth callback for user {}",
@@ -54,8 +54,8 @@ pub async fn exchange_and_store_tokens(
     })?);
 
     let oauth_provider: Box<dyn Provider> = match provider {
-        OauthProvider::Google => Box::new(create_google_provider(config)?),
-        OauthProvider::Zoom => Box::new(create_zoom_provider(config)?),
+        MeetingProvider::Google => Box::new(create_google_provider(config)?),
+        MeetingProvider::Zoom => Box::new(create_zoom_provider(config)?),
     };
 
     let tokens_raw = oauth_provider
@@ -149,7 +149,7 @@ pub async fn get_valid_access_token(
     db: &DatabaseConnection,
     config: &Config,
     user_id: Id,
-    provider: OauthProvider,
+    provider: MeetingProvider,
 ) -> Result<String, Error> {
     let encryption_key = SecretString::from(config.encryption_key().ok_or_else(|| Error {
         source: None,
@@ -160,7 +160,7 @@ pub async fn get_valid_access_token(
     let manager = Manager::new(storage);
 
     let result = match provider {
-        OauthProvider::Google => {
+        MeetingProvider::Google => {
             let oauth_provider = create_google_provider(config)?;
             manager
                 .get_valid_token(&oauth_provider, &user_id.to_string())
@@ -172,7 +172,7 @@ pub async fn get_valid_access_token(
                     )
                 })
         }
-        OauthProvider::Zoom => {
+        MeetingProvider::Zoom => {
             let oauth_provider = create_zoom_provider(config)?;
             manager
                 .get_valid_token(&oauth_provider, &user_id.to_string())
@@ -267,7 +267,7 @@ fn create_zoom_provider(config: &Config) -> Result<impl Provider, Error> {
 
 fn create_oauth_connection_model(
     user_id: Id,
-    provider: OauthProvider,
+    provider: MeetingProvider,
     user_info: UserInfo,
     tokens: &Plain,
     scopes: String,
@@ -293,8 +293,8 @@ fn create_oauth_connection_model(
     };
 
     match provider {
-        OauthProvider::Google => apply_google_fields(&mut model, user_info),
-        OauthProvider::Zoom => apply_zoom_fields(&mut model, user_info),
+        MeetingProvider::Google => apply_google_fields(&mut model, user_info),
+        MeetingProvider::Zoom => apply_zoom_fields(&mut model, user_info),
     }
 
     model

@@ -111,6 +111,10 @@ impl Error {
                 );
                 (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
             }
+            EntityErrorKind::Forbidden => {
+                warn!("EntityErrorKind::Forbidden: Responding with 403 Forbidden. Error: {self:?}");
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
+            }
             EntityErrorKind::DbTransaction => {
                 warn!(
                     "EntityErrorKind::DbTransaction: Responding with 500 Internal Server Error. Error: {self:?}"
@@ -157,6 +161,43 @@ impl Error {
                     "status_code": 409,
                     "error": "goal_already_linked_to_session",
                     "message": "This goal is already linked to the coaching session.",
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count,
+                coaching_session_count,
+                member_count,
+            } => {
+                warn!("EntityErrorKind::OrganizationNotEmpty: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "organization_not_empty",
+                    "message": "This organization still has coaching relationships and cannot be deleted.",
+                    "details": {
+                        "coaching_relationship_count": coaching_relationship_count,
+                        "coaching_session_count": coaching_session_count,
+                        "member_count": member_count,
+                    },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::OrganizationNameTaken { name } => {
+                warn!("EntityErrorKind::OrganizationNameTaken: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "organization_name_taken",
+                    "message": "An organization with that name already exists.",
+                    "details": { "name": name },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::OrganizationArchived => {
+                warn!("EntityErrorKind::OrganizationArchived: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "organization_archived",
+                    "message": "This organization is archived and cannot accept new changes.",
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
@@ -316,6 +357,95 @@ mod tests {
         assert!(
             message.contains("Not/A/Timezone"),
             "message should quote the offending value, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn organization_not_empty_produces_structured_409_with_details() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationNotEmpty {
+                    coaching_relationship_count: 3,
+                    coaching_session_count: 12,
+                    member_count: 4,
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "organization_not_empty");
+        assert_eq!(body["details"]["coaching_relationship_count"], 3);
+        assert_eq!(body["details"]["coaching_session_count"], 12);
+        assert_eq!(body["details"]["member_count"], 4);
+    }
+
+    #[tokio::test]
+    async fn organization_name_taken_produces_structured_409_with_name() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationNameTaken {
+                    name: "Acme".to_string(),
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "organization_name_taken");
+        assert_eq!(body["details"]["name"], "Acme");
+    }
+
+    #[tokio::test]
+    async fn organization_archived_produces_structured_409() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived,
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "organization_archived");
+    }
+
+    // Locks the authn/authz status-code split: an authorization failure
+    // (`Forbidden`) must map to 403, distinct from `Unauthenticated` → 401.
+    // The frontend branches on this to decide whether to re-authenticate.
+    #[test]
+    fn forbidden_maps_to_403_and_unauthenticated_to_401() {
+        let forbidden = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Forbidden,
+            )),
+        });
+        assert_eq!(forbidden.into_response().status(), StatusCode::FORBIDDEN);
+
+        let unauthenticated = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Unauthenticated,
+            )),
+        });
+        assert_eq!(
+            unauthenticated.into_response().status(),
+            StatusCode::UNAUTHORIZED
         );
     }
 }

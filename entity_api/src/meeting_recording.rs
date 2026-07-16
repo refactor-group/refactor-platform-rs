@@ -54,6 +54,11 @@ pub async fn find_latest_by_coaching_session(
         .await?)
 }
 
+/// Finds a recording by its primary key
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
+    Ok(Entity::find_by_id(id).one(db).await?)
+}
+
 /// Finds a recording by Recall.ai bot ID — used by webhook handlers
 pub async fn find_by_bot_id(db: &DatabaseConnection, bot_id: &str) -> Result<Option<Model>, Error> {
     Ok(Entity::find()

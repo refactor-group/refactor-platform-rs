@@ -45,12 +45,22 @@ pub enum EntityErrorKind {
     NotFound,
     Invalid,
     Unauthenticated,
+    Forbidden,
     Conflict {
         message: String,
         details: Option<serde_json::Value>,
     },
     CannotLinkCompletedGoal,
     GoalAlreadyLinkedToSession,
+    OrganizationNotEmpty {
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+        member_count: u64,
+    },
+    OrganizationNameTaken {
+        name: String,
+    },
+    OrganizationArchived,
     /// Token missing, expired, or has wrong purpose. Collapsed deliberately
     /// for password-reset endpoints so attackers can't distinguish these
     /// three cases via the response.
@@ -104,6 +114,32 @@ impl From<EntityApiError> for Error {
                     error_kind: DomainErrorKind::Validation(message),
                 };
             }
+            EntityApiErrorKind::TopicReorderMismatch => {
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(
+                        "Reorder id set does not match the coaching session's current topics."
+                            .to_string(),
+                    ),
+                };
+            }
+            // Over-long text field → 422 `validation_error`, same path as
+            // `OutOfRange`. The variant carries the bound and the offending
+            // length as context for the message.
+            EntityApiErrorKind::TitleTooLong { max, actual } => {
+                let message = format!("title must be at most {max} characters (got {actual})");
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
+            EntityApiErrorKind::OrganizationNameInvalid { message } => {
+                let message = message.clone();
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
             EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,
@@ -115,6 +151,19 @@ impl From<EntityApiError> for Error {
             EntityApiErrorKind::GoalAlreadyLinkedToSession => {
                 EntityErrorKind::GoalAlreadyLinkedToSession
             }
+            EntityApiErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count,
+                coaching_session_count,
+                member_count,
+            } => EntityErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count: *coaching_relationship_count,
+                coaching_session_count: *coaching_session_count,
+                member_count: *member_count,
+            },
+            EntityApiErrorKind::OrganizationNameTaken { name } => {
+                EntityErrorKind::OrganizationNameTaken { name: name.clone() }
+            }
+            EntityApiErrorKind::OrganizationArchived => EntityErrorKind::OrganizationArchived,
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
@@ -122,6 +171,17 @@ impl From<EntityApiError> for Error {
         Error {
             source: Some(Box::new(err)),
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(entity_error_kind)),
+        }
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Self {
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "JSON serialization error".to_string(),
+            )),
         }
     }
 }
