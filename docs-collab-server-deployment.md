@@ -106,25 +106,26 @@ Phase 5 - PARTIALLY done:
 - DONE 5b (a71ac8c): `build-test-push.yml` builds+pushes the collab image to its OWN GHCR
   package `.../<branch>/docs-collab:{latest,<sha>}`, distinct GHA cache scope. YAML parses.
 - DONE 5c-compose: `docker-compose.pr-preview.yaml` frontend `NEXT_PUBLIC_DOCS_COLLAB_URL`.
-- OUTSTANDING 5c-workflow (`ci-deploy-pr-preview.yml`) + GitHub vars - do this WITH a live
-  preview dispatch (Phase 6), not blind. Precise spec:
-  * In the `resolve` step (job `build-arm64-image`, ~L619/686): compute
-    `DOCS_COLLAB_IMAGE="${BACKEND_IMAGE_REPO}/docs-collab:pr-${PR}"` (mirror the pr/main/override
-    branches that set `BACKEND_IMAGE`) and `echo "docs_collab_image=..." >> $GITHUB_OUTPUT`
-    (+ a `docs_collab_tags`).
-  * Add a build-push step after `Build and push backend image` (~L816): `context: ./backend-src`,
-    `file: ./backend-src/docs-collab-server/Dockerfile`, `platforms: linux/arm64`,
-    `tags: ${{ steps.resolve.outputs.docs_collab_tags }}`, cache `scope=docs-collab-arm64`,
-    `if:` tied to the backend build (same checkout).
-  * In the deploy job's preview-env heredoc (~L1142): add
-    `DOCS_COLLAB_IMAGE=${{ needs.build-arm64-image.outputs.docs_collab_image }}` and
-    `NEXT_PUBLIC_DOCS_COLLAB_URL=<per-PR ws path, e.g. ws://${host}/pr-${PR}/collab>`.
-  * GitHub config (UI; only you can do): prod env `vars.DOCS_COLLAB_IMAGE_NAME` (= the pushed
-    collab image:tag) + `vars.NEXT_PUBLIC_DOCS_COLLAB_URL` = `wss://myrefactor.com/collab`;
-    preview env equivalents. NOTE: keep `DOCS_COLLAB_IMAGE_NAME` STABLE between app deploys; bump
-    it + set `deploy_docs_collab=true` together to roll a new collab build.
-  Reason deferred: `ci-deploy-pr-preview.yml` is ~1100 lines of conditional orchestration, zero
-  local verifiability (no docker/GHA); best modified against real CI feedback in Phase 6.
+- DONE 5c-workflow (code, revised 2026-07-17) - VALIDATE on the first live dispatch (Phase 6).
+  Implemented in `ci-deploy-pr-preview.yml`:
+  * `resolve` step computes `DOCS_COLLAB_IMAGE=${BACKEND_IMAGE_REPO}/docs-collab:pr-${PR}`
+    (backend PRs) or `:main-arm64` (frontend-only), plus `docs_collab_tags`; echoed to
+    `$GITHUB_OUTPUT` and exposed as the job output `docs_collab_image`.
+  * `build_docs_collab` build-push step after the backend build: `context: ./backend-src`,
+    `file: ./backend-src/docs-collab-server/Dockerfile`, `platforms: linux/arm64`, cache
+    `scope=docs-collab-arm64-*`, gated on the SAME `if:` as the backend build (shared checkout).
+  * Deploy heredoc sets `DOCS_COLLAB_IMAGE` and `NEXT_PUBLIC_DOCS_COLLAB_URL`
+    (`ws://<rpi-host>/pr-<PR>/collab`); the collab URL is ALSO a frontend build-arg because
+    Next.js bakes `NEXT_PUBLIC_*` at build time (mirrors the `NEXT_PUBLIC_BACKEND_*` pattern).
+  * Caveat: frontend-only previews reference `docs-collab:main-arm64`, which no main-branch
+    job publishes yet, so collab in a frontend-only preview would fail to pull. Backend-PR
+    previews (the intended collab test path) build the per-PR image and work.
+  * STILL NEEDS (GitHub UI; only you can do): prod env `vars.DOCS_COLLAB_IMAGE_NAME` (= the
+    pushed collab image:tag) + `vars.NEXT_PUBLIC_DOCS_COLLAB_URL` = `wss://myrefactor.com/collab`;
+    preview env equivalents. Keep `DOCS_COLLAB_IMAGE_NAME` STABLE between app deploys; bump it +
+    set `deploy_docs_collab=true` together to roll a new collab build.
+  Validation note: this file has zero local verifiability (no docker/GHA), so the first preview
+  dispatch is the real test.
 - Phase 6 (PR-preview rehearsal): operational; needs a real preview deploy + e2e.
 - Phase 8 (prod cutover): out of scope by request.
 
