@@ -520,9 +520,7 @@ jobs:
             backend_image_sha: ${{ steps.resolve.outputs.backend_image_sha }}
             frontend_image: ${{ steps.resolve.outputs.frontend_image }}
             frontend_image_sha: ${{ steps.resolve.outputs.frontend_image_sha }}
-            # Non-empty ONLY when a collab image was actually built + pushed this run
-            # (backend PR whose branch contains the crate). Empty otherwise, which keeps
-            # the deploy's collab compose profile inactive.
+            # Non-empty only when the collab image was actually built this run; empty keeps the collab profile off.
             docs_collab_image: ${{ steps.build_docs_collab.outcome == 'success' && steps.resolve.outputs.docs_collab_image || '' }}
             backend_branch: ${{ steps.resolve.outputs.backend_branch }}
             frontend_branch: ${{ steps.resolve.outputs.frontend_branch }}
@@ -664,10 +662,7 @@ jobs:
                       fi
                       DOCS_COLLAB_TAGS="${DOCS_COLLAB_IMAGE},${DOCS_COLLAB_SHA}"
                   else
-                      # Frontend-only previews do not build or run collab: no
-                      # docs-collab:main-arm64 image is published yet, so referencing one
-                      # would point at a missing image + WS endpoint. Leave empty; the
-                      # deploy keeps the compose `collab` profile inactive when unset.
+                      # Frontend-only previews don't run collab (no main-arm64 image); leave empty.
                       DOCS_COLLAB_IMAGE=""
                       DOCS_COLLAB_TAGS=""
                   fi
@@ -840,8 +835,7 @@ jobs:
                   provenance: true
                   sbom: false
 
-            # Skip the collab image build for PR branches that predate the crate
-            # (no Dockerfile in the checkout), so unrelated previews are unaffected.
+            # Skip the collab build when the checked-out branch lacks the crate's Dockerfile.
             - name: Check for docs-collab Dockerfile
               id: collab_dockerfile
               if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
@@ -853,9 +847,7 @@ jobs:
                       echo "::notice::docs-collab Dockerfile absent in this branch; skipping collab image build."
                   fi
 
-            # Build and push ARM64 docs-collab image from the same backend checkout.
-            # Its own GHCR package + cache scope; built whenever the backend builds
-            # (and only when the crate's Dockerfile is present in the checkout).
+            # Build+push the docs-collab image from the backend checkout (own GHCR package + cache scope).
             - name: Build and push docs-collab image
               id: build_docs_collab
               if: steps.collab_dockerfile.outputs.exists == 'true'
@@ -1339,10 +1331,7 @@ jobs:
                   # place (with its volume) on update deploys; the previous
                   # teardown step already removed the app-tier services, so
                   # they will be (re)created here against the new image.
-                  # Activate the collab compose profile only when a collab image was built
-                  # for this preview (backend PRs with the crate). Frontend-only previews
-                  # (and older backend PRs without the crate) leave it empty, so the
-                  # profiled docs-collab service is skipped instead of failing to pull.
+                  # Enable the collab profile only when its image was built (else skip the service).
                   COLLAB_PROFILE=""
                   if [[ -n "\${DOCS_COLLAB_IMAGE}" && "\${DOCS_COLLAB_IMAGE}" != "null" ]]; then
                       COLLAB_PROFILE="--profile collab"
