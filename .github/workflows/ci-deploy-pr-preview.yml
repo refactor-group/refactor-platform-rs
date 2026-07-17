@@ -125,9 +125,7 @@ on:
                 required: false
 
             # Third-party service credentials for backend
-            TIPTAP_URL:
-                description: "TipTap service URL"
-                required: false
+            # NOTE: TIPTAP_URL is a non-secret VARIABLE (vars.TIPTAP_URL), not a secret.
             TIPTAP_AUTH_KEY:
                 description: "TipTap authentication key"
                 required: false
@@ -522,7 +520,8 @@ jobs:
             backend_image_sha: ${{ steps.resolve.outputs.backend_image_sha }}
             frontend_image: ${{ steps.resolve.outputs.frontend_image }}
             frontend_image_sha: ${{ steps.resolve.outputs.frontend_image_sha }}
-            docs_collab_image: ${{ steps.resolve.outputs.docs_collab_image }}
+            # Non-empty only when the collab image was actually built this run; empty keeps the collab profile off.
+            docs_collab_image: ${{ steps.build_docs_collab.outcome == 'success' && steps.resolve.outputs.docs_collab_image || '' }}
             backend_branch: ${{ steps.resolve.outputs.backend_branch }}
             frontend_branch: ${{ steps.resolve.outputs.frontend_branch }}
             backend_service_port: ${{ steps.resolve.outputs.backend_service_port }}
@@ -661,11 +660,12 @@ jobs:
                       else
                           DOCS_COLLAB_SHA="${DOCS_COLLAB_IMAGE_REPO}:pr-${PR}-${{ github.sha }}"
                       fi
+                      DOCS_COLLAB_TAGS="${DOCS_COLLAB_IMAGE},${DOCS_COLLAB_SHA}"
                   else
-                      DOCS_COLLAB_IMAGE="${DOCS_COLLAB_IMAGE_REPO}:main-arm64"
-                      DOCS_COLLAB_SHA="${DOCS_COLLAB_IMAGE_REPO}:main-arm64-latest"
+                      # Frontend-only previews don't run collab (no main-arm64 image); leave empty.
+                      DOCS_COLLAB_IMAGE=""
+                      DOCS_COLLAB_TAGS=""
                   fi
-                  DOCS_COLLAB_TAGS="${DOCS_COLLAB_IMAGE},${DOCS_COLLAB_SHA}"
 
                   # Configure frontend image strategy
                   # Always build PR-specific frontend image regardless of repo_type.
@@ -835,11 +835,23 @@ jobs:
                   provenance: true
                   sbom: false
 
-            # Build and push ARM64 docs-collab image from the same backend checkout.
-            # Its own GHCR package + cache scope; built whenever the backend builds.
+            # Skip the collab build when the branch lacks the crate's Dockerfile, or when a
+            # backend image override forces build_mode=skip (collab profile then stays off).
+            - name: Check for docs-collab Dockerfile
+              id: collab_dockerfile
+              if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
+              run: |
+                  if [[ -f ./backend-src/docs-collab-server/Dockerfile ]]; then
+                      echo "exists=true" >> $GITHUB_OUTPUT
+                  else
+                      echo "exists=false" >> $GITHUB_OUTPUT
+                      echo "::notice::docs-collab Dockerfile absent in this branch; skipping collab image build."
+                  fi
+
+            # Build+push the docs-collab image from the backend checkout (own GHCR package + cache scope).
             - name: Build and push docs-collab image
               id: build_docs_collab
-              if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
+              if: steps.collab_dockerfile.outputs.exists == 'true'
               uses: docker/build-push-action@v5
               with:
                   context: ./backend-src
@@ -915,7 +927,7 @@ jobs:
                       NEXT_PUBLIC_BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION || '1.0.0-beta1' }}
                       NEXT_PUBLIC_TIPTAP_APP_ID=${{ vars.TIPTAP_APP_ID }}
                       NEXT_PUBLIC_BASE_PATH=/pr-${{ steps.resolve.outputs.pr_number }}
-                      NEXT_PUBLIC_DOCS_COLLAB_URL=ws://${{ secrets.RPI5_TAILSCALE_NAME || 'neo.rove-barbel.ts.net' }}/pr-${{ steps.resolve.outputs.pr_number }}/collab
+                      NEXT_PUBLIC_DOCS_COLLAB_URL=ws://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ steps.resolve.outputs.pr_number }}/collab
                       FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT || '3000' }}
                       FRONTEND_SERVICE_INTERFACE=${{ vars.FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
                       BUILDKIT_INLINE_CACHE=1
@@ -1141,7 +1153,7 @@ jobs:
                       # (avoids `volume rm` racing into the wrong state).
                       ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
                           ${{ secrets.RPI5_USERNAME }}@${{ secrets.RPI5_TAILSCALE_NAME }} \
-                          "docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml rm -fsv backend frontend migrator seed 2>/dev/null || true"
+                          "docker compose -p ${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --profile collab rm -fsv backend frontend migrator seed docs-collab 2>/dev/null || true"
                       echo "::notice::✅ App-tier teardown complete (postgres + volume preserved)"
                   fi
 
@@ -1218,7 +1230,7 @@ jobs:
                   TIPTAP_AUTH_KEY='${{ secrets.TIPTAP_AUTH_KEY || 'UNUSED' }}'
                   TIPTAP_JWT_SIGNING_KEY='${{ secrets.TIPTAP_JWT_SIGNING_KEY || 'UNUSED' }}'
                   TIPTAP_APP_ID='${{ vars.TIPTAP_APP_ID || 'UNUSED' }}'
-                  TIPTAP_URL='${{ secrets.TIPTAP_URL || 'UNUSED' }}'
+                  TIPTAP_URL='${{ vars.TIPTAP_URL || 'UNUSED' }}'
                   RESEND_API_KEY='${{ secrets.RESEND_API_KEY || 'UNUSED' }}'
                   WELCOME_EMAIL_TEMPLATE_ID='${{ vars.WELCOME_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   SESSION_SCHEDULED_EMAIL_TEMPLATE_ID='${{ vars.SESSION_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
@@ -1320,8 +1332,14 @@ jobs:
                   # place (with its volume) on update deploys; the previous
                   # teardown step already removed the app-tier services, so
                   # they will be (re)created here against the new image.
+                  # Enable the collab profile only when its image was built (else skip the service).
+                  COLLAB_PROFILE=""
+                  if [[ -n "\${DOCS_COLLAB_IMAGE}" ]]; then
+                      COLLAB_PROFILE="--profile collab"
+                  fi
+
                   echo "🚀 Starting PR preview environment..."
-                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" up -d --no-recreate
+                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" \${COLLAB_PROFILE} up -d --no-recreate
 
                   # Allow services time to start up
                   echo "⏳ Waiting \${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."

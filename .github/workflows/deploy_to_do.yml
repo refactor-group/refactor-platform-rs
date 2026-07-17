@@ -156,7 +156,7 @@ jobs:
           # TipTap account unique ID
           TIPTAP_APP_ID=${{ vars.TIPTAP_APP_ID }}
           # TipTap collaborative editor URL
-          TIPTAP_URL=${{ secrets.TIPTAP_URL }}
+          TIPTAP_URL=${{ vars.TIPTAP_URL }}
           # TipTap authentication key
           TIPTAP_AUTH_KEY=${{ secrets.TIPTAP_AUTH_KEY }}
           # JWT signing key for TipTap
