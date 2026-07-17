@@ -520,7 +520,10 @@ jobs:
             backend_image_sha: ${{ steps.resolve.outputs.backend_image_sha }}
             frontend_image: ${{ steps.resolve.outputs.frontend_image }}
             frontend_image_sha: ${{ steps.resolve.outputs.frontend_image_sha }}
-            docs_collab_image: ${{ steps.resolve.outputs.docs_collab_image }}
+            # Non-empty ONLY when a collab image was actually built + pushed this run
+            # (backend PR whose branch contains the crate). Empty otherwise, which keeps
+            # the deploy's collab compose profile inactive.
+            docs_collab_image: ${{ steps.build_docs_collab.outcome == 'success' && steps.resolve.outputs.docs_collab_image || '' }}
             backend_branch: ${{ steps.resolve.outputs.backend_branch }}
             frontend_branch: ${{ steps.resolve.outputs.frontend_branch }}
             backend_service_port: ${{ steps.resolve.outputs.backend_service_port }}
@@ -659,11 +662,15 @@ jobs:
                       else
                           DOCS_COLLAB_SHA="${DOCS_COLLAB_IMAGE_REPO}:pr-${PR}-${{ github.sha }}"
                       fi
+                      DOCS_COLLAB_TAGS="${DOCS_COLLAB_IMAGE},${DOCS_COLLAB_SHA}"
                   else
-                      DOCS_COLLAB_IMAGE="${DOCS_COLLAB_IMAGE_REPO}:main-arm64"
-                      DOCS_COLLAB_SHA="${DOCS_COLLAB_IMAGE_REPO}:main-arm64-latest"
+                      # Frontend-only previews do not build or run collab: no
+                      # docs-collab:main-arm64 image is published yet, so referencing one
+                      # would point at a missing image + WS endpoint. Leave empty; the
+                      # deploy keeps the compose `collab` profile inactive when unset.
+                      DOCS_COLLAB_IMAGE=""
+                      DOCS_COLLAB_TAGS=""
                   fi
-                  DOCS_COLLAB_TAGS="${DOCS_COLLAB_IMAGE},${DOCS_COLLAB_SHA}"
 
                   # Configure frontend image strategy
                   # Always build PR-specific frontend image regardless of repo_type.
@@ -1332,8 +1339,17 @@ jobs:
                   # place (with its volume) on update deploys; the previous
                   # teardown step already removed the app-tier services, so
                   # they will be (re)created here against the new image.
+                  # Activate the collab compose profile only when a collab image was built
+                  # for this preview (backend PRs with the crate). Frontend-only previews
+                  # (and older backend PRs without the crate) leave it empty, so the
+                  # profiled docs-collab service is skipped instead of failing to pull.
+                  COLLAB_PROFILE=""
+                  if [[ -n "\${DOCS_COLLAB_IMAGE}" && "\${DOCS_COLLAB_IMAGE}" != "null" ]]; then
+                      COLLAB_PROFILE="--profile collab"
+                  fi
+
                   echo "🚀 Starting PR preview environment..."
-                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" up -d --no-recreate
+                  docker compose -p \${PROJECT_NAME} -f pr-${PR_NUMBER}-compose.yaml --env-file "\$ENV_FILE" \${COLLAB_PROFILE} up -d --no-recreate
 
                   # Allow services time to start up
                   echo "⏳ Waiting \${SERVICE_STARTUP_WAIT_SECONDS} seconds for services..."
