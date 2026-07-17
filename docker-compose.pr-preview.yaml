@@ -154,6 +154,8 @@ services:
   # Self-hosted collaborative document server (per-PR)
   docs-collab:
     image: ${DOCS_COLLAB_IMAGE}
+    # Started only when the deploy activates the `collab` profile (image was built).
+    profiles: [collab]
     platform: linux/arm64/v8
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
