@@ -409,7 +409,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    // Caleb: User in Refactor Group and Acme Corp
+    // Caleb: User in Refactor Group, Admin of Acme Corp
     user_roles::ActiveModel {
         role: Set(Role::User),
         organization_id: Set(Some(refactor_group_id)),
@@ -423,7 +423,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .unwrap();
 
     user_roles::ActiveModel {
-        role: Set(Role::User),
+        role: Set(Role::Admin),
         organization_id: Set(Some(acme_corp.id.clone().unwrap())),
         user_id: Set(caleb_bourg.id.clone().unwrap()),
         created_at: Set(now.into()),
@@ -434,9 +434,9 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    // jim@refactorgroup.com: User in Refactor Group
+    // jim@refactorgroup.com: Admin of Refactor Group
     user_roles::ActiveModel {
-        role: Set(Role::User),
+        role: Set(Role::Admin),
         organization_id: Set(Some(refactor_group_id)),
         user_id: Set(jim_refactor_group.id.clone().unwrap()),
         created_at: Set(now.into()),
