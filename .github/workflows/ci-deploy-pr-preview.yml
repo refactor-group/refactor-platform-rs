@@ -125,9 +125,7 @@ on:
                 required: false
 
             # Third-party service credentials for backend
-            TIPTAP_URL:
-                description: "TipTap service URL"
-                required: false
+            # NOTE: TIPTAP_URL is a non-secret VARIABLE (vars.TIPTAP_URL), not a secret.
             TIPTAP_AUTH_KEY:
                 description: "TipTap authentication key"
                 required: false
@@ -522,6 +520,7 @@ jobs:
             backend_image_sha: ${{ steps.resolve.outputs.backend_image_sha }}
             frontend_image: ${{ steps.resolve.outputs.frontend_image }}
             frontend_image_sha: ${{ steps.resolve.outputs.frontend_image_sha }}
+            docs_collab_image: ${{ steps.resolve.outputs.docs_collab_image }}
             backend_branch: ${{ steps.resolve.outputs.backend_branch }}
             frontend_branch: ${{ steps.resolve.outputs.frontend_branch }}
             backend_service_port: ${{ steps.resolve.outputs.backend_service_port }}
@@ -648,6 +647,24 @@ jobs:
                       fi
                   fi
 
+                  # Configure docs-collab image (built from the same backend
+                  # checkout/workspace; its own GHCR package under the backend repo).
+                  # For backend PRs it is a per-PR tag; frontend-only deploys reference
+                  # the main-arm64 collab tag (mirrors the backend main-arm64 strategy).
+                  DOCS_COLLAB_IMAGE_REPO="${BACKEND_IMAGE_REPO}/docs-collab"
+                  if [[ "$REPO_TYPE" == "backend" ]]; then
+                      DOCS_COLLAB_IMAGE="${DOCS_COLLAB_IMAGE_REPO}:pr-${PR}"
+                      if [[ -n "$BACKEND_SHA_OVERRIDE" ]]; then
+                          DOCS_COLLAB_SHA="${DOCS_COLLAB_IMAGE_REPO}:pr-${PR}-${BACKEND_SHA_OVERRIDE:0:7}"
+                      else
+                          DOCS_COLLAB_SHA="${DOCS_COLLAB_IMAGE_REPO}:pr-${PR}-${{ github.sha }}"
+                      fi
+                  else
+                      DOCS_COLLAB_IMAGE="${DOCS_COLLAB_IMAGE_REPO}:main-arm64"
+                      DOCS_COLLAB_SHA="${DOCS_COLLAB_IMAGE_REPO}:main-arm64-latest"
+                  fi
+                  DOCS_COLLAB_TAGS="${DOCS_COLLAB_IMAGE},${DOCS_COLLAB_SHA}"
+
                   # Configure frontend image strategy
                   # Always build PR-specific frontend image regardless of repo_type.
                   # Next.js basePath is baked in at build time — main-arm64 has basePath=""
@@ -688,6 +705,8 @@ jobs:
                   echo "backend_build_mode=${BACKEND_BUILD_MODE}" >> $GITHUB_OUTPUT
                   echo "backend_needs_build=${BACKEND_NEEDS_BUILD}" >> $GITHUB_OUTPUT
                   echo "backend_tags=${BACKEND_TAGS}" >> $GITHUB_OUTPUT
+                  echo "docs_collab_image=${DOCS_COLLAB_IMAGE}" >> $GITHUB_OUTPUT
+                  echo "docs_collab_tags=${DOCS_COLLAB_TAGS}" >> $GITHUB_OUTPUT
                   echo "frontend_image=${FRONTEND_IMAGE}" >> $GITHUB_OUTPUT
                   echo "frontend_image_sha=${FRONTEND_SHA}" >> $GITHUB_OUTPUT
                   echo "frontend_build_mode=${FRONTEND_BUILD_MODE}" >> $GITHUB_OUTPUT
@@ -814,6 +833,47 @@ jobs:
                   provenance: true
                   sbom: false
 
+            # Skip the collab image build for PR branches that predate the crate
+            # (no Dockerfile in the checkout), so unrelated previews are unaffected.
+            - name: Check for docs-collab Dockerfile
+              id: collab_dockerfile
+              if: steps.resolve.outputs.backend_build_mode != 'skip' && (steps.resolve.outputs.backend_needs_build == 'true' || steps.backend_registry.outputs.exists == 'false')
+              run: |
+                  if [[ -f ./backend-src/docs-collab-server/Dockerfile ]]; then
+                      echo "exists=true" >> $GITHUB_OUTPUT
+                  else
+                      echo "exists=false" >> $GITHUB_OUTPUT
+                      echo "::notice::docs-collab Dockerfile absent in this branch; skipping collab image build."
+                  fi
+
+            # Build and push ARM64 docs-collab image from the same backend checkout.
+            # Its own GHCR package + cache scope; built whenever the backend builds
+            # (and only when the crate's Dockerfile is present in the checkout).
+            - name: Build and push docs-collab image
+              id: build_docs_collab
+              if: steps.collab_dockerfile.outputs.exists == 'true'
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./backend-src
+                  file: ./backend-src/docs-collab-server/Dockerfile
+                  platforms: linux/arm64
+                  push: true
+                  tags: ${{ steps.resolve.outputs.docs_collab_tags }}
+                  cache-from: |
+                      type=registry,ref=${{ steps.resolve.outputs.docs_collab_image }}
+                      type=registry,ref=${{ env.BACKEND_IMAGE_REPO }}/docs-collab:main-arm64
+                      type=gha,scope=docs-collab-arm64-${{ steps.resolve.outputs.backend_branch }}
+                      type=gha,scope=docs-collab-arm64-main
+                      type=gha,scope=docs-collab-arm64
+                  cache-to: type=gha,mode=max,scope=docs-collab-arm64-${{ steps.resolve.outputs.backend_branch }}
+                  labels: |
+                      pr.branch=${{ steps.resolve.outputs.backend_branch }}
+                      pr.number=${{ steps.resolve.outputs.pr_number }}
+                  build-args: |
+                      BUILDKIT_INLINE_CACHE=1
+                  provenance: true
+                  sbom: false
+
             # Get frontend source code if we need to build it.
             # Uses continue-on-error + fallback to main so that if a PR branch
             # has been deleted (e.g. after merge), the checkout still succeeds.
@@ -867,6 +927,7 @@ jobs:
                       NEXT_PUBLIC_BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION || '1.0.0-beta1' }}
                       NEXT_PUBLIC_TIPTAP_APP_ID=${{ vars.TIPTAP_APP_ID }}
                       NEXT_PUBLIC_BASE_PATH=/pr-${{ steps.resolve.outputs.pr_number }}
+                      NEXT_PUBLIC_DOCS_COLLAB_URL=ws://${{ secrets.RPI5_TAILSCALE_NAME || 'neo.rove-barbel.ts.net' }}/pr-${{ steps.resolve.outputs.pr_number }}/collab
                       FRONTEND_SERVICE_PORT=${{ vars.FRONTEND_SERVICE_PORT || '3000' }}
                       FRONTEND_SERVICE_INTERFACE=${{ vars.FRONTEND_SERVICE_INTERFACE || '0.0.0.0' }}
                       BUILDKIT_INLINE_CACHE=1
@@ -1141,6 +1202,7 @@ jobs:
                   PR_NUMBER=${{ needs.build-arm64-image.outputs.pr_number }}
                   BACKEND_IMAGE=${{ needs.build-arm64-image.outputs.backend_image }}
                   FRONTEND_IMAGE=${{ needs.build-arm64-image.outputs.frontend_image }}
+                  DOCS_COLLAB_IMAGE=${{ needs.build-arm64-image.outputs.docs_collab_image }}
                   PROJECT_NAME=${{ steps.ports.outputs.project_name }}
                   INITIAL_CREATE=${{ steps.db_lifecycle.outputs.initial_create }}
                   RESET_DB=${{ steps.db_lifecycle.outputs.reset_requested }}
@@ -1168,7 +1230,7 @@ jobs:
                   TIPTAP_AUTH_KEY='${{ secrets.TIPTAP_AUTH_KEY || 'UNUSED' }}'
                   TIPTAP_JWT_SIGNING_KEY='${{ secrets.TIPTAP_JWT_SIGNING_KEY || 'UNUSED' }}'
                   TIPTAP_APP_ID='${{ vars.TIPTAP_APP_ID || 'UNUSED' }}'
-                  TIPTAP_URL='${{ secrets.TIPTAP_URL || 'UNUSED' }}'
+                  TIPTAP_URL='${{ vars.TIPTAP_URL || 'UNUSED' }}'
                   RESEND_API_KEY='${{ secrets.RESEND_API_KEY || 'UNUSED' }}'
                   WELCOME_EMAIL_TEMPLATE_ID='${{ vars.WELCOME_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   SESSION_SCHEDULED_EMAIL_TEMPLATE_ID='${{ vars.SESSION_SCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
@@ -1192,6 +1254,7 @@ jobs:
                   NEXT_PUBLIC_BACKEND_SERVICE_PORT=80
                   NEXT_PUBLIC_BACKEND_SERVICE_API_PATH=pr-${{ needs.build-arm64-image.outputs.pr_number }}/api
                   NEXT_PUBLIC_BACKEND_API_VERSION=${{ vars.BACKEND_API_VERSION || '1.0.0-beta1' }}
+                  NEXT_PUBLIC_DOCS_COLLAB_URL=ws://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}/collab
                   ENVEOF
 
                   # Transfer deployment configuration to target server
