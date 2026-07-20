@@ -281,6 +281,17 @@ async fn dispatch_frame(
                 None => match join_document(state, peers, &name).await {
                     Ok(pair) => {
                         joined.insert(name.clone(), pair.clone());
+                        // Mirror Hocuspocus `sendCurrentAwareness`: push the existing
+                        // peers' awareness to the just-joined client so presence shows
+                        // immediately, instead of only on a peer's next awareness update.
+                        for aw_body in pair.0.current_awareness_reply() {
+                            let bytes = Frame {
+                                name: name.clone(),
+                                body: aw_body,
+                            }
+                            .encode();
+                            sink.send(Message::Binary(bytes)).await.map_err(|_| ())?;
+                        }
                         pair
                     }
                     Err(reason) => {

@@ -202,7 +202,7 @@ impl Document {
         Body::SyncStep2(bytes)
     }
 
-    fn current_awareness_reply(&self) -> Vec<Body> {
+    pub(crate) fn current_awareness_reply(&self) -> Vec<Body> {
         let aw = self.awareness.lock();
         aw.update().ok().map(Body::Awareness).into_iter().collect()
     }
