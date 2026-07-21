@@ -12,7 +12,26 @@ async fn main() {
     let config = Config::new();
     Logger::init_logger(&config as &Config);
 
-    let dry_run = std::env::args().any(|a| a == "--dry-run");
+    let args: Vec<String> = std::env::args().collect();
+
+    // --list is a read-only Cloud discovery mode: no DB connection, no writes.
+    if args.iter().any(|a| a == "--list") {
+        match domain::collab_import::list_cloud_documents(&config).await {
+            Ok(docs) => {
+                info!("Cloud documents listed: {}", docs.len());
+                for d in &docs {
+                    info!("  {} (size={}, archived={})", d.name, d.size, d.archived);
+                }
+            }
+            Err(e) => {
+                error!("List failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let dry_run = args.iter().any(|a| a == "--dry-run");
     info!("Importing TipTap Cloud documents into collab_documents (dry_run={dry_run})...");
 
     let db = match service::init_database(&config).await {

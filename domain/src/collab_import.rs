@@ -36,6 +36,32 @@ pub struct ImportSummary {
     pub failed: usize,
 }
 
+/// One listed Cloud document, surfaced by `--list` so an operator can pick
+/// real names before a rehearsal or a targeted import. Mirrors the gateway's
+/// internal `Document` without leaking it across the crate boundary.
+#[derive(Debug, Clone)]
+pub struct CloudDocInfo {
+    pub name: String,
+    pub size: u64,
+    pub archived: bool,
+}
+
+/// List every TipTap Cloud document (read-only; no DB access). Backs the
+/// importer's `--list` discovery mode.
+pub async fn list_cloud_documents(config: &Config) -> Result<Vec<CloudDocInfo>, Error> {
+    let client = Client::new(config)?;
+    Ok(client
+        .list_all_documents()
+        .await?
+        .into_iter()
+        .map(|d| CloudDocInfo {
+            name: d.name,
+            size: d.size,
+            archived: d.archived,
+        })
+        .collect())
+}
+
 /// Eligibility classes for a listed Cloud document.
 enum Class {
     Eligible,
