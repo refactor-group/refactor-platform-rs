@@ -117,8 +117,7 @@ pub async fn serve(config: Config) -> Result<(), ServeError> {
     info!(addr = %addr, "docs-collab-server listening");
 
     let shutdown_signal = async move {
-        let _ = tokio::signal::ctrl_c().await;
-        info!("ctrl-c received; initiating graceful shutdown");
+        await_shutdown_signal().await;
         // Wake per-connection actors. Errors here mean every receiver has
         // already dropped, which is harmless.
         let _ = shutdown_tx.send(true);
@@ -137,6 +136,39 @@ pub async fn serve(config: Config) -> Result<(), ServeError> {
     }
     info!("docs-collab-server stopped");
     Ok(())
+}
+
+/// Resolve on the first shutdown signal: SIGINT (Ctrl-C) everywhere, or, on
+/// unix, SIGTERM. `docker stop`/`restart` and `compose down` send SIGTERM, so
+/// without the SIGTERM arm every deploy restart would SIGKILL the process
+/// past its grace period with debounced writes unflushed.
+async fn await_shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            // Can't install the handler: never resolve this arm so Ctrl-C still
+            // drives shutdown, rather than treating the failure as a signal.
+            Err(e) => {
+                warn!(error = %e, "failed to install SIGTERM handler; SIGTERM will not flush");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("SIGINT received; initiating graceful shutdown"),
+        _ = terminate => info!("SIGTERM received; initiating graceful shutdown"),
+    }
 }
 
 /// Assemble the routed application without binding a port. Useful for tests
@@ -281,13 +313,16 @@ async fn dispatch_frame(
                 None => match join_document(state, peers, &name).await {
                     Ok(pair) => {
                         joined.insert(name.clone(), pair.clone());
-                        // Mirror Hocuspocus `sendCurrentAwareness`: push the existing
-                        // peers' awareness to the just-joined client so presence shows
-                        // immediately, instead of only on a peer's next awareness update.
-                        for aw_body in pair.0.current_awareness_reply() {
+                        // Mirror Hocuspocus's on-connect handshake: send our
+                        // SyncStep1 (so the client returns any state we lack,
+                        // e.g. edits made while it was disconnected) then the
+                        // existing peers' awareness (so presence shows on load).
+                        let mut join_frames = vec![pair.0.sync_step1()];
+                        join_frames.extend(pair.0.current_awareness_reply());
+                        for join_body in join_frames {
                             let bytes = Frame {
                                 name: name.clone(),
-                                body: aw_body,
+                                body: join_body,
                             }
                             .encode();
                             sink.send(Message::Binary(bytes)).await.map_err(|_| ())?;

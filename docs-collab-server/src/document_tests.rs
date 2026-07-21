@@ -51,6 +51,34 @@ async fn update_observe_subscription_outlives_first_callback() {
     );
 }
 
+#[tokio::test]
+async fn sync_step1_reflects_current_state() {
+    let storage = Arc::new(CountingStorage::new());
+    let doc = Document::open("d".into(), storage).await.expect("open");
+
+    // Fresh doc: its state vector encodes to the empty-vector sentinel.
+    let Body::SyncStep1(sv_empty) = doc.sync_step1() else {
+        panic!("sync_step1 must return SyncStep1");
+    };
+
+    {
+        let aw = doc.awareness.lock();
+        let mut txn = aw.doc().transact_mut();
+        let text = txn.get_or_insert_text("t");
+        text.push(&mut txn, "hello");
+    }
+
+    // After a write the state vector must advance, so a peer diffing against it
+    // sees there is state to send back.
+    let Body::SyncStep1(sv_after) = doc.sync_step1() else {
+        panic!("sync_step1 must return SyncStep1");
+    };
+    assert_ne!(
+        sv_empty, sv_after,
+        "sync_step1 must reflect current doc state so joiners return what we lack"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn debounced_writes_coalesce_a_burst() {
     let storage = Arc::new(CountingStorage::new());

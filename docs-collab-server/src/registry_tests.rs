@@ -48,6 +48,34 @@ async fn evict_drops_inner_entry_after_last_arc_release() {
 }
 
 #[tokio::test]
+async fn flush_all_flushes_every_live_document() {
+    let storage = Arc::new(CountingStorage::new());
+    let reg = DocumentRegistry::new(storage.clone());
+
+    // Hold both Arcs so the entries stay live across flush_all; no writes, so
+    // the debounced persist loop never fires and `stores` is attributable
+    // solely to flush_all.
+    let _a = reg.get_or_load("a").await.expect("load a");
+    let _b = reg.get_or_load("b").await.expect("load b");
+
+    reg.flush_all().await.expect("flush_all");
+
+    assert_eq!(
+        storage.stores(),
+        2,
+        "flush_all must flush every live doc exactly once"
+    );
+    assert!(
+        storage.fetch("a").await.expect("fetch a").is_some(),
+        "doc a must be persisted by flush_all"
+    );
+    assert!(
+        storage.fetch("b").await.expect("fetch b").is_some(),
+        "doc b must be persisted by flush_all"
+    );
+}
+
+#[tokio::test]
 async fn concurrent_get_or_load_does_not_double_load() {
     let storage = Arc::new(CountingStorage::new());
     let reg = DocumentRegistry::new(storage.clone());

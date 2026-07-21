@@ -207,6 +207,15 @@ impl Document {
         aw.update().ok().map(Body::Awareness).into_iter().collect()
     }
 
+    /// The server's own `SyncStep1` (its current state vector). Sent to a
+    /// joining client so the client replies `SyncStep2` with any state the
+    /// server lacks, e.g. edits made while the client was disconnected.
+    pub(crate) fn sync_step1(&self) -> Body {
+        let aw = self.awareness.lock();
+        let txn = aw.doc().transact();
+        Body::SyncStep1(txn.state_vector())
+    }
+
     /// Apply update bytes if they decode; never propagate decode/apply failure
     /// to the caller (a malformed Update is not a storage error, and the
     /// debounced persist must still treat the frame as a change signal).
