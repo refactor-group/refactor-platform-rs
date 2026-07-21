@@ -3,13 +3,14 @@
 Manual validation of the self-hosted `docs-collab-server` and its integration
 across the backend (`refactor-platform-rs`) and frontend (`refactor-platform-fe`),
 run against a **deployed PR-preview environment** (per-PR container stack on the
-RPi5 host, `neo`). For the single-machine local variant, see the companion
+preview host). For the single-machine local variant, see the companion
 [docs-collab-server-local-e2e.md](docs-collab-server-local-e2e.md).
 
 This plan is written to be followed by a human tester or by a Claude Code
 instance driving server-side verification. Each check states who does it
 (browser vs. server-side), the exact command where relevant, and a PASS
-criterion. Substitute `<N>` with the preview PR number (e.g. `371`) throughout.
+criterion. Substitute `<N>` with the preview PR number (e.g. `371`) and
+`<preview-host>` with the SSH alias for the deployment host throughout.
 
 ## What is under test
 
@@ -43,7 +44,7 @@ Key facts the checks rely on:
 
 - The `pr-<N>` stack is deployed and healthy. Confirm (server-side):
   ```bash
-  ssh neo 'docker ps --filter name=pr-<N> --format "{{.Names}}\t{{.Status}}\t{{.Image}}"'
+  ssh <preview-host> 'docker ps --filter name=pr-<N> --format "{{.Names}}\t{{.Status}}\t{{.Image}}"'
   ```
   PASS = `backend`, `frontend`, `docs-collab`, `postgres` all `Up`. Note the image
   tags/digests if verifying a fresh deploy (a redeploy should show `Up <minutes>`,
@@ -61,7 +62,7 @@ Key facts the checks rely on:
 - Optional: direct Postgres access for a GUI client (e.g. Postico) via an SSH
   tunnel to the container's bridge IP (the DB port is not published on the host):
   ```bash
-  ssh -N -L 5433:$(ssh neo "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pr-<N>-postgres-1"):5432 neo
+  ssh -N -L 5433:$(ssh <preview-host> "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pr-<N>-postgres-1"):5432 <preview-host>
   ```
   Then connect to `localhost:5433`, db `refactor`, user `refactor`, schema
   `refactor_platform`.
@@ -74,22 +75,22 @@ UI alone.
 1. **Persistence**: the `collab_documents` row's byte length and `updated_at`
    change after edits.
    ```bash
-   ssh neo 'docker exec pr-<N>-postgres-1 psql -U refactor -d refactor -A -F"|" \
+   ssh <preview-host> 'docker exec pr-<N>-postgres-1 psql -U refactor -d refactor -A -F"|" \
      -c "SELECT name, octet_length(state) AS bytes, updated_at FROM refactor_platform.collab_documents ORDER BY updated_at DESC;"'
    ```
 2. **Session-to-document mapping** (empty `collab_document_name` = no document yet):
    ```bash
-   ssh neo 'docker exec pr-<N>-postgres-1 psql -U refactor -d refactor -A -F"|" \
+   ssh <preview-host> 'docker exec pr-<N>-postgres-1 psql -U refactor -d refactor -A -F"|" \
      -c "SELECT id, date, collab_document_name FROM refactor_platform.coaching_sessions ORDER BY date DESC;"'
    ```
 3. **Server logs** (startup, shutdown; auth decisions if the level is raised):
    ```bash
-   ssh neo 'docker logs pr-<N>-docs-collab-1 --since 10m'
+   ssh <preview-host> 'docker logs pr-<N>-docs-collab-1 --since 10m'
    ```
 
 Backend document create/delete activity is visible in the backend log at INFO:
 ```bash
-ssh neo 'docker logs pr-<N>-backend-1 --since 10m | grep -i "tiptap document"'
+ssh <preview-host> 'docker logs pr-<N>-backend-1 --since 10m | grep -i "tiptap document"'
 ```
 
 ## Phase 1: Presence and awareness
@@ -126,7 +127,7 @@ persisted state.
 10. **Process restart (hydrate from storage).** After an edit and a few seconds,
     restart the collab process so its in-memory state is wiped:
     ```bash
-    ssh neo 'docker restart pr-<N>-docs-collab-1'
+    ssh <preview-host> 'docker restart pr-<N>-docs-collab-1'
     ```
     Reload the editor. PASS = content is restored (it can only have come from the
     `collab_documents` BYTEA snapshot). Confirm the row byte counts are unchanged
@@ -183,9 +184,9 @@ persisted state.
 20. **SIGTERM handling.** The collab server must flush in-flight (debounced) writes
     on `docker stop`/`restart`/`compose down`, which send SIGTERM.
     ```bash
-    ssh neo '/usr/bin/time -v docker stop pr-<N>-docs-collab-1 2>&1 | grep -i "Elapsed"; \
+    ssh <preview-host> '/usr/bin/time -v docker stop pr-<N>-docs-collab-1 2>&1 | grep -i "Elapsed"; \
              docker logs pr-<N>-docs-collab-1 --tail 5'
-    ssh neo 'docker start pr-<N>-docs-collab-1'
+    ssh <preview-host> 'docker start pr-<N>-docs-collab-1'
     ```
     PASS = the stop returns in well under a second (not the ~10s SIGKILL grace
     period), and the logs show `SIGTERM received; initiating graceful shutdown`
