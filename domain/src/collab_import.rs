@@ -1,17 +1,17 @@
 //! TipTap Cloud -> `collab_documents` importer.
 //!
 //! Lists Cloud documents, exports each as a raw Yjs v1 binary update, and
-//! upserts it into `refactor_platform.collab_documents` keyed by name. Only
-//! documents that map to a coaching session and carry live content are copied.
+//! upserts it into `refactor_platform.collab_documents` (in whatever database
+//! `db` connects to, i.e. the collab DB) keyed by name. Every non-archived,
+//! non-empty Cloud document is copied; there is no coaching-session
+//! intersection, so `collab_documents` may live in its own database, separate
+//! from `coaching_sessions`. Docs whose sessions were since deleted import as
+//! harmless orphan rows (nothing references them, so they are never served).
 //! Has a dry-run mode that classifies and exports but writes nothing.
-
-use std::collections::HashSet;
 
 use log::{info, warn};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use service::config::Config;
-
-use entity_api::tiptap_metrics::all_collab_document_names;
 
 use crate::error::Error;
 use crate::gateway::tiptap_metrics::{Client, Document};
@@ -26,8 +26,6 @@ pub struct ImportSummary {
     pub written: usize,
     /// Eligible docs that exported OK (the dry-run count).
     pub would_write: usize,
-    /// Skipped: no matching coaching session.
-    pub skipped_no_session: usize,
     /// Skipped: archived in Cloud.
     pub skipped_archived: usize,
     /// Skipped: zero-size (no content).
@@ -36,9 +34,9 @@ pub struct ImportSummary {
     pub failed: usize,
 }
 
-/// One listed Cloud document, surfaced by `--list` so an operator can pick
-/// real names before a rehearsal or a targeted import. Mirrors the gateway's
-/// internal `Document` without leaking it across the crate boundary.
+/// One listed Cloud document, surfaced by `--list` so an operator can preview
+/// the inventory before an import. Mirrors the gateway's internal `Document`
+/// without leaking it across the crate boundary.
 #[derive(Debug, Clone)]
 pub struct CloudDocInfo {
     pub name: String,
@@ -65,17 +63,14 @@ pub async fn list_cloud_documents(config: &Config) -> Result<Vec<CloudDocInfo>, 
 /// Eligibility classes for a listed Cloud document.
 enum Class {
     Eligible,
-    NoSession,
     Archived,
     Empty,
 }
 
-/// Pure eligibility check. Order matters: no-session, then archived, then empty.
-/// A doc with no matching session is NoSession even when archived.
-fn classify(doc: &Document, names: &HashSet<String>) -> Class {
-    if !names.contains(&doc.name) {
-        Class::NoSession
-    } else if doc.archived {
+/// Pure eligibility check from the Cloud list metadata alone: archived first,
+/// then empty, otherwise eligible.
+fn classify(doc: &Document) -> Class {
+    if doc.archived {
         Class::Archived
     } else if doc.size == 0 {
         Class::Empty
@@ -98,7 +93,8 @@ async fn upsert_document(db: &DatabaseConnection, name: &str, state: Vec<u8>) ->
     Ok(())
 }
 
-/// Copy eligible TipTap Cloud documents into `collab_documents`.
+/// Copy every non-archived, non-empty TipTap Cloud document into
+/// `collab_documents`.
 ///
 /// `dry_run` classifies and exports but writes nothing, so the returned
 /// `would_write` previews a real run without mutating the table.
@@ -110,16 +106,13 @@ pub async fn import_cloud_documents(
     let client = Client::new(config)?;
     let docs = client.list_all_documents().await?;
 
-    let names: HashSet<String> = all_collab_document_names(db).await?.into_iter().collect();
-
     let mut summary = ImportSummary {
         found: docs.len(),
         ..Default::default()
     };
 
     for doc in &docs {
-        match classify(doc, &names) {
-            Class::NoSession => summary.skipped_no_session += 1,
+        match classify(doc) {
             Class::Archived => summary.skipped_archived += 1,
             Class::Empty => summary.skipped_empty += 1,
             Class::Eligible => match client.export_document(&doc.name).await {
@@ -142,11 +135,10 @@ pub async fn import_cloud_documents(
 
     info!(
         "Cloud import complete (dry_run={dry_run}): found={} would_write={} written={} \
-         skipped_no_session={} skipped_archived={} skipped_empty={} failed={}",
+         skipped_archived={} skipped_empty={} failed={}",
         summary.found,
         summary.would_write,
         summary.written,
-        summary.skipped_no_session,
         summary.skipped_archived,
         summary.skipped_empty,
         summary.failed,
@@ -167,30 +159,14 @@ mod tests {
         }
     }
 
-    /// classify order: no-session beats archived beats empty.
+    /// classify order: archived beats empty beats eligible.
     #[test]
     fn classify_applies_checks_in_documented_order() {
-        let names: HashSet<String> = ["present".to_string()].into_iter().collect();
-
-        // Absent name -> NoSession even when archived.
-        assert!(matches!(
-            classify(&doc("absent", 0, true), &names),
-            Class::NoSession
-        ));
-        // Present + archived -> Archived (archived checked before empty).
-        assert!(matches!(
-            classify(&doc("present", 0, true), &names),
-            Class::Archived
-        ));
-        // Present + size 0 -> Empty.
-        assert!(matches!(
-            classify(&doc("present", 0, false), &names),
-            Class::Empty
-        ));
-        // Present + size > 0 -> Eligible.
-        assert!(matches!(
-            classify(&doc("present", 10, false), &names),
-            Class::Eligible
-        ));
+        // Archived checked before empty.
+        assert!(matches!(classify(&doc("d", 0, true)), Class::Archived));
+        // Not archived + size 0 -> Empty.
+        assert!(matches!(classify(&doc("d", 0, false)), Class::Empty));
+        // Not archived + size > 0 -> Eligible.
+        assert!(matches!(classify(&doc("d", 10, false)), Class::Eligible));
     }
 }

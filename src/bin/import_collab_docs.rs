@@ -57,11 +57,10 @@ async fn main() {
         Ok(summary) => {
             info!(
                 "Import finished: found={} would_write={} written={} \
-                 skipped_no_session={} skipped_archived={} skipped_empty={} failed={}",
+                 skipped_archived={} skipped_empty={} failed={}",
                 summary.found,
                 summary.would_write,
                 summary.written,
-                summary.skipped_no_session,
                 summary.skipped_archived,
                 summary.skipped_empty,
                 summary.failed,

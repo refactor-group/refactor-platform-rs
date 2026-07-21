@@ -151,6 +151,29 @@ services:
       - preview-ingress
     restart: unless-stopped               # Restart automatically unless manually stopped
 
+  # Creates the dedicated collab database so docs-collab owns collab_documents
+  # in its own database, mirroring prod's separate DOCS_COLLAB_DATABASE_URL.
+  # Idempotent (creates refactor_collab only if absent), so it is safe on both
+  # fresh and reused per-PR volumes. Prod creates this DB out-of-band on the
+  # managed cluster; only the ephemeral preview needs to bootstrap it here.
+  collab-db-init:
+    image: postgres:17
+    profiles: [collab]
+    platform: linux/arm64/v8
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    command: >
+      sh -c "psql -h postgres -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc
+      \"SELECT 1 FROM pg_database WHERE datname='refactor_collab'\" | grep -q 1
+      || psql -h postgres -U ${POSTGRES_USER} -d ${POSTGRES_DB}
+      -c 'CREATE DATABASE refactor_collab OWNER ${POSTGRES_USER}'"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+    restart: "no"
+
   # Self-hosted collaborative document server (per-PR)
   docs-collab:
     image: ${DOCS_COLLAB_IMAGE}
@@ -158,7 +181,10 @@ services:
     profiles: [collab]
     platform: linux/arm64/v8
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Dedicated collab database (created by collab-db-init), mirroring prod's
+      # separate DOCS_COLLAB_DATABASE_URL. docs-collab bootstraps its own schema
+      # + collab_documents table here; it never touches the app database.
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/refactor_collab
       DATABASE_SCHEMA: ${POSTGRES_SCHEMA}
       JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
       MANAGEMENT_AUTH_KEY: ${TIPTAP_AUTH_KEY}
@@ -171,7 +197,7 @@ services:
     expose:
       - "1234"
     depends_on:
-      migrator:
+      collab-db-init:
         condition: service_completed_successfully
     networks:
       - default
