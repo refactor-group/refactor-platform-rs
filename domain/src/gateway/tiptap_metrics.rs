@@ -11,6 +11,7 @@ use serde::Deserialize;
 use service::config::Config;
 
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::gateway::auth::{Authenticator, SecretAuth};
 
 // Admin endpoints need bounded budgets so a dead upstream can't hold an
 // Axum worker. `tiptap.rs` intentionally sets none; this gateway differs.
@@ -172,7 +173,16 @@ pub(crate) struct Document {
 pub(crate) type DocumentsPage = Vec<Document>;
 
 fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
-    let headers = build_auth_headers(config)?;
+    // Per-document operations authenticate with the raw shared secret, exactly
+    // like tiptap.rs create/delete (proven in production).
+    let secret = config.tiptap_auth_key().ok_or_else(|| {
+        warn!("TipTap auth key missing from config (metrics gateway init)");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+        }
+    })?;
+    let headers = SecretAuth::new(secret).headers()?;
 
     Ok(reqwest::Client::builder()
         .use_rustls_tls()
@@ -180,35 +190,6 @@ fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()?)
-}
-
-// TipTap auth is the raw secret value, NOT `Bearer <secret>`. Matches
-// `tiptap.rs::build_auth_headers`; do not copy mailersend's Bearer pattern.
-fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
-    let auth_key = config.tiptap_auth_key().ok_or_else(|| {
-        warn!("TipTap auth key missing from config (metrics gateway init)");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-        }
-    })?;
-
-    let mut headers = reqwest::header::HeaderMap::new();
-
-    let mut auth_value = reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| {
-        warn!("Failed to build TipTap auth header value: {err:?}");
-        Error {
-            source: Some(Box::new(err)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Failed to create TipTap auth header value".to_string(),
-            )),
-        }
-    })?;
-
-    auth_value.set_sensitive(true);
-    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
-
-    Ok(headers)
 }
 
 #[cfg(test)]

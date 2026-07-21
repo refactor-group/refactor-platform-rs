@@ -1,10 +1,21 @@
 //! Importer binary: copies TipTap Cloud documents into `collab_documents`.
 //!
-//! Default run upserts; pass `--dry-run` to classify and export without writing.
+//! Modes are selected by environment variable, not CLI args: `Config::new()`
+//! parses argv strictly via clap and would reject unknown flags. `IMPORT_LIST=1`
+//! lists Cloud documents (read-only, no DB); `IMPORT_DRY_RUN=1` classifies and
+//! exports without writing; unset upserts for real.
 
 use log::{error, info};
 use service::{config::Config, logging::Logger};
 use std::sync::Arc;
+
+/// Read a boolean importer-mode flag from the environment. True for "1" or
+/// "true" (case-insensitive); absent or anything else is false.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
 
 #[tokio::main]
 async fn main() {
@@ -12,10 +23,11 @@ async fn main() {
     let config = Config::new();
     Logger::init_logger(&config as &Config);
 
-    let args: Vec<String> = std::env::args().collect();
+    let list_mode = env_flag("IMPORT_LIST");
+    let dry_run = env_flag("IMPORT_DRY_RUN");
 
-    // --list is a read-only Cloud discovery mode: no DB connection, no writes.
-    if args.iter().any(|a| a == "--list") {
+    // IMPORT_LIST is a read-only Cloud discovery mode: no DB connection, no writes.
+    if list_mode {
         match domain::collab_import::list_cloud_documents(&config).await {
             Ok(docs) => {
                 info!("Cloud documents listed: {}", docs.len());
@@ -31,7 +43,6 @@ async fn main() {
         return;
     }
 
-    let dry_run = args.iter().any(|a| a == "--dry-run");
     info!("Importing TipTap Cloud documents into collab_documents (dry_run={dry_run})...");
 
     let db = match service::init_database(&config).await {
