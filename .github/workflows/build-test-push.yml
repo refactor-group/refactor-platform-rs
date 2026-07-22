@@ -75,6 +75,11 @@ jobs:
       - name: Run clippy (mock feature)
         run: cargo clippy -p entity_api -p domain -p web --all-targets --features "domain/mock,web/mock" -- -D warnings
 
+      # docs-collab-server is excluded from workspace default-members, so the
+      # --all-targets clippy above skips it; lint it explicitly.
+      - name: Run clippy (docs-collab-server)
+        run: cargo clippy -p docs-collab-server --all-targets -- -D warnings
+
       - name: Run format check
         run: cargo fmt --all -- --check
 
@@ -123,6 +128,12 @@ jobs:
 
       - name: Run mock-gated tests
         run: cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"
+
+      # Excluded from default-members, so `cargo test` above skips it. Runs the
+      # unit + frozen protocol-conformance suites; DB-backed tests are ignored
+      # without a live Postgres.
+      - name: Run docs-collab-server tests
+        run: cargo test -p docs-collab-server
 
       - name: Show sccache stats
         run: sccache --show-stats

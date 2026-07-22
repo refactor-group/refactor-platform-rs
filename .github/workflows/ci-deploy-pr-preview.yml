@@ -284,6 +284,11 @@ jobs:
             - name: Run clippy
               run: cargo clippy --all-targets -- -D warnings
 
+            # docs-collab-server is excluded from workspace default-members, so
+            # the clippy above skips it; lint it explicitly.
+            - name: Run clippy (docs-collab-server)
+              run: cargo clippy -p docs-collab-server --all-targets -- -D warnings
+
             # Check if code follows Rust formatting standards
             # Blocking step (no continue-on-error) to match main CI pipeline
             - name: Run format check
@@ -394,6 +399,10 @@ jobs:
 
             - name: Run mock-gated tests
               run: cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"
+
+            # Excluded from default-members, so `cargo test` above skips it.
+            - name: Run docs-collab-server tests
+              run: cargo test -p docs-collab-server
 
     # ===========================================================================
     # JOB 4: Frontend Build and Test
