@@ -133,7 +133,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     let jim_refactor_group: users::ActiveModel = users::ActiveModel {
         email: Set("jim@refactorgroup.com".to_owned()),
         first_name: Set("Jim".to_owned()),
-        last_name: Set("Hodapp".to_owned()),
+        last_name: Set("Hodapp (Refactor Group)".to_owned()),
         display_name: Set(Some("Jim (Refactor Group)".to_owned())),
         password: Set(Some(generate_hash("password"))),
         github_username: Set(None),
