@@ -28,8 +28,6 @@ services:
         condition: service_started
       nextjs-app:
         condition: service_started
-      docs-collab:
-        condition: service_started
     networks:
       - backend_network
     restart: unless-stopped
@@ -162,7 +160,9 @@ services:
       - migrator
     volumes:
       # CA cert for collab's own managed cluster (may differ from the app's).
-      - ${DOCS_COLLAB_SSL_ROOT_CERT}:/app/root.crt:ro
+      # Falls back to /dev/null when unset so `docker compose config` stays valid
+      # on app-only deploys before the collab secret is provisioned.
+      - ${DOCS_COLLAB_SSL_ROOT_CERT:-/dev/null}:/app/root.crt:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:1234/health"]
       interval: 15s

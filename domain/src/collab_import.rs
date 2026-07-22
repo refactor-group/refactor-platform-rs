@@ -80,6 +80,10 @@ fn classify(doc: &Document) -> Class {
 }
 
 /// Idempotent upsert of one document's Yjs state by name.
+///
+/// Targets the `refactor_platform` schema, matching the collab server's default
+/// `DATABASE_SCHEMA`. A collab DB running a non-default schema would need this
+/// literal and the server's `DATABASE_SCHEMA` changed together.
 async fn upsert_document(db: &DatabaseConnection, name: &str, state: Vec<u8>) -> Result<(), Error> {
     let stmt = Statement::from_sql_and_values(
         DbBackend::Postgres,
