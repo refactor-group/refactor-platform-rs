@@ -1,6 +1,6 @@
 use chrono::{Days, Utc};
 use password_auth::generate_hash;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
@@ -130,9 +130,14 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    let refactor_coaching = organizations::ActiveModel {
-        name: Set("Refactor Coaching".to_owned()),
-        slug: Set("refactor-coaching".to_owned()),
+    let jim_refactor_group: users::ActiveModel = users::ActiveModel {
+        email: Set("jim@refactorgroup.com".to_owned()),
+        first_name: Set("Jim".to_owned()),
+        last_name: Set("Hodapp".to_owned()),
+        display_name: Set(Some("Jim (Refactor Group)".to_owned())),
+        password: Set(Some(generate_hash("password"))),
+        github_username: Set(None),
+        github_profile_url: Set(None),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -141,7 +146,15 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    let refactor_coaching_id = refactor_coaching.id.clone().unwrap();
+    // "Refactor Group" is created by migration m20250509_164646_add_initial_user; reuse it
+    // as the primary org instead of creating a separate "Refactor Coaching".
+    let refactor_group_id = organizations::Entity::find()
+        .filter(organizations::Column::Slug.eq("refactor-group"))
+        .one(db)
+        .await
+        .unwrap()
+        .expect("Refactor Group organization (from initial-admin migration) must exist")
+        .id;
 
     let acme_corp = organizations::ActiveModel {
         name: Set("Acme Corp".to_owned()),
@@ -154,12 +167,26 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    // In Refactor Coaching organization, Jim is coaching Caleb.
+    // In Refactor Group, Jim (james.hodapp) is coaching Caleb.
     let jim_caleb_coaching_relationship = coaching_relationships::ActiveModel {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(caleb_bourg.id.clone().unwrap()),
-        organization_id: Set(refactor_coaching_id),
+        organization_id: Set(refactor_group_id),
         slug: Set("jim-caleb".to_owned()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // In Refactor Group, jim@refactorgroup.com is the default coach of james.hodapp@gmail.com.
+    let jimrg_james_coaching_relationship = coaching_relationships::ActiveModel {
+        coach_id: Set(jim_refactor_group.id.clone().unwrap()),
+        coachee_id: Set(jim_hodapp.id.clone().unwrap()),
+        organization_id: Set(refactor_group_id),
+        slug: Set("jimrg-james".to_owned()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -201,6 +228,31 @@ pub async fn seed_database(db: &DatabaseConnection) {
         coachee_id: Set(other_user.id.clone().unwrap()),
         organization_id: Set(acme_corp.id.clone().unwrap()),
         slug: Set("jim-other".to_owned()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // jim@refactorgroup.com coaches james.hodapp@gmail.com (Refactor Group)
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(jimrg_james_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local()),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(jimrg_james_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local().checked_sub_days(Days::new(7)).unwrap()),
+        collab_document_name: Set(None),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -332,10 +384,10 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    // Jim: User in Refactor Coaching and Acme Corp
+    // Jim (james.hodapp): User in Refactor Group and Acme Corp
     user_roles::ActiveModel {
         role: Set(Role::User),
-        organization_id: Set(Some(refactor_coaching_id)),
+        organization_id: Set(Some(refactor_group_id)),
         user_id: Set(jim_hodapp.id.clone().unwrap()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -357,10 +409,10 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    // Caleb: User in Refactor Coaching and Acme Corp
+    // Caleb: User in Refactor Group, Admin of Acme Corp
     user_roles::ActiveModel {
         role: Set(Role::User),
-        organization_id: Set(Some(refactor_coaching_id)),
+        organization_id: Set(Some(refactor_group_id)),
         user_id: Set(caleb_bourg.id.clone().unwrap()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -371,9 +423,22 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .unwrap();
 
     user_roles::ActiveModel {
-        role: Set(Role::User),
+        role: Set(Role::Admin),
         organization_id: Set(Some(acme_corp.id.clone().unwrap())),
         user_id: Set(caleb_bourg.id.clone().unwrap()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // jim@refactorgroup.com: Admin of Refactor Group
+    user_roles::ActiveModel {
+        role: Set(Role::Admin),
+        organization_id: Set(Some(refactor_group_id)),
+        user_id: Set(jim_refactor_group.id.clone().unwrap()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
