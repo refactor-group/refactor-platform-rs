@@ -300,4 +300,18 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
     }
+
+    #[tokio::test]
+    async fn missing_organization_is_not_found() {
+        let other_id = Id::new_v4();
+        let test_user = create_test_user();
+        let test_role = create_test_user_roles(test_user.id, users::Role::Admin, Some(other_id));
+        let empty_organization = vec![];
+        let (app, cookie) = login_and_build(test_user, test_role, empty_organization).await;
+
+        assert_eq!(
+            make_protected_request(app, cookie, other_id).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 }
