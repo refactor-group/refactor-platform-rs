@@ -1,7 +1,12 @@
-use super::error::Error;
-use entity::user_roles::{Column, Entity};
+use super::error::{EntityApiErrorKind, Error};
+use chrono::Utc;
+use entity::roles::Role;
+use entity::user_roles::{ActiveModel, Column, Entity, Model};
 use entity::Id;
-use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait,
+    QueryFilter, QuerySelect, Set,
+};
 
 pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_many()
@@ -9,6 +14,136 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
         .exec(db)
         .await?;
     Ok(())
+}
+
+/// Grants `role` to `user_id` within `organization_id`.
+///
+/// # Errors
+///
+/// Returns `ValidationError` for `Role::SuperAdmin`, which is a global role and
+/// cannot be scoped to an organization. Rejected before any query runs so the
+/// caller gets a 422 rather than the 500 the entity-level `before_save` guard
+/// would produce.
+pub async fn create(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+    role: Role,
+) -> Result<Model, Error> {
+    if role == Role::SuperAdmin {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "SuperAdmin cannot be granted within an organization.".into(),
+                details: None,
+            },
+        });
+    }
+
+    let now = Utc::now();
+    Ok(ActiveModel {
+        user_id: Set(user_id),
+        organization_id: Set(Some(organization_id)),
+        role: Set(role),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?)
+}
+
+/// Finds the role a user holds in a specific organization, if any.
+pub async fn find_by_user_and_organization(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::UserId.eq(user_id))
+        .filter(Column::OrganizationId.eq(organization_id))
+        .one(db)
+        .await?)
+}
+
+/// Removes a user's role in one organization, returning the number of rows deleted.
+pub async fn delete_by_user_and_organization(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<u64, Error> {
+    Ok(Entity::delete_many()
+        .filter(Column::UserId.eq(user_id))
+        .filter(Column::OrganizationId.eq(organization_id))
+        .exec(db)
+        .await?
+        .rows_affected)
+}
+
+/// Counts the distinct organizations a user belongs to, ignoring global roles.
+pub async fn count_organizations_for_user(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+) -> Result<u64, Error> {
+    Ok(Entity::find()
+        .select_only()
+        .column(Column::OrganizationId)
+        .distinct()
+        .filter(Column::UserId.eq(user_id))
+        .filter(Column::OrganizationId.is_not_null())
+        .into_tuple::<Option<Id>>()
+        .count(db)
+        .await?)
+}
+
+/// Counts the admins of an organization.
+pub async fn count_admins_in_organization(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+) -> Result<u64, Error> {
+    Ok(Entity::find()
+        .filter(Column::OrganizationId.eq(organization_id))
+        .filter(Column::Role.eq(Role::Admin))
+        .count(db)
+        .await?)
+}
+
+/// Whether `requester_id` administers an organization that `target_user_id` belongs to.
+///
+/// This is the visibility predicate for cross-organization user lookups: being a
+/// plain member of a shared organization is not enough, the requester must hold
+/// `Role::Admin` there. Global SuperAdmin rows (`organization_id IS NULL`) are
+/// ignored; that bypass belongs one layer up.
+///
+/// Always issues exactly two queries so callers can rely on a constant query
+/// count regardless of the answer.
+pub async fn shares_administered_organization(
+    db: &impl ConnectionTrait,
+    requester_id: Id,
+    target_user_id: Id,
+) -> Result<bool, Error> {
+    let administered_organization_ids = Entity::find()
+        .select_only()
+        .column(Column::OrganizationId)
+        .filter(Column::UserId.eq(requester_id))
+        .filter(Column::Role.eq(Role::Admin))
+        .filter(Column::OrganizationId.is_not_null())
+        .into_tuple::<Option<Id>>()
+        .all(db)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<Id>>();
+
+    Ok(Entity::find()
+        .select_only()
+        .column(Column::Id)
+        .filter(Column::UserId.eq(target_user_id))
+        .filter(Column::OrganizationId.is_in(administered_organization_ids))
+        .into_tuple::<Id>()
+        .one(db)
+        .await?
+        .is_some())
 }
 
 #[cfg(test)]
@@ -37,3 +172,8 @@ mod test {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "user_role_tests.rs"]
+mod tests;

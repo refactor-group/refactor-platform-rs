@@ -1,5 +1,6 @@
 //! Error types for the `domain` layer.
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
+use entity_api::Id;
 use meeting_auth::error::{
     Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
 };
@@ -61,6 +62,18 @@ pub enum EntityErrorKind {
         name: String,
     },
     OrganizationArchived,
+    /// User already holds a role in the target organization.
+    UserAlreadyInOrganization {
+        organization_id: Id,
+    },
+    /// Removing this user would leave the organization with no admin.
+    LastOrganizationAdmin {
+        organization_id: Id,
+    },
+    /// User belongs to more than one organization; global delete refused.
+    UserBelongsToMultipleOrganizations {
+        organization_count: u64,
+    },
     /// Token missing, expired, or has wrong purpose. Collapsed deliberately
     /// for password-reset endpoints so attackers can't distinguish these
     /// three cases via the response.
@@ -164,6 +177,21 @@ impl From<EntityApiError> for Error {
                 EntityErrorKind::OrganizationNameTaken { name: name.clone() }
             }
             EntityApiErrorKind::OrganizationArchived => EntityErrorKind::OrganizationArchived,
+            EntityApiErrorKind::UserAlreadyInOrganization { organization_id } => {
+                EntityErrorKind::UserAlreadyInOrganization {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::LastOrganizationAdmin { organization_id } => {
+                EntityErrorKind::LastOrganizationAdmin {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::UserBelongsToMultipleOrganizations { organization_count } => {
+                EntityErrorKind::UserBelongsToMultipleOrganizations {
+                    organization_count: *organization_count,
+                }
+            }
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };

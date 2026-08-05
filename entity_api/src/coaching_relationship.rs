@@ -357,6 +357,27 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
     Ok(())
 }
 
+/// Deletes the user's coaching relationships within a single organization.
+///
+/// Org-scoped counterpart to [`delete_by_user_id`], for removing a member from
+/// one organization without touching their relationships elsewhere.
+pub async fn delete_by_user_and_organization(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<u64, Error> {
+    Ok(Entity::delete_many()
+        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
+        .filter(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .exec(db)
+        .await?
+        .rows_affected)
+}
+
 /// Trait for filtering coaching relationships by user's role.
 ///
 /// Implement this trait in the web layer to define role-based filtering

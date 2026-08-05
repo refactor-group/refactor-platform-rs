@@ -192,6 +192,36 @@ impl Error {
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
+            EntityErrorKind::UserAlreadyInOrganization { organization_id } => {
+                warn!("EntityErrorKind::UserAlreadyInOrganization: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "user_already_in_organization",
+                    "message": "This user is already a member of this organization.",
+                    "details": { "organization_id": organization_id },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::LastOrganizationAdmin { organization_id } => {
+                warn!("EntityErrorKind::LastOrganizationAdmin: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "last_organization_admin",
+                    "message": "This user is the only admin of this organization. Assign another admin before removing them.",
+                    "details": { "organization_id": organization_id },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::UserBelongsToMultipleOrganizations { organization_count } => {
+                warn!("EntityErrorKind::UserBelongsToMultipleOrganizations: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "user_belongs_to_multiple_organizations",
+                    "message": "This user belongs to other organizations. Remove them from this organization instead of deleting their account.",
+                    "details": { "organization_count": organization_count },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
             EntityErrorKind::OrganizationArchived => {
                 warn!("EntityErrorKind::OrganizationArchived: Responding with 409 Conflict. Error: {self:?}");
                 let body = serde_json::json!({

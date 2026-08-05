@@ -6,6 +6,7 @@ use crate::{
     magic_link_token, magic_link_tokens, users, Id,
 };
 use chrono::Utc;
+use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::{
     coaching_relationship, coaching_session, mutate, query,
     query::{IntoQueryFilterMap, QuerySort},
@@ -171,6 +172,19 @@ pub async fn create_user_and_coaching_relationship(
 }
 
 pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
+    // This delete is global, so refuse it while the account is still reachable from
+    // another organization. Callers should remove the membership instead.
+    let organization_count = crate::user_role::count_organizations(db, user_id).await?;
+    if organization_count > 1 {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::UserBelongsToMultipleOrganizations {
+                organization_count,
+            },
+        }
+        .into());
+    }
+
     let txn = db.begin().await.map_err(|e| Error {
         source: Some(Box::new(e)),
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
