@@ -73,8 +73,10 @@ pub async fn index(
 pub(crate) async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(authenticated_user): AuthenticatedUser,
-    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess {
+        organization_id,
+        authenticated_user,
+    }: OrganizationAdminAccess,
     Json(user_model): Json<users::Model>,
 ) -> Result<impl IntoResponse, Error> {
     let user =
@@ -117,8 +119,9 @@ pub(crate) async fn create(
 pub(crate) async fn resend_invite(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(authenticated_user): AuthenticatedUser,
-    OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess {
+        authenticated_user, ..
+    }: OrganizationAdminAccess,
     OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
     if user.password.is_some() {
@@ -286,9 +289,21 @@ pub(crate) async fn remove_role(
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess {
+        authenticated_user, ..
+    }: OrganizationAdminAccess,
     OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
+    if user.id == authenticated_user.id {
+        return Err(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Forbidden,
+            )),
+        }
+        .into());
+    }
+
     info!("Deleting user: {:?}", user.id);
     UserApi::delete(app_state.db_conn_ref(), user.id).await?;
     Ok(Json(ApiResponse::<()>::no_content(

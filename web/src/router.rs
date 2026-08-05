@@ -488,50 +488,24 @@ fn organization_user_routes(app_state: AppState) -> Router {
                 get(organization::user_controller::index),
             ),
         )
-        .merge(
-            // POST /organizations/:organization_id/users
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/users",
-                    post(organization::user_controller::create),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::users::create,
-                )),
+        // The routes below are authorized by the OrganizationAdminAccess extractor,
+        // not a route layer.
+        .route(
+            "/organizations/:organization_id/users",
+            post(organization::user_controller::create),
         )
-        .merge(
-            // POST /organizations/:organization_id/users/:user_id/resend-invite
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/users/:user_id/resend-invite",
-                    post(organization::user_controller::resend_invite),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::users::resend_invite,
-                )),
+        .route(
+            "/organizations/:organization_id/users/:user_id/resend-invite",
+            post(organization::user_controller::resend_invite),
         )
-        .merge(
-            // DELETE /organizations/:organization_id/users/:user_id
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/users/:user_id",
-                    delete(organization::user_controller::delete),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::users::delete,
-                )),
+        .route(
+            "/organizations/:organization_id/users/:user_id",
+            delete(organization::user_controller::delete),
         )
-        .merge(
-            // POST and DELETE /organizations/:organization_id/users/:user_id/role
-            // Authorized by the OrganizationAdminAccess extractor, not a route layer.
-            Router::new().route(
-                "/organizations/:organization_id/users/:user_id/role",
-                post(organization::user_controller::attach_role)
-                    .delete(organization::user_controller::remove_role),
-            ),
+        .route(
+            "/organizations/:organization_id/users/:user_id/role",
+            post(organization::user_controller::attach_role)
+                .delete(organization::user_controller::remove_role),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

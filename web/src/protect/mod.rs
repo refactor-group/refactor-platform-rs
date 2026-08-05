@@ -141,6 +141,7 @@ pub(crate) async fn authorize(
 ///
 /// # Arguments
 /// * `args[0]` - The user ID to check against
+#[allow(dead_code)]
 pub struct UserIsNotSelf;
 
 #[async_trait]
