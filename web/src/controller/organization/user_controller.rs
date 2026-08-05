@@ -74,13 +74,13 @@ pub(crate) async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     OrganizationAdminAccess {
-        organization_id,
+        organization,
         authenticated_user,
     }: OrganizationAdminAccess,
     Json(user_model): Json<users::Model>,
 ) -> Result<impl IntoResponse, Error> {
     let user =
-        UserApi::create_by_organization(app_state.db_conn_ref(), organization_id, user_model)
+        UserApi::create_by_organization(app_state.db_conn_ref(), organization.id, user_model)
             .await?;
     info!("User created: {user:?}");
 
@@ -174,7 +174,7 @@ pub(crate) async fn resend_invite(
 pub(crate) async fn attach_role(
     CompareApiVersion(_v): CompareApiVersion,
     OrganizationAdminAccess {
-        organization_id,
+        organization,
         authenticated_user,
     }: OrganizationAdminAccess,
     Path((_organization_id, user_id)): Path<(Id, Id)>,
@@ -206,12 +206,24 @@ pub(crate) async fn attach_role(
 
     let user = UserRoleApi::attach_to_organization(
         app_state.db_conn_ref(),
-        organization_id,
+        organization.id,
         user_id,
-        params.role,
+        params.role.clone(),
     )
     .await?;
-    info!("User {user_id} attached to organization {organization_id}");
+    info!(
+        "User {user_id} attached to organization {}",
+        organization.id
+    );
+
+    EmailsAPI::notify_added_to_organization(
+        &app_state.config,
+        &user,
+        &authenticated_user,
+        &organization,
+        params.role,
+    )
+    .await;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
 }
@@ -242,7 +254,7 @@ pub(crate) async fn attach_role(
 pub(crate) async fn remove_role(
     CompareApiVersion(_v): CompareApiVersion,
     OrganizationAdminAccess {
-        organization_id,
+        organization,
         authenticated_user,
     }: OrganizationAdminAccess,
     Path((_organization_id, user_id)): Path<(Id, Id)>,
@@ -258,9 +270,12 @@ pub(crate) async fn remove_role(
         .into());
     }
 
-    UserRoleApi::remove_from_organization(app_state.db_conn_ref(), organization_id, user_id)
+    UserRoleApi::remove_from_organization(app_state.db_conn_ref(), organization.id, user_id)
         .await?;
-    info!("User {user_id} removed from organization {organization_id}");
+    info!(
+        "User {user_id} removed from organization {}",
+        organization.id
+    );
 
     Ok(Json(ApiResponse::<()>::no_content(
         StatusCode::NO_CONTENT.into(),

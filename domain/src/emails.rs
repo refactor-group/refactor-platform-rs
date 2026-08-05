@@ -9,8 +9,14 @@ use crate::{
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::resend::{Client as ResendClient, SendEmailRequestBuilder},
-    goal, organization, organizations, user, users, Id,
+    goal, organization, organizations, user, users,
+    users::Role,
+    Id,
 };
+
+#[cfg(test)]
+#[path = "emails_added_to_organization_tests.rs"]
+mod added_to_organization_tests;
 
 /// Trait for email notifications that need common config prerequisites.
 ///
@@ -108,6 +114,19 @@ impl EmailNotification for WelcomeEmail {
     }
     fn url_path_template(config: &Config) -> Option<String> {
         Some(config.magic_link_email_url_path().to_owned())
+    }
+}
+
+struct AddedToOrganization;
+impl EmailNotification for AddedToOrganization {
+    fn template_id(config: &Config) -> Option<String> {
+        config.added_to_organization_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "added to organization"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.added_to_organization_email_url_path().to_owned())
     }
 }
 
@@ -213,6 +232,79 @@ async fn send_welcome_email(
     email_config.client.send_email(email_request).await
 }
 
+/// Send a best-effort notification that a user was granted a role in an organization.
+///
+/// `inviter` is the administrator who added them. Errors are logged internally and
+/// never propagate: a failed notification must not undo a membership that already
+/// committed.
+pub async fn notify_added_to_organization(
+    config: &Config,
+    user: &users::Model,
+    inviter: &users::Model,
+    organization: &organizations::Model,
+    role: Role,
+) {
+    if let Err(e) =
+        send_added_to_organization_email(config, user, inviter, organization, role).await
+    {
+        warn!(
+            "Failed to send added to organization email to {}: {e:?}",
+            user.email
+        );
+    }
+}
+
+/// Recipient-facing name for a role, as the product labels it in the UI.
+pub(crate) fn role_display_name(role: Role) -> &'static str {
+    match role {
+        Role::Admin => "Admin",
+        Role::User | Role::SuperAdmin => "Member",
+    }
+}
+
+/// Build and send the added-to-organization email to the newly attached user.
+async fn send_added_to_organization_email(
+    config: &Config,
+    user: &users::Model,
+    inviter: &users::Model,
+    organization: &organizations::Model,
+    role: Role,
+) -> Result<(), Error> {
+    info!(
+        "Initiating added to organization email for user: {} ({})",
+        user.email, user.id
+    );
+
+    let email_config = ResolvedEmailConfig::new::<AddedToOrganization>(config).await?;
+
+    let organization_url = email_config
+        .session_url_builder
+        .as_ref()
+        .map(|b| b.build(ORGANIZATION_ID_PLACEHOLDER, &organization.id.to_string()))
+        .unwrap_or_default();
+
+    let inviter_full_name = format!("{} {}", inviter.first_name, inviter.last_name);
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from(FROM_ADDRESS)
+        .to_with_name(
+            &user.email,
+            format!("{} {}", user.first_name, user.last_name),
+        )
+        .template_id(&email_config.template_id)
+        .add_variable("first_name", user.first_name.as_str())
+        .add_variable("last_name", user.last_name.as_str())
+        .add_variable("organization_name", organization.name.as_str())
+        .add_variable("role_name", role_display_name(role))
+        .add_variable("inviter_first_name", inviter.first_name.as_str())
+        .add_variable("inviter_full_name", inviter_full_name.as_str())
+        .add_variable("organization_url", organization_url.as_str())
+        .build()
+        .await?;
+
+    email_config.client.send_email(email_request).await
+}
+
 /// Build and send a password-reset email to a single user.
 ///
 /// Called from the password-reset domain flow after a token has been issued.
@@ -272,6 +364,7 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
 
 const TOKEN_PLACEHOLDER: &str = "{token}";
 const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
+const ORGANIZATION_ID_PLACEHOLDER: &str = "{organization_id}";
 
 /// The `From:` address used for every transactional email sent through this module.
 /// Kept on the `mail.` subdomain so production DMARC/SPF/DKIM records for the

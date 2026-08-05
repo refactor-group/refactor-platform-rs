@@ -4,7 +4,7 @@ use axum::{
     http::{request::Parts, StatusCode},
 };
 use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
-use domain::{organization as OrganizationApi, users, Id};
+use domain::{organization as OrganizationApi, organizations, users};
 use log::*;
 
 use crate::{
@@ -16,9 +16,9 @@ use crate::{
 ///
 /// Passes for a global SuperAdmin (`SuperAdmin` with no organization), or for a
 /// user holding `Admin` in that specific organization. Carries the organization
-/// id and the authenticated user so handlers need not resolve either again.
+/// and the authenticated user so handlers need not resolve either again.
 pub(crate) struct OrganizationAdminAccess {
-    pub organization_id: Id,
+    pub organization: organizations::Model,
     pub authenticated_user: users::Model,
 }
 
@@ -37,26 +37,28 @@ where
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, &state).await?;
 
-        if let Err(err) = OrganizationApi::find_by_id(state.db_conn_ref(), organization_id).await {
-            let domain_err: DomainError = err.into();
-            return match domain_err.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound)) => {
-                    Err((
+        let organization = OrganizationApi::find_by_id(state.db_conn_ref(), organization_id)
+            .await
+            .map_err(|err| {
+                let domain_err: DomainError = err.into();
+                match domain_err.error_kind {
+                    DomainErrorKind::Internal(InternalErrorKind::Entity(
+                        EntityErrorKind::NotFound,
+                    )) => (
                         StatusCode::NOT_FOUND,
                         format!("Organization {organization_id} not found"),
-                    ))
+                    ),
+                    _ => {
+                        error!(
+                            "find_by_id({organization_id:?}) failed while verifying organization existence: {domain_err:?}"
+                        );
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to verify organization existence".to_string(),
+                        )
+                    }
                 }
-                _ => {
-                    error!(
-                        "find_by_id({organization_id:?}) failed while verifying organization existence: {domain_err:?}"
-                    );
-                    Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to verify organization existence".to_string(),
-                    ))
-                }
-            };
-        }
+            })?;
 
         // Evaluated in memory against the roles `AuthenticatedUser` already hydrated,
         // so this extractor costs no extra connection.
@@ -68,7 +70,7 @@ where
 
         is_organization_admin
             .then_some(OrganizationAdminAccess {
-                organization_id,
+                organization,
                 authenticated_user,
             })
             .ok_or_else(|| {
