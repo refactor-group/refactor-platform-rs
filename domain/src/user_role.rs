@@ -151,6 +151,26 @@ pub async fn lookup_by_email_scoped(
         .collect())
 }
 
+/// Whether `requester` may act on `target_user_id`.
+///
+/// True for a global SuperAdmin, or when the requester administers an
+/// organization the target belongs to. Unlike `lookup_by_email_scoped` this may
+/// short-circuit: the target id is already known to the caller, so query count
+/// reveals nothing.
+pub async fn can_administer_user(
+    db: &impl ConnectionTrait,
+    requester: &users::Model,
+    target_user_id: Id,
+) -> Result<bool, Error> {
+    let requester_is_super_admin = requester
+        .roles
+        .iter()
+        .any(|role| role.role == Role::SuperAdmin && role.organization_id.is_none());
+
+    Ok(requester_is_super_admin
+        || user_role::shares_administered_organization(db, requester.id, target_user_id).await?)
+}
+
 /// Counts the distinct organizations a user belongs to.
 pub async fn count_organizations(db: &impl ConnectionTrait, user_id: Id) -> Result<u64, Error> {
     Ok(user_role::count_organizations_for_user(db, user_id).await?)

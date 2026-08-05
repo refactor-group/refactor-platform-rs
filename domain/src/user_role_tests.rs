@@ -55,6 +55,11 @@ fn count_row(count: i64) -> BTreeMap<String, sea_orm::Value> {
     BTreeMap::from([("num_items".to_string(), count.into())])
 }
 
+/// A single-column mock row, for the id-only selects.
+fn id_row(column: &str, value: Id) -> BTreeMap<String, sea_orm::Value> {
+    BTreeMap::from([(column.to_string(), value.into())])
+}
+
 fn exec_result(rows_affected: u64) -> MockExecResult {
     MockExecResult {
         last_insert_id: 0,
@@ -283,6 +288,72 @@ async fn lookup_by_email_scoped_returns_the_user_for_a_super_admin() -> Result<(
     );
     // The scope check still ran, even though the super-admin answer was already known.
     assert_eq!(statements(db).len(), 3);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn can_administer_user_is_true_for_a_super_admin() -> Result<(), Error> {
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(requester_id, None, Role::SuperAdmin)],
+    );
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+    assert!(can_administer_user(&db, &requester, Id::new_v4()).await?);
+    assert!(
+        statements(db).is_empty(),
+        "a super admin needs no scope query"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn can_administer_user_is_true_for_an_admin_of_a_shared_organization() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(
+            requester_id,
+            Some(organization_id),
+            Role::Admin,
+        )],
+    );
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([vec![id_row("id", Id::new_v4())]])
+        .into_connection();
+
+    assert!(can_administer_user(&db, &requester, Id::new_v4()).await?);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn can_administer_user_is_false_for_a_plain_member() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(
+            requester_id,
+            Some(organization_id),
+            Role::User,
+        )],
+    );
+
+    // The requester holds no Admin role, so the admin-scoped query finds nothing.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .into_connection();
+
+    assert!(!can_administer_user(&db, &requester, Id::new_v4()).await?);
 
     Ok(())
 }

@@ -212,13 +212,14 @@ impl Error {
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
-            EntityErrorKind::UserBelongsToMultipleOrganizations { organization_count } => {
+            EntityErrorKind::UserBelongsToMultipleOrganizations { .. } => {
                 warn!("EntityErrorKind::UserBelongsToMultipleOrganizations: Responding with 409 Conflict. Error: {self:?}");
+                // The count stays out of the response: an org admin has no right to know
+                // how many other organizations a member belongs to.
                 let body = serde_json::json!({
                     "status_code": 409,
                     "error": "user_belongs_to_multiple_organizations",
                     "message": "This user belongs to other organizations. Remove them from this organization instead of deleting their account.",
-                    "details": { "organization_count": organization_count },
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }

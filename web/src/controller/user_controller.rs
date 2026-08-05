@@ -1,16 +1,77 @@
+use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::{controller::ApiResponse, params::user::*};
 use crate::{AppState, Error};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use domain::{user as UserApi, Id};
+use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
+use domain::users::Role;
+use domain::{user as UserApi, user_role as UserRoleApi, Id};
 use service::config::ApiVersion;
+
+/// INDEX the Users matching an exact email address.
+///
+/// Returns an array of zero or one results. An empty array is the only
+/// not-found signal, so a caller cannot distinguish an unknown email from one
+/// belonging to a user they are not allowed to see.
+#[utoipa::path(
+    get,
+    path = "/users",
+    params(
+        ApiVersion,
+        LookupParams,
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved the matching Users", body = [domain::user_role::UserLookupResult]),
+        (status = 400, description = "Missing or blank email"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Requester administers no organization"),
+        (status = 503, description = "Service temporarily unavailable"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn index(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Query(params): Query<LookupParams>,
+) -> Result<impl IntoResponse, Error> {
+    if params.email.trim().is_empty() {
+        return Err(Error::Web(WebErrorKind::Input));
+    }
+
+    let administers_any_organization = authenticated_user.roles.iter().any(|role| {
+        role.role == Role::Admin
+            || (role.role == Role::SuperAdmin && role.organization_id.is_none())
+    });
+
+    if !administers_any_organization {
+        return Err(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Forbidden,
+            )),
+        }
+        .into());
+    }
+
+    let users = UserRoleApi::lookup_by_email_scoped(
+        app_state.db_conn_ref(),
+        &authenticated_user,
+        &params.email,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), users)))
+}
 
 /// GET a User
 ///

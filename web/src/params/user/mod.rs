@@ -4,10 +4,26 @@ pub(crate) mod coaching_session;
 pub(crate) mod goal;
 
 // Re-export user profile update params for backward compatibility
-use domain::{IntoUpdateMap, UpdateMap};
+use domain::{users::Role, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+
+/// Query parameters for an exact-match user lookup by email.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub struct LookupParams {
+    pub email: String,
+}
+
+/// Body for granting a user a role within an organization.
+///
+/// Unknown fields are rejected so a misspelled key fails loudly rather than
+/// silently granting the wrong role.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttachRoleParams {
+    pub role: Role,
+}
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct UpdateParams {

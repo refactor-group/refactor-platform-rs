@@ -99,6 +99,8 @@ use utoipa_rapidoc::RapiDoc;
             organization::user_controller::create,
             organization::user_controller::resend_invite,
             organization::user_controller::delete,
+            organization::user_controller::attach_role,
+            organization::user_controller::remove_role,
             goal_controller::create,
             goal_controller::update,
             goal_controller::index,
@@ -111,6 +113,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::goal_controller::batch_index,
             goal_controller::coaching_sessions_by_goal,
             goal_controller::progress,
+            user_controller::index,
             user_controller::read,
             user_controller::update,
             user_session_controller::login,
@@ -153,7 +156,9 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::coaching_session_series::RescheduleParams,
                 crate::params::goal::SortField,
                 crate::params::sort::SortOrder,
+                crate::params::user::AttachRoleParams,
                 crate::params::user::CompleteSetupParams,
+                crate::params::user::LookupParams,
                 crate::params::user::PasswordResetCompleteParams,
                 crate::params::user::PasswordResetRequestParams,
                 crate::params::user::goal::SortField,
@@ -176,6 +181,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::meeting_provider::Provider,
                 domain::status::Status,
                 domain::user::Credentials,
+                domain::user_role::UserLookupResult,
                 domain::users::Model,
                 params::coaching_session::UpdateParams,
                 params::user::UpdateParams,
@@ -518,6 +524,15 @@ fn organization_user_routes(app_state: AppState) -> Router {
                     protect::organizations::users::delete,
                 )),
         )
+        .merge(
+            // POST and DELETE /organizations/:organization_id/users/:user_id/role
+            // Authorized by the OrganizationAdminAccess extractor, not a route layer.
+            Router::new().route(
+                "/organizations/:organization_id/users/:user_id/role",
+                post(organization::user_controller::attach_role)
+                    .delete(organization::user_controller::remove_role),
+            ),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -614,6 +629,10 @@ fn coaching_session_goal_routes(app_state: AppState) -> Router {
 
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
+        .merge(
+            // GET /users?email= — authorized in the handler against the target user.
+            Router::new().route("/users", get(user_controller::index)),
+        )
         .merge(
             // GET /users/:id
             Router::new()
