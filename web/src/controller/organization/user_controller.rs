@@ -4,7 +4,7 @@ use crate::extractors::organization_user_access::OrganizationUserAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::user::AttachRoleParams;
+use crate::params::user::{AttachRoleParams, CreateMemberParams};
 use crate::{controller::ApiResponse, AppState, Error};
 use axum::{
     extract::{Path, State},
@@ -14,7 +14,7 @@ use axum::{
 };
 use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
 use domain::users::Role;
-use domain::{emails as EmailsAPI, user as UserApi, user_role as UserRoleApi, users, Id};
+use domain::{emails as EmailsAPI, user as UserApi, user_role as UserRoleApi, Id};
 use service::config::ApiVersion;
 
 use log::*;
@@ -51,7 +51,9 @@ pub async fn index(
 }
 
 /// CREATE a User for an organization
-/// This function creates a new user associated with the specified organization.
+///
+/// Creates a new user associated with the specified organization, optionally
+/// assigning them a coach in the same transaction.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/users",
@@ -59,11 +61,12 @@ pub async fn index(
         ApiVersion,
         ("organization_id" = Id, Path, description = "The ID of the organization"),
     ),
-    request_body = domain::users::Model,
+    request_body = CreateMemberParams,
     responses(
         (status = 201, description = "User created successfully", body = domain::users::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
+        (status = 422, description = "The requested coach cannot be assigned"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -77,13 +80,18 @@ pub(crate) async fn create(
         organization,
         authenticated_user,
     }: OrganizationAdminAccess,
-    Json(user_model): Json<users::Model>,
+    Json(params): Json<CreateMemberParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let user =
-        UserApi::create_by_organization(app_state.db_conn_ref(), organization.id, user_model)
-            .await?;
+    let user = UserApi::create_in_organization(
+        app_state.db_conn_ref(),
+        organization.id,
+        params.user,
+        params.coach_id,
+    )
+    .await?;
     info!("User created: {user:?}");
 
+    // Must stay after the commit: a failed coach assignment invites nobody.
     EmailsAPI::notify_welcome_email(
         app_state.db_conn_ref(),
         &app_state.config,
@@ -147,9 +155,10 @@ pub(crate) async fn resend_invite(
 
 /// ATTACH an existing User to an organization with a role.
 ///
-/// Grants the user a role in the organization without creating an account. The
-/// caller must administer the organization and must already be able to see the
-/// target user, otherwise the response is indistinguishable from a missing user.
+/// Grants the user a role in the organization without creating an account,
+/// optionally assigning them a coach in the same transaction. The caller must
+/// administer the organization and must already be able to see the target user,
+/// otherwise the response is indistinguishable from a missing user.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/users/{user_id}/role",
@@ -165,7 +174,7 @@ pub(crate) async fn resend_invite(
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "No such user, or a user the caller may not see"),
         (status = 409, description = "User already belongs to the organization"),
-        (status = 422, description = "SuperAdmin cannot be granted within an organization"),
+        (status = 422, description = "SuperAdmin cannot be granted within an organization, or the requested coach cannot be assigned"),
     ),
     security(
         ("cookie_auth" = [])
@@ -209,6 +218,7 @@ pub(crate) async fn attach_role(
         organization.id,
         user_id,
         params.role.clone(),
+        params.coach_id,
     )
     .await?;
     info!(
@@ -216,6 +226,7 @@ pub(crate) async fn attach_role(
         organization.id
     );
 
+    // Must stay after the commit: a failed coach assignment notifies nobody.
     EmailsAPI::notify_added_to_organization(
         &app_state.config,
         &user,

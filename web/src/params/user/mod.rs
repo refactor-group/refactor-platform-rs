@@ -3,8 +3,11 @@ pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
 pub(crate) mod goal;
 
+#[cfg(test)]
+mod tests;
+
 // Re-export user profile update params for backward compatibility
-use domain::{users::Role, IntoUpdateMap, UpdateMap};
+use domain::{users, users::Role, Id, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -23,6 +26,23 @@ pub struct LookupParams {
 #[serde(deny_unknown_fields)]
 pub struct AttachRoleParams {
     pub role: Role,
+    /// Coach to assign in the same transaction as the membership.
+    #[serde(default)]
+    pub coach_id: Option<Id>,
+}
+
+/// Body for creating a new member of an organization.
+///
+/// The user fields are flattened so a client that sends only them still
+/// deserializes. serde rejects `deny_unknown_fields` alongside `flatten`, so
+/// unknown keys are ignored rather than refused here.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateMemberParams {
+    #[serde(flatten)]
+    pub user: users::Model,
+    /// Coach to assign in the same transaction as the new account.
+    #[serde(default)]
+    pub coach_id: Option<Id>,
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]

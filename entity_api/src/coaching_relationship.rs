@@ -26,6 +26,16 @@ pub async fn create(
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
     debug!("New Coaching Relationship Model to be inserted: {coaching_relationship_model:?}");
 
+    if coaching_relationship_model.coach_id == coaching_relationship_model.coachee_id {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "A user cannot be their own coach.".into(),
+                details: None,
+            },
+        });
+    }
+
     let organization = organization::find_by_id(db, organization_id).await?;
     if organization.archived_at.is_some() {
         return Err(Error {
@@ -682,5 +692,37 @@ mod tests {
             err.error_kind,
             EntityApiErrorKind::OrganizationArchived
         ));
+    }
+
+    #[tokio::test]
+    async fn create_rejects_a_user_as_their_own_coach() {
+        let now = Utc::now();
+        let organization_id = Id::new_v4();
+        let user_id = Id::new_v4();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let model = Model {
+            id: Id::new_v4(),
+            organization_id,
+            coach_id: user_id,
+            coachee_id: user_id,
+            slug: String::new(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let err = create(&db, organization_id, model)
+            .await
+            .expect_err("expected self-coaching rejection");
+
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::ValidationError { .. }
+        ));
+        assert!(
+            db.into_transaction_log().is_empty(),
+            "self-coaching must be rejected before any statement runs"
+        );
     }
 }

@@ -158,6 +158,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::sort::SortOrder,
                 crate::params::user::AttachRoleParams,
                 crate::params::user::CompleteSetupParams,
+                crate::params::user::CreateMemberParams,
                 crate::params::user::LookupParams,
                 crate::params::user::PasswordResetCompleteParams,
                 crate::params::user::PasswordResetRequestParams,

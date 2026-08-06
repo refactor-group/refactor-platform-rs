@@ -1,7 +1,7 @@
 use super::*;
 use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
-use crate::{organizations, user_roles};
-use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+use crate::{coaching_relationships, organizations, user_roles};
+use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult};
 use std::collections::BTreeMap;
 
 fn organization(id: Id, archived: bool) -> organizations::Model {
@@ -109,13 +109,106 @@ async fn attach_to_organization_returns_the_user_scoped_to_the_target_org() -> R
         ]])
         .into_connection();
 
-    let attached = attach_to_organization(&db, organization_id, user_id, Role::User).await?;
+    let attached = attach_to_organization(&db, organization_id, user_id, Role::User, None).await?;
 
     assert_eq!(attached.id, user_id);
     assert_eq!(attached.roles.len(), 1);
     assert_eq!(attached.roles[0].organization_id, Some(organization_id));
 
     Ok(())
+}
+
+/// Mocks every query `attach_to_organization` runs up to and including the role
+/// insert, then the lookups `coaching_relationship::create` runs before its own
+/// insert.
+fn mock_attach_with_coach(organization_id: Id, user_id: Id, coach_id: Id) -> MockDatabase {
+    let membership = [organization(organization_id, false)];
+    MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            user(user_id, vec![]),
+            None,
+        )]])
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([
+            vec![(user(coach_id, vec![]), None)],
+            vec![(user(user_id, vec![]), None)],
+        ])
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .append_query_results([membership.clone()])
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .append_query_results([membership])
+        .append_query_results([Vec::<coaching_relationships::Model>::new()])
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([
+            vec![(user(coach_id, vec![]), None)],
+            vec![(user(user_id, vec![]), None)],
+        ])
+}
+
+#[tokio::test]
+async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let coach_id = Id::new_v4();
+    let now = chrono::Utc::now();
+    let target_role = user_role_model(user_id, Some(organization_id), Role::User);
+
+    let db = mock_attach_with_coach(organization_id, user_id, coach_id)
+        .append_query_results([[coaching_relationships::Model {
+            id: Id::new_v4(),
+            organization_id,
+            coach_id,
+            coachee_id: user_id,
+            slug: "member-member".to_owned(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }]])
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            user(user_id, vec![]),
+            Some(target_role),
+        )]])
+        .into_connection();
+
+    attach_to_organization(&db, organization_id, user_id, Role::User, Some(coach_id)).await?;
+
+    let sql = statements(db);
+    let inserts: Vec<&String> = sql.iter().filter(|s| s.contains("INSERT")).collect();
+    assert_eq!(inserts.len(), 2, "{sql:?}");
+    assert!(inserts.iter().any(|s| s.contains("user_roles")));
+    assert!(inserts.iter().any(|s| s.contains("coaching_relationships")));
+    assert_eq!(sql.iter().filter(|s| s.as_str() == "COMMIT").count(), 1);
+    assert!(!sql.iter().any(|s| s == "ROLLBACK"), "{sql:?}");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn attach_to_organization_rolls_back_the_role_when_the_coach_assignment_fails() {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let coach_id = Id::new_v4();
+
+    let db = mock_attach_with_coach(organization_id, user_id, coach_id)
+        .append_query_errors([DbErr::Custom("relationship insert failed".to_owned())])
+        .into_connection();
+
+    attach_to_organization(&db, organization_id, user_id, Role::User, Some(coach_id))
+        .await
+        .expect_err("expected the failed coach assignment to fail the whole call");
+
+    let sql = statements(db);
+    assert!(
+        sql.iter()
+            .any(|s| s.contains("INSERT") && s.contains("coaching_relationships")),
+        "the failure must be the relationship insert, not an earlier lookup: {sql:?}"
+    );
+    assert!(sql.iter().any(|s| s == "ROLLBACK"), "{sql:?}");
+    assert!(
+        !sql.iter().any(|s| s == "COMMIT"),
+        "the role row must not survive a failed coach assignment: {sql:?}"
+    );
 }
 
 #[tokio::test]
@@ -126,7 +219,7 @@ async fn attach_to_organization_rejects_an_archived_organization() {
         .append_query_results([[organization(organization_id, true)]])
         .into_connection();
 
-    let error = attach_to_organization(&db, organization_id, Id::new_v4(), Role::User)
+    let error = attach_to_organization(&db, organization_id, Id::new_v4(), Role::User, None)
         .await
         .expect_err("expected archived-org rejection");
 
@@ -154,7 +247,7 @@ async fn attach_to_organization_rejects_an_existing_membership() {
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .into_connection();
 
-    let error = attach_to_organization(&db, organization_id, user_id, Role::Admin)
+    let error = attach_to_organization(&db, organization_id, user_id, Role::Admin, None)
         .await
         .expect_err("expected duplicate-membership rejection");
 
