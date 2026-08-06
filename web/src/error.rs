@@ -35,6 +35,10 @@ pub enum WebErrorKind {
     /// debuggability.
     InvalidTimezone(String),
     Conflict,
+    /// Caller is authenticated but not permitted to act on this resource.
+    Forbidden,
+    /// Target resource does not exist, or the caller may not know that it does.
+    NotFound,
     Other,
 }
 
@@ -178,6 +182,24 @@ impl Error {
                         "coaching_relationship_count": coaching_relationship_count,
                         "coaching_session_count": coaching_session_count,
                         "member_count": member_count,
+                    },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::UserHasCoachingHistory {
+                organization_id,
+                coaching_relationship_count,
+                coaching_session_count,
+            } => {
+                warn!("EntityErrorKind::UserHasCoachingHistory: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "user_has_coaching_history",
+                    "message": "This member still has coaching sessions in this organization. Remove or reassign those sessions before removing them.",
+                    "details": {
+                        "organization_id": organization_id,
+                        "coaching_relationship_count": coaching_relationship_count,
+                        "coaching_session_count": coaching_session_count,
                     },
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
@@ -331,6 +353,14 @@ impl Error {
                 });
                 (StatusCode::BAD_REQUEST, Json(body)).into_response()
             }
+            WebErrorKind::Forbidden => {
+                warn!("WebErrorKind::Forbidden: Responding with 403 Forbidden. Error: {self:?}");
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
+            }
+            WebErrorKind::NotFound => {
+                warn!("WebErrorKind::NotFound: Responding with 404 Not Found. Error: {self:?}");
+                (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
+            }
             WebErrorKind::Conflict => {
                 warn!("WebErrorKind::Conflict: Responding with 409 Conflict. Error: {self:?}");
                 (StatusCode::CONFLICT, "CONFLICT").into_response()
@@ -367,6 +397,14 @@ pub(crate) fn domain_error_into_response(err: DomainError) -> Response {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use domain::Id;
+
+    async fn json_body(response: Response) -> serde_json::Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        serde_json::from_slice(&bytes).expect("body is JSON")
+    }
 
     // Locks down the wire shape callers parse against. Changing `error` or
     // dropping `status_code`/`message` here is a breaking change to the
@@ -388,6 +426,102 @@ mod tests {
         assert!(
             message.contains("Not/A/Timezone"),
             "message should quote the offending value, got: {message}"
+        );
+    }
+
+    // The four 409 shapes below are parsed by callers to branch on the specific
+    // conflict. Changing `error`, `status_code` or the `details` keys is a
+    // breaking change to that contract.
+    #[tokio::test]
+    async fn user_already_in_organization_produces_structured_409_with_the_organization() {
+        let organization_id = Id::new_v4();
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::UserAlreadyInOrganization { organization_id },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "user_already_in_organization");
+        assert_eq!(
+            body["details"]["organization_id"],
+            organization_id.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn last_organization_admin_produces_structured_409_with_the_organization() {
+        let organization_id = Id::new_v4();
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::LastOrganizationAdmin { organization_id },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "last_organization_admin");
+        assert_eq!(
+            body["details"]["organization_id"],
+            organization_id.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn user_belongs_to_multiple_organizations_produces_409_without_disclosing_the_count() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::UserBelongsToMultipleOrganizations {
+                    organization_count: 3,
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "user_belongs_to_multiple_organizations");
+        // Deliberately withheld: an org admin has no right to learn how many
+        // other organizations a member belongs to, only that they belong to some.
+        assert!(
+            body.get("details").is_none(),
+            "the organization count must not be disclosed, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_has_coaching_history_produces_structured_409_with_counts() {
+        let organization_id = Id::new_v4();
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::UserHasCoachingHistory {
+                    organization_id,
+                    coaching_relationship_count: 2,
+                    coaching_session_count: 7,
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "user_has_coaching_history");
+        assert_eq!(body["details"]["coaching_relationship_count"], 2);
+        assert_eq!(body["details"]["coaching_session_count"], 7);
+        assert_eq!(
+            body["details"]["organization_id"],
+            organization_id.to_string()
         );
     }
 

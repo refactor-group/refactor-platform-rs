@@ -7,7 +7,7 @@ use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationships::{self, ActiveModel, Entity, Model},
-    Id,
+    coaching_sessions, Id,
 };
 use log::*;
 use sea_orm::{
@@ -386,6 +386,55 @@ pub async fn delete_by_user_and_organization(
         .exec(db)
         .await?
         .rows_affected)
+}
+
+/// A user's coaching footprint inside one organization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct History {
+    pub coaching_relationship_count: u64,
+    pub coaching_session_count: u64,
+}
+
+/// Counts the user's coaching relationships in an organization, and the
+/// sessions hanging off them.
+///
+/// Backs the guard on removing a member: `coaching_sessions` references
+/// `coaching_relationships` with NO ACTION, so deleting a relationship that
+/// carries sessions raises a foreign key violation rather than cascading.
+pub async fn count_history_for_user_in_organization(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<History, Error> {
+    let relationship_ids: Vec<Id> = Entity::find()
+        .select_only()
+        .column(coaching_relationships::Column::Id)
+        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
+        .filter(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .into_tuple()
+        .all(db)
+        .await?;
+
+    // Sessions hang off relationships, so only worth counting when there are any.
+    let coaching_session_count = if relationship_ids.is_empty() {
+        0
+    } else {
+        coaching_sessions::Entity::find()
+            .filter(
+                coaching_sessions::Column::CoachingRelationshipId.is_in(relationship_ids.clone()),
+            )
+            .count(db)
+            .await?
+    };
+
+    Ok(History {
+        coaching_relationship_count: relationship_ids.len() as u64,
+        coaching_session_count,
+    })
 }
 
 /// Trait for filtering coaching relationships by user's role.

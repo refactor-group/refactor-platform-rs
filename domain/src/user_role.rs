@@ -120,6 +120,29 @@ pub async fn remove_from_organization(
         .into());
     }
 
+    // `coaching_sessions` references `coaching_relationships` with NO ACTION, so
+    // deleting a relationship that carries sessions is a foreign key violation,
+    // and the goal and series rows that do cascade would be destroyed for third
+    // parties. Refuse instead, and let an operator unwind deliberately.
+    let history = coaching_relationship::count_history_for_user_in_organization(
+        &txn,
+        user_id,
+        organization_id,
+    )
+    .await?;
+
+    if history.coaching_session_count > 0 {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::UserHasCoachingHistory {
+                organization_id,
+                coaching_relationship_count: history.coaching_relationship_count,
+                coaching_session_count: history.coaching_session_count,
+            },
+        }
+        .into());
+    }
+
     coaching_relationship::delete_by_user_and_organization(&txn, user_id, organization_id).await?;
     user_role::delete_by_user_and_organization(&txn, user_id, organization_id).await?;
 

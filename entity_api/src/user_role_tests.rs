@@ -82,30 +82,28 @@ async fn create_inserts_an_organization_scoped_role() -> Result<(), Error> {
     Ok(())
 }
 
-#[tokio::test]
-async fn create_maps_the_one_role_per_organization_violation_to_a_membership_conflict() {
-    let organization_id = Id::new_v4();
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_errors([sea_orm::DbErr::Custom(
-            "error returned from database: duplicate key value violates unique constraint \
-             \"user_roles_user_org_unique\""
-                .to_string(),
-        )])
-        .into_connection();
+/// The mapping is matched on the constraint name rather than the message text,
+/// which is locale and version sensitive. A `DbErr` carrying a real `SqlErr`
+/// cannot be constructed by hand, so the policy is tested at its own boundary.
+#[test]
+fn the_one_role_per_organization_index_is_recognised_as_a_membership_conflict() {
+    assert!(is_one_role_per_organization_violation(Some(
+        SqlErr::UniqueConstraintViolation(
+            "duplicate key value violates unique constraint \"user_roles_user_org_unique\""
+                .to_string()
+        )
+    )));
+}
 
-    let err = create(&db, Id::new_v4(), organization_id, Role::Admin)
-        .await
-        .expect_err("expected the unique violation to surface as a conflict");
-
-    assert!(
-        matches!(
-            err.error_kind,
-            EntityApiErrorKind::UserAlreadyInOrganization { organization_id: conflicted }
-                if conflicted == organization_id
-        ),
-        "unexpected error kind: {:?}",
-        err.error_kind
-    );
+#[test]
+fn an_unrelated_unique_index_is_not_a_membership_conflict() {
+    assert!(!is_one_role_per_organization_violation(Some(
+        SqlErr::UniqueConstraintViolation("user_roles_user_global_role_unique".to_string())
+    )));
+    assert!(!is_one_role_per_organization_violation(Some(
+        SqlErr::ForeignKeyConstraintViolation("user_roles_user_org_unique".to_string())
+    )));
+    assert!(!is_one_role_per_organization_violation(None));
 }
 
 #[tokio::test]

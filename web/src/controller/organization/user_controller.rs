@@ -1,3 +1,4 @@
+use crate::error::WebErrorKind;
 use crate::extractors::organization_admin_access::OrganizationAdminAccess;
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::organization_user_access::OrganizationUserAccess;
@@ -12,7 +13,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
+use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::users::Role;
 use domain::{emails as EmailsAPI, user as UserApi, user_role as UserRoleApi, Id};
 use service::config::ApiVersion;
@@ -204,13 +205,7 @@ pub(crate) async fn attach_role(
     if !UserRoleApi::can_administer_user(app_state.db_conn_ref(), &authenticated_user, user_id)
         .await?
     {
-        return Err(DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::NotFound,
-            )),
-        }
-        .into());
+        return Err(Error::Web(WebErrorKind::NotFound));
     }
 
     let user = UserRoleApi::attach_to_organization(
@@ -272,13 +267,7 @@ pub(crate) async fn remove_role(
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
     if user_id == authenticated_user.id {
-        return Err(DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::Forbidden,
-            )),
-        }
-        .into());
+        return Err(Error::Web(WebErrorKind::Forbidden));
     }
 
     UserRoleApi::remove_from_organization(app_state.db_conn_ref(), organization.id, user_id)
@@ -321,13 +310,7 @@ pub async fn delete(
     OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
     if user.id == authenticated_user.id {
-        return Err(DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::Forbidden,
-            )),
-        }
-        .into());
+        return Err(Error::Web(WebErrorKind::Forbidden));
     }
 
     info!("Deleting user: {:?}", user.id);

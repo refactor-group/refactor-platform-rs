@@ -61,6 +61,13 @@ pub enum EntityErrorKind {
     OrganizationNameTaken {
         name: String,
     },
+    /// User still has coaching sessions in the organization they are being
+    /// removed from.
+    UserHasCoachingHistory {
+        organization_id: Id,
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+    },
     OrganizationArchived,
     /// User already holds a role in the target organization.
     UserAlreadyInOrganization {
@@ -176,6 +183,15 @@ impl From<EntityApiError> for Error {
             EntityApiErrorKind::OrganizationNameTaken { name } => {
                 EntityErrorKind::OrganizationNameTaken { name: name.clone() }
             }
+            EntityApiErrorKind::UserHasCoachingHistory {
+                organization_id,
+                coaching_relationship_count,
+                coaching_session_count,
+            } => EntityErrorKind::UserHasCoachingHistory {
+                organization_id: *organization_id,
+                coaching_relationship_count: *coaching_relationship_count,
+                coaching_session_count: *coaching_session_count,
+            },
             EntityApiErrorKind::OrganizationArchived => EntityErrorKind::OrganizationArchived,
             EntityApiErrorKind::UserAlreadyInOrganization { organization_id } => {
                 EntityErrorKind::UserAlreadyInOrganization {

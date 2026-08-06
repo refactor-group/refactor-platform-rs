@@ -282,12 +282,45 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
 }
 
 #[tokio::test]
+async fn remove_from_organization_refuses_when_the_member_has_sessions() {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_query_results([vec![id_row("id", relationship_id)]])
+        .append_query_results([vec![count_row(2)]])
+        .into_connection();
+
+    let error = remove_from_organization(&db, organization_id, user_id)
+        .await
+        .expect_err("expected a refusal when sessions exist");
+
+    assert_eq!(
+        entity_error_kind(&error),
+        &EntityErrorKind::UserHasCoachingHistory {
+            organization_id,
+            coaching_relationship_count: 1,
+            coaching_session_count: 2,
+        }
+    );
+    // Deleting the relationship would violate the coaching_sessions foreign key,
+    // and cascade away the goal and series rows that do cascade.
+    assert!(
+        !statements(db).iter().any(|sql| sql.contains("DELETE")),
+        "nothing may be deleted when the member still has sessions"
+    );
+}
+
+#[tokio::test]
 async fn remove_from_organization_deletes_only_the_target_org_membership() -> Result<(), Error> {
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
         .append_exec_results([exec_result(1), exec_result(1)])
         .into_connection();
 

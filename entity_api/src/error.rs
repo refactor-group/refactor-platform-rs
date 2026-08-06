@@ -48,6 +48,13 @@ pub enum EntityApiErrorKind {
         coaching_session_count: u64,
         member_count: u64,
     },
+    // User still has coaching relationships carrying sessions in the organization,
+    // so removing them from it would orphan or destroy that history.
+    UserHasCoachingHistory {
+        organization_id: Id,
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+    },
     // Organization name (or its derived slug) collides with an existing org.
     OrganizationNameTaken {
         name: String,

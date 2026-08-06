@@ -67,6 +67,10 @@ fn test_organization(organization_id: Id) -> organizations::Model {
 }
 
 /// A single-column mock row, for the id-only selects the visibility probe runs.
+fn count_row(count: i64) -> BTreeMap<String, Value> {
+    BTreeMap::from([("num_items".to_string(), count.into())])
+}
+
 fn id_row(column: &str, value: Id) -> BTreeMap<String, Value> {
     BTreeMap::from([(column.to_string(), value.into())])
 }
@@ -320,6 +324,42 @@ async fn remove_returns_403_when_the_requester_targets_themselves() {
 }
 
 #[tokio::test]
+async fn remove_returns_409_when_the_member_still_has_sessions() {
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(
+        mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![test_role(
+                target_id,
+                Some(organization_id),
+                users::Role::User,
+            )]])
+            .append_query_results([vec![id_row("id", relationship_id)]])
+            .append_query_results([vec![count_row(2)]])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "DELETE",
+        organization_id,
+        target_id,
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn remove_returns_204_for_another_member() {
     let organization_id = Id::new_v4();
     let target_id = Id::new_v4();
@@ -333,6 +373,8 @@ async fn remove_returns_204_for_another_member() {
                 Some(organization_id),
                 users::Role::User,
             )]])
+            // No coaching relationships, so no session count and nothing blocking.
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
             .append_exec_results([exec_result(), exec_result()])
             .into_connection(),
     );

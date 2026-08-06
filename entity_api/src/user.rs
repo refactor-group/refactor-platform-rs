@@ -10,8 +10,11 @@ use password_auth;
 use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func},
-    Condition, ConnectionTrait, DatabaseConnection, Set, TransactionTrait,
+    Condition, ConnectionTrait, DatabaseConnection, Set, SqlErr, TransactionTrait,
 };
+
+/// Postgres index backing the global uniqueness of `users.email`.
+const EMAIL_UNIQUE_INDEX: &str = "users_email_key";
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
@@ -40,9 +43,13 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         .insert(db)
         .await
         // `users.email` is globally unique. Surface the collision as a 4xx pointing at
-        // the multi-org path instead of letting it bubble up as a bare 500.
-        .map_err(|err| match err.to_string().to_lowercase() {
-            message if message.contains("duplicate key value") && message.contains("email") => {
+        // the multi-org path instead of letting it bubble up as a bare 500. Matched on
+        // the constraint name rather than the message, which is locale and version
+        // sensitive, and would also catch unrelated indexes containing "email".
+        .map_err(|err| match err.sql_err() {
+            Some(SqlErr::UniqueConstraintViolation(constraint))
+                if constraint.contains(EMAIL_UNIQUE_INDEX) =>
+            {
                 Error {
                     source: Some(err),
                     error_kind: EntityApiErrorKind::ValidationError {

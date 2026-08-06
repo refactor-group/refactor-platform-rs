@@ -131,13 +131,21 @@ distinct.
 
 | Action | Target | Expected |
 |---|---|---|
-| **Remove from organization** | a member of two organizations | removed from this organization only; account intact; still in the other organization; coaching relationships **in the other organization survive** |
+| **Remove from organization** | a member of two organizations, **with no sessions in this one** | removed from this organization only; account intact; still in the other organization; coaching relationships **in the other organization survive** |
+| **Remove from organization** | a member **with at least one past or future session in this organization** | refused with a **409** `user_has_coaching_history` naming the relationship and session counts |
+| **Remove from organization** | a **coach who has coachees** in this organization | refused with the same 409 once any of those relationships carries a session |
 | **Delete** | a member of two organizations | refused with a **409** and a message telling you to remove them from the organization instead |
 | **Remove from organization** | the organization's only remaining Admin | refused with a clear last-admin message |
 | Either action | yourself | not offered / refused |
 
 After the successful remove, re-check the other organization's member list and
 its coaching relationships explicitly. "Remove" must not cascade.
+
+**The session cases must be exercised against a real database.** `coaching_sessions`
+references `coaching_relationships` with NO ACTION while goals and session series
+cascade, so a mock-backed test cannot reach either behavior. Before the guard
+existed this path returned a 503. Use an account that has actually had a session
+scheduled, not a freshly created one.
 
 ## 6. Scenario E: regression checks on pre-existing flows
 

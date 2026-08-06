@@ -10,7 +10,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
 use domain::users::Role;
 use domain::{user as UserApi, user_role as UserRoleApi, Id};
 use service::config::ApiVersion;
@@ -49,18 +48,12 @@ pub async fn index(
     }
 
     let administers_any_organization = authenticated_user.roles.iter().any(|role| {
-        role.role == Role::Admin
+        (role.role == Role::Admin && role.organization_id.is_some())
             || (role.role == Role::SuperAdmin && role.organization_id.is_none())
     });
 
     if !administers_any_organization {
-        return Err(DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::Forbidden,
-            )),
-        }
-        .into());
+        return Err(Error::Web(WebErrorKind::Forbidden));
     }
 
     let users = UserRoleApi::lookup_by_email_scoped(

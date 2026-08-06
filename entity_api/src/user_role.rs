@@ -5,7 +5,7 @@ use entity::user_roles::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait,
-    QueryFilter, QuerySelect, Set,
+    QueryFilter, QuerySelect, Set, SqlErr,
 };
 
 /// Partial unique index holding a user to one role per organization.
@@ -24,18 +24,25 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
 /// Only that index is recognised, so an unrelated unique violation keeps its
 /// `SystemError` mapping instead of being reported as a membership conflict.
 fn map_duplicate_role(err: DbErr, organization_id: Id) -> Error {
-    match err.to_string().to_lowercase() {
-        message
-            if message.contains("duplicate key value")
-                && message.contains(ONE_ROLE_PER_ORGANIZATION_INDEX) =>
-        {
-            Error {
-                source: Some(err),
-                error_kind: EntityApiErrorKind::UserAlreadyInOrganization { organization_id },
-            }
-        }
-        _ => Error::from(err),
+    if is_one_role_per_organization_violation(err.sql_err()) {
+        return Error {
+            source: Some(err),
+            error_kind: EntityApiErrorKind::UserAlreadyInOrganization { organization_id },
+        };
     }
+    Error::from(err)
+}
+
+/// Whether a database error is a violation of the one-role-per-organization index.
+///
+/// Split out from [`map_duplicate_role`] so the constraint-name policy is
+/// testable: a `DbErr` carrying a real `SqlErr` cannot be constructed by hand.
+fn is_one_role_per_organization_violation(sql_err: Option<SqlErr>) -> bool {
+    matches!(
+        sql_err,
+        Some(SqlErr::UniqueConstraintViolation(constraint))
+            if constraint.contains(ONE_ROLE_PER_ORGANIZATION_INDEX)
+    )
 }
 
 /// Grants `role` to `user_id` within `organization_id`.
