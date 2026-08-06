@@ -4,9 +4,12 @@ use entity::roles::Role;
 use entity::user_roles::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait,
     QueryFilter, QuerySelect, Set,
 };
+
+/// Partial unique index holding a user to one role per organization.
+const ONE_ROLE_PER_ORGANIZATION_INDEX: &str = "user_roles_user_org_unique";
 
 pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_many()
@@ -14,6 +17,25 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
         .exec(db)
         .await?;
     Ok(())
+}
+
+/// Translates a violation of the one-role-per-organization index into a 409.
+///
+/// Only that index is recognised, so an unrelated unique violation keeps its
+/// `SystemError` mapping instead of being reported as a membership conflict.
+fn map_duplicate_role(err: DbErr, organization_id: Id) -> Error {
+    match err.to_string().to_lowercase() {
+        message
+            if message.contains("duplicate key value")
+                && message.contains(ONE_ROLE_PER_ORGANIZATION_INDEX) =>
+        {
+            Error {
+                source: Some(err),
+                error_kind: EntityApiErrorKind::UserAlreadyInOrganization { organization_id },
+            }
+        }
+        _ => Error::from(err),
+    }
 }
 
 /// Grants `role` to `user_id` within `organization_id`.
@@ -24,6 +46,9 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
 /// cannot be scoped to an organization. Rejected before any query runs so the
 /// caller gets a 422 rather than the 500 the entity-level `before_save` guard
 /// would produce.
+///
+/// Returns `UserAlreadyInOrganization` when the user already holds a role there,
+/// including when two concurrent grants race past the application-level check.
 pub async fn create(
     db: &impl ConnectionTrait,
     user_id: Id,
@@ -41,7 +66,7 @@ pub async fn create(
     }
 
     let now = Utc::now();
-    Ok(ActiveModel {
+    ActiveModel {
         user_id: Set(user_id),
         organization_id: Set(Some(organization_id)),
         role: Set(role),
@@ -50,7 +75,8 @@ pub async fn create(
         ..Default::default()
     }
     .insert(db)
-    .await?)
+    .await
+    .map_err(|err| map_duplicate_role(err, organization_id))
 }
 
 /// Finds the role a user holds in a specific organization, if any.
