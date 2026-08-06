@@ -352,3 +352,52 @@ async fn remove_returns_204_for_another_member() {
 
     assert_eq!(api_status_code(response).await, 204);
 }
+
+/// Nothing else pins that the handler forwards the body's coach into the domain
+/// call: hardcoding `None` at the call site passes every other test in the suite.
+/// The mock is primed only for the coachless path, so a forwarded coach must run
+/// past the end of the queue and fail the request.
+#[tokio::test]
+async fn attach_forwards_the_requested_coach_to_the_domain_call() {
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let coach_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, None, users::Role::SuperAdmin);
+    let granted = test_role(target_id, Some(organization_id), users::Role::User);
+
+    let db = Arc::new(
+        mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![test_organization(organization_id)]])
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                requester(),
+                None,
+            )]])
+            .append_query_results([Vec::<user_roles::Model>::new()])
+            .append_query_results([vec![granted.clone()]])
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                requester(),
+                Some(granted),
+            )]])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "POST",
+        organization_id,
+        target_id,
+        Body::from(format!(r#"{{"role":"User","coach_id":"{coach_id}"}}"#)),
+    )
+    .await;
+
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "a coach in the body must reach the domain call, not be dropped"
+    );
+}

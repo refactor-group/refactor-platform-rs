@@ -496,3 +496,77 @@ async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Er
 
     Ok(())
 }
+
+/// The org-admin half of the lookup's `super_admin || shares_organization`
+/// condition. The super-admin test only covers the first disjunct.
+#[tokio::test]
+async fn lookup_by_email_scoped_returns_the_user_for_an_admin_of_a_shared_organization(
+) -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(
+            requester_id,
+            Some(organization_id),
+            Role::Admin,
+        )],
+    );
+    let target_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            user(target_id, vec![]),
+            None,
+        )]])
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([vec![id_row("id", Id::new_v4())]])
+        .into_connection();
+
+    let results = lookup_by_email_scoped(&db, &requester, "member@test.com").await?;
+
+    assert_eq!(
+        results.len(),
+        1,
+        "an admin of a shared org may see the user"
+    );
+    assert_eq!(results[0].id, target_id);
+
+    Ok(())
+}
+
+/// Documented in the function's `# Errors` section but previously unexercised.
+#[tokio::test]
+async fn remove_from_organization_rejects_a_non_member() {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .into_connection();
+
+    let error = remove_from_organization(&db, Id::new_v4(), Id::new_v4())
+        .await
+        .expect_err("expected a not-found rejection");
+
+    assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
+    assert!(
+        !statements(db).iter().any(|sql| sql.contains("DELETE")),
+        "a non-member must not trigger any delete"
+    );
+}
+
+/// Documented in the function's `# Errors` section but previously unexercised.
+#[tokio::test]
+async fn attach_to_organization_rejects_a_missing_organization() {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<organizations::Model>::new()])
+        .into_connection();
+
+    let error = attach_to_organization(&db, Id::new_v4(), Id::new_v4(), Role::User, None)
+        .await
+        .expect_err("expected a not-found rejection");
+
+    assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
+    assert!(
+        !statements(db).iter().any(|sql| sql.contains("INSERT")),
+        "a missing organization must not insert a role"
+    );
+}
