@@ -159,10 +159,8 @@ services:
     depends_on:
       - migrator
     volumes:
-      # CA cert for collab's own managed cluster (may differ from the app's).
-      # Falls back to /dev/null when unset so `docker compose config` stays valid
-      # on app-only deploys before the collab secret is provisioned.
-      - ${DOCS_COLLAB_SSL_ROOT_CERT:-/dev/null}:/app/root.crt:ro
+      # Collab lives on the same managed cluster as the app, so it shares the CA.
+      - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:1234/health"]
       interval: 15s

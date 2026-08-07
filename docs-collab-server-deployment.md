@@ -38,10 +38,12 @@ Phase 1) is cleanest. NOTE: `docs-collab-server` is in `members` but EXCLUDED fr
    more service. The only reused secret whose *value* changes is `TIPTAP_URL` (Cloud
    URL -> internal `http://docs-collab:1234`).
 
-   EXCEPTION (revised 2026-06-05): the database is no longer the shared `DATABASE_URL`.
-   The collab server uses its OWN managed Postgres via a dedicated
-   `DOCS_COLLAB_DATABASE_URL` plus that cluster's CA cert (`DOCS_COLLAB_SSL_ROOT_CERT`),
-   two new production secrets. See the Database placement decision below.
+   EXCEPTION (revised 2026-06-05, amended 2026-08-07): the database is no longer the
+   shared `DATABASE_URL`. The collab server uses its own database via a dedicated
+   `DOCS_COLLAB_DATABASE_URL`, one new production secret. That database lives on the
+   SAME managed cluster as the app, so it shares the app's CA cert
+   (`POSTGRES_SSL_ROOT_CERT`); there is no separate collab cert secret. See the
+   Database placement decision below.
 2. **Dedicated collab image.** The collab server ships as its own multi-stage
    `docs-collab-server/Dockerfile` with its own CI build+push job and image tag, kept
    separate from the app image. Config flows entirely through the compose
@@ -59,16 +61,20 @@ Phase 1) is cleanest. NOTE: `docs-collab-server` is in `members` but EXCLUDED fr
 
 - **Routing:** path-based `/collab` on the existing host (recommended) vs a
   `collab.` subdomain (new cert/DNS). Default: path-based.
-- **Database placement (revised 2026-06-05): dedicated managed instance.** The collab
-  server gets its OWN managed Postgres cluster (small tier), NOT the shared app DB. It
-  connects via a dedicated `DOCS_COLLAB_DATABASE_URL` plus that cluster's CA cert
-  (`DOCS_COLLAB_SSL_ROOT_CERT`). Rationale: decide the final home before the import (so
-  the ~250 docs land once, in place, with no future live migration), keep all ~22
-  connections of the 1 GB app tier for the app, and isolate the high-churn full-blob
-  UPSERT workload. A separate MANAGED instance avoids the durability downgrade a
-  self-managed container would carry. Frugal alternative if cost-bound: a separate
-  database + role on the existing managed cluster ($0, shares the cluster failure
-  domain, does not relieve the connection ceiling).
+- **Database placement (revised 2026-06-05, SETTLED 2026-08-07): separate database on
+  the EXISTING cluster.** The collab server gets its own database (`refactor_collab`),
+  NOT its own cluster and NOT the shared app database. It connects via a dedicated
+  `DOCS_COLLAB_DATABASE_URL`. Rationale: decide the final home before the import (so the
+  ~250 docs land once, in place, with no future live migration) and isolate the
+  high-churn full-blob UPSERT workload, at $0 and with no second cluster to operate.
+  Consequences of staying on one cluster, both accepted:
+  - Shared CA. The collab container mounts the app's `POSTGRES_SSL_ROOT_CERT`; no
+    separate cert secret exists.
+  - Shared connection ceiling. `max_connections` is per-CLUSTER, so this does NOT
+    relieve the 22-connection limit; the app and collab pools must be budgeted
+    together (see the pool sizing note below).
+  Rejected: a dedicated managed instance (relieves the ceiling and the failure domain,
+  but adds cost and a second cluster to operate for ~250 low-traffic documents).
 - **DB table ownership (revised): self-bootstrap on the dedicated DB.** On a single-role
   dedicated DB the server's `CREATE TABLE IF NOT EXISTS` bootstrap (`storage.rs`) creates
   `collab_documents` owned by the collab role automatically, so the SeaORM migration plus
@@ -133,10 +139,10 @@ Phase 5 - PARTIALLY done:
 
 - **CRITICAL (prod DB TLS):** the collab crate's `sqlx` had NO TLS feature
   (`["postgres","time","runtime-tokio"]`), but every managed DO Postgres needs
-  `sslmode=verify-full&sslrootcert=/app/root.crt`. Revised: this applies to collab's OWN
-  dedicated cluster too. Its `DOCS_COLLAB_DATABASE_URL` value must carry those params and
-  the container must mount that cluster's CA at `/app/root.crt` (via
-  `DOCS_COLLAB_SSL_ROOT_CERT`). Fix: `tls-rustls` in the crate's `sqlx` features
+  `sslmode=verify-full&sslrootcert=/app/root.crt`. Revised: this applies to the collab
+  database too. Its `DOCS_COLLAB_DATABASE_URL` value must carry those params and the
+  container must mount the cluster's CA at `/app/root.crt` (via the app's
+  `POSTGRES_SSL_ROOT_CERT`, same cluster). Fix: `tls-rustls` in the crate's `sqlx` features
   (Phase 1b, done) + the cert mount and SSL params (Phase 4/5). Does NOT affect PR preview
   (local non-SSL Postgres), so Phase 6 rehearsal would not catch it. Blocks Phase 8 (prod
   cutover).
@@ -160,10 +166,11 @@ Record the four decisions above in this doc. Readiness status:
   `OWNER TO refactor` concern does not arise (it existed only because the shared DB mixes
   `doadmin` and `refactor`). `collab_documents` is a plain table (no custom PG type), so
   the type-ownership gotcha also does not apply.
-- **New-cluster CA cert (readiness).** Provision the dedicated managed cluster, download
-  its CA cert, and set the `DOCS_COLLAB_DATABASE_URL` (value carrying
-  `?sslmode=verify-full&sslrootcert=/app/root.crt`) and `DOCS_COLLAB_SSL_ROOT_CERT` (host
-  path to that CA cert) production secrets before the cutover deploy.
+- **CA cert (readiness).** No new cert work: the collab database is on the app's
+  cluster, so the container mounts the existing `POSTGRES_SSL_ROOT_CERT` path. Only
+  `DOCS_COLLAB_DATABASE_URL` (value carrying
+  `?sslmode=verify-full&sslrootcert=/app/root.crt`) must be set as a production secret
+  before the cutover deploy.
 - **Cert covers WS route — CONFIRMED.** Apex `myrefactor.com` server block exists
   (`nginx/conf.d/refactor-platform.conf:77-83`) with a valid cert; it's the same block
   `/api/sse` lives in. `location /collab` goes there, reusing the cert. No new
@@ -244,11 +251,12 @@ exist; this is mostly referencing them for the new service):
   env (referencing existing `TIPTAP_JWT_SIGNING_KEY`/`TIPTAP_AUTH_KEY`, the DB vars,
   `BIND_ADDR`, timeouts). **Change the `TIPTAP_URL` value** in the GitHub `production`
   and `PR_PREVIEW_*` environments to the internal collab URL.
-- **NEW dedicated-DB secrets (revised 2026-06-05):** `DOCS_COLLAB_DATABASE_URL` and
-  `DOCS_COLLAB_SSL_ROOT_CERT` are added to the `deploy_to_do.yml` production heredoc (done)
-  and must be set as `production` environment secrets. PR preview keeps using its local
-  Postgres container, so no preview passthrough is required for these; only production
-  points at the dedicated managed cluster.
+- **NEW dedicated-DB secret (revised 2026-06-05, amended 2026-08-07):**
+  `DOCS_COLLAB_DATABASE_URL` is added to the `deploy_to_do.yml` production heredoc (done)
+  and must be set as a `production` environment secret. The CA cert reuses the app's
+  `POSTGRES_SSL_ROOT_CERT` (same cluster), so no second cert secret exists. PR preview
+  keeps using its local Postgres container, so no preview passthrough is required; only
+  production points at the managed cluster.
 - **Frontend**: add `NEXT_PUBLIC_DOCS_COLLAB_URL` to the frontend compose env and both
   deploy heredocs (prod: `wss://myrefactor.com/collab`; preview: the per-PR path), and
   to the GitHub vars. (Frontend PR refactor-platform-fe#409 already consumes it.)
