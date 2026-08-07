@@ -26,6 +26,6 @@ nginx/logs/
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
 
-# Per-phase implementation handoffs are working docs, not version-controlled.
-# Only the overall plan under docs/implementation-plans/ is committed.
+# Agent working docs (per-phase handoffs, scratch plans) are not version-controlled.
+.agents/
 docs/implementation-plans/handoffs/
