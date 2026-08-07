@@ -172,7 +172,7 @@ jobs:
           # Base URL of the frontend app, used to construct links in emails
           FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL }}
           # Public URL of the docs-collab-server, used by the frontend collaborative editor
-          NEXT_PUBLIC_DOCS_COLLAB_URL=${{ vars.NEXT_PUBLIC_DOCS_COLLAB_URL }}
+          DOCS_COLLAB_URL=${{ vars.DOCS_COLLAB_URL }}
 
           # -------- Frontend Config
           # Docker image for frontend
