@@ -85,6 +85,9 @@ async fn create_inserts_an_organization_scoped_role() -> Result<(), Error> {
 /// The mapping is matched on the constraint name rather than the message text,
 /// which is locale and version sensitive. A `DbErr` carrying a real `SqlErr`
 /// cannot be constructed by hand, so the policy is tested at its own boundary.
+/// The only guard on duplicate-membership returning 409 rather than 500. The
+/// racing insert can only be refused by the database, and `MockDatabase` cannot
+/// produce a real `SqlErr`, so this cannot be covered above the predicate.
 #[test]
 fn the_one_role_per_organization_index_is_recognised_as_a_membership_conflict() {
     assert!(is_one_role_per_organization_violation(Some(
@@ -106,8 +109,10 @@ fn an_unrelated_unique_index_is_not_a_membership_conflict() {
     assert!(!is_one_role_per_organization_violation(None));
 }
 
+/// A `DbErr` carrying no `SqlErr` must not be guessed at from its message text.
+/// Only a parsed unique violation on the membership index may become a conflict.
 #[tokio::test]
-async fn create_leaves_an_unrelated_unique_violation_as_a_system_error() {
+async fn create_leaves_an_unparsed_database_error_as_a_system_error() {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_errors([sea_orm::DbErr::Custom(
             "error returned from database: duplicate key value violates unique constraint \

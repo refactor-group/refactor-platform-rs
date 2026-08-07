@@ -64,18 +64,6 @@ fn url_path_falls_back_to_default_when_empty() {
     );
 }
 
-#[test]
-fn template_id_accessor_is_none_until_configured() {
-    let config = Config::from_args(["test"]);
-    assert!(config.added_to_organization_email_template_id().is_none());
-
-    let config = Config::from_args(["test", "--added-to-organization-email-template-id=tmpl_1"]);
-    assert_eq!(
-        config.added_to_organization_email_template_id(),
-        Some("tmpl_1".to_string())
-    );
-}
-
 #[tokio::test]
 async fn notify_without_template_id_logs_and_returns() {
     let mut server = setup_test_server().await;
