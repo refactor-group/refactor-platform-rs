@@ -210,6 +210,98 @@ async fn attach_returns_404_for_a_user_the_admin_cannot_see() {
 }
 
 #[tokio::test]
+async fn attach_returns_201_for_an_org_admin_who_can_see_the_target() {
+    // The driving use case: an admin of two organizations moving a member of one
+    // into the other. Distinct from the super admin path, which short-circuits the
+    // visibility probe entirely, so that test cannot catch org admins losing this.
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+    let granted = test_role(target_id, Some(organization_id), users::Role::User);
+
+    let db = Arc::new(
+        mock_through_extractor(&user, &role, organization_id)
+            // Visibility probe: an administered org, and the target is in it.
+            .append_query_results([vec![id_row("organization_id", organization_id)]])
+            .append_query_results([vec![id_row("id", Id::new_v4())]])
+            .append_query_results([vec![test_organization(organization_id)]])
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                requester(),
+                None,
+            )]])
+            .append_query_results([Vec::<user_roles::Model>::new()])
+            .append_query_results([vec![granted.clone()]])
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                requester(),
+                Some(granted),
+            )]])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "POST",
+        organization_id,
+        target_id,
+        Body::from(r#"{"role":"User"}"#),
+    )
+    .await;
+
+    assert_eq!(api_status_code(response).await, 201);
+}
+
+#[tokio::test]
+async fn attach_returns_409_for_an_org_admin_whose_only_visible_users_are_members() {
+    // The other half of the visibility rule. An org admin can only see users in
+    // organizations they administer, so for an admin of a single organization every
+    // visible user is already a member and attach can only ever conflict. Pins the
+    // mechanism behind that; the graph-level claim is exercised live, not here.
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(
+        mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![id_row("organization_id", organization_id)]])
+            .append_query_results([vec![id_row("id", Id::new_v4())]])
+            .append_query_results([vec![test_organization(organization_id)]])
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                requester(),
+                None,
+            )]])
+            // Already holds a role here, which is the only state a single-org
+            // admin's visible users can be in.
+            .append_query_results([vec![test_role(
+                target_id,
+                Some(organization_id),
+                users::Role::User,
+            )]])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "POST",
+        organization_id,
+        target_id,
+        Body::from(r#"{"role":"User"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn attach_returns_201_for_a_super_admin() {
     let organization_id = Id::new_v4();
     let target_id = Id::new_v4();
