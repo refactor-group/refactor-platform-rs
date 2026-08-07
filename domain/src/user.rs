@@ -176,9 +176,16 @@ pub(crate) fn new_coaching_relationship(
 }
 
 pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
+    let txn = db.begin().await.map_err(|e| Error {
+        source: Some(Box::new(e)),
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::DbTransaction,
+        )),
+    })?;
+
     // This delete is global, so refuse it while the account is still reachable from
     // another organization. Callers should remove the membership instead.
-    let organization_count = crate::user_role::count_organizations(db, user_id).await?;
+    let organization_count = crate::user_role::count_organizations(&txn, user_id).await?;
     if organization_count > 1 {
         return Err(EntityApiError {
             source: None,
@@ -189,12 +196,19 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
         .into());
     }
 
-    let txn = db.begin().await.map_err(|e| Error {
-        source: Some(Box::new(e)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-            EntityErrorKind::DbTransaction,
-        )),
-    })?;
+    // Deleting the account drops its role rows, so it owes the organization the
+    // same last-admin invariant the remove-from-organization path enforces.
+    // Reachable by a super admin, who passes the org gate without being an admin
+    // of the organization themselves.
+    for organization_id in user_role::find_administered_organizations(&txn, user_id).await? {
+        if user_role::count_admins_in_organization(&txn, organization_id).await? <= 1 {
+            return Err(EntityApiError {
+                source: None,
+                error_kind: EntityApiErrorKind::LastOrganizationAdmin { organization_id },
+            }
+            .into());
+        }
+    }
 
     coaching_relationship::delete_by_user_id(&txn, user_id).await?;
     user_role::delete_by_user_id(&txn, user_id).await?;

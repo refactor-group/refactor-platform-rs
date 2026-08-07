@@ -129,6 +129,25 @@ pub async fn count_organizations_for_user(
         .await?)
 }
 
+/// Organizations in which the user holds the Admin role.
+pub async fn find_administered_organizations(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+) -> Result<Vec<Id>, Error> {
+    Ok(Entity::find()
+        .select_only()
+        .column(Column::OrganizationId)
+        .filter(Column::UserId.eq(user_id))
+        .filter(Column::Role.eq(Role::Admin))
+        .filter(Column::OrganizationId.is_not_null())
+        .into_tuple::<Option<Id>>()
+        .all(db)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
 /// Counts the admins of an organization, locking those rows for the caller's
 /// transaction.
 ///

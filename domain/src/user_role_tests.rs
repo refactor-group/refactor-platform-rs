@@ -516,9 +516,41 @@ async fn delete_refuses_a_user_who_belongs_to_multiple_organizations() {
 }
 
 #[tokio::test]
+async fn delete_refuses_when_the_user_is_an_organizations_last_admin() {
+    let organization_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![count_row(1)]])
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([[user_role_model(
+            Id::new_v4(),
+            Some(organization_id),
+            Role::Admin,
+        )]])
+        .into_connection();
+
+    let error = crate::user::delete(&db, Id::new_v4())
+        .await
+        .expect_err("expected last-admin rejection");
+
+    assert_eq!(
+        entity_error_kind(&error),
+        &EntityErrorKind::LastOrganizationAdmin { organization_id }
+    );
+    // Deleting the account drops its role rows, so it must not be allowed to
+    // leave the organization unadministrable by that back door.
+    assert!(
+        !statements(db).iter().any(|sql| sql.contains("DELETE")),
+        "nothing may be deleted when the account is an organization's last admin"
+    );
+}
+
+#[tokio::test]
 async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Error> {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([vec![count_row(1)]])
+        // Administers nothing, so the last-admin guard has nothing to check.
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
         .append_exec_results([exec_result(1), exec_result(1), exec_result(1)])
         .into_connection();
 
