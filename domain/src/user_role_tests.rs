@@ -264,7 +264,7 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
-        .append_query_results([vec![count_row(1)]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .into_connection();
 
     let error = remove_from_organization(&db, organization_id, user_id)
@@ -275,9 +275,18 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
         entity_error_kind(&error),
         &EntityErrorKind::LastOrganizationAdmin { organization_id }
     );
+
+    let sql = statements(db);
     assert!(
-        !statements(db).iter().any(|sql| sql.contains("DELETE")),
+        !sql.iter().any(|sql| sql.contains("DELETE")),
         "the last admin must not be deleted"
+    );
+    // Without the row lock two concurrent removals both see two admins and both
+    // commit, leaving the organization with none.
+    assert!(
+        sql.iter()
+            .any(|sql| sql.contains("user_roles") && sql.contains("FOR UPDATE")),
+        "the admin count must lock the rows it counts: {sql:?}"
     );
 }
 

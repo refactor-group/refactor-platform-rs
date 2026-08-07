@@ -129,7 +129,17 @@ pub async fn count_organizations_for_user(
         .await?)
 }
 
-/// Counts the admins of an organization.
+/// Counts the admins of an organization, locking those rows for the caller's
+/// transaction.
+///
+/// The lock is what makes the last-admin guard safe. Read committed lets two
+/// concurrent removals both observe two admins and both commit, leaving the
+/// organization with none; taking `FOR UPDATE` here makes the second removal
+/// wait and then re-read a count of one. Postgres rejects `FOR UPDATE`
+/// alongside an aggregate, so the rows are counted in Rust rather than by
+/// `COUNT(*)`.
+///
+/// Callers must run inside a transaction for the lock to outlive this call.
 pub async fn count_admins_in_organization(
     db: &impl ConnectionTrait,
     organization_id: Id,
@@ -137,8 +147,10 @@ pub async fn count_admins_in_organization(
     Ok(Entity::find()
         .filter(Column::OrganizationId.eq(organization_id))
         .filter(Column::Role.eq(Role::Admin))
-        .count(db)
-        .await?)
+        .lock_exclusive()
+        .all(db)
+        .await?
+        .len() as u64)
 }
 
 /// Whether `requester_id` administers an organization that `target_user_id` belongs to.

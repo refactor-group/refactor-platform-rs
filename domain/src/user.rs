@@ -1,17 +1,18 @@
 use std::collections::HashMap;
 
-use crate::{
-    coaching_relationships,
-    error::Error,
-    error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
-    magic_link_token, magic_link_tokens, users, Id,
-};
 use chrono::Utc;
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::{
     coaching_relationship, coaching_session, mutate, query,
     query::{IntoQueryFilterMap, QuerySort},
     user, user_role,
+};
+
+use crate::{
+    coaching_relationships,
+    error::Error,
+    error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
+    magic_link_token, magic_link_tokens, users, Id,
 };
 pub use entity_api::{
     user::{

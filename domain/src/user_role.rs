@@ -4,14 +4,15 @@
 //! organizations, so these operations are always scoped to one organization and
 //! never touch the `users` row itself.
 
-use crate::error::Error;
-use crate::user::{new_coaching_relationship, Role};
-use crate::{users, Id};
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::{coaching_relationship, organization, user, user_role};
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+use crate::error::Error;
+use crate::user::{new_coaching_relationship, Role};
+use crate::{users, Id};
 
 /// Minimal projection of a user returned by an email lookup.
 ///
