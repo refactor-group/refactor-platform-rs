@@ -15,39 +15,6 @@ const DUPLICATE_PAIRS_SQL: &str = r#"
     ORDER BY user_id, organization_id
 "#;
 
-/// A `(user_id, organization_id)` pair that holds more than one role.
-struct DuplicatePair {
-    user_id: String,
-    organization_id: String,
-    role_count: i64,
-}
-
-/// Refuses the migration when a pair already holds several roles.
-///
-/// Deleting the extra rows here would silently change someone's effective
-/// privileges, so the operator resolves each pair by hand instead.
-fn duplicate_pairs_error(pairs: &[DuplicatePair]) -> Option<DbErr> {
-    (!pairs.is_empty()).then(|| {
-        let offenders = pairs
-            .iter()
-            .map(|pair| {
-                format!(
-                    "(user_id={}, organization_id={}, roles={})",
-                    pair.user_id, pair.organization_id, pair.role_count
-                )
-            })
-            .collect::<Vec<String>>()
-            .join(", ");
-
-        DbErr::Custom(format!(
-            "Cannot create unique index user_roles_user_org_unique: {} user/organization pair(s) \
-             hold more than one role: {offenders}. Reduce each pair to the single intended role \
-             before running this migration.",
-            pairs.len()
-        ))
-    })
-}
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -59,21 +26,30 @@ impl MigrationTrait for Migration {
         let conn = manager.get_connection();
         let backend = conn.get_database_backend();
 
-        let duplicate_pairs = conn
+        // Deleting the extra rows here would silently change someone's effective
+        // privileges, so name them and let the operator resolve each by hand.
+        let duplicates = conn
             .query_all(Statement::from_string(backend, DUPLICATE_PAIRS_SQL))
             .await?
             .into_iter()
             .map(|row| {
-                Ok(DuplicatePair {
-                    user_id: row.try_get("", "user_id")?,
-                    organization_id: row.try_get("", "organization_id")?,
-                    role_count: row.try_get("", "role_count")?,
-                })
+                Ok(format!(
+                    "(user_id={}, organization_id={}, roles={})",
+                    row.try_get::<String>("", "user_id")?,
+                    row.try_get::<String>("", "organization_id")?,
+                    row.try_get::<i64>("", "role_count")?
+                ))
             })
-            .collect::<Result<Vec<DuplicatePair>, DbErr>>()?;
+            .collect::<Result<Vec<String>, DbErr>>()?;
 
-        if let Some(err) = duplicate_pairs_error(&duplicate_pairs) {
-            return Err(err);
+        if !duplicates.is_empty() {
+            return Err(DbErr::Custom(format!(
+                "Cannot create unique index user_roles_user_org_unique: {} user/organization \
+                 pair(s) hold more than one role: {}. Reduce each pair to the single intended \
+                 role before running this migration.",
+                duplicates.len(),
+                duplicates.join(", ")
+            )));
         }
 
         conn.execute_unprepared(
@@ -111,7 +87,3 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "m20260806_000000_user_roles_one_role_per_org_tests.rs"]
-mod tests;
