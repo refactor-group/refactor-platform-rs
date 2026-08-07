@@ -4,10 +4,10 @@ pub(crate) mod user_controller;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
-#[path = "user_role_tests.rs"]
-mod user_role_tests;
+#[path = "user_controller_tests.rs"]
+mod user_controller_tests;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
-#[path = "user_controller_tests.rs"]
-mod user_controller_tests;
+#[path = "user_controller_role_tests.rs"]
+mod user_controller_role_tests;

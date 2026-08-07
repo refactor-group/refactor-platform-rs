@@ -3,9 +3,6 @@ pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
 pub(crate) mod goal;
 
-#[cfg(test)]
-mod tests;
-
 // Re-export user profile update params for backward compatibility
 use domain::{users, users::Role, Id, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
@@ -190,3 +187,7 @@ impl IntoUpdateMap for PasswordResetCompleteParams {
         update_map
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
