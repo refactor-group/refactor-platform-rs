@@ -24,7 +24,6 @@ pub struct LookupParams {
 pub struct AttachRoleParams {
     pub role: Role,
     /// Coach to assign in the same transaction as the membership.
-    #[serde(default)]
     pub coach_id: Option<Id>,
 }
 
@@ -38,7 +37,6 @@ pub struct CreateMemberParams {
     #[serde(flatten)]
     pub user: users::Model,
     /// Coach to assign in the same transaction as the new account.
-    #[serde(default)]
     pub coach_id: Option<Id>,
 }
 
