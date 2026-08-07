@@ -1,4 +1,3 @@
-use sea_orm::Statement;
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]
@@ -21,22 +20,18 @@ const DROP_INDEX_SQL: &str = r#"
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
-        db.execute(Statement::from_string(
-            manager.get_database_backend(),
-            CREATE_INDEX_SQL,
-        ))
-        .await?;
+        manager
+            .get_connection()
+            .execute_unprepared(CREATE_INDEX_SQL)
+            .await?;
         Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
-        db.execute(Statement::from_string(
-            manager.get_database_backend(),
-            DROP_INDEX_SQL,
-        ))
-        .await?;
+        manager
+            .get_connection()
+            .execute_unprepared(DROP_INDEX_SQL)
+            .await?;
         Ok(())
     }
 }
