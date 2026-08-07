@@ -136,6 +136,41 @@ services:
     networks:
       - backend_network
 
+  docs-collab:
+    image: ${DOCS_COLLAB_IMAGE_NAME}
+    build:
+      context: .
+      dockerfile: docs-collab-server/Dockerfile
+    platform: ${PLATFORM}
+    container_name: docs-collab
+    environment:
+      # Collab's OWN managed Postgres (not the shared app DB). The secret value
+      # must embed ?sslmode=verify-full&sslrootcert=/app/root.crt.
+      DATABASE_URL: ${DOCS_COLLAB_DATABASE_URL}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
+      JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+      MANAGEMENT_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      BIND_ADDR: 0.0.0.0:1234
+      PERSIST_DEBOUNCE_MS: ${DOCS_COLLAB_PERSIST_DEBOUNCE_MS:-500}
+      IDLE_EVICT_SECS: ${DOCS_COLLAB_IDLE_EVICT_SECS:-300}
+      DB_MAX_CONNECTIONS: ${DOCS_COLLAB_DB_MAX_CONNECTIONS:-4}
+      DB_MIN_CONNECTIONS: ${DOCS_COLLAB_DB_MIN_CONNECTIONS:-1}
+      RUST_LOG: ${DOCS_COLLAB_RUST_LOG:-info}
+    depends_on:
+      - migrator
+    volumes:
+      # Collab lives on the same managed cluster as the app, so it shares the CA.
+      - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:1234/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend_network
+    restart: unless-stopped
+
   nextjs-app:
     image: ${FRONTEND_IMAGE_NAME}
     build:
@@ -152,6 +187,7 @@ services:
       NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${BACKEND_SERVICE_API_PATH:-api}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION:-1.0.0-beta1}
       NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      NEXT_PUBLIC_DOCS_COLLAB_URL: ${DOCS_COLLAB_URL}
       FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
       FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT:-3000}
       FRONTEND_IMAGE_NAME: ${FRONTEND_IMAGE_NAME}

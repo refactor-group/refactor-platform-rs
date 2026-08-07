@@ -75,6 +75,8 @@ jobs:
           IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository }}"
           echo "backend_tags=$IMAGE_NAME:stable" >> $GITHUB_OUTPUT  # Tag image as "stable"
           echo "backend_image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "docs_collab_image_name=$IMAGE_NAME/docs-collab" >> $GITHUB_OUTPUT
+          echo "docs_collab_tags=$IMAGE_NAME/docs-collab:stable" >> $GITHUB_OUTPUT  # Tag docs-collab as "stable"
 
       - name: Build + Push Backend
         id: push_backend
@@ -88,6 +90,19 @@ jobs:
           tags: ${{ steps.tags.outputs.backend_tags }}  # Use "stable" tag
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build + Push docs-collab
+        id: push_docs_collab
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docs-collab-server/Dockerfile
+          platforms: linux/amd64,linux/arm64  # Multi-arch build
+          push: true
+          provenance: true
+          tags: ${{ steps.tags.outputs.docs_collab_tags }}  # Use "stable" tag
+          cache-from: type=gha,scope=docs-collab
+          cache-to: type=gha,scope=docs-collab,mode=max
 
       - name: Show Docker Build Cache (After)
         run: |
@@ -103,9 +118,19 @@ jobs:
           subject-digest: ${{ steps.push_backend.outputs.digest }}
           push-to-registry: true
 
+      - name: Attest docs-collab
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.tags.outputs.docs_collab_image_name }}
+          subject-digest: ${{ steps.push_docs_collab.outputs.digest }}
+          push-to-registry: true
+
       - name: Print Usage Instructions
         run: |
           echo "Backend Image Pushed to ghcr.io as STABLE:"
           echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:stable"
+          echo "docs-collab Image Pushed to ghcr.io as STABLE:"
+          echo "  docker pull ${{ steps.tags.outputs.docs_collab_image_name }}:stable"
           echo "Run it locally:"
           echo "  docker run --rm --env-file .env -p ${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }} ${{ steps.tags.outputs.backend_image_name }}:stable"

@@ -37,8 +37,8 @@ The Refactor Platform is a coaching management system built with Rust (Axum back
 - **Connection Management**: In-memory registry for active user connections (single-instance only)
 
 ### External Integrations
-- **TipTap**: Collaborative document editing service
-- **JWT**: Token generation and validation service
+- **Collaboration server (docs-collab-server)**: Self-hosted, Hocuspocus-compatible collaboration server (Rust/Axum) that replaces TipTap Cloud for coaching notes. The `domain::gateway::tiptap` client calls its REST API to create/delete documents; the frontend connects to it **directly** over a WebSocket for live editing, exactly as it previously connected straight to TipTap Cloud. The collaboration WebSocket never proxies through this Axum backend; only the endpoint moved (from `wss://<appId>.collab.tiptap.cloud` to the self-hosted server). The backend's role (mint the JWT, manage documents via REST) is unchanged. See `docs/architecture/docs_collab_server_components.md`.
+- **JWT**: Collaboration token generation (`domain::jwt::generate_collab_token`), HS256-signed with the shared `tiptap_jwt_signing_key`; verified by the collaboration server.
 - **Resend**: Transactional email service for notifications
 
 ## Data Flow Example
@@ -89,8 +89,8 @@ graph TB
     DB[(PostgreSQL Database<br/>refactor_platform schema)]
     
     %% External Services
-    TipTap[TipTap Gateway<br/>Document Collaboration]
-    JWT[JWT Service<br/>Token Generation]
+    Collab[docs-collab-server<br/>Self-hosted Hocuspocus collab]
+    JWT[JWT Service<br/>Collab Token Generation]
     Resend[Resend<br/>Email Service]
     
     %% Request Flow
@@ -147,9 +147,12 @@ graph TB
     Auth -.-> DB
     
     %% External Integrations
-    Domain --> TipTap
+    Domain -->|REST create/delete docs| Collab
     Domain --> JWT
     Domain --> Resend
+
+    %% Frontend connects to the collaboration server directly (not via this backend)
+    Client -.->|WebSocket: live collab sync| Collab
     
     %% Styling
     classDef external fill:#e1f5fe

@@ -1,0 +1,81 @@
+{
+  "source": "@hocuspocus/common 2.15.3 + y-protocols 1.0.6 + yjs 13.6.27 + lib0 0.2.114",
+  "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+  "auth_token": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.fake",
+  "stateless_payload": "hello stateless",
+  "authenticated_scope": "read-write",
+  "permission_denied_reason": "not authorized",
+  "fixtures": [
+    {
+      "file": "sync_step1.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "SyncStep1",
+      "outer_tag": 0
+    },
+    {
+      "file": "sync_step2.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "SyncStep2",
+      "outer_tag": 0
+    },
+    {
+      "file": "update.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "Update",
+      "outer_tag": 0
+    },
+    {
+      "file": "awareness.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "Awareness",
+      "outer_tag": 1
+    },
+    {
+      "file": "awareness_query.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "AwarenessQuery",
+      "outer_tag": 3
+    },
+    {
+      "file": "auth_token.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "AuthToken",
+      "outer_tag": 2,
+      "payload_string": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.fake"
+    },
+    {
+      "file": "stateless.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "Stateless",
+      "outer_tag": 5,
+      "payload_string": "hello stateless"
+    },
+    {
+      "file": "close.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "Close",
+      "outer_tag": 7
+    },
+    {
+      "file": "authenticated.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "Authenticated",
+      "outer_tag": 2,
+      "payload_string": "read-write"
+    },
+    {
+      "file": "permission_denied.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "PermissionDenied",
+      "outer_tag": 2,
+      "payload_string": "not authorized"
+    },
+    {
+      "file": "sync_status.bin",
+      "doc_name": "refactor-coaching.alice-bob.aaaaaaaa-v0",
+      "kind": "SyncStatus",
+      "outer_tag": 8,
+      "payload_bool": true
+    }
+  ]
+}

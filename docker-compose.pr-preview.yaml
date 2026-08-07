@@ -151,6 +151,59 @@ services:
       - preview-ingress
     restart: unless-stopped               # Restart automatically unless manually stopped
 
+  # Creates the dedicated collab database so docs-collab owns collab_documents
+  # in its own database, mirroring prod's separate DOCS_COLLAB_DATABASE_URL.
+  # Idempotent (creates refactor_collab only if absent), so it is safe on both
+  # fresh and reused per-PR volumes. Prod creates this DB out-of-band on the
+  # managed cluster; only the ephemeral preview needs to bootstrap it here.
+  collab-db-init:
+    image: postgres:17
+    profiles: [collab]
+    platform: linux/arm64/v8
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    command: >
+      sh -c "psql -h postgres -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc
+      \"SELECT 1 FROM pg_database WHERE datname='refactor_collab'\" | grep -q 1
+      || psql -h postgres -U ${POSTGRES_USER} -d ${POSTGRES_DB}
+      -c 'CREATE DATABASE refactor_collab OWNER ${POSTGRES_USER}'"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+    restart: "no"
+
+  # Self-hosted collaborative document server (per-PR)
+  docs-collab:
+    image: ${DOCS_COLLAB_IMAGE}
+    # Started only when the deploy activates the `collab` profile (image was built).
+    profiles: [collab]
+    platform: linux/arm64/v8
+    environment:
+      # Dedicated collab database (created by collab-db-init), mirroring prod's
+      # separate DOCS_COLLAB_DATABASE_URL. docs-collab bootstraps its own schema
+      # + collab_documents table here; it never touches the app database.
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/refactor_collab
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA}
+      JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+      MANAGEMENT_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      BIND_ADDR: 0.0.0.0:1234
+      PERSIST_DEBOUNCE_MS: ${DOCS_COLLAB_PERSIST_DEBOUNCE_MS:-500}
+      IDLE_EVICT_SECS: ${DOCS_COLLAB_IDLE_EVICT_SECS:-300}
+      DB_MAX_CONNECTIONS: ${DOCS_COLLAB_DB_MAX_CONNECTIONS:-4}
+      DB_MIN_CONNECTIONS: ${DOCS_COLLAB_DB_MIN_CONNECTIONS:-1}
+      RUST_LOG: ${DOCS_COLLAB_RUST_LOG:-info}
+    expose:
+      - "1234"
+    depends_on:
+      collab-db-init:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - preview-ingress
+    restart: unless-stopped
+
   # Frontend application service
   frontend:
     image: ${FRONTEND_IMAGE}              # PR-specific frontend image
@@ -169,6 +222,7 @@ services:
       NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${NEXT_PUBLIC_BACKEND_SERVICE_API_PATH}
       NEXT_PUBLIC_BACKEND_API_VERSION: ${NEXT_PUBLIC_BACKEND_API_VERSION:-1.0.0-beta1}
       NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      NEXT_PUBLIC_DOCS_COLLAB_URL: ${DOCS_COLLAB_URL}
     # Expose port to Docker networks only (no host port binding)
     expose:
       - "3000"                            # Container listens on port 3000
