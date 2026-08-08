@@ -144,10 +144,6 @@ fn mock_attach_with_coach(organization_id: Id, user_id: Id, coach_id: Id) -> Moc
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership])
         .append_query_results([Vec::<coaching_relationships::Model>::new()])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([
-            vec![(user(coach_id, vec![]), None)],
-            vec![(user(user_id, vec![]), None)],
-        ])
 }
 
 #[tokio::test]

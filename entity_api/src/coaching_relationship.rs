@@ -7,7 +7,7 @@ use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationships::{self, ActiveModel, Entity, Model},
-    Id,
+    users, Id,
 };
 use log::*;
 use sea_orm::{
@@ -19,6 +19,10 @@ use serde::Serialize;
 use slugify::slugify;
 use utoipa::ToSchema;
 
+/// Creates a coaching relationship between a coach and a coachee in an organization.
+///
+/// Returns the existing relationship when one already exists for that coach, coachee
+/// and organization.
 pub async fn create(
     db: &impl ConnectionTrait,
     organization_id: Id,
@@ -77,26 +81,20 @@ pub async fn create(
 
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
-    let existing_coaching_relationships = find_by_organization(db, organization_id).await?;
-    let existing_coaching_relationship = existing_coaching_relationships.iter().find(|cr| {
-        cr.coach_id == coaching_relationship_model.coach_id
-            && cr.coachee_id == coaching_relationship_model.coachee_id
-    });
-
-    if existing_coaching_relationship.is_some() {
-        error!("Coaching relationship already exists for coach: {} and coachee: {} in organization: {}", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, coaching_relationship_model.organization_id);
-        return Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::ValidationError {
-                message: "Coaching relationship already exists for this coach and coachee in the organization.".into(),
-                details: None,
-            },
+    let existing_coaching_relationship = find_by_organization(db, organization_id)
+        .await?
+        .into_iter()
+        .find(|cr| {
+            cr.coach_id == coaching_relationship_model.coach_id
+                && cr.coachee_id == coaching_relationship_model.coachee_id
         });
+
+    if let Some(existing) = existing_coaching_relationship {
+        debug!("Reusing existing coaching relationship: {existing:?}");
+        return Ok(with_user_names(existing, &coach, &coachee));
     }
 
     let now = Utc::now();
-    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
-    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
     let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
@@ -110,17 +108,26 @@ pub async fn create(
     };
     let inserted: Model = coaching_relationship_active_model.insert(db).await?;
 
-    Ok(CoachingRelationshipWithUserNames {
-        id: inserted.id,
-        coach_id: inserted.coach_id,
-        coachee_id: inserted.coachee_id,
-        coach_first_name: coach.first_name,
-        coach_last_name: coach.last_name,
-        coachee_first_name: coachee.first_name,
-        coachee_last_name: coachee.last_name,
-        created_at: inserted.created_at,
-        updated_at: inserted.updated_at,
-    })
+    Ok(with_user_names(inserted, &coach, &coachee))
+}
+
+/// Pairs a coaching relationship with the names of its coach and coachee.
+fn with_user_names(
+    coaching_relationship: Model,
+    coach: &users::Model,
+    coachee: &users::Model,
+) -> CoachingRelationshipWithUserNames {
+    CoachingRelationshipWithUserNames {
+        id: coaching_relationship.id,
+        coach_id: coaching_relationship.coach_id,
+        coachee_id: coaching_relationship.coachee_id,
+        coach_first_name: coach.first_name.clone(),
+        coach_last_name: coach.last_name.clone(),
+        coachee_first_name: coachee.first_name.clone(),
+        coachee_last_name: coachee.last_name.clone(),
+        created_at: coaching_relationship.created_at,
+        updated_at: coaching_relationship.updated_at,
+    }
 }
 
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
@@ -705,3 +712,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_reuse_tests.rs"]
+mod reuse_tests;

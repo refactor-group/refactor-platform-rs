@@ -75,8 +75,7 @@ fn mock_user_creation(
 }
 
 /// Mocks the lookups `entity_api::coaching_relationship::create` runs before it
-/// inserts: the organization, both parties, their memberships, the duplicate
-/// check, then both parties again for the slug.
+/// inserts: the organization, both parties, their memberships, the duplicate check.
 fn mock_relationship_preflight(
     db: MockDatabase,
     organization_id: Id,
@@ -86,18 +85,14 @@ fn mock_relationship_preflight(
     let membership = [organization(organization_id)];
     db.append_query_results([[organization(organization_id)]])
         .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([
-            vec![(coach.clone(), None)],
-            vec![(coachee.clone(), None)],
+            vec![(coach, None)],
+            vec![(coachee, None)],
         ])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership.clone()])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership])
         .append_query_results([Vec::<coaching_relationships::Model>::new()])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([
-            vec![(coach, None)],
-            vec![(coachee, None)],
-        ])
 }
 
 #[tokio::test]
