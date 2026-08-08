@@ -291,35 +291,31 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
 }
 
 #[tokio::test]
-async fn remove_from_organization_refuses_when_the_member_has_sessions() {
+async fn remove_from_organization_succeeds_when_the_member_has_sessions() -> Result<(), Error> {
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
     let relationship_id = Id::new_v4();
 
+    // The member still has a relationship carrying sessions; removal ignores it.
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_query_results([vec![id_row("id", relationship_id)]])
         .append_query_results([vec![count_row(2)]])
+        .append_exec_results([exec_result(1)])
         .into_connection();
 
-    let error = remove_from_organization(&db, organization_id, user_id)
-        .await
-        .expect_err("expected a refusal when sessions exist");
+    remove_from_organization(&db, organization_id, user_id).await?;
 
-    assert_eq!(
-        entity_error_kind(&error),
-        &EntityErrorKind::UserHasCoachingHistory {
-            organization_id,
-            coaching_relationship_count: 1,
-            coaching_session_count: 2,
-        }
-    );
-    // Deleting the relationship would violate the coaching_sessions foreign key,
-    // and cascade away the goal and series rows that do cascade.
+    // The coaching history is the record of work done; removal revokes access to
+    // it rather than destroying it.
     assert!(
-        !statements(db).iter().any(|sql| sql.contains("DELETE")),
-        "nothing may be deleted when the member still has sessions"
+        !statements(db)
+            .iter()
+            .any(|sql| sql.contains("DELETE") && sql.contains("coaching_")),
+        "removal must not delete the member's coaching history"
     );
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -329,8 +325,7 @@ async fn remove_from_organization_deletes_only_the_target_org_membership() -> Re
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .append_exec_results([exec_result(1), exec_result(1)])
+        .append_exec_results([exec_result(1)])
         .into_connection();
 
     remove_from_organization(&db, organization_id, user_id).await?;
@@ -340,12 +335,9 @@ async fn remove_from_organization_deletes_only_the_target_org_membership() -> Re
         .filter(|sql| sql.contains("DELETE"))
         .collect();
 
-    assert_eq!(deletes.len(), 2, "{deletes:?}");
+    assert_eq!(deletes.len(), 1, "{deletes:?}");
     assert!(deletes.iter().all(|sql| sql.contains("organization_id")));
     assert!(deletes.iter().any(|sql| sql.contains("user_roles")));
-    assert!(deletes
-        .iter()
-        .any(|sql| sql.contains("coaching_relationships")));
 
     Ok(())
 }
