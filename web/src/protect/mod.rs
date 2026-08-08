@@ -14,7 +14,6 @@ pub(crate) mod coaching_sessions;
 pub(crate) mod goals;
 pub(crate) mod jwt;
 pub(crate) mod notes;
-pub(crate) mod organizations;
 pub(crate) mod tiptap_metrics;
 pub(crate) mod users;
 

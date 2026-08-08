@@ -1,6 +1,7 @@
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::coaching_relationship_access::CoachingRelationshipAccess;
+use crate::extractors::organization_admin_access::OrganizationAdminAccess;
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
@@ -20,7 +21,16 @@ use service::config::ApiVersion;
 
 use log::*;
 
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_authz_tests.rs"]
+mod authz_tests;
+
 /// CREATE a new CoachingRelationship.
+///
+/// Restricted to administrators of the organization named in the path. Idempotent:
+/// when a relationship already exists for this coach and coachee in the organization,
+/// that relationship is returned rather than a duplicate created.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/coaching_relationships",
@@ -29,8 +39,10 @@ use log::*;
     ),
     request_body = entity::coaching_relationships::Model,
     responses(
-        (status = 200, description = "Successfully created a new Coaching Relationship", body = [coaching_relationships::Model]),
+        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee", body = [coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller does not administer the organization"),
+        (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -41,14 +53,14 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
     Json(coaching_relationship_model): Json<coaching_relationships::Model>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("CREATE new Coaching Relationship from: {coaching_relationship_model:?}");
 
     let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
         app_state.db_conn_ref(),
-        organization_id,
+        organization.id,
         coaching_relationship_model,
     )
     .await?;

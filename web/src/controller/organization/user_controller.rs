@@ -160,6 +160,9 @@ pub(crate) async fn resend_invite(
 /// optionally assigning them a coach in the same transaction. The caller must
 /// administer the organization and must already be able to see the target user,
 /// otherwise the response is indistinguishable from a missing user.
+///
+/// A coaching relationship surviving an earlier removal is reused, so re-adding a
+/// member with their original coach restores their history rather than conflicting.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/users/{user_id}/role",
@@ -175,7 +178,7 @@ pub(crate) async fn resend_invite(
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "No such user, or a user the caller may not see"),
         (status = 409, description = "User already belongs to the organization"),
-        (status = 422, description = "SuperAdmin cannot be granted within an organization, or the requested coach cannot be assigned"),
+        (status = 422, description = "SuperAdmin cannot be granted within an organization, or the requested coach is not a member of it"),
     ),
     security(
         ("cookie_auth" = [])
