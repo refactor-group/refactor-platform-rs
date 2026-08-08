@@ -65,10 +65,15 @@ DELETE /organizations/{acme_id}/users/{robin_id}/role
 
 | Check | Expected |
 |---|---|
-| HTTP status | **204 No Content** |
-| Response body | empty |
+| HTTP status | **200** |
+| Response body | `{"status_code":204}` |
 | Members list after refresh | Robin gone |
 | Server log | no foreign key error, no 409 |
+
+> [!NOTE]
+> The transport status is **200**, and the `204` lives in the response envelope. That is
+> this codebase's `ApiResponse` convention, not a quirk of this endpoint. If you assert
+> on `curl -w '%{http_code}'` you will see 200; read `status_code` from the body.
 
 If this returns 409, the history guard was not removed. If it returns 500 with a
 foreign key violation, the relationship delete was not removed.
@@ -212,7 +217,30 @@ blockers for this feature.
 | Behavior | Why |
 |---|---|
 | A collab token minted **before** removal keeps working on the collab server for up to 24h | JWTs are validated independently and there is no revocation path yet |
-| **Re-adding** Robin to Acme with Casey as coach fails with "Coaching relationship already exists" | The surviving relationship trips the `coaching_relationships_coach_coachee_org` unique index; the re-add path has not been taught to reuse it |
+| The **organization admin cannot re-add Robin** — lookup by email returns no results, and attaching by user id returns 404 | Intended. Removal drops the shared membership that made Robin visible to that admin, so re-add escalates to a super admin (Scenario I) |
+
+## 9a. Scenario I: re-adding requires a SUPER ADMIN
+
+Removal is not reversible by the same org admin who performed it. Verify both halves.
+
+First, as the **Acme Admin** who removed Robin:
+
+| Request | Expected |
+|---|---|
+| Look up `robin@example.com` in Add Existing Member | **no results** (`{"data":[]}`) |
+| `POST /organizations/{acme_id}/users/{robin_id}/role` | **404** |
+
+Then, logged in as a **super admin**:
+
+| Request | Expected |
+|---|---|
+| Same lookup by email | Robin found |
+| `POST /organizations/{acme_id}/users/{robin_id}/role` with `{"role":"User","coach_id":"<casey_id>"}` | **201**, Robin re-added |
+| The Acme coaching-relationship list | Casey↔Robin still has its **original id**, and there is exactly **one** such row |
+| Robin's access (rerun the Scenario C table) | back to **200** everywhere |
+
+The relationship id check is the one that matters: a new id, or two Casey↔Robin rows,
+means the re-add duplicated instead of reusing the surviving relationship.
 
 ## 11. Sign-off checklist
 
@@ -224,3 +252,4 @@ blockers for this feature.
 - [ ] F: removing a coach behaves identically
 - [ ] G: self-removal, last-admin, non-member and non-admin guards intact
 - [ ] H: removed user's open SSE stream receives no further events
+- [ ] I: org admin cannot re-add; super admin can, reusing the original relationship
