@@ -92,6 +92,11 @@ where
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
+#[path = "coaching_session_access_revocation_tests.rs"]
+mod revocation_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
 mod tests {
     use std::sync::Arc;
 
