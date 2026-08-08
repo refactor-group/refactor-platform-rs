@@ -294,13 +294,11 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
 async fn remove_from_organization_succeeds_when_the_member_has_sessions() -> Result<(), Error> {
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
 
-    // The member still has a relationship carrying sessions; removal ignores it.
+    // The member's coaching history no longer factors into removal, so the
+    // membership lookup and the one delete are all that run.
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
-        .append_query_results([vec![id_row("id", relationship_id)]])
-        .append_query_results([vec![count_row(2)]])
         .append_exec_results([exec_result(1)])
         .into_connection();
 
