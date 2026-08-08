@@ -40,6 +40,11 @@ pub(crate) struct IndexParams {
     pub(crate) user_id: Id,
     /// Optional: filter sessions to only those in this coaching relationship
     pub(crate) coaching_relationship_id: Option<Id>,
+    /// Optional: filter sessions to relationships in this organization.
+    ///
+    /// Omitted = unscoped, matching the pre-multi-org behavior.
+    #[serde(default)]
+    pub(crate) organization_id: Option<Id>,
     /// Optional: filter sessions starting from this date (inclusive).
     ///
     /// Interpreted in `tz` when present; otherwise UTC.
@@ -162,6 +167,9 @@ pub(crate) struct CountsByMonthParams {
     pub(crate) group_by: GroupByParam,
     pub(crate) tz: String,
     pub(crate) coaching_relationship_id: Option<Id>,
+    /// Optional: restrict the counts to relationships in this organization.
+    #[serde(default)]
+    pub(crate) organization_id: Option<Id>,
 }
 
 impl CountsByMonthParams {

@@ -1,5 +1,6 @@
 //! Error types for the `domain` layer.
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
+use entity_api::Id;
 use meeting_auth::error::{
     Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
 };
@@ -60,7 +61,26 @@ pub enum EntityErrorKind {
     OrganizationNameTaken {
         name: String,
     },
+    /// User still has coaching sessions in the organization they are being
+    /// removed from.
+    UserHasCoachingHistory {
+        organization_id: Id,
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+    },
     OrganizationArchived,
+    /// User already holds a role in the target organization.
+    UserAlreadyInOrganization {
+        organization_id: Id,
+    },
+    /// Removing this user would leave the organization with no admin.
+    LastOrganizationAdmin {
+        organization_id: Id,
+    },
+    /// User belongs to more than one organization; global delete refused.
+    UserBelongsToMultipleOrganizations {
+        organization_count: u64,
+    },
     /// Token missing, expired, or has wrong purpose. Collapsed deliberately
     /// for password-reset endpoints so attackers can't distinguish these
     /// three cases via the response.
@@ -163,7 +183,31 @@ impl From<EntityApiError> for Error {
             EntityApiErrorKind::OrganizationNameTaken { name } => {
                 EntityErrorKind::OrganizationNameTaken { name: name.clone() }
             }
+            EntityApiErrorKind::UserHasCoachingHistory {
+                organization_id,
+                coaching_relationship_count,
+                coaching_session_count,
+            } => EntityErrorKind::UserHasCoachingHistory {
+                organization_id: *organization_id,
+                coaching_relationship_count: *coaching_relationship_count,
+                coaching_session_count: *coaching_session_count,
+            },
             EntityApiErrorKind::OrganizationArchived => EntityErrorKind::OrganizationArchived,
+            EntityApiErrorKind::UserAlreadyInOrganization { organization_id } => {
+                EntityErrorKind::UserAlreadyInOrganization {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::LastOrganizationAdmin { organization_id } => {
+                EntityErrorKind::LastOrganizationAdmin {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::UserBelongsToMultipleOrganizations { organization_count } => {
+                EntityErrorKind::UserBelongsToMultipleOrganizations {
+                    organization_count: *organization_count,
+                }
+            }
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };

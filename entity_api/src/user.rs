@@ -8,8 +8,13 @@ use entity::{roles, user_roles, Id};
 use log::*;
 use password_auth;
 use sea_orm::{
-    entity::prelude::*, Condition, ConnectionTrait, DatabaseConnection, Set, TransactionTrait,
+    entity::prelude::*,
+    sea_query::{Expr, Func},
+    Condition, ConnectionTrait, DatabaseConnection, QuerySelect, Set, SqlErr, TransactionTrait,
 };
+
+/// Postgres index backing the global uniqueness of `users.email`.
+const EMAIL_UNIQUE_INDEX: &str = "users_email_key";
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
@@ -34,7 +39,29 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         ..Default::default()
     };
 
-    let mut created_user = user_active_model.insert(db).await?;
+    let mut created_user = user_active_model
+        .insert(db)
+        .await
+        // `users.email` is globally unique. Surface the collision as a 4xx pointing at
+        // the multi-org path instead of letting it bubble up as a bare 500. Matched on
+        // the constraint name rather than the message, which is locale and version
+        // sensitive, and would also catch unrelated indexes containing "email".
+        .map_err(|err| match err.sql_err() {
+            Some(SqlErr::UniqueConstraintViolation(constraint))
+                if constraint.contains(EMAIL_UNIQUE_INDEX) =>
+            {
+                Error {
+                    source: Some(err),
+                    error_kind: EntityApiErrorKind::ValidationError {
+                        message:
+                            "A user with that email already exists. Add them as an existing member instead."
+                                .into(),
+                        details: None,
+                    },
+                }
+            }
+            _ => Error::from(err),
+        })?;
 
     // Newly created users will not have roles at this point so we will add an empty vec manually
     created_user.roles = Vec::new();
@@ -92,6 +119,35 @@ pub async fn find_by_email(db: &impl ConnectionTrait, email: &str) -> Result<Opt
     }
 }
 
+/// Finds a user by email, case-insensitively, with their roles hydrated.
+///
+/// Distinct from [`find_by_email`], which stays exact-match because login depends
+/// on it. Returns `None` in the `Ok` variant when no user matches.
+pub async fn find_by_email_ci(
+    db: &impl ConnectionTrait,
+    email: &str,
+) -> Result<Option<Model>, Error> {
+    let results = Entity::find()
+        .filter(Expr::expr(Func::lower(Expr::col(Column::Email))).eq(Func::lower(email)))
+        .find_with_related(user_roles::Entity)
+        .all(db)
+        .await?;
+
+    Ok(results.into_iter().next().map(|(mut user, roles)| {
+        user.roles = roles;
+        user
+    }))
+}
+
+/// Drops every role that belongs to another organization, keeping global roles.
+///
+/// `Model::roles` is serialized to API clients, so an unscoped listing would tell
+/// one organization's admin which other organizations each member belongs to.
+pub fn scope_roles_to_organization(user: &mut Model, organization_id: Id) {
+    user.roles
+        .retain(|role| role.organization_id.is_none_or(|id| id == organization_id));
+}
+
 pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     let results = Entity::find_by_id(id)
         .find_with_related(user_roles::Entity)
@@ -110,6 +166,27 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     }
 }
 
+/// `find_by_id` holding an exclusive lock on the row until the transaction ends.
+///
+/// Membership changes and account deletion both read a user's set of roles and
+/// then act on it, but neither sees the other's uncommitted rows. Contending on
+/// the one row they share serializes them.
+///
+/// Unlike `find_by_id`, the returned model has no roles hydrated: Postgres
+/// refuses to lock the nullable side of the join that would fetch them.
+///
+/// Callers must run inside a transaction for the lock to outlive this call.
+pub async fn find_by_id_for_update(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .lock_exclusive()
+        .one(db)
+        .await?
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
 pub async fn find_by_organization(
     db: &DatabaseConnection,
     organization_id: Id,
@@ -122,17 +199,14 @@ pub async fn find_by_organization(
     Ok(results
         .into_iter()
         .filter_map(|(mut user, roles)| {
-            // Check if user has any role in the specified organization
-            let has_role_in_org = roles
+            roles
                 .iter()
-                .any(|r| r.organization_id == Some(organization_id));
-
-            if has_role_in_org {
-                user.roles = roles;
-                Some(user)
-            } else {
-                None
-            }
+                .any(|role| role.organization_id == Some(organization_id))
+                .then(|| {
+                    user.roles = roles;
+                    scope_roles_to_organization(&mut user, organization_id);
+                    user
+                })
         })
         .collect())
 }

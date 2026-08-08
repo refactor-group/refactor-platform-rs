@@ -64,6 +64,7 @@ Encapsulates config resolution so `send_*` functions don't leak config details t
 | `SessionScheduled` | `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsScheduled` | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `ActionAssigned` | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` |
+| `AddedToOrganization` | `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` |
 
 ## Timezone Handling
 
@@ -78,9 +79,11 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` | Session scheduled template |
 | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` | Recurring Sessions scheduled template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |
+| `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` | Added-to-organization template |
 | `FRONTEND_BASE_URL` | Base URL for email links (e.g. `https://app.myrefactor.com`) |
 | `SESSION_SCHEDULED_EMAIL_URL_PATH` | URL path template for session links (default: `/coaching-sessions/{session_id}`) |
 | `ACTION_ASSIGNED_EMAIL_URL_PATH` | URL path template for action links (default: `/coaching-sessions/{session_id}?tab=actions`) |
+| `ADDED_TO_ORGANIZATION_EMAIL_URL_PATH` | URL path for added-to-organization links, supports `{organization_id}` (default: `/dashboard`) |
 
 ## Key Files
 

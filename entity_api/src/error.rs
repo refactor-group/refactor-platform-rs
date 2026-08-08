@@ -7,6 +7,7 @@ use serde::Serialize;
 use sea_orm::error::DbErr;
 
 use entity::duration::OutOfRange;
+use entity::Id;
 
 /// Errors while executing operations related to entities.
 /// The intent is to categorize errors into two major types:
@@ -47,6 +48,13 @@ pub enum EntityApiErrorKind {
         coaching_session_count: u64,
         member_count: u64,
     },
+    // User still has coaching relationships carrying sessions in the organization,
+    // so removing them from it would orphan or destroy that history.
+    UserHasCoachingHistory {
+        organization_id: Id,
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+    },
     // Organization name (or its derived slug) collides with an existing org.
     OrganizationNameTaken {
         name: String,
@@ -63,6 +71,18 @@ pub enum EntityApiErrorKind {
     OutOfRange(OutOfRange),
     // Reorder request whose id set is not a permutation of the session's current topics.
     TopicReorderMismatch,
+    // User already holds a role in the target organization.
+    UserAlreadyInOrganization {
+        organization_id: Id,
+    },
+    // Removing this user would leave the organization with no admin.
+    LastOrganizationAdmin {
+        organization_id: Id,
+    },
+    // User belongs to more than one organization; global delete refused.
+    UserBelongsToMultipleOrganizations {
+        organization_count: u64,
+    },
     // A text field exceeded its maximum length. Maps to 422 in domain (a
     // value-validation failure, distinct from `ValidationError` → 409 state
     // conflicts). `max`/`actual` are character counts, matching the column bound.

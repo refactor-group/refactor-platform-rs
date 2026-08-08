@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 
-use crate::{
-    error::Error,
-    error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
-    magic_link_token, magic_link_tokens, users, Id,
-};
 use chrono::Utc;
+use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::{
     coaching_relationship, coaching_session, mutate, query,
     query::{IntoQueryFilterMap, QuerySort},
     user, user_role,
+};
+
+use crate::{
+    coaching_relationships,
+    error::Error,
+    error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
+    magic_link_token, magic_link_tokens, users, Id,
 };
 pub use entity_api::{
     user::{
@@ -119,55 +122,57 @@ pub async fn update_password(
     Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
 }
 
-// This function is intended to be a temporary solution until we finalize our user experience strategy for assigning a new user
-// to a coach or designating them as a coach. In the future, the API will require the frontend to make separate requests:
-// one request to create a new user within the scope of an organization, and a subsequent request to assign that user to a
-// coaching relationship. This separation is necessary because a user can be created and then assigned to a coaching relationship at
-// a later time. Currently, we are combining these two operations to leverage the backend database transaction, which helps
-// prevent inconsistencies or errors that might arise from network issues or other problems, ensuring a consistent state
-// between new users and their coaching relationships.
-pub async fn create_user_and_coaching_relationship(
+/// Creates a user in an organization and, when `coach_id` is given, their
+/// coaching relationship, in a single transaction.
+///
+/// The two operations are deliberately combined: callers send the invitation
+/// email once this returns, so a failed coach assignment has to leave nothing
+/// behind. A rolled-back row is recoverable, a sent email is not.
+///
+/// # Errors
+///
+/// Any entity-layer error from the user or relationship creation, with nothing
+/// committed.
+pub async fn create_in_organization(
     db: &DatabaseConnection,
     organization_id: Id,
-    coach_id: Id,
     user_model: users::Model,
+    coach_id: Option<Id>,
 ) -> Result<users::Model, Error> {
-    // This is not probably the type of error we'll ultimately be exposing. Again just temporary (hopfully)
-    let txn = db.begin().await.map_err(|e| Error {
-        source: Some(Box::new(e)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-            EntityErrorKind::DbTransaction,
-        )),
-    })?;
+    let txn = db.begin().await.map_err(EntityApiError::from)?;
 
-    // Create the user within the organization
-    let new_user =
-        entity_api::user::create_by_organization(&txn, organization_id, user_model).await?;
-    // Create the coaching relationship using the new user's ID as the coachee_id
-    let new_coaching_relationship_model = entity_api::coaching_relationships::Model {
-        coachee_id: new_user.id,
+    let new_user = user::create_by_organization(&txn, organization_id, user_model).await?;
+
+    if let Some(coach_id) = coach_id {
+        coaching_relationship::create(
+            &txn,
+            organization_id,
+            new_coaching_relationship(coach_id, new_user.id),
+        )
+        .await?;
+    }
+
+    txn.commit().await.map_err(EntityApiError::from)?;
+
+    Ok(new_user)
+}
+
+/// A relationship model for insertion. `id`, `slug` and `organization_id` are
+/// set by `coaching_relationship::create`.
+pub(crate) fn new_coaching_relationship(
+    coach_id: Id,
+    coachee_id: Id,
+) -> coaching_relationships::Model {
+    let now = Utc::now();
+    coaching_relationships::Model {
         coach_id,
-        // These will be overridden
+        coachee_id,
         organization_id: Default::default(),
         id: Default::default(),
-        slug: "".to_string(),
-        created_at: Utc::now().into(),
-        updated_at: Utc::now().into(),
-    };
-    entity_api::coaching_relationship::create(
-        &txn,
-        organization_id,
-        new_coaching_relationship_model,
-    )
-    .await?;
-    // This is not probably the type of error we'll ultimately be exposing. Again just temporary (hopfully
-    txn.commit().await.map_err(|e| Error {
-        source: Some(Box::new(e)),
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-            EntityErrorKind::DbTransaction,
-        )),
-    })?;
-    Ok(new_user)
+        slug: String::new(),
+        created_at: now.into(),
+        updated_at: now.into(),
+    }
 }
 
 pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
@@ -177,6 +182,38 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
             EntityErrorKind::DbTransaction,
         )),
     })?;
+
+    // Both guards below read this user's memberships and then delete every one of
+    // them, so a membership committed in between would be destroyed unchecked.
+    // Attaching a membership takes the same lock.
+    user::find_by_id_for_update(&txn, user_id).await?;
+
+    // This delete is global, so refuse it while the account is still reachable from
+    // another organization. Callers should remove the membership instead.
+    let organization_count = crate::user_role::count_organizations(&txn, user_id).await?;
+    if organization_count > 1 {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::UserBelongsToMultipleOrganizations {
+                organization_count,
+            },
+        }
+        .into());
+    }
+
+    // Deleting the account drops its role rows, so it owes the organization the
+    // same last-admin invariant the remove-from-organization path enforces.
+    // Reachable by a super admin, who passes the org gate without being an admin
+    // of the organization themselves.
+    for organization_id in user_role::find_administered_organizations(&txn, user_id).await? {
+        if user_role::count_admins_in_organization(&txn, organization_id).await? <= 1 {
+            return Err(EntityApiError {
+                source: None,
+                error_kind: EntityApiErrorKind::LastOrganizationAdmin { organization_id },
+            }
+            .into());
+        }
+    }
 
     coaching_relationship::delete_by_user_id(&txn, user_id).await?;
     user_role::delete_by_user_id(&txn, user_id).await?;
@@ -192,14 +229,7 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn create_by_organization(
-    db: &DatabaseConnection,
-    organization_id: Id,
-    user_model: users::Model,
-) -> Result<users::Model, Error> {
-    // Create the user first using the entity_api function
-    let new_user =
-        entity_api::user::create_by_organization(db, organization_id, user_model).await?;
-
-    Ok(new_user)
-}
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "user_tests.rs"]
+mod tests;

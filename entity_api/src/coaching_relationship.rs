@@ -7,7 +7,7 @@ use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationships::{self, ActiveModel, Entity, Model},
-    Id,
+    coaching_sessions, Id,
 };
 use log::*;
 use sea_orm::{
@@ -25,6 +25,16 @@ pub async fn create(
     coaching_relationship_model: Model,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
     debug!("New Coaching Relationship Model to be inserted: {coaching_relationship_model:?}");
+
+    if coaching_relationship_model.coach_id == coaching_relationship_model.coachee_id {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "A user cannot be their own coach.".into(),
+                details: None,
+            },
+        });
+    }
 
     let organization = organization::find_by_id(db, organization_id).await?;
     if organization.archived_at.is_some() {
@@ -357,6 +367,76 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
     Ok(())
 }
 
+/// Deletes the user's coaching relationships within a single organization.
+///
+/// Org-scoped counterpart to [`delete_by_user_id`], for removing a member from
+/// one organization without touching their relationships elsewhere.
+pub async fn delete_by_user_and_organization(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<u64, Error> {
+    Ok(Entity::delete_many()
+        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
+        .filter(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .exec(db)
+        .await?
+        .rows_affected)
+}
+
+/// A user's coaching footprint inside one organization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct History {
+    pub coaching_relationship_count: u64,
+    pub coaching_session_count: u64,
+}
+
+/// Counts the user's coaching relationships in an organization, and the
+/// sessions hanging off them.
+///
+/// Backs the guard on removing a member: `coaching_sessions` references
+/// `coaching_relationships` with NO ACTION, so deleting a relationship that
+/// carries sessions raises a foreign key violation rather than cascading.
+pub async fn count_history_for_user_in_organization(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    organization_id: Id,
+) -> Result<History, Error> {
+    let relationship_ids: Vec<Id> = Entity::find()
+        .select_only()
+        .column(coaching_relationships::Column::Id)
+        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
+        .filter(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .into_tuple()
+        .all(db)
+        .await?;
+
+    // Sessions hang off relationships, so only worth counting when there are any.
+    let coaching_session_count = if relationship_ids.is_empty() {
+        0
+    } else {
+        coaching_sessions::Entity::find()
+            .filter(
+                coaching_sessions::Column::CoachingRelationshipId.is_in(relationship_ids.clone()),
+            )
+            .count(db)
+            .await?
+    };
+
+    Ok(History {
+        coaching_relationship_count: relationship_ids.len() as u64,
+        coaching_session_count,
+    })
+}
+
 /// Trait for filtering coaching relationships by user's role.
 ///
 /// Implement this trait in the web layer to define role-based filtering
@@ -661,5 +741,37 @@ mod tests {
             err.error_kind,
             EntityApiErrorKind::OrganizationArchived
         ));
+    }
+
+    #[tokio::test]
+    async fn create_rejects_a_user_as_their_own_coach() {
+        let now = Utc::now();
+        let organization_id = Id::new_v4();
+        let user_id = Id::new_v4();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let model = Model {
+            id: Id::new_v4(),
+            organization_id,
+            coach_id: user_id,
+            coachee_id: user_id,
+            slug: String::new(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let err = create(&db, organization_id, model)
+            .await
+            .expect_err("expected self-coaching rejection");
+
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::ValidationError { .. }
+        ));
+        assert!(
+            db.into_transaction_log().is_empty(),
+            "self-coaching must be rejected before any statement runs"
+        );
     }
 }
