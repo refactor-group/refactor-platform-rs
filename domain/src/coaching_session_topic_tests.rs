@@ -2,7 +2,7 @@ use super::*;
 use crate::coaching_relationships;
 use crate::coaching_sessions;
 use crate::events::DomainEvent;
-use crate::test_support::recording_publisher;
+use crate::test_support::{both_participants_are_members, recording_publisher};
 use entity::coaching_session_topics::TopicSnapshot;
 use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase};
@@ -98,10 +98,13 @@ async fn create_publishes_topics_changed() {
     let (publisher, events) = recording_publisher();
 
     // create: existing-topics load (all) → insert (save) → participant lookup (find_also_related)
+    // → membership filter
+    let (session, relationship) = session_with_relationship(session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results(vec![Vec::<Model>::new()])
         .append_query_results(vec![vec![created.clone()]])
-        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .append_query_results(vec![vec![(session, relationship.clone())]])
+        .append_query_results([both_participants_are_members(&relationship)])
         .into_connection();
 
     let result = create(
@@ -126,13 +129,15 @@ async fn reorder_publishes_topics_changed() {
     let ordered = vec![topic_b.id, topic_a.id];
     let (publisher, events) = recording_publisher();
 
-    // reorder: load current → per-id update (x2) → reload → participant lookup
+    // reorder: load current → per-id update (x2) → reload → participant lookup → membership filter
+    let (session, relationship) = session_with_relationship(session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results(vec![vec![topic_a.clone(), topic_b.clone()]])
         .append_query_results(vec![vec![topic_b.clone()]])
         .append_query_results(vec![vec![topic_a.clone()]])
         .append_query_results(vec![vec![topic_b.clone(), topic_a.clone()]])
-        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .append_query_results(vec![vec![(session, relationship.clone())]])
+        .append_query_results([both_participants_are_members(&relationship)])
         .into_connection();
 
     let result = reorder(&db, &publisher, session_id, ordered).await;
@@ -147,11 +152,13 @@ async fn set_status_publishes_topics_changed() {
     let topic = topic_model(session_id);
     let (publisher, events) = recording_publisher();
 
-    // set_status: load topic (find_by_id) → update → participant lookup
+    // set_status: load topic (find_by_id) → update → participant lookup → membership filter
+    let (session, relationship) = session_with_relationship(session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results(vec![vec![topic.clone()]])
         .append_query_results(vec![vec![topic.clone()]])
-        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        .append_query_results(vec![vec![(session, relationship.clone())]])
+        .append_query_results([both_participants_are_members(&relationship)])
         .into_connection();
 
     let result = set_status(&db, &publisher, topic.id, Status::Discussed).await;
@@ -200,6 +207,7 @@ async fn set_status_deferred_moves_to_existing_next_session() {
 
     let (publisher, events) = recording_publisher();
 
+    let (dest_session, dest_relationship) = session_with_relationship(next_session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         // set_status defer path: find_by_id(topic) → find_by_id(source session) →
         // find_next_session → next session.
@@ -210,9 +218,9 @@ async fn set_status_deferred_moves_to_existing_next_session() {
         .append_query_results(vec![Vec::<Model>::new()])
         .append_query_results(vec![vec![topic.clone()]])
         .append_query_results(vec![vec![moved.clone()]])
-        // participant lookup for dest (next), then for origin (source).
-        .append_query_results(vec![vec![session_with_relationship(next_session_id)]])
-        .append_query_results(vec![vec![session_with_relationship(source_session_id)]])
+        // one participant lookup for dest (next), reused for both events → membership filter.
+        .append_query_results(vec![vec![(dest_session, dest_relationship.clone())]])
+        .append_query_results([both_participants_are_members(&dest_relationship)])
         .into_connection();
 
     let result = set_status(&db, &publisher, topic.id, Status::Deferred)
@@ -274,6 +282,7 @@ async fn set_status_deferred_with_no_next_session_holds() {
 
     let (publisher, events) = recording_publisher();
 
+    let (notify_session, notify_relationship) = session_with_relationship(session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         // defer path: find_by_id(topic) → find_by_id(session) → find_next_session (none).
         .append_query_results(vec![vec![topic.clone()]])
@@ -282,8 +291,9 @@ async fn set_status_deferred_with_no_next_session_holds() {
         // defer_hold: find_by_id(topic) → UPDATE (now Deferred, snapshot set).
         .append_query_results(vec![vec![topic.clone()]])
         .append_query_results(vec![vec![deferred.clone()]])
-        // participant lookup (in place).
-        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        // participant lookup (in place) → membership filter.
+        .append_query_results(vec![vec![(notify_session, notify_relationship.clone())]])
+        .append_query_results([both_participants_are_members(&notify_relationship)])
         .into_connection();
 
     let result = set_status(&db, &publisher, topic.id, Status::Deferred)
@@ -332,13 +342,16 @@ async fn set_status_deferred_again_preserves_original_snapshot() {
 
     let (publisher, events) = recording_publisher();
 
+    let (notify_session, notify_relationship) = session_with_relationship(session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         // defer path: find_by_id(topic=held) → find_by_id(session) → find_next_session (none).
         .append_query_results(vec![vec![held.clone()]])
         .append_query_results(vec![vec![session.clone()]])
         .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
-        // guard short-circuits before any defer_hold UPDATE; only the participant lookup remains.
-        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        // guard short-circuits before any defer_hold UPDATE; participant lookup + membership
+        // filter remain.
+        .append_query_results(vec![vec![(notify_session, notify_relationship.clone())]])
+        .append_query_results([both_participants_are_members(&notify_relationship)])
         .into_connection();
 
     let result = set_status(&db, &publisher, held.id, Status::Deferred)
@@ -404,14 +417,15 @@ async fn undo_restores_pre_defer_status() {
 
     let (publisher, events) = recording_publisher();
 
+    let (origin_session, origin_relationship) = session_with_relationship(origin_session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         // undo: find_including_deleted_by_id(before) → restore_from_snapshot [find_including_deleted_by_id → UPDATE].
         .append_query_results(vec![vec![moved.clone()]])
         .append_query_results(vec![vec![moved.clone()]])
         .append_query_results(vec![vec![restored.clone()]])
-        // participant lookup for restored (origin), then old current (notify_other).
-        .append_query_results(vec![vec![session_with_relationship(origin_session_id)]])
-        .append_query_results(vec![vec![session_with_relationship(current_session_id)]])
+        // one participant lookup for restored (origin), reused for both events → membership filter.
+        .append_query_results(vec![vec![(origin_session, origin_relationship.clone())]])
+        .append_query_results([both_participants_are_members(&origin_relationship)])
         .into_connection();
 
     let result = undo(&db, &publisher, moved.id).await.unwrap();
@@ -487,13 +501,15 @@ async fn undo_restores_a_soft_deleted_topic() {
 
     let (publisher, events) = recording_publisher();
 
+    let (notify_session, notify_relationship) = session_with_relationship(session_id);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         // undo: find_including_deleted_by_id(before) → restore_from_snapshot [find_including_deleted_by_id → UPDATE].
         .append_query_results(vec![vec![deleted.clone()]])
         .append_query_results(vec![vec![deleted.clone()]])
         .append_query_results(vec![vec![restored.clone()]])
-        // participant lookup (one session; old == new).
-        .append_query_results(vec![vec![session_with_relationship(session_id)]])
+        // participant lookup (one session; old == new) → membership filter.
+        .append_query_results(vec![vec![(notify_session, notify_relationship.clone())]])
+        .append_query_results([both_participants_are_members(&notify_relationship)])
         .into_connection();
 
     let result = undo(&db, &publisher, deleted.id).await.unwrap();

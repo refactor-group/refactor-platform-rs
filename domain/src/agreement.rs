@@ -119,7 +119,7 @@ pub async fn delete_by_id(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::test_support::recording_publisher;
+    use crate::test_support::{both_participants_are_members, recording_publisher};
     use crate::{coaching_relationships, coaching_sessions};
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
@@ -172,10 +172,12 @@ mod tests {
         let agreement = agreement_model(session_id);
         let (publisher, events) = recording_publisher();
 
-        // create (INSERT RETURNING) → participant lookup.
+        // create (INSERT RETURNING) → participant lookup → membership filter.
+        let (session, relationship) = session_with_relationship(session_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![agreement.clone()]])
-            .append_query_results(vec![vec![session_with_relationship(session_id)]])
+            .append_query_results(vec![vec![(session, relationship.clone())]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = create(&db, &publisher, agreement.clone(), agreement.user_id).await;
@@ -202,11 +204,13 @@ mod tests {
         let agreement = agreement_model(session_id);
         let (publisher, events) = recording_publisher();
 
-        // update: find_by_id → UPDATE RETURNING → participant lookup.
+        // update: find_by_id → UPDATE RETURNING → participant lookup → membership filter.
+        let (session, relationship) = session_with_relationship(session_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![agreement.clone()]])
             .append_query_results(vec![vec![agreement.clone()]])
-            .append_query_results(vec![vec![session_with_relationship(session_id)]])
+            .append_query_results(vec![vec![(session, relationship.clone())]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = update(&db, &publisher, agreement.id, agreement.clone()).await;
@@ -226,7 +230,9 @@ mod tests {
         let agreement = agreement_model(session_id);
         let (publisher, events) = recording_publisher();
 
-        // delete: wrapper find_by_id → entity delete_by_id (find_by_id + DELETE) → participant lookup.
+        // delete: wrapper find_by_id → entity delete_by_id (find_by_id + DELETE) → participant
+        // lookup → membership filter.
+        let (session, relationship) = session_with_relationship(session_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![agreement.clone()]])
             .append_query_results(vec![vec![agreement.clone()]])
@@ -234,7 +240,8 @@ mod tests {
                 last_insert_id: 0,
                 rows_affected: 1,
             }])
-            .append_query_results(vec![vec![session_with_relationship(session_id)]])
+            .append_query_results(vec![vec![(session, relationship.clone())]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = delete_by_id(&db, &publisher, agreement.id).await;

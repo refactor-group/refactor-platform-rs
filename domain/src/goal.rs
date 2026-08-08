@@ -4,6 +4,7 @@ use crate::goals::Model;
 use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
+use entity_api::user_role::retain_organization_members;
 use entity_api::{goal as GoalApi, goals, query};
 use log::*;
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
@@ -118,14 +119,20 @@ pub async fn delete(
 // ── Event publishing helpers ─────────────────────────────────────────
 
 /// Looks up the coaching relationship and returns the user IDs that should
-/// receive SSE notifications (coach + coachee).
+/// receive SSE notifications (coach + coachee), minus anyone no longer a member
+/// of the relationship's organization.
 async fn find_notify_user_ids_for_relationship(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
 ) -> Result<Vec<Id>, Error> {
     let relationship =
         crate::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
-    Ok(vec![relationship.coach_id, relationship.coachee_id])
+    Ok(retain_organization_members(
+        db,
+        &[relationship.coach_id, relationship.coachee_id],
+        relationship.organization_id,
+    )
+    .await?)
 }
 
 /// Publishes a `GoalUpdated` SSE event. Shared by `update` and `update_status`.
@@ -165,6 +172,7 @@ where
 #[cfg(feature = "mock")]
 mod integration_tests {
     use super::*;
+    use crate::test_support::both_participants_are_members;
     use entity_api::coaching_sessions_goals;
     use entity_api::status::Status;
     use events::EventPublisher;
@@ -226,10 +234,12 @@ mod integration_tests {
         );
         let relationship = create_test_relationship(relationship_id);
 
-        // Mock sequence (inside txn): goal save → (no session link) → relationship lookup
+        // Mock sequence (inside txn): goal save → (no session link) → relationship lookup →
+        // membership filter
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![new_goal.clone()]])
-            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = create(&db, &event_publisher, new_goal, Id::new_v4()).await;
@@ -276,6 +286,7 @@ mod integration_tests {
         //   6. coaching_session_goal::create — promotion update (UPDATE goals)
         // After commit:
         //   7. relationship lookup
+        //   8. membership filter
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![new_goal.clone()]])
             .append_query_results(vec![vec![new_goal.clone()]])
@@ -283,7 +294,8 @@ mod integration_tests {
             .append_query_results(vec![Vec::<Model>::new()])
             .append_query_results(vec![vec![join_row]])
             .append_query_results(vec![vec![promoted_goal]])
-            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = create(&db, &event_publisher, new_goal, Id::new_v4()).await;
@@ -303,11 +315,12 @@ mod integration_tests {
         );
         let relationship = create_test_relationship(relationship_id);
 
-        // Mock sequence: find_by_id → update_status save → relationship lookup
+        // Mock sequence: find_by_id → update_status save → relationship lookup → membership filter
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![current_goal.clone()]])
             .append_query_results(vec![vec![current_goal.clone()]])
-            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = update_status(&db, &event_publisher, current_goal.id, Status::Completed).await;
