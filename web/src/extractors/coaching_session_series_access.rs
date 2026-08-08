@@ -107,7 +107,7 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (series, relationship, user) = resolve(parts, state).await?;
-        if relationship.coach_id == user.id {
+        if relationship.coach_id == user.id && relationship.grants_access_to(&user) {
             Ok(CoachingSessionSeriesCoachAccess(series))
         } else {
             Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
