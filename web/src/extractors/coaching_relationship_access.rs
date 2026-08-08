@@ -67,7 +67,7 @@ where
                     (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
                 })?;
 
-        if !relationship.includes_user(authenticated_user.id) {
+        if !relationship.grants_access_to(&authenticated_user) {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 

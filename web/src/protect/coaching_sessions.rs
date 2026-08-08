@@ -30,9 +30,7 @@ pub(crate) async fn index(
             .await;
     match coaching_relationship {
         Ok(coaching_relationship) => {
-            if coaching_relationship.coach_id == user.id
-                || coaching_relationship.coachee_id == user.id
-            {
+            if coaching_relationship.grants_access_to(&user) {
                 // User has access to coaching relationship
                 next.run(request).await
             } else {
