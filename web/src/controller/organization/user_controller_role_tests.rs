@@ -226,10 +226,7 @@ async fn attach_returns_201_for_an_org_admin_who_can_see_the_target() {
             .append_query_results([vec![id_row("organization_id", organization_id)]])
             .append_query_results([vec![id_row("id", Id::new_v4())]])
             .append_query_results([vec![test_organization(organization_id)]])
-            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-                requester(),
-                None,
-            )]])
+            .append_query_results([vec![requester()]])
             .append_query_results([Vec::<user_roles::Model>::new()])
             .append_query_results([vec![granted.clone()]])
             .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
@@ -271,10 +268,7 @@ async fn attach_returns_409_for_an_org_admin_whose_only_visible_users_are_member
             .append_query_results([vec![id_row("organization_id", organization_id)]])
             .append_query_results([vec![id_row("id", Id::new_v4())]])
             .append_query_results([vec![test_organization(organization_id)]])
-            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-                requester(),
-                None,
-            )]])
+            .append_query_results([vec![requester()]])
             // Already holds a role here, which is the only state a single-org
             // admin's visible users can be in.
             .append_query_results([vec![test_role(
@@ -314,10 +308,7 @@ async fn attach_returns_201_for_a_super_admin() {
     let db = Arc::new(
         mock_through_extractor(&user, &role, organization_id)
             .append_query_results([vec![test_organization(organization_id)]])
-            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-                requester(),
-                None,
-            )]])
+            .append_query_results([vec![requester()]])
             .append_query_results([Vec::<user_roles::Model>::new()])
             .append_query_results([vec![granted.clone()]])
             .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
@@ -503,10 +494,7 @@ async fn attach_forwards_the_requested_coach_to_the_domain_call() {
     let db = Arc::new(
         mock_through_extractor(&user, &role, organization_id)
             .append_query_results([vec![test_organization(organization_id)]])
-            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-                requester(),
-                None,
-            )]])
+            .append_query_results([vec![requester()]])
             .append_query_results([Vec::<user_roles::Model>::new()])
             .append_query_results([vec![granted.clone()]])
             .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(

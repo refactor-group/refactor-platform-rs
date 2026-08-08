@@ -97,10 +97,7 @@ async fn attach_to_organization_returns_the_user_scoped_to_the_target_org() -> R
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[organization(organization_id, false)]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            user(user_id, vec![]),
-            None,
-        )]])
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([[target_role.clone()]])
         .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![
@@ -115,6 +112,15 @@ async fn attach_to_organization_returns_the_user_scoped_to_the_target_org() -> R
     assert_eq!(attached.roles.len(), 1);
     assert_eq!(attached.roles[0].organization_id, Some(organization_id));
 
+    // The lock is only worth taking if both racing paths take it; account
+    // deletion holds up its half in delete_still_cascades_for_a_single_organization_user.
+    let sql = statements(db);
+    assert!(
+        sql.iter()
+            .any(|statement| statement.contains("FOR UPDATE") && statement.contains(r#""users""#)),
+        "the new membership must land under a lock on the user row: {sql:?}"
+    );
+
     Ok(())
 }
 
@@ -125,10 +131,7 @@ fn mock_attach_with_coach(organization_id: Id, user_id: Id, coach_id: Id) -> Moc
     let membership = [organization(organization_id, false)];
     MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[organization(organization_id, false)]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            user(user_id, vec![]),
-            None,
-        )]])
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_query_results([[organization(organization_id, false)]])
@@ -240,10 +243,7 @@ async fn attach_to_organization_rejects_an_existing_membership() {
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[organization(organization_id, false)]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            user(user_id, vec![]),
-            None,
-        )]])
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .into_connection();
 
@@ -496,6 +496,7 @@ async fn can_administer_user_is_false_for_a_plain_member() -> Result<(), Error> 
 #[tokio::test]
 async fn delete_refuses_a_user_who_belongs_to_multiple_organizations() {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(Id::new_v4(), vec![])]])
         .append_query_results([vec![count_row(2)]])
         .into_connection();
 
@@ -520,6 +521,7 @@ async fn delete_refuses_when_the_user_is_an_organizations_last_admin() {
     let organization_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(Id::new_v4(), vec![])]])
         .append_query_results([vec![count_row(1)]])
         .append_query_results([vec![id_row("organization_id", organization_id)]])
         .append_query_results([[user_role_model(
@@ -548,6 +550,7 @@ async fn delete_refuses_when_the_user_is_an_organizations_last_admin() {
 #[tokio::test]
 async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Error> {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(Id::new_v4(), vec![])]])
         .append_query_results([vec![count_row(1)]])
         // Administers nothing, so the last-admin guard has nothing to check.
         .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
@@ -556,9 +559,25 @@ async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Er
 
     crate::user::delete(&db, Id::new_v4()).await?;
 
-    let deletes: Vec<String> = statements(db)
+    let sql = statements(db);
+
+    // Without the lock a membership can commit between the guards and the
+    // delete, and be destroyed unchecked. It must precede the guards, not merely
+    // appear somewhere in the transaction.
+    let lock = sql
+        .iter()
+        .position(|statement| statement.contains("FOR UPDATE") && statement.contains(r#""users""#));
+    let first_guard = sql
+        .iter()
+        .position(|statement| statement.contains("COUNT(*)"));
+    assert!(
+        matches!((lock, first_guard), (Some(lock), Some(guard)) if lock < guard),
+        "the user row must be locked before its memberships are counted: {sql:?}"
+    );
+
+    let deletes: Vec<String> = sql
         .into_iter()
-        .filter(|sql| sql.contains("DELETE"))
+        .filter(|statement| statement.contains("DELETE"))
         .collect();
 
     assert_eq!(deletes.len(), 3, "{deletes:?}");

@@ -55,7 +55,10 @@ pub async fn attach_to_organization(
         .into());
     }
 
-    user::find_by_id(&txn, user_id).await?;
+    // Held for the rest of the transaction so a concurrent account deletion
+    // cannot read this user's memberships before the new row lands and then
+    // delete it along with the rest.
+    user::find_by_id_for_update(&txn, user_id).await?;
 
     if user_role::find_by_user_and_organization(&txn, user_id, organization_id)
         .await?

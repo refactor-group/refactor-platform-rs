@@ -10,7 +10,7 @@ use password_auth;
 use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func},
-    Condition, ConnectionTrait, DatabaseConnection, Set, SqlErr, TransactionTrait,
+    Condition, ConnectionTrait, DatabaseConnection, QuerySelect, Set, SqlErr, TransactionTrait,
 };
 
 /// Postgres index backing the global uniqueness of `users.email`.
@@ -164,6 +164,27 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
             error_kind: EntityApiErrorKind::RecordNotFound,
         }),
     }
+}
+
+/// `find_by_id` holding an exclusive lock on the row until the transaction ends.
+///
+/// Membership changes and account deletion both read a user's set of roles and
+/// then act on it, but neither sees the other's uncommitted rows. Contending on
+/// the one row they share serializes them.
+///
+/// Unlike `find_by_id`, the returned model has no roles hydrated: Postgres
+/// refuses to lock the nullable side of the join that would fetch them.
+///
+/// Callers must run inside a transaction for the lock to outlive this call.
+pub async fn find_by_id_for_update(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .lock_exclusive()
+        .one(db)
+        .await?
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
 }
 
 pub async fn find_by_organization(

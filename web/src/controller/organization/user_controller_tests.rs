@@ -194,10 +194,16 @@ async fn send(
 /// The `status_code` the `ApiResponse` envelope reports. Success responses in this
 /// codebase are HTTP 200 and carry their real code in the body.
 async fn api_status_code(response: axum::response::Response) -> u64 {
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&bytes)
+    );
     serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["status_code"]
         .as_u64()
         .expect("envelope must carry a status_code")
@@ -432,6 +438,8 @@ async fn delete_succeeds_for_an_organization_admin_targeting_another_member() {
         authenticated_as(&user, &role)
             .append_query_results([vec![merge([row(test_organization(organization_id))])]])
             .append_query_results([vec![requester_row, target_row.clone()]])
+            // The lock the deletion takes on the target before counting its orgs.
+            .append_query_results([vec![merge([row(target.clone())])]])
             .append_query_results([vec![requester_row_with_count, target_row]])
             .append_query_results([vec![merge([count_row(1)])]])
             .append_exec_results([exec_result(), exec_result(), exec_result()])

@@ -183,6 +183,11 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
         )),
     })?;
 
+    // Both guards below read this user's memberships and then delete every one of
+    // them, so a membership committed in between would be destroyed unchecked.
+    // Attaching a membership takes the same lock.
+    user::find_by_id_for_update(&txn, user_id).await?;
+
     // This delete is global, so refuse it while the account is still reachable from
     // another organization. Callers should remove the membership instead.
     let organization_count = crate::user_role::count_organizations(&txn, user_id).await?;
