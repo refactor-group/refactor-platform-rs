@@ -150,9 +150,6 @@ pub async fn create(
 ///
 /// Shared by the pre-check and the lost-race recovery so both agree on what "the same
 /// relationship" means. Directional: swapping coach and coachee is a different pair.
-///
-/// Matches in Rust rather than SQL so the directionality stays observable to callers
-/// that stub the query layer.
 async fn find_for_pair(
     db: &impl ConnectionTrait,
     organization_id: Id,
@@ -163,6 +160,22 @@ async fn find_for_pair(
         .await?
         .into_iter()
         .find(|cr| cr.coach_id == coach_id && cr.coachee_id == coachee_id))
+}
+
+/// The relationship's participants who are still members of its organization.
+///
+/// The notify set for anything that happens inside a coaching relationship. Someone
+/// removed from the organization keeps the relationship but stops being notified.
+pub async fn notify_member_ids(
+    db: &impl ConnectionTrait,
+    relationship: &Model,
+) -> Result<Vec<Id>, Error> {
+    crate::user_role::retain_organization_members(
+        db,
+        &[relationship.coach_id, relationship.coachee_id],
+        relationship.organization_id,
+    )
+    .await
 }
 
 /// Pairs a coaching relationship with the names of its coach and coachee.

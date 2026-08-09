@@ -1,7 +1,6 @@
 use super::error::{EntityApiErrorKind, Error};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
-use crate::user_role::retain_organization_members;
 use chrono::NaiveDateTime;
 use entity::{
     agreements, coaching_relationships, coaching_session_topics, coaching_session_views,
@@ -294,12 +293,7 @@ pub async fn find_participant_ids(
     coaching_session_id: Id,
 ) -> Result<Vec<Id>, Error> {
     let (_, relationship) = find_by_id_with_coaching_relationship(db, coaching_session_id).await?;
-    retain_organization_members(
-        db,
-        &[relationship.coach_id, relationship.coachee_id],
-        relationship.organization_id,
-    )
-    .await
+    crate::coaching_relationship::notify_member_ids(db, &relationship).await
 }
 
 pub async fn find_by_id_with_coaching_relationship(

@@ -11,7 +11,6 @@ use crate::goals::Model;
 use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
 use entity_api::coaching_sessions_goals;
-use entity_api::user_role::retain_organization_members;
 use log::*;
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
@@ -35,12 +34,8 @@ pub async fn link_to_coaching_session(
     let (_, relationship) =
         crate::coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id)
             .await?;
-    let notify_user_ids = retain_organization_members(
-        db,
-        &[relationship.coach_id, relationship.coachee_id],
-        relationship.organization_id,
-    )
-    .await?;
+    let notify_user_ids =
+        entity_api::coaching_relationship::notify_member_ids(db, &relationship).await?;
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let (link, promoted_goal) =
@@ -190,12 +185,8 @@ async fn publish_session_goal_deleted(
     link: &coaching_sessions_goals::Model,
     relationship: &entity_api::coaching_relationships::Model,
 ) -> Result<(), Error> {
-    let notify_user_ids = retain_organization_members(
-        db,
-        &[relationship.coach_id, relationship.coachee_id],
-        relationship.organization_id,
-    )
-    .await?;
+    let notify_user_ids =
+        entity_api::coaching_relationship::notify_member_ids(db, relationship).await?;
 
     event_publisher
         .publish(DomainEvent::CoachingSessionGoalDeleted {

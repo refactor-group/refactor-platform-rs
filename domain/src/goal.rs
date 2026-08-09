@@ -4,7 +4,6 @@ use crate::goals::Model;
 use crate::Id;
 use entity_api::coaching_session_goal as CoachingSessionGoalApi;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
-use entity_api::user_role::retain_organization_members;
 use entity_api::{goal as GoalApi, goals, query};
 use log::*;
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
@@ -127,12 +126,7 @@ async fn find_notify_user_ids_for_relationship(
 ) -> Result<Vec<Id>, Error> {
     let relationship =
         crate::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
-    Ok(retain_organization_members(
-        db,
-        &[relationship.coach_id, relationship.coachee_id],
-        relationship.organization_id,
-    )
-    .await?)
+    Ok(entity_api::coaching_relationship::notify_member_ids(db, &relationship).await?)
 }
 
 /// Publishes a `GoalUpdated` SSE event. Shared by `update` and `update_status`.

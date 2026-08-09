@@ -39,7 +39,7 @@ mod authz_tests;
     ),
     request_body = entity::coaching_relationships::Model,
     responses(
-        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee", body = [coaching_relationships::Model]),
+        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = [coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "Organization not found"),
