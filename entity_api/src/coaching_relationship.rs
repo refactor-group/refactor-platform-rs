@@ -11,8 +11,8 @@ use entity::{
 };
 use log::*;
 use sea_orm::{
-    entity::prelude::*, sea_query::Alias, Condition, DatabaseConnection, FromQueryResult, JoinType,
-    QuerySelect, QueryTrait, Set,
+    entity::prelude::*, sea_query::Alias, sea_query::OnConflict, Condition, DatabaseConnection,
+    DbErr, FromQueryResult, JoinType, QuerySelect, QueryTrait, Set,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -81,13 +81,13 @@ pub async fn create(
 
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
-    let existing_coaching_relationship = find_by_organization(db, organization_id)
-        .await?
-        .into_iter()
-        .find(|cr| {
-            cr.coach_id == coaching_relationship_model.coach_id
-                && cr.coachee_id == coaching_relationship_model.coachee_id
-        });
+    let existing_coaching_relationship = find_for_pair(
+        db,
+        organization_id,
+        coaching_relationship_model.coach_id,
+        coaching_relationship_model.coachee_id,
+    )
+    .await?;
 
     if let Some(existing) = existing_coaching_relationship {
         debug!("Reusing existing coaching relationship: {existing:?}");
@@ -106,9 +106,63 @@ pub async fn create(
         updated_at: Set(now.into()),
         ..Default::default()
     };
-    let inserted: Model = coaching_relationship_active_model.insert(db).await?;
+    // DO NOTHING rather than letting the unique index raise: a constraint violation
+    // aborts the caller's transaction, which would poison the membership insert that
+    // `attach_to_organization` wraps around this and leave the recovery read unable
+    // to run at all.
+    let conflict = OnConflict::columns([
+        coaching_relationships::Column::CoachId,
+        coaching_relationships::Column::CoacheeId,
+        coaching_relationships::Column::OrganizationId,
+    ])
+    .do_nothing()
+    .to_owned();
 
-    Ok(with_user_names(inserted, &coach, &coachee))
+    match Entity::insert(coaching_relationship_active_model)
+        .on_conflict(conflict)
+        .exec_with_returning(db)
+        .await
+    {
+        Ok(inserted) => Ok(with_user_names(inserted, &coach, &coachee)),
+        // DO NOTHING wrote no row, so RETURNING yielded none and SeaORM reports the
+        // miss as RecordNotFound. Only a conflict can produce that here, since this
+        // statement inserts exactly one row.
+        Err(DbErr::RecordNotFound(_)) => {
+            let winner = find_for_pair(
+                db,
+                organization_id,
+                coaching_relationship_model.coach_id,
+                coaching_relationship_model.coachee_id,
+            )
+            .await?
+            .ok_or_else(|| Error {
+                source: None,
+                error_kind: EntityApiErrorKind::RecordNotFound,
+            })?;
+            debug!("Lost the create race, reusing the winning relationship: {winner:?}");
+            Ok(with_user_names(winner, &coach, &coachee))
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// The relationship for exactly this coach, coachee and organization, if one exists.
+///
+/// Shared by the pre-check and the lost-race recovery so both agree on what "the same
+/// relationship" means. Directional: swapping coach and coachee is a different pair.
+///
+/// Matches in Rust rather than SQL so the directionality stays observable to callers
+/// that stub the query layer.
+async fn find_for_pair(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    coach_id: Id,
+    coachee_id: Id,
+) -> Result<Option<Model>, Error> {
+    Ok(find_by_organization(db, organization_id)
+        .await?
+        .into_iter()
+        .find(|cr| cr.coach_id == coach_id && cr.coachee_id == coachee_id))
 }
 
 /// Pairs a coaching relationship with the names of its coach and coachee.
@@ -717,3 +771,8 @@ mod tests {
 #[cfg(feature = "mock")]
 #[path = "coaching_relationship_reuse_tests.rs"]
 mod reuse_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_race_tests.rs"]
+mod race_tests;
