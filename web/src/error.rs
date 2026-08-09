@@ -186,24 +186,6 @@ impl Error {
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
-            EntityErrorKind::UserHasCoachingHistory {
-                organization_id,
-                coaching_relationship_count,
-                coaching_session_count,
-            } => {
-                warn!("EntityErrorKind::UserHasCoachingHistory: Responding with 409 Conflict. Error: {self:?}");
-                let body = serde_json::json!({
-                    "status_code": 409,
-                    "error": "user_has_coaching_history",
-                    "message": "This member still has coaching sessions in this organization. Remove or reassign those sessions before removing them.",
-                    "details": {
-                        "organization_id": organization_id,
-                        "coaching_relationship_count": coaching_relationship_count,
-                        "coaching_session_count": coaching_session_count,
-                    },
-                });
-                (StatusCode::CONFLICT, Json(body)).into_response()
-            }
             EntityErrorKind::OrganizationNameTaken { name } => {
                 warn!("EntityErrorKind::OrganizationNameTaken: Responding with 409 Conflict. Error: {self:?}");
                 let body = serde_json::json!({
@@ -495,33 +477,6 @@ mod tests {
         assert!(
             body.get("details").is_none(),
             "the organization count must not be disclosed, got: {body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn user_has_coaching_history_produces_structured_409_with_counts() {
-        let organization_id = Id::new_v4();
-        let err = Error::Domain(DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::UserHasCoachingHistory {
-                    organization_id,
-                    coaching_relationship_count: 2,
-                    coaching_session_count: 7,
-                },
-            )),
-        });
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-
-        let body = json_body(response).await;
-        assert_eq!(body["status_code"], 409);
-        assert_eq!(body["error"], "user_has_coaching_history");
-        assert_eq!(body["details"]["coaching_relationship_count"], 2);
-        assert_eq!(body["details"]["coaching_session_count"], 7);
-        assert_eq!(
-            body["details"]["organization_id"],
-            organization_id.to_string()
         );
     }
 

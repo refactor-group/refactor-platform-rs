@@ -440,14 +440,11 @@ fn note_routes(app_state: AppState) -> Router {
 fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
     Router::new()
         // POST /organizations/:organization_id/coaching_relationships
+        // Authorized by the OrganizationAdminAccess extractor, not a route layer.
         .route(
             "/organizations/:organization_id/coaching_relationships",
             post(organization::coaching_relationship_controller::create),
         )
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::organizations::coaching_relationships::create,
-        ))
         .merge(
             // GET /organizations/:organization_id/coaching_relationships
             Router::new().route(

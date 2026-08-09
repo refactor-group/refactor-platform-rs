@@ -7,18 +7,22 @@ use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationships::{self, ActiveModel, Entity, Model},
-    coaching_sessions, Id,
+    users, Id,
 };
 use log::*;
 use sea_orm::{
-    entity::prelude::*, sea_query::Alias, Condition, DatabaseConnection, FromQueryResult, JoinType,
-    QuerySelect, QueryTrait, Set,
+    entity::prelude::*, sea_query::Alias, sea_query::OnConflict, Condition, DatabaseConnection,
+    DbErr, FromQueryResult, JoinType, QuerySelect, QueryTrait, Set,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
 use utoipa::ToSchema;
 
+/// Creates a coaching relationship between a coach and a coachee in an organization.
+///
+/// Returns the existing relationship when one already exists for that coach, coachee
+/// and organization.
 pub async fn create(
     db: &impl ConnectionTrait,
     organization_id: Id,
@@ -77,26 +81,20 @@ pub async fn create(
 
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
-    let existing_coaching_relationships = find_by_organization(db, organization_id).await?;
-    let existing_coaching_relationship = existing_coaching_relationships.iter().find(|cr| {
-        cr.coach_id == coaching_relationship_model.coach_id
-            && cr.coachee_id == coaching_relationship_model.coachee_id
-    });
+    let existing_coaching_relationship = find_for_pair(
+        db,
+        organization_id,
+        coaching_relationship_model.coach_id,
+        coaching_relationship_model.coachee_id,
+    )
+    .await?;
 
-    if existing_coaching_relationship.is_some() {
-        error!("Coaching relationship already exists for coach: {} and coachee: {} in organization: {}", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, coaching_relationship_model.organization_id);
-        return Err(Error {
-            source: None,
-            error_kind: EntityApiErrorKind::ValidationError {
-                message: "Coaching relationship already exists for this coach and coachee in the organization.".into(),
-                details: None,
-            },
-        });
+    if let Some(existing) = existing_coaching_relationship {
+        debug!("Reusing existing coaching relationship: {existing:?}");
+        return Ok(with_user_names(existing, &coach, &coachee));
     }
 
     let now = Utc::now();
-    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
-    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
     let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
@@ -108,19 +106,101 @@ pub async fn create(
         updated_at: Set(now.into()),
         ..Default::default()
     };
-    let inserted: Model = coaching_relationship_active_model.insert(db).await?;
+    // DO NOTHING rather than letting the unique index raise: a constraint violation
+    // aborts the caller's transaction, which would poison the membership insert that
+    // `attach_to_organization` wraps around this and leave the recovery read unable
+    // to run at all.
+    let conflict = OnConflict::columns([
+        coaching_relationships::Column::CoachId,
+        coaching_relationships::Column::CoacheeId,
+        coaching_relationships::Column::OrganizationId,
+    ])
+    .do_nothing()
+    .to_owned();
 
-    Ok(CoachingRelationshipWithUserNames {
-        id: inserted.id,
-        coach_id: inserted.coach_id,
-        coachee_id: inserted.coachee_id,
-        coach_first_name: coach.first_name,
-        coach_last_name: coach.last_name,
-        coachee_first_name: coachee.first_name,
-        coachee_last_name: coachee.last_name,
-        created_at: inserted.created_at,
-        updated_at: inserted.updated_at,
-    })
+    match Entity::insert(coaching_relationship_active_model)
+        .on_conflict(conflict)
+        .exec_with_returning(db)
+        .await
+    {
+        Ok(inserted) => Ok(with_user_names(inserted, &coach, &coachee)),
+        // DO NOTHING wrote no row, so RETURNING yielded none and SeaORM reports the
+        // miss as RecordNotFound. Only a conflict can produce that here, since this
+        // statement inserts exactly one row.
+        Err(DbErr::RecordNotFound(_)) => {
+            let winner = find_for_pair(
+                db,
+                organization_id,
+                coaching_relationship_model.coach_id,
+                coaching_relationship_model.coachee_id,
+            )
+            .await?
+            .ok_or_else(|| Error {
+                source: None,
+                error_kind: EntityApiErrorKind::RecordNotFound,
+            })?;
+            debug!("Lost the create race, reusing the winning relationship: {winner:?}");
+            Ok(with_user_names(winner, &coach, &coachee))
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// The relationship for exactly this coach, coachee and organization, if one exists.
+///
+/// Shared by the pre-check and the lost-race recovery so both agree on what "the same
+/// relationship" means. Directional: swapping coach and coachee is a different pair.
+///
+/// Filters in SQL so this rides the `coaching_relationships_coach_coachee_org` unique
+/// index and returns at most one row, rather than reading an organization's whole set
+/// to answer a question about one pair.
+async fn find_for_pair(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    coach_id: Id,
+    coachee_id: Id,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
+        .filter(coaching_relationships::Column::CoachId.eq(coach_id))
+        .filter(coaching_relationships::Column::CoacheeId.eq(coachee_id))
+        .one(db)
+        .await?)
+}
+
+/// The relationship's participants who are still members of its organization.
+///
+/// The notify set for anything that happens inside a coaching relationship. Someone
+/// removed from the organization keeps the relationship but stops being notified.
+pub async fn notify_member_ids(
+    db: &impl ConnectionTrait,
+    relationship: &Model,
+) -> Result<Vec<Id>, Error> {
+    crate::user_role::retain_organization_members(
+        db,
+        &[relationship.coach_id, relationship.coachee_id],
+        relationship.organization_id,
+    )
+    .await
+}
+
+/// Pairs a coaching relationship with the names of its coach and coachee.
+fn with_user_names(
+    coaching_relationship: Model,
+    coach: &users::Model,
+    coachee: &users::Model,
+) -> CoachingRelationshipWithUserNames {
+    CoachingRelationshipWithUserNames {
+        id: coaching_relationship.id,
+        coach_id: coaching_relationship.coach_id,
+        coachee_id: coaching_relationship.coachee_id,
+        coach_first_name: coach.first_name.clone(),
+        coach_last_name: coach.last_name.clone(),
+        coachee_first_name: coachee.first_name.clone(),
+        coachee_last_name: coachee.last_name.clone(),
+        created_at: coaching_relationship.created_at,
+        updated_at: coaching_relationship.updated_at,
+    }
 }
 
 pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
@@ -365,76 +445,6 @@ pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result
         .exec(db)
         .await?;
     Ok(())
-}
-
-/// Deletes the user's coaching relationships within a single organization.
-///
-/// Org-scoped counterpart to [`delete_by_user_id`], for removing a member from
-/// one organization without touching their relationships elsewhere.
-pub async fn delete_by_user_and_organization(
-    db: &impl ConnectionTrait,
-    user_id: Id,
-    organization_id: Id,
-) -> Result<u64, Error> {
-    Ok(Entity::delete_many()
-        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
-        .filter(
-            Condition::any()
-                .add(coaching_relationships::Column::CoachId.eq(user_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
-        .exec(db)
-        .await?
-        .rows_affected)
-}
-
-/// A user's coaching footprint inside one organization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct History {
-    pub coaching_relationship_count: u64,
-    pub coaching_session_count: u64,
-}
-
-/// Counts the user's coaching relationships in an organization, and the
-/// sessions hanging off them.
-///
-/// Backs the guard on removing a member: `coaching_sessions` references
-/// `coaching_relationships` with NO ACTION, so deleting a relationship that
-/// carries sessions raises a foreign key violation rather than cascading.
-pub async fn count_history_for_user_in_organization(
-    db: &impl ConnectionTrait,
-    user_id: Id,
-    organization_id: Id,
-) -> Result<History, Error> {
-    let relationship_ids: Vec<Id> = Entity::find()
-        .select_only()
-        .column(coaching_relationships::Column::Id)
-        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
-        .filter(
-            Condition::any()
-                .add(coaching_relationships::Column::CoachId.eq(user_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
-        .into_tuple()
-        .all(db)
-        .await?;
-
-    // Sessions hang off relationships, so only worth counting when there are any.
-    let coaching_session_count = if relationship_ids.is_empty() {
-        0
-    } else {
-        coaching_sessions::Entity::find()
-            .filter(
-                coaching_sessions::Column::CoachingRelationshipId.is_in(relationship_ids.clone()),
-            )
-            .count(db)
-            .await?
-    };
-
-    Ok(History {
-        coaching_relationship_count: relationship_ids.len() as u64,
-        coaching_session_count,
-    })
 }
 
 /// Trait for filtering coaching relationships by user's role.
@@ -775,3 +785,13 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_reuse_tests.rs"]
+mod reuse_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_race_tests.rs"]
+mod race_tests;

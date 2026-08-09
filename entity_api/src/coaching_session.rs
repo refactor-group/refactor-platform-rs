@@ -283,16 +283,17 @@ pub async fn find_next_session(
         .await?)
 }
 
-/// Returns the coach and coachee user IDs for a coaching session.
+/// Returns the coach and coachee user IDs for a coaching session, excluding any
+/// participant no longer a member of the relationship's organization.
 ///
 /// Used by webhook handlers to determine which users to notify via SSE when
-/// recording or transcription state changes. Performs a single join query.
+/// recording or transcription state changes.
 pub async fn find_participant_ids(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> Result<Vec<Id>, Error> {
     let (_, relationship) = find_by_id_with_coaching_relationship(db, coaching_session_id).await?;
-    Ok(vec![relationship.coach_id, relationship.coachee_id])
+    crate::coaching_relationship::notify_member_ids(db, &relationship).await
 }
 
 pub async fn find_by_id_with_coaching_relationship(

@@ -45,12 +45,17 @@ fn create_test_user() -> users::Model {
     }
 }
 
+/// Fixtures share one organization so a participant is also a member of it.
+fn fixture_organization_id() -> Id {
+    Id::from_u128(1)
+}
+
 fn test_role(user_id: Id) -> user_roles::Model {
     let now = Utc::now();
     user_roles::Model {
         id: Id::new_v4(),
         role: users::Role::User,
-        organization_id: Some(Id::new_v4()),
+        organization_id: Some(fixture_organization_id()),
         user_id,
         created_at: now.into(),
         updated_at: now.into(),
@@ -81,7 +86,7 @@ fn test_relationship(relationship_id: Id, coachee_id: Id) -> coaching_relationsh
         id: relationship_id,
         coach_id: Id::new_v4(),
         coachee_id,
-        organization_id: Id::new_v4(),
+        organization_id: fixture_organization_id(),
         slug: "test".to_string(),
         created_at: now.into(),
         updated_at: now.into(),
@@ -98,7 +103,7 @@ fn test_relationship_with_coach(
         id: relationship_id,
         coach_id,
         coachee_id,
-        organization_id: Id::new_v4(),
+        organization_id: fixture_organization_id(),
         slug: "test".to_string(),
         created_at: now.into(),
         updated_at: now.into(),

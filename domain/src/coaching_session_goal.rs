@@ -34,7 +34,8 @@ pub async fn link_to_coaching_session(
     let (_, relationship) =
         crate::coaching_session::find_by_id_with_coaching_relationship(db, coaching_session_id)
             .await?;
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+    let notify_user_ids =
+        entity_api::coaching_relationship::notify_member_ids(db, &relationship).await?;
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let (link, promoted_goal) =
@@ -90,7 +91,7 @@ pub async fn unlink_from_coaching_session(
 
     CoachingSessionGoalApi::delete_by_id(db, id).await?;
 
-    publish_session_goal_deleted(event_publisher, &link, &relationship).await;
+    publish_session_goal_deleted(db, event_publisher, &link, &relationship).await;
 
     Ok(())
 }
@@ -113,7 +114,7 @@ pub async fn unlink_goal_from_coaching_session(
 
     CoachingSessionGoalApi::delete_by_id(db, link.id).await?;
 
-    publish_session_goal_deleted(event_publisher, &link, &relationship).await;
+    publish_session_goal_deleted(db, event_publisher, &link, &relationship).await;
 
     Ok(())
 }
@@ -178,12 +179,28 @@ pub async fn find_session_ids_by_coaching_relationship_id(
 
 /// Publishes a `CoachingSessionGoalDeleted` SSE event. Shared by both
 /// unlink-by-id and unlink-by-session-and-goal paths.
+///
+/// Infallible by signature, deliberately. Both callers have already deleted the link by
+/// the time they get here, so nothing this function does may turn a committed unlink
+/// into a failed request. A recipient lookup that fails is logged and the event
+/// dropped, matching the goal, action and agreement paths.
 async fn publish_session_goal_deleted(
+    db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     link: &coaching_sessions_goals::Model,
     relationship: &entity_api::coaching_relationships::Model,
 ) {
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
+    let notify_user_ids =
+        match entity_api::coaching_relationship::notify_member_ids(db, relationship).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                error!(
+                    "session-goal SSE: failed to resolve members for relationship {}: {e:?}",
+                    relationship.id
+                );
+                return;
+            }
+        };
 
     event_publisher
         .publish(DomainEvent::CoachingSessionGoalDeleted {
@@ -205,11 +222,11 @@ async fn publish_session_goal_deleted(
 mod integration_tests {
     use super::*;
     use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
-    use crate::test_support::recording_publisher;
+    use crate::test_support::{both_participants_are_members, recording_publisher};
     use entity_api::coaching_relationships;
     use entity_api::coaching_sessions;
     use entity_api::status::Status;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
     fn build_goal(status: Status, relationship_id: Id) -> Model {
         let now = chrono::Utc::now().fixed_offset();
@@ -290,17 +307,19 @@ mod integration_tests {
         // Mock sequence (relationship lookup now runs FIRST, before the txn opens,
         // so a missing session fails fast without any writes):
         //   1. find_by_id_with_coaching_relationship — JOIN returning (session, relationship)
+        //   2. organization-membership filter on the notify set
         // Then inside the txn opened by link_to_coaching_session:
-        //   2. SELECT goal by id (entity_api::coaching_session_goal::create)
-        //   3. SELECT existing link (duplicate-check, returns empty)
-        //   4. SELECT in-progress goals on relationship (cap check, returns empty)
-        //   5. INSERT into coaching_sessions_goals (the new link row)
-        //   6. UPDATE goals (auto-promotion to InProgress)
+        //   3. SELECT goal by id (entity_api::coaching_session_goal::create)
+        //   4. SELECT existing link (duplicate-check, returns empty)
+        //   5. SELECT in-progress goals on relationship (cap check, returns empty)
+        //   6. INSERT into coaching_sessions_goals (the new link row)
+        //   7. UPDATE goals (auto-promotion to InProgress)
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![(
                 build_session(new_session_id, relationship_id),
                 Some(relationship.clone()),
             )]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
             .append_query_results(vec![Vec::<Model>::new()])
@@ -374,14 +393,16 @@ mod integration_tests {
 
         // Mock sequence (relationship lookup first, no cap-check, no promotion update):
         //   1. find_by_id_with_coaching_relationship
-        //   2. SELECT goal by id
-        //   3. SELECT existing link (duplicate-check, returns empty)
-        //   4. INSERT into coaching_sessions_goals
+        //   2. organization-membership filter on the notify set
+        //   3. SELECT goal by id
+        //   4. SELECT existing link (duplicate-check, returns empty)
+        //   5. INSERT into coaching_sessions_goals
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![(
                 build_session(new_session_id, relationship_id),
                 Some(relationship.clone()),
             )]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
             .append_query_results(vec![vec![link.clone()]])
@@ -417,15 +438,17 @@ mod integration_tests {
 
         // Mock sequence:
         //   1. find_by_id_with_coaching_relationship (pre-txn, fail-fast lookup)
+        //   2. organization-membership filter on the notify set
         // Then inside txn:
-        //   2. SELECT goal by id
-        //   3. SELECT existing link — returns the existing row, triggering 409
+        //   3. SELECT goal by id
+        //   4. SELECT existing link (returns the existing row, triggering 409)
         // No further queries — error returns before INSERT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![(
                 build_session(new_session_id, relationship_id),
                 Some(relationship.clone()),
             )]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![vec![existing_link]])
             .into_connection();
@@ -463,14 +486,16 @@ mod integration_tests {
 
         // Mock sequence:
         //   1. find_by_id_with_coaching_relationship (pre-txn, fail-fast lookup)
+        //   2. organization-membership filter on the notify set
         // Then inside txn:
-        //   2. SELECT goal by id (returns Completed goal)
+        //   3. SELECT goal by id (returns Completed goal)
         // No further queries — error returns immediately.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![(
                 build_session(new_session_id, relationship_id),
                 Some(relationship.clone()),
             )]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![goal.clone()]])
             .into_connection();
 
@@ -515,16 +540,18 @@ mod integration_tests {
 
         // Mock sequence:
         //   1. find_by_id_with_coaching_relationship (pre-txn, fail-fast lookup)
+        //   2. organization-membership filter on the notify set
         // Then inside txn:
-        //   2. SELECT goal by id (returns NotStarted)
-        //   3. SELECT existing link (duplicate-check, empty)
-        //   4. SELECT in-progress goals on relationship (cap check, returns 3 → at cap)
+        //   3. SELECT goal by id (returns NotStarted)
+        //   4. SELECT existing link (duplicate-check, empty)
+        //   5. SELECT in-progress goals on relationship (cap check, returns 3 → at cap)
         // No further queries — error returns before INSERT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![(
                 build_session(new_session_id, relationship_id),
                 Some(relationship.clone()),
             )]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![Vec::<coaching_sessions_goals::Model>::new()])
             .append_query_results(vec![cap_goals])
@@ -549,6 +576,40 @@ mod integration_tests {
         assert!(
             events.is_empty(),
             "no events should fire on failed link, got {events:?}"
+        );
+    }
+
+    /// The link is already deleted by the time recipients are resolved, so a failure
+    /// there must not turn a successful unlink into a failed request.
+    #[tokio::test]
+    async fn unlink_succeeds_when_the_notify_lookup_fails() {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let goal_id = Id::new_v4();
+        let relationship = build_relationship(relationship_id);
+        let link = build_link(session_id, goal_id);
+
+        // Link and relationship resolve, the delete succeeds, then the membership
+        // lookup runs off the end of the queue and errors.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![(link.clone(), Some(relationship.clone()))]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        let result = unlink_from_coaching_session(&db, &publisher, link.id).await;
+
+        assert!(
+            result.is_ok(),
+            "a failed recipient lookup must not fail the committed unlink: {:?}",
+            result.err()
+        );
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "with no resolvable recipients there is nobody to notify, so no event should fire"
         );
     }
 }

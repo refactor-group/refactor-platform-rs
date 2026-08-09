@@ -78,7 +78,8 @@ impl CoachingSessionHydrationTask for GoalsCarryForwardTask {
         &self,
         ctx: &CoachingSessionHydrationContext<'_>,
     ) -> Result<Vec<DomainEvent>, Error> {
-        let notify_user_ids = vec![ctx.relationship.coach_id, ctx.relationship.coachee_id];
+        let notify_user_ids =
+            entity_api::coaching_relationship::notify_member_ids(ctx.txn, ctx.relationship).await?;
         Ok(coaching_session_goal::link_in_progress_goals_to_session(
             ctx.txn,
             ctx.session.coaching_relationship_id,
@@ -126,7 +127,8 @@ impl CoachingSessionHydrationTask for TopicsMoveForwardTask {
         if moved.is_empty() {
             return Ok(Vec::new());
         }
-        let notify_user_ids = vec![ctx.relationship.coach_id, ctx.relationship.coachee_id];
+        let notify_user_ids =
+            entity_api::coaching_relationship::notify_member_ids(ctx.txn, ctx.relationship).await?;
         Ok(vec![
             DomainEvent::TopicsChanged {
                 coaching_session_id: ctx.session.id,

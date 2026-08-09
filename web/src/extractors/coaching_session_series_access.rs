@@ -33,7 +33,7 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (series, relationship, user) = resolve(parts, state).await?;
-        if relationship.coach_id == user.id || relationship.coachee_id == user.id {
+        if relationship.grants_access_to(&user) {
             Ok(CoachingSessionSeriesAccess(series))
         } else {
             Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
@@ -85,7 +85,7 @@ where
             (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
         })?;
 
-        if relationship.coach_id == user.id || relationship.coachee_id == user.id {
+        if relationship.grants_access_to(&user) {
             Ok(CoachingRelationshipQueryAccess(relationship))
         } else {
             Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
@@ -107,7 +107,7 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (series, relationship, user) = resolve(parts, state).await?;
-        if relationship.coach_id == user.id {
+        if relationship.coach_id == user.id && relationship.grants_access_to(&user) {
             Ok(CoachingSessionSeriesCoachAccess(series))
         } else {
             Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
@@ -224,25 +224,29 @@ mod tests {
         }
     }
 
-    fn test_role(user_id: Id) -> user_roles::Model {
+    fn test_role(user_id: Id, organization_id: Id) -> user_roles::Model {
         let now = Utc::now();
         user_roles::Model {
             id: Id::new_v4(),
             role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
+            organization_id: Some(organization_id),
             user_id,
             created_at: now.into(),
             updated_at: now.into(),
         }
     }
 
-    fn test_relationship(coach_id: Id, coachee_id: Id) -> coaching_relationships::Model {
+    fn test_relationship(
+        coach_id: Id,
+        coachee_id: Id,
+        organization_id: Id,
+    ) -> coaching_relationships::Model {
         let now = Utc::now();
         coaching_relationships::Model {
             id: Id::new_v4(),
             coach_id,
             coachee_id,
-            organization_id: Id::new_v4(),
+            organization_id,
             slug: "test".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
@@ -340,9 +344,10 @@ mod tests {
     #[tokio::test]
     async fn series_access_allows_coachee() {
         let user = test_user();
-        let role = test_role(user.id);
+        let organization_id = Id::new_v4();
+        let role = test_role(user.id, organization_id);
         let coach_id = Id::new_v4();
-        let relationship = test_relationship(coach_id, user.id);
+        let relationship = test_relationship(coach_id, user.id, organization_id);
         let series = test_series(relationship.id, coach_id);
 
         let db = Arc::new(
@@ -374,9 +379,10 @@ mod tests {
     #[tokio::test]
     async fn coach_access_denies_coachee() {
         let user = test_user();
-        let role = test_role(user.id);
+        let organization_id = Id::new_v4();
+        let role = test_role(user.id, organization_id);
         let coach_id = Id::new_v4();
-        let relationship = test_relationship(coach_id, user.id);
+        let relationship = test_relationship(coach_id, user.id, organization_id);
         let series = test_series(relationship.id, coach_id);
 
         let db = Arc::new(
@@ -409,9 +415,10 @@ mod tests {
     #[tokio::test]
     async fn coach_access_allows_coach() {
         let user = test_user();
-        let role = test_role(user.id);
+        let organization_id = Id::new_v4();
+        let role = test_role(user.id, organization_id);
         let coachee_id = Id::new_v4();
-        let relationship = test_relationship(user.id, coachee_id);
+        let relationship = test_relationship(user.id, coachee_id, organization_id);
         let series = test_series(relationship.id, user.id);
 
         let db = Arc::new(
@@ -444,9 +451,10 @@ mod tests {
     #[tokio::test]
     async fn relationship_query_access_allows_coach() {
         let user = test_user();
-        let role = test_role(user.id);
+        let organization_id = Id::new_v4();
+        let role = test_role(user.id, organization_id);
         let coachee_id = Id::new_v4();
-        let relationship = test_relationship(user.id, coachee_id);
+        let relationship = test_relationship(user.id, coachee_id, organization_id);
 
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
@@ -479,8 +487,9 @@ mod tests {
     #[tokio::test]
     async fn relationship_query_access_denies_outsider() {
         let user = test_user();
-        let role = test_role(user.id);
-        let relationship = test_relationship(Id::new_v4(), Id::new_v4());
+        let organization_id = Id::new_v4();
+        let role = test_role(user.id, organization_id);
+        let relationship = test_relationship(Id::new_v4(), Id::new_v4(), organization_id);
 
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)

@@ -210,6 +210,39 @@ pub async fn shares_administered_organization(
         .is_some())
 }
 
+/// Keeps only those users who currently hold a role in `organization_id`.
+///
+/// Input order is preserved, so callers relying on a coach-then-coachee ordering
+/// keep it. A global SuperAdmin is always kept.
+pub async fn retain_organization_members(
+    db: &impl ConnectionTrait,
+    user_ids: &[Id],
+    organization_id: Id,
+) -> Result<Vec<Id>, Error> {
+    let members: Vec<Id> = Entity::find()
+        .select_only()
+        .column(Column::UserId)
+        .filter(Column::UserId.is_in(user_ids.iter().copied()))
+        .filter(
+            Condition::any()
+                .add(Column::OrganizationId.eq(organization_id))
+                .add(
+                    Condition::all()
+                        .add(Column::Role.eq(Role::SuperAdmin))
+                        .add(Column::OrganizationId.is_null()),
+                ),
+        )
+        .into_tuple::<Id>()
+        .all(db)
+        .await?;
+
+    Ok(user_ids
+        .iter()
+        .copied()
+        .filter(|user_id| members.contains(user_id))
+        .collect())
+}
+
 #[cfg(test)]
 #[cfg(feature = "mock")]
 mod test {
@@ -241,3 +274,8 @@ mod test {
 #[cfg(feature = "mock")]
 #[path = "user_role_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "user_role_membership_tests.rs"]
+mod membership_tests;

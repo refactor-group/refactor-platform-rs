@@ -1,26 +1,36 @@
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::coaching_relationship_access::CoachingRelationshipAccess;
+use crate::extractors::organization_admin_access::OrganizationAdminAccess;
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_relationship::goal_progress::IndexParams as GoalProgressIndexParams;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::{
     action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
-    goal_progress as GoalProgressApi, Id,
+    goal_progress as GoalProgressApi,
 };
 use service::config::ApiVersion;
 
 use log::*;
 
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_authz_tests.rs"]
+mod authz_tests;
+
 /// CREATE a new CoachingRelationship.
+///
+/// Restricted to administrators of the organization named in the path. Idempotent:
+/// when a relationship already exists for this coach and coachee in the organization,
+/// that relationship is returned rather than a duplicate created.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/coaching_relationships",
@@ -29,8 +39,10 @@ use log::*;
     ),
     request_body = entity::coaching_relationships::Model,
     responses(
-        (status = 200, description = "Successfully created a new Coaching Relationship", body = [coaching_relationships::Model]),
+        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = [coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller does not administer the organization"),
+        (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -41,14 +53,14 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
     Json(coaching_relationship_model): Json<coaching_relationships::Model>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("CREATE new Coaching Relationship from: {coaching_relationship_model:?}");
 
     let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
         app_state.db_conn_ref(),
-        organization_id,
+        organization.id,
         coaching_relationship_model,
     )
     .await?;
@@ -65,6 +77,9 @@ pub async fn create(
 }
 
 /// GET a particular CoachingRelationship specified by the organization Id and relationship Id.
+///
+/// Restricted to participants of the relationship who still belong to its organization,
+/// matching what the list read returns for the same caller.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}",
@@ -86,12 +101,10 @@ pub async fn create(
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
-    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+    CoachingRelationshipAccess(coaching_relationship): CoachingRelationshipAccess,
 ) -> Result<impl IntoResponse, Error> {
+    let relationship_id = coaching_relationship.id;
     debug!("GET CoachingRelationship by id: {relationship_id}");
 
     let relationship: Option<CoachingRelationshipWithUserNames> =
