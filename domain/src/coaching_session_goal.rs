@@ -91,7 +91,7 @@ pub async fn unlink_from_coaching_session(
 
     CoachingSessionGoalApi::delete_by_id(db, id).await?;
 
-    publish_session_goal_deleted(db, event_publisher, &link, &relationship).await?;
+    publish_session_goal_deleted(db, event_publisher, &link, &relationship).await;
 
     Ok(())
 }
@@ -114,7 +114,7 @@ pub async fn unlink_goal_from_coaching_session(
 
     CoachingSessionGoalApi::delete_by_id(db, link.id).await?;
 
-    publish_session_goal_deleted(db, event_publisher, &link, &relationship).await?;
+    publish_session_goal_deleted(db, event_publisher, &link, &relationship).await;
 
     Ok(())
 }
@@ -179,14 +179,28 @@ pub async fn find_session_ids_by_coaching_relationship_id(
 
 /// Publishes a `CoachingSessionGoalDeleted` SSE event. Shared by both
 /// unlink-by-id and unlink-by-session-and-goal paths.
+///
+/// Infallible by signature, deliberately. Both callers have already deleted the link by
+/// the time they get here, so nothing this function does may turn a committed unlink
+/// into a failed request. A recipient lookup that fails is logged and the event
+/// dropped, matching the goal, action and agreement paths.
 async fn publish_session_goal_deleted(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     link: &coaching_sessions_goals::Model,
     relationship: &entity_api::coaching_relationships::Model,
-) -> Result<(), Error> {
+) {
     let notify_user_ids =
-        entity_api::coaching_relationship::notify_member_ids(db, relationship).await?;
+        match entity_api::coaching_relationship::notify_member_ids(db, relationship).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                error!(
+                    "session-goal SSE: failed to resolve members for relationship {}: {e:?}",
+                    relationship.id
+                );
+                return;
+            }
+        };
 
     event_publisher
         .publish(DomainEvent::CoachingSessionGoalDeleted {
@@ -201,8 +215,6 @@ async fn publish_session_goal_deleted(
         "Published CoachingSessionGoalDeleted event for goal {} in session {}",
         link.goal_id, link.coaching_session_id
     );
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -214,7 +226,7 @@ mod integration_tests {
     use entity_api::coaching_relationships;
     use entity_api::coaching_sessions;
     use entity_api::status::Status;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
     fn build_goal(status: Status, relationship_id: Id) -> Model {
         let now = chrono::Utc::now().fixed_offset();
@@ -564,6 +576,40 @@ mod integration_tests {
         assert!(
             events.is_empty(),
             "no events should fire on failed link, got {events:?}"
+        );
+    }
+
+    /// The link is already deleted by the time recipients are resolved, so a failure
+    /// there must not turn a successful unlink into a failed request.
+    #[tokio::test]
+    async fn unlink_succeeds_when_the_notify_lookup_fails() {
+        let relationship_id = Id::new_v4();
+        let session_id = Id::new_v4();
+        let goal_id = Id::new_v4();
+        let relationship = build_relationship(relationship_id);
+        let link = build_link(session_id, goal_id);
+
+        // Link and relationship resolve, the delete succeeds, then the membership
+        // lookup runs off the end of the queue and errors.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![(link.clone(), Some(relationship.clone()))]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        let result = unlink_from_coaching_session(&db, &publisher, link.id).await;
+
+        assert!(
+            result.is_ok(),
+            "a failed recipient lookup must not fail the committed unlink: {:?}",
+            result.err()
+        );
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "with no resolvable recipients there is nobody to notify, so no event should fire"
         );
     }
 }
