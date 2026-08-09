@@ -8,14 +8,14 @@ use crate::extractors::{
 };
 use crate::params::coaching_relationship::goal_progress::IndexParams as GoalProgressIndexParams;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::{
     action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
-    goal_progress as GoalProgressApi, Id,
+    goal_progress as GoalProgressApi,
 };
 use service::config::ApiVersion;
 
@@ -77,6 +77,9 @@ pub async fn create(
 }
 
 /// GET a particular CoachingRelationship specified by the organization Id and relationship Id.
+///
+/// Restricted to participants of the relationship who still belong to its organization,
+/// matching what the list read returns for the same caller.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}",
@@ -98,12 +101,10 @@ pub async fn create(
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
-    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+    CoachingRelationshipAccess(coaching_relationship): CoachingRelationshipAccess,
 ) -> Result<impl IntoResponse, Error> {
+    let relationship_id = coaching_relationship.id;
     debug!("GET CoachingRelationship by id: {relationship_id}");
 
     let relationship: Option<CoachingRelationshipWithUserNames> =

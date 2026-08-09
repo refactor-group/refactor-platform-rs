@@ -7,7 +7,7 @@ use axum_login::{
 };
 use chrono::Utc;
 use domain::user::Backend;
-use domain::{organizations, user_roles, users, Id};
+use domain::{coaching_relationships, organizations, user_roles, users, Id};
 use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, MockDatabase};
 use service::config::Config;
@@ -205,4 +205,137 @@ async fn create_denies_an_admin_of_a_different_organization() {
         create_request(&app, &cookie, organization_id).await,
         StatusCode::FORBIDDEN
     );
+}
+
+fn relationship(
+    id: Id,
+    organization_id: Id,
+    coach_id: Id,
+    coachee_id: Id,
+) -> coaching_relationships::Model {
+    let now = Utc::now();
+    coaching_relationships::Model {
+        id,
+        organization_id,
+        coach_id,
+        coachee_id,
+        slug: "coach-coachee".to_string(),
+        created_at: now.into(),
+        updated_at: now.into(),
+    }
+}
+
+/// Login's two user lookups, then the relationship `CoachingRelationshipAccess` resolves.
+fn mock_through_relationship_read(
+    user: &users::Model,
+    role: &user_roles::Model,
+    relationship: &coaching_relationships::Model,
+) -> Arc<sea_orm::DatabaseConnection> {
+    Arc::new(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![relationship.clone()]])
+            .into_connection(),
+    )
+}
+
+async fn read_request(
+    app: &Router,
+    cookie: &str,
+    organization_id: Id,
+    relationship_id: Id,
+) -> StatusCode {
+    let request = Request::builder()
+        .uri(format!(
+            "/organizations/{organization_id}/coaching_relationships/{relationship_id}"
+        ))
+        .header("cookie", cookie)
+        .header("x-version", "1.0.0-beta1")
+        .body(Body::empty())
+        .unwrap();
+    app.clone().oneshot(request).await.unwrap().status()
+}
+
+fn build_read_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+    let app_state = AppState::new(
+        service::AppState::new(Config::default(), &db),
+        Arc::new(sse::Manager::default()),
+        domain::events::EventPublisher::default(),
+        None,
+        None,
+    );
+
+    let session_layer = SessionManagerLayer::new(MemoryStore::default())
+        .with_secure(false)
+        .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+        .with_always_save(true);
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+
+    Router::new()
+        .route(
+            "/login",
+            post(crate::controller::user_session_controller::login),
+        )
+        .route(
+            "/organizations/:organization_id/coaching_relationships/:relationship_id",
+            axum::routing::get(super::read),
+        )
+        .with_state(app_state)
+        .layer(auth_layer)
+}
+
+#[tokio::test]
+async fn read_denies_a_non_participant() {
+    let organization_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::User);
+    // A member of the organization, but this relationship is between two other people.
+    let other = relationship(relationship_id, organization_id, Id::new_v4(), Id::new_v4());
+
+    let db = mock_through_relationship_read(&user, &role, &other);
+    let app = build_read_app(db);
+    let cookie = login_cookie(&app).await;
+
+    assert_eq!(
+        read_request(&app, &cookie, organization_id, relationship_id).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn read_denies_a_participant_removed_from_the_organization() {
+    let organization_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let user = requester();
+    // Still the coachee, but their only role is in some other organization.
+    let role = test_role(user.id, Some(Id::new_v4()), users::Role::User);
+    let own = relationship(relationship_id, organization_id, Id::new_v4(), user.id);
+
+    let db = mock_through_relationship_read(&user, &role, &own);
+    let app = build_read_app(db);
+    let cookie = login_cookie(&app).await;
+
+    assert_eq!(
+        read_request(&app, &cookie, organization_id, relationship_id).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn read_allows_a_participant_who_is_still_a_member() {
+    let organization_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::User);
+    let own = relationship(relationship_id, organization_id, Id::new_v4(), user.id);
+
+    let db = mock_through_relationship_read(&user, &role, &own);
+    let app = build_read_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let status = read_request(&app, &cookie, organization_id, relationship_id).await;
+    assert_ne!(status, StatusCode::FORBIDDEN);
+    assert_ne!(status, StatusCode::UNAUTHORIZED);
 }
