@@ -339,3 +339,25 @@ async fn read_allows_a_participant_who_is_still_a_member() {
     assert_ne!(status, StatusCode::FORBIDDEN);
     assert_ne!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// The organization segment addresses the relationship. Pointing a valid relationship
+/// id at the wrong organization must not resolve, even for a legitimate participant.
+#[tokio::test]
+async fn read_denies_a_relationship_addressed_under_the_wrong_organization() {
+    let organization_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::User);
+    // The caller really is the coachee and really is a member, but the relationship
+    // belongs to a different organization than the one in the URL.
+    let elsewhere = relationship(relationship_id, Id::new_v4(), Id::new_v4(), user.id);
+
+    let db = mock_through_relationship_read(&user, &role, &elsewhere);
+    let app = build_read_app(db);
+    let cookie = login_cookie(&app).await;
+
+    assert_eq!(
+        read_request(&app, &cookie, organization_id, relationship_id).await,
+        StatusCode::NOT_FOUND
+    );
+}

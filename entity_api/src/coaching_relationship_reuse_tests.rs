@@ -50,6 +50,25 @@ fn relationship(organization_id: Id, coach_id: Id, coachee_id: Id) -> Model {
     }
 }
 
+/// Every statement the mock saw, paired with the values bound to it.
+///
+/// `to_string()` on a SELECT keeps the placeholders, so the only way to prove which id
+/// went into which column is to read the bindings.
+fn logged(db: DatabaseConnection) -> Vec<(String, Vec<String>)> {
+    db.into_transaction_log()
+        .into_iter()
+        .flat_map(|transaction| transaction.statements().to_vec())
+        .map(|statement| {
+            let values = statement
+                .values
+                .clone()
+                .map(|values| values.0.iter().map(|value| format!("{value:?}")).collect())
+                .unwrap_or_default();
+            (statement.to_string(), values)
+        })
+        .collect()
+}
+
 /// Every statement the mock saw, flattened across transactions.
 fn statements(db: DatabaseConnection) -> Vec<String> {
     db.into_transaction_log()
@@ -152,8 +171,11 @@ async fn does_not_reuse_a_reversed_pair() -> Result<(), Error> {
     let reversed = relationship(organization_id, coachee.id, coach.id);
     let inserted = relationship(organization_id, coach.id, coachee.id);
 
+    // The uniqueness lookup filters in SQL, so a real database excludes the reversed
+    // row and returns nothing. The proof that it is genuinely excluded is the query
+    // itself, asserted below.
     let db = mock_up_to_uniqueness_check(organization_id, &coach, &coachee)
-        .append_query_results([[reversed.clone()]])
+        .append_query_results([Vec::<Model>::new()])
         .append_query_results([[inserted.clone()]])
         .into_connection();
 
@@ -167,10 +189,25 @@ async fn does_not_reuse_a_reversed_pair() -> Result<(), Error> {
     assert_ne!(created.id, reversed.id);
     assert_eq!(created.id, inserted.id);
 
-    let sql = statements(db);
+    // Organization, coach, coachee, in that order. Swap the last two and these fail,
+    // which is what keeps the reversed pair a different relationship.
+    let logged = logged(db);
+    let (_, bindings) = logged
+        .iter()
+        .find(|(sql, _)| sql.contains("\"coach_id\" = "))
+        .expect("the uniqueness lookup must filter on the pair");
+
     assert!(
-        sql.iter().any(|statement| statement.contains("INSERT")),
-        "the reversed pair is not a match, so the requested one must be created: {sql:?}"
+        bindings[1].contains(&coach.id.to_string()),
+        "coach must be matched as the coach, got {bindings:?}"
+    );
+    assert!(
+        bindings[2].contains(&coachee.id.to_string()),
+        "coachee must be matched as the coachee, got {bindings:?}"
+    );
+    assert!(
+        logged.iter().any(|(sql, _)| sql.contains("INSERT")),
+        "the reversed pair is not a match, so the requested one must be created"
     );
 
     Ok(())

@@ -150,16 +150,22 @@ pub async fn create(
 ///
 /// Shared by the pre-check and the lost-race recovery so both agree on what "the same
 /// relationship" means. Directional: swapping coach and coachee is a different pair.
+///
+/// Filters in SQL so this rides the `coaching_relationships_coach_coachee_org` unique
+/// index and returns at most one row, rather than reading an organization's whole set
+/// to answer a question about one pair.
 async fn find_for_pair(
     db: &impl ConnectionTrait,
     organization_id: Id,
     coach_id: Id,
     coachee_id: Id,
 ) -> Result<Option<Model>, Error> {
-    Ok(find_by_organization(db, organization_id)
-        .await?
-        .into_iter()
-        .find(|cr| cr.coach_id == coach_id && cr.coachee_id == coachee_id))
+    Ok(Entity::find()
+        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
+        .filter(coaching_relationships::Column::CoachId.eq(coach_id))
+        .filter(coaching_relationships::Column::CoacheeId.eq(coachee_id))
+        .one(db)
+        .await?)
 }
 
 /// The relationship's participants who are still members of its organization.
