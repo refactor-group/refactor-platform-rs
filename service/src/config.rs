@@ -36,6 +36,9 @@ const DEFAULT_MAGIC_LINK_EXPIRY_SECONDS: u64 = 259200;
 /// Default URL path for password reset page.
 const DEFAULT_PASSWORD_RESET_EMAIL_URL_PATH: &str = "/reset-password/{token}";
 
+/// Default URL path for added-to-organization email links.
+const DEFAULT_ADDED_TO_ORGANIZATION_EMAIL_URL_PATH: &str = "/dashboard";
+
 /// Default expiry duration for password reset tokens (30 minutes in seconds).
 /// Shorter than the setup-token default because the user is actively at their
 /// keyboard when requesting reset.
@@ -72,6 +75,8 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "password_reset_email_template_id",
     "password_reset_email_url_path",
     "password_reset_token_expiry_seconds",
+    "added_to_organization_email_template_id",
+    "added_to_organization_email_url_path",
     "interface",
     "port",
     "log_level_filter",
@@ -278,6 +283,9 @@ pub struct Config {
     /// The Resend template ID for action-assigned emails.
     #[arg(long, env)]
     action_assigned_email_template_id: Option<String>,
+    /// The Resend template ID for added-to-organization emails.
+    #[arg(long, env)]
+    added_to_organization_email_template_id: Option<String>,
     /// The base URL of the frontend application (e.g. https://app.myrefactor.com).
     /// Used to construct links in email notifications.
     #[arg(long, env)]
@@ -312,6 +320,10 @@ pub struct Config {
     /// Expiry duration in seconds for password reset tokens (default: 30 minutes).
     #[arg(long, env, default_value_t = DEFAULT_PASSWORD_RESET_TOKEN_EXPIRY_SECONDS)]
     password_reset_token_expiry_seconds: u64,
+    /// URL path for the link in added-to-organization emails.
+    /// Use `{organization_id}` as a placeholder for the organization ID.
+    #[arg(long, env, default_value = DEFAULT_ADDED_TO_ORGANIZATION_EMAIL_URL_PATH)]
+    added_to_organization_email_url_path: String,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -630,6 +642,14 @@ impl Config {
             "password_reset_token_expiry_seconds",
             &self.password_reset_token_expiry_seconds,
         );
+        self.debug_field(
+            "added_to_organization_email_template_id",
+            &self.added_to_organization_email_template_id,
+        );
+        self.debug_field(
+            "added_to_organization_email_url_path",
+            &self.added_to_organization_email_url_path,
+        );
     }
 
     pub fn api_version(&self) -> &str {
@@ -763,6 +783,21 @@ impl Config {
     /// Returns the expiry duration in seconds for password reset tokens.
     pub fn password_reset_token_expiry_seconds(&self) -> u64 {
         self.password_reset_token_expiry_seconds
+    }
+
+    /// Returns the Resend template ID for added-to-organization emails, if configured.
+    pub fn added_to_organization_email_template_id(&self) -> Option<String> {
+        self.added_to_organization_email_template_id.clone()
+    }
+
+    /// Returns the URL path for added-to-organization email links.
+    /// Falls back to the default if the configured value is empty.
+    pub fn added_to_organization_email_url_path(&self) -> &str {
+        if self.added_to_organization_email_url_path.is_empty() {
+            DEFAULT_ADDED_TO_ORGANIZATION_EMAIL_URL_PATH
+        } else {
+            &self.added_to_organization_email_url_path
+        }
     }
 
     pub fn runtime_env(&self) -> RustEnv {

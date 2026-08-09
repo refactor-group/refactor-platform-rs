@@ -13,8 +13,12 @@ use crate::{
 };
 use log::*;
 
-/// Checks that the authenticated user is a participant (coach or coachee)
-/// in the coaching relationship specified by `relationship_id` in the URL path.
+/// Checks that the authenticated user is a participant (coach or coachee) in the
+/// coaching relationship specified by `relationship_id` in the URL path, and that they
+/// still belong to that relationship's organization.
+///
+/// When the route also carries an `organization_id` segment, the relationship must
+/// actually live under it, so the segment addresses rather than decorates.
 ///
 /// On success, yields the coaching relationship model so the handler can use it
 /// without an additional database query.
@@ -67,7 +71,17 @@ where
                     (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
                 })?;
 
-        if !relationship.includes_user(authenticated_user.id) {
+        // The organization segment addresses the relationship, so a mismatch is a
+        // request for something that does not exist at that address. 404 rather than
+        // 403, to avoid confirming the relationship lives somewhere else. Skipped when
+        // the route carries no organization segment; every current one does.
+        if let Some(path_organization_id) = path_params.get("organization_id") {
+            if path_organization_id.parse::<Id>() != Ok(relationship.organization_id) {
+                return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
+            }
+        }
+
+        if !relationship.grants_access_to(&authenticated_user) {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 

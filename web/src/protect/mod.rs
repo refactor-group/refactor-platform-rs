@@ -14,7 +14,6 @@ pub(crate) mod coaching_sessions;
 pub(crate) mod goals;
 pub(crate) mod jwt;
 pub(crate) mod notes;
-pub(crate) mod organizations;
 pub(crate) mod tiptap_metrics;
 pub(crate) mod users;
 
@@ -132,28 +131,6 @@ pub(crate) async fn authorize(
         }
     }
     next.run(request).await
-}
-
-/// Checks if the authenticated user is NOT the user specified in args.
-///
-/// This is useful for preventing users from performing actions on themselves
-/// (e.g., deleting their own account, removing their own admin privileges).
-///
-/// # Arguments
-/// * `args[0]` - The user ID to check against
-pub struct UserIsNotSelf;
-
-#[async_trait]
-impl Check for UserIsNotSelf {
-    async fn eval(
-        &self,
-        _app_state: &AppState,
-        authenticated_user: &domain::users::Model,
-        args: Vec<Id>,
-    ) -> bool {
-        let user_id = args[0];
-        authenticated_user.id != user_id
-    }
 }
 
 /// Checks if the authenticated user has admin privileges.

@@ -64,6 +64,8 @@ PLATFORM="linux/arm64/v8"                    # Or linux/amd64
 # ==============================
 RESEND_API_KEY=""                            # Resend API key for sending emails
 WELCOME_EMAIL_TEMPLATE_ID=""                 # Template ID for welcome emails
+ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID=""   # Template ID for added-to-organization emails
+ADDED_TO_ORGANIZATION_EMAIL_URL_PATH=""      # Link path in those emails (default: /dashboard)
 
 # ==============================
 #   TipTap Service Configuration

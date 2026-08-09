@@ -33,6 +33,7 @@ use utoipa::ToSchema;
         ApiVersion,
         ("user_id" = Id, Path, description = "User ID to retrieve coaching sessions for"),
         ("coaching_relationship_id" = Option<Id>, Query, description = "Filter sessions to only those in this coaching relationship"),
+        ("organization_id" = Option<Id>, Query, description = "Filter sessions to relationships in this organization. Omitted = unscoped."),
         ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive). Evaluated in `tz` if supplied; otherwise UTC."),
         ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive at calendar-day precision). Evaluated in `tz` if supplied; otherwise UTC."),
         ("tz" = Option<String>, Query, description = "Optional IANA timezone identifier (e.g. 'America/Los_Angeles'). Interprets `from_date`/`to_date` as local-day boundaries in that zone. Invalid value → 400 invalid_timezone."),
@@ -97,6 +98,7 @@ pub async fn index(
         user_id,
         CoachingSessionApi::SessionQueryOptions {
             coaching_relationship_id: params.coaching_relationship_id,
+            organization_id: params.organization_id,
             from_date: params.from_date,
             to_date: params.to_date,
             tz: tz_name,
@@ -141,7 +143,8 @@ pub(crate) struct CountsResponse {
         ("to_date" = chrono::NaiveDate, Query, description = "End of the range (inclusive at calendar-day precision)"),
         ("group_by" = crate::params::user::coaching_session::GroupByParam, Query, description = "Aggregation grouping. v1 accepts only 'month'."),
         ("tz" = String, Query, description = "IANA timezone identifier (e.g. 'America/Los_Angeles'). Invalid value → 400 invalid_timezone."),
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Narrow to a single coaching relationship.")
+        ("coaching_relationship_id" = Option<Id>, Query, description = "Narrow to a single coaching relationship."),
+        ("organization_id" = Option<Id>, Query, description = "Narrow to relationships in this organization. Omitted = unscoped.")
     ),
     responses(
         (status = 200, description = "Monthly counts in the requested timezone", body = CountsResponse),
@@ -185,6 +188,7 @@ pub async fn counts(
         params.to_date,
         tz.name(),
         params.coaching_relationship_id,
+        params.organization_id,
     )
     .await?;
 

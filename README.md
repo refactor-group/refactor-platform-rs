@@ -93,6 +93,8 @@ The platform uses Resend for transactional emails. To configure email functional
    - `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for session-scheduled notification emails
    - `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for recurring-sessions-scheduled notification emails
    - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
+   - `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID`: The template ID for added-to-organization notification emails
+   - `ADDED_TO_ORGANIZATION_EMAIL_URL_PATH`: URL path for the link in added-to-organization emails (default: `/dashboard`)
    - `FRONTEND_BASE_URL`: Base URL used to construct links in email notifications (e.g. `https://myrefactor.com`)
 
 2. **Command Line Arguments** (for direct execution):

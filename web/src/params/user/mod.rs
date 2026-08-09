@@ -4,10 +4,41 @@ pub(crate) mod coaching_session;
 pub(crate) mod goal;
 
 // Re-export user profile update params for backward compatibility
-use domain::{IntoUpdateMap, UpdateMap};
+use domain::{users, users::Role, Id, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+
+/// Query parameters for an exact-match user lookup by email.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub struct LookupParams {
+    pub email: String,
+}
+
+/// Body for granting a user a role within an organization.
+///
+/// Unknown fields are rejected so a misspelled key fails loudly rather than
+/// silently granting the wrong role.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttachRoleParams {
+    pub role: Role,
+    /// Coach to assign in the same transaction as the membership.
+    pub coach_id: Option<Id>,
+}
+
+/// Body for creating a new member of an organization.
+///
+/// The user fields are flattened so a client that sends only them still
+/// deserializes. serde rejects `deny_unknown_fields` alongside `flatten`, so
+/// unknown keys are ignored rather than refused here.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateMemberParams {
+    #[serde(flatten)]
+    pub user: users::Model,
+    /// Coach to assign in the same transaction as the new account.
+    pub coach_id: Option<Id>,
+}
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct UpdateParams {
@@ -154,3 +185,7 @@ impl IntoUpdateMap for PasswordResetCompleteParams {
         update_map
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

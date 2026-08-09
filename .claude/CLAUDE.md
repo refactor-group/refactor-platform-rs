@@ -108,10 +108,10 @@ Nginx runs as a Docker container (`docker-compose.nginx-preview.yaml`) using Doc
 The entrypoint waits for PostgreSQL readiness, then idempotently creates the `refactor_platform` schema and sets `search_path`. This supports the PR preview migrator container which needs the schema to exist before running migrations.
 
 ### Manual Dispatch (Primary Deployment Method)
-PR preview environments are deployed **manually via workflow dispatch only** — there are no automatic deploy triggers on PR events. `dispatch-pr-preview.yml` takes three text inputs:
-- `backend_pr_number` — required (e.g. `289` or `PR#289`).
-- `backend_sha_override` — optional, override the PR branch HEAD with a specific SHA.
-- `frontend_ref` — optional, default `main`; accepts `main`, a branch name, a 7+ char SHA, or `PR#<num>`.
+PR preview environments are deployed **manually via workflow dispatch only** — there are no automatic deploy triggers on PR events. `dispatch-pr-preview.yml` takes these dispatch inputs:
+- `backend_ref` (required): accepts `PR#<num>`, `<num>`, a branch, a tag, a full SHA, or a short SHA (>=6 hex).
+- `frontend_ref` (required): same vocabulary as `backend_ref`.
+- `reset_db` (optional, default `false`): drops the per-PR Postgres volume and re-seeds.
 
 At dispatch time, the `validate` job resolves each input to a full SHA via the GitHub API (`gh pr view`, `gh api repos/.../commits/<ref>`), validates that the backend PR is OPEN, and passes `backend_sha` / `frontend_sha` / `pr_number` / `branch_name` to the reusable `ci-deploy-pr-preview.yml`. Nothing is written to `main` — the workflow is stateless with respect to the default branch. Cleanup still runs automatically when the PR is closed or merged.
 

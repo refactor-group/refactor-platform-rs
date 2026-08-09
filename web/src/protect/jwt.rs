@@ -27,9 +27,7 @@ pub(crate) async fn generate_collab_token(
     .await
     {
         Ok((_coaching_session, coaching_relationship)) => {
-            if coaching_relationship.coach_id == user.id
-                || coaching_relationship.coachee_id == user.id
-            {
+            if coaching_relationship.grants_access_to(&user) {
                 next.run(request).await
             } else {
                 // User does not have access to coaching relationship

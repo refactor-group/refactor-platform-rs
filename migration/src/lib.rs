@@ -44,6 +44,8 @@ mod m20260624_000000_add_archive_to_organizations;
 mod m20260624_000001_add_organizations_name_slug_unique;
 mod m20260701_000000_user_roles_org_fk_restrict;
 mod m20260702_000000_add_ical_sequence;
+mod m20260806_000000_user_roles_one_role_per_org;
+mod m20260807_000000_users_lower_email_index;
 
 pub struct Migrator;
 
@@ -97,6 +99,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260624_000001_add_organizations_name_slug_unique::Migration),
             Box::new(m20260701_000000_user_roles_org_fk_restrict::Migration),
             Box::new(m20260702_000000_add_ical_sequence::Migration),
+            Box::new(m20260806_000000_user_roles_one_role_per_org::Migration),
+            Box::new(m20260807_000000_users_lower_email_index::Migration),
         ]
     }
 }

@@ -283,16 +283,17 @@ pub async fn find_next_session(
         .await?)
 }
 
-/// Returns the coach and coachee user IDs for a coaching session.
+/// Returns the coach and coachee user IDs for a coaching session, excluding any
+/// participant no longer a member of the relationship's organization.
 ///
 /// Used by webhook handlers to determine which users to notify via SSE when
-/// recording or transcription state changes. Performs a single join query.
+/// recording or transcription state changes.
 pub async fn find_participant_ids(
     db: &DatabaseConnection,
     coaching_session_id: Id,
 ) -> Result<Vec<Id>, Error> {
     let (_, relationship) = find_by_id_with_coaching_relationship(db, coaching_session_id).await?;
-    Ok(vec![relationship.coach_id, relationship.coachee_id])
+    crate::coaching_relationship::notify_member_ids(db, &relationship).await
 }
 
 pub async fn find_by_id_with_coaching_relationship(
@@ -446,6 +447,7 @@ pub async fn find_counts_by_month_for_user(
     to_date: chrono::NaiveDate,
     tz_name: &str,
     coaching_relationship_id: Option<Id>,
+    organization_id: Option<Id>,
 ) -> Result<Vec<CountByMonth>, Error> {
     let to_exclusive = to_date.succ_opt().ok_or_else(|| Error {
         source: None,
@@ -481,6 +483,9 @@ pub async fn find_counts_by_month_for_user(
         )
         .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
             q.filter(Column::CoachingRelationshipId.eq(rel_id))
+        })
+        .apply_if(organization_id, |q: Select<Entity>, org_id| {
+            q.filter(coaching_relationships::Column::OrganizationId.eq(org_id))
         })
         .group_by(Expr::cust(r#""month""#))
         .order_by(Expr::cust(r#""month""#), Order::Asc)
@@ -647,6 +652,8 @@ impl IncludeOptions {
 pub struct SessionQueryOptions {
     /// Filter sessions to only those in this coaching relationship
     pub coaching_relationship_id: Option<Id>,
+    /// Filter sessions to only those whose relationship belongs to this organization
+    pub organization_id: Option<Id>,
     /// Filter sessions starting from this date (inclusive). Interpreted in
     /// `tz` when present; otherwise UTC.
     pub from_date: Option<chrono::NaiveDate>,
@@ -719,6 +726,9 @@ async fn find_by_user_filtered(
                 q.filter(coaching_sessions::Column::CoachingRelationshipId.eq(rel_id))
             },
         )
+        .apply_if(options.organization_id, |q: Select<Entity>, org_id| {
+            q.filter(coaching_relationships::Column::OrganizationId.eq(org_id))
+        })
         .apply_if(lower_bound_filter, |q: Select<Entity>, expr| q.filter(expr))
         .apply_if(upper_bound_filter, |q: Select<Entity>, expr| q.filter(expr))
         .apply_if(
@@ -1060,6 +1070,11 @@ fn assemble_enriched_session(
 mod normalize_tests;
 
 #[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_org_scope_tests.rs"]
+mod org_scope_tests;
+
+#[cfg(test)]
 // We need to gate seaORM's mock feature behind conditional compilation because
 // the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
 // see https://github.com/SeaQL/sea-orm/issues/830
@@ -1396,6 +1411,7 @@ mod tests {
             to_date,
             "America/Los_Angeles",
             None,
+            None,
         )
         .await?;
 
@@ -1437,6 +1453,7 @@ mod tests {
             to_date,
             "Europe/Berlin",
             Some(rel_id),
+            None,
         )
         .await?;
 

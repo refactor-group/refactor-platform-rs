@@ -609,7 +609,7 @@ mod calendar_change_tests {
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::test_support::recording_publisher;
+    use crate::test_support::{both_participants_are_members, recording_publisher};
     use crate::{
         coaching_relationships, coaching_sessions, goals, meeting_provider::Provider,
         oauth_connections, organizations,
@@ -708,7 +708,7 @@ mod tests {
         // find_by_id → UPDATE ... RETURNING → increment_ical_sequence (find_by_id →
         // UPDATE ... RETURNING) → best-effort notify whose relationship lookup
         // returns empty (send skipped). Then the participant lookup
-        // (find_also_related) for the title-updated event.
+        // (find_also_related) and the membership filter for the title-updated event.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
@@ -718,6 +718,7 @@ mod tests {
                 vec![vec![]],
             )
             .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let mut map = mutate::UpdateMap::new();
@@ -787,12 +788,13 @@ mod tests {
             updated_at: now.into(),
         };
 
-        // Queries: relationship, organization, session INSERT, in-progress goals
-        // SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
+        // Queries: relationship, organization, session INSERT, membership filter,
+        // in-progress goals SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![vec![link.clone()]])
             // find_prior_session → None, so topics carry-over no-ops.
@@ -909,19 +911,21 @@ mod tests {
             ..deferred_topic.clone()
         };
 
-        // relationship → organization → session INSERT → in-progress goals SELECT
-        // (empty, no goal event) → find_prior_session (returns prior) →
+        // relationship → organization → session INSERT → membership filter → in-progress
+        // goals SELECT (empty, no goal event) → find_prior_session (returns prior) →
         // move_deferred_to_session source SELECT (one Deferred topic) → target SELECT
-        // (empty, for base) → UPDATE (the moved topic).
+        // (empty, for base) → UPDATE (the moved topic) → membership filter.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .append_query_results(vec![vec![prior.clone()]])
             .append_query_results(vec![vec![deferred_topic.clone()]])
             .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
             .append_query_results(vec![vec![moved_topic.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -975,13 +979,14 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, None);
 
-        // Queries: relationship SELECT, organization SELECT, session INSERT,
-        // in-progress goals SELECT (for link_in_progress_goals_to_session).
+        // Queries: relationship SELECT, organization SELECT, session INSERT, membership
+        // filter, in-progress goals SELECT (for link_in_progress_goals_to_session).
         // No oauth_connections query because provider is None.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             // find_prior_session → None, so topics carry-over no-ops.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
@@ -1050,12 +1055,14 @@ mod tests {
         // 3. find_meeting_url_by_relationship_and_provider → returns existing session
         //    (no oauth lookup or Meet API call needed!)
         // 4. session INSERT → returns saved_session with the reused meeting_url
-        // 5. in-progress goals SELECT
+        // 5. membership filter
+        // 6. in-progress goals SELECT
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results(vec![vec![existing_session_with_url]])
             .append_query_results(vec![vec![saved_session]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             // find_prior_session → None, so topics carry-over no-ops.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
@@ -1095,10 +1102,10 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, Some(Provider::Google));
 
-        // 6 queries: relationship, organization,
+        // 7 queries: relationship, organization,
         // find_meeting_url (empty = no reusable URL),
         // oauth_connection (empty = no credentials),
-        // session INSERT, in-progress goals SELECT.
+        // session INSERT, membership filter, in-progress goals SELECT.
         // No Google Meet API call should occur.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
@@ -1110,6 +1117,7 @@ mod tests {
                 vec![vec![]],
             )
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             // find_prior_session → None, so topics carry-over no-ops.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])

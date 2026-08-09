@@ -1040,6 +1040,7 @@ dependencies = [
  "sha2",
  "tokio",
  "urlencoding",
+ "utoipa",
  "uuid",
  "vtimezones-rs",
 ]
