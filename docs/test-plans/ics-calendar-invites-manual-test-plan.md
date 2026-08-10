@@ -6,8 +6,7 @@ UID, bumped `SEQUENCE`, so the calendar event updates in place), and **cancellat
 both (`METHOD:CANCEL`, so the event is removed). Per-occurrence cancellation within a series is
 NOT implemented yet (Phase 8), so do not expect it.
 
-Related: [implementation plan](../implementation-plans/ics-calendar-invites-coaching-sessions.md),
-issue #333.
+Related: issue #333.
 
 ---
 
