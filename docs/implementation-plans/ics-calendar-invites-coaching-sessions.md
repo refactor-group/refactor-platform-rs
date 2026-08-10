@@ -317,7 +317,9 @@ Overseer scoping (from recon): `coaching_session::update` only ever touches `dat
 so **5a's change detection is bounded to those four fields**; topic/goal/action-driven re-sends are a
 documented follow-on (they would hook the topic/goal/action controllers, a different surface). Single +
 series **share one `rescheduled_email_template_id` config flag** (per Phase 7) differentiated by a
-`session_or_series` template variable (added in 5a, reused by 5b). Reschedule reuses the Phase 4 `.ics`
+`session_or_series` template variable (added in 5a, reused by 5b). **[SUPERSEDED in Phase 6: Resend has no
+conditional syntax, so the flag was split into `session_`/`series_` variants and `session_or_series` became
+vestigial.]** Reschedule reuses the Phase 4 `.ics`
 builders unchanged: bump `ical_sequence` in the DB first, then pass the bumped model in (same UID,
 `SEQUENCE` 0→1). 5a threads `&Config` through `update` (no `&Config` today) + its `update_title` caller +
 the PUT controller; 5b fires from the series PUT controller (which already holds old+new series).
@@ -331,7 +333,7 @@ caller is `series::reschedule`, and the route accepts only `start_at`/`recurrenc
 a calendar move. `send_recurring_sessions_scheduled_email` became generic `send_series_invite_email<N>` (mirrors 5a's single-session
 refactor); create and reschedule differ only by `N` and the `session_or_series` variable (`None` on create, `Some("series")` on
 reschedule), so create behavior is byte-identical. New `SeriesRescheduled` marker shares the `rescheduled_email_template_id` flag
-with `SessionRescheduled`. New best-effort `notify_series_rescheduled(db, config, series, sessions)` early-returns on an empty
+with `SessionRescheduled` (**split into separate flags in Phase 6**). New best-effort `notify_series_rescheduled(db, config, series, sessions)` early-returns on an empty
 `sessions` slice; fired from the series PUT controller for symmetry with the create path in the same file. `build_series_invite_ics`
 unchanged (it already reads `series.ical_sequence` and derives the UID from `series.id`). Tests: T1 asserts the bumped bind on the
 emitted UPDATE via the transaction log (asserting the returned model proves nothing, `MockDatabase` echoes the canned row); pure
