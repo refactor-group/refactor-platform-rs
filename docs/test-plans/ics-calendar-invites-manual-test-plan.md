@@ -1,10 +1,10 @@
-# Manual Test Plan — `.ics` Calendar Invites (Phases 0-6)
+# Manual Test Plan — `.ics` Calendar Invites (Phases 0-8)
 
 Covers what is implemented so far: a `.ics` calendar invite attached to the **create** emails
 for a single coaching session and for a recurring series, **reschedule** invites for both (same
 UID, bumped `SEQUENCE`, so the calendar event updates in place), and **cancellation** invites for
-both (`METHOD:CANCEL`, so the event is removed). Per-occurrence cancellation within a series is
-NOT implemented yet (Phase 8), so do not expect it.
+both (`METHOD:CANCEL`, so the event is removed), and **per-occurrence** edits within a series
+addressed by `RECURRENCE-ID`. All planned phases are implemented.
 
 Related: issue #333.
 
@@ -283,11 +283,56 @@ The email fires **after** the delete succeeds, so a failed delete never produces
 
 ---
 
+## Single occurrence of a series (Phase 8)
+
+Editing or deleting **one session that belongs to a series** now addresses that occurrence specifically,
+rather than the whole recurring event. The `.ics` carries the **series** `UID` plus a `RECURRENCE-ID`
+naming the occurrence's original start, and no `RRULE`.
+
+Before Phase 8 both of these were broken: a per-occurrence cancel named a `UID` no calendar held (so
+nothing happened), and a per-occurrence reschedule created a **duplicate** standalone event next to the
+untouched original. Watch specifically for those two symptoms.
+
+The emails still use the single-session templates, since from the recipient's point of view this is one
+session moving or being cancelled.
+
+### HO1 — Move one occurrence out of a series (happy path)
+1. Create a weekly series (H3) and import its `.ics`. Note the recurring event.
+2. Change the **date/time of a single session** in that series.
+3. **Expect:** a reschedule email whose `.ics` has `UID:<series_id>@myrefactor.com` (the **series** id, not
+   the session id), a `RECURRENCE-ID` matching that occurrence's **original** slot, a `DTSTART` at the new
+   time, and **no** `RRULE`.
+4. Import it: that one occurrence moves. **Every other occurrence stays put**, and there is **no duplicate**.
+
+### HO2 — Cancel one occurrence (happy path)
+1. On the same series, delete a **single future session**.
+2. **Expect:** a cancellation email with `METHOD:CANCEL`, `STATUS:CANCELLED`, the series `UID`, and a
+   `RECURRENCE-ID` for that occurrence.
+3. Import it: that occurrence disappears; the rest of the series remains.
+
+### HO3 — RECURRENCE-ID timezone form matches DTSTART
+1. Inspect any occurrence `.ics` from HO1/HO2 with a non-UTC coach zone.
+2. **Expect:** `RECURRENCE-ID;TZID=<zone>:...` in the same zoned form as `DTSTART`. A mismatch here is the
+   usual reason a client silently ignores an override, so the two must agree.
+
+### SO1 — Move an occurrence twice (the address must not drift)
+1. Move one occurrence, import, then move the **same** occurrence again.
+2. **Expect:** the second `.ics` has the **same** `RECURRENCE-ID` as the first (the original slot, not the
+   intermediate one) and a higher `SEQUENCE`. The occurrence moves again in place rather than duplicating.
+
+### SO2 — Series created before this change sends nothing (sad path)
+1. Only reachable with a series materialized before the `ical_recurrence_id` migration.
+2. **Expect:** editing or deleting one of its occurrences sends **no** email, with a warning logged. There
+   is no valid occurrence address, and guessing would remove or move the wrong instance.
+
+---
+
 ## Not testable yet (later phases — expect NOTHING to happen)
 
-- Cancelling **one occurrence** of a series (Phase 8).
-- Full env passthrough for the four template flags is finalized in Phase 7. The flags exist now, so you can
-  supply template ids directly to exercise everything above.
+- Nothing. All planned phases (0-8) are implemented.
+- Note the remaining known limitation in HR5 / SC4: a **series-level** reschedule or cancel still replaces
+  or removes the whole recurring event, including past occurrences. Phase 8 fixed per-occurrence
+  operations, not that.
 
 ## Outlook gate (please record the result)
 
