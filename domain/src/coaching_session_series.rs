@@ -8,6 +8,7 @@
 use crate::coaching_session;
 use crate::coaching_sessions;
 use crate::duration::Duration;
+use crate::emails;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
@@ -217,6 +218,12 @@ pub async fn delete_with_future_sessions(
         entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
             .await?;
 
+    // Best-effort: deleting a nonexistent series still succeeds silently, it just cannot
+    // announce a cancellation.
+    let series = coaching_session_series::find_by_id(db, series_id)
+        .await
+        .ok();
+
     let doc_names_to_cleanup: Vec<String> = future_sessions
         .iter()
         .filter_map(|s| s.collab_document_name.clone())
@@ -236,6 +243,10 @@ pub async fn delete_with_future_sessions(
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
+
+    if let Some(series) = series {
+        emails::notify_series_cancelled(db, config, &series, &future_sessions).await;
+    }
 
     Ok(())
 }

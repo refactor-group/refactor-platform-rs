@@ -65,7 +65,10 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "welcome_email_template_id",
     "session_scheduled_email_template_id",
     "recurring_sessions_scheduled_email_template_id",
-    "rescheduled_email_template_id",
+    "session_rescheduled_email_template_id",
+    "series_rescheduled_email_template_id",
+    "session_cancelled_email_template_id",
+    "series_cancelled_email_template_id",
     "action_assigned_email_template_id",
     "frontend_base_url",
     "session_scheduled_email_url_path",
@@ -277,9 +280,18 @@ pub struct Config {
     /// The Resend template ID for recurring-sessions-scheduled emails.
     #[arg(long, env)]
     recurring_sessions_scheduled_email_template_id: Option<String>,
-    /// The Resend template ID for reschedule emails (single + series).
+    /// The Resend template ID for single-session reschedule emails.
     #[arg(long, env)]
-    rescheduled_email_template_id: Option<String>,
+    session_rescheduled_email_template_id: Option<String>,
+    /// The Resend template ID for series reschedule emails.
+    #[arg(long, env)]
+    series_rescheduled_email_template_id: Option<String>,
+    /// The Resend template ID for single-session cancellation emails.
+    #[arg(long, env)]
+    session_cancelled_email_template_id: Option<String>,
+    /// The Resend template ID for series cancellation emails.
+    #[arg(long, env)]
+    series_cancelled_email_template_id: Option<String>,
     /// The Resend template ID for action-assigned emails.
     #[arg(long, env)]
     action_assigned_email_template_id: Option<String>,
@@ -612,8 +624,20 @@ impl Config {
             &self.recurring_sessions_scheduled_email_template_id,
         );
         self.debug_field(
-            "rescheduled_email_template_id",
-            &self.rescheduled_email_template_id,
+            "session_rescheduled_email_template_id",
+            &self.session_rescheduled_email_template_id,
+        );
+        self.debug_field(
+            "series_rescheduled_email_template_id",
+            &self.series_rescheduled_email_template_id,
+        );
+        self.debug_field(
+            "session_cancelled_email_template_id",
+            &self.session_cancelled_email_template_id,
+        );
+        self.debug_field(
+            "series_cancelled_email_template_id",
+            &self.series_cancelled_email_template_id,
         );
         self.debug_field(
             "action_assigned_email_template_id",
@@ -715,9 +739,24 @@ impl Config {
         self.recurring_sessions_scheduled_email_template_id.clone()
     }
 
-    /// Returns the Resend template ID for reschedule emails, if configured.
-    pub fn rescheduled_email_template_id(&self) -> Option<String> {
-        self.rescheduled_email_template_id.clone()
+    /// Returns the Resend template ID for single-session reschedule emails, if configured.
+    pub fn session_rescheduled_email_template_id(&self) -> Option<String> {
+        self.session_rescheduled_email_template_id.clone()
+    }
+
+    /// Returns the Resend template ID for series reschedule emails, if configured.
+    pub fn series_rescheduled_email_template_id(&self) -> Option<String> {
+        self.series_rescheduled_email_template_id.clone()
+    }
+
+    /// Returns the Resend template ID for single-session cancellation emails, if configured.
+    pub fn session_cancelled_email_template_id(&self) -> Option<String> {
+        self.session_cancelled_email_template_id.clone()
+    }
+
+    /// Returns the Resend template ID for series cancellation emails, if configured.
+    pub fn series_cancelled_email_template_id(&self) -> Option<String> {
+        self.series_cancelled_email_template_id.clone()
     }
 
     /// Returns the Resend template ID for action-assigned emails, if configured.

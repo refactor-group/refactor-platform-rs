@@ -399,12 +399,14 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
         "Domain delete coaching_session id={id} relationship_id={} tiptap_doc={:?}",
         coaching_session.coaching_relationship_id, coaching_session.collab_document_name,
     );
-    if let Some(document_name) = coaching_session.collab_document_name {
+    if let Some(document_name) = coaching_session.collab_document_name.as_deref() {
         let tiptap = TiptapDocument::new(config).await?;
-        tiptap.delete(&document_name).await?;
+        tiptap.delete(document_name).await?;
     }
 
     coaching_session::delete(db, id).await?;
+    // Announce only once the delete has committed, using the in-memory model.
+    emails::notify_session_cancelled(db, config, &coaching_session).await;
     Ok(())
 }
 
