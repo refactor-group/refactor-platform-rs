@@ -301,7 +301,7 @@ full mock suite green (222/258/113); clippy/fmt clean.
   - [ ] Single-session description shows title/topics/goals/actions per the composition rules; series description shows link + first-session goals only.
   - [ ] Existing `mockito` body-match tests updated to expect `attachments` + ≥1 structural `.ics` assertion (UID prefix, METHOD, SEQUENCE, `VTIMEZONE` present, TZID == coach zone). Series test asserts `RRULE` + `<series_id>` UID.
 
-### Phase 5 — Net-new update/reschedule emails (scenarios 3 & 4) — 5a (single) DONE ✅ / 5b (series) next
+### Phase 5 — Net-new update/reschedule emails (scenarios 3 & 4) — DONE ✅ (5a `4c437115` + 5b `a1e1a784`, overseer-verified)
 **Phase 5a DONE ✅ (commit `4c437115`, overseer-verified):** single-session reschedule. Added shared
 `rescheduled_email_template_id` config flag (4 places); `entity_api::coaching_session::increment_ical_sequence`
 (`Set(old+1)`); pure `is_calendar_relevant_change(old,new)` over date/duration_minutes/meeting_url/title;
@@ -324,10 +324,36 @@ the PUT controller; 5b fires from the series PUT controller (which already holds
 - **Calendar-relevant change set (decided):** re-send when **any** field that appears in the invite changes — `date`, `duration_minutes`, `meeting_url`, or description fields (`title`, topics, goals, open actions). A change to any of these produces an updated `.ics` so the calendar entry stays accurate; an edit touching none of them sends nothing.
 - **Single (scenario 3):** thread `&Config` into `coaching_session::update` + its two call sites; detect a calendar-relevant change (compare pre/post), bump `coaching_sessions.ical_sequence`, fire new `notify_session_rescheduled` (`REQUEST`, same UID, bumped SEQUENCE) with a new `SessionRescheduled` impl + template.
 - **Series (scenario 4):** hook `series::reschedule` (or its controller): bump `coaching_session_series.ical_sequence`, fire new `notify_series_rescheduled` (`REQUEST` + `RRULE`, UID `<series_id>`, bumped SEQUENCE).
+
+**Phase 5b DONE ✅ (commit `a1e1a784`, overseer-verified):** series reschedule. `entity_api::coaching_session_series::update_rule`
+now writes `ical_sequence: Set(old+1)` in the same UPDATE that replaces the rule. No change-detection guard: `update_rule`'s only
+caller is `series::reschedule`, and the route accepts only `start_at`/`recurrence`/`duration_minutes`, so every rule replacement is
+a calendar move. `send_recurring_sessions_scheduled_email` became generic `send_series_invite_email<N>` (mirrors 5a's single-session
+refactor); create and reschedule differ only by `N` and the `session_or_series` variable (`None` on create, `Some("series")` on
+reschedule), so create behavior is byte-identical. New `SeriesRescheduled` marker shares the `rescheduled_email_template_id` flag
+with `SessionRescheduled`. New best-effort `notify_series_rescheduled(db, config, series, sessions)` early-returns on an empty
+`sessions` slice; fired from the series PUT controller for symmetry with the create path in the same file. `build_series_invite_ics`
+unchanged (it already reads `series.ical_sequence` and derives the UID from `series.id`). Tests: T1 asserts the bumped bind on the
+emitted UPDATE via the transaction log (asserting the returned model proves nothing, `MockDatabase` echoes the canned row); pure
+bumped-`SEQUENCE:3` series `.ics`; mockito reschedule email with `.assert_async()` teeth; empty-slice no-op asserts an empty
+transaction log. Overseer independently mutated both behaviors and confirmed the tests fail. Full mock suite green (259/286/162);
+all six gates clean.
+
+**Also fixed here (pre-existing, unrelated to 5b):** `expect_resend_body_with_ics` and `create_test_session_on` in
+`domain/src/emails.rs` are only called from mock-gated tests, so they were dead code without the feature. That had been failing
+`cargo clippy --all-targets -- -D warnings` (a CI step in `build-test-push.yml` and `ci-deploy-pr-preview.yml`) since Phase 4a.
+Both are now `#[cfg(feature = "mock")]`. Lesson: the mock-featured clippy run passes while the plain one fails, so **both** clippy
+invocations must be run as gates, not just the mock one.
+
+**Known limitation (accepted, revisit in Phase 8):** a series carries one `UID` for the whole recurring event, so a reschedule
+replaces it wholesale. Past occurrences survive in the DB (the reschedule only re-materializes future sessions) but disappear from
+participants' calendars, because the replacement `RRULE` starts at the new `start_at`. Preserving calendar history would require
+per-occurrence `RECURRENCE-ID` overrides, which is the Phase 8 surface.
+
 - **Acceptance:**
-  - [ ] A `PUT` changing `date`, `duration`, `meeting_url`, `title`, topics, goals, or open actions sends a reschedule email; opening the `.ics` updates the event in place (same UID, bumped SEQUENCE) on all three platforms.
-  - [ ] A `PUT` changing none of those fields sends no reschedule email.
-  - [ ] Rescheduling a series (`PUT /coaching_session_series/:id`) sends an email; opening the `.ics` updates the recurring event in place (same `<series_id>` UID, bumped SEQUENCE).
+  - [x] A `PUT` changing `date`, `duration`, `meeting_url`, or `title` sends a reschedule email; opening the `.ics` updates the event in place (same UID, bumped SEQUENCE). Topics/goals/actions are edited via separate endpoints and remain a documented follow-on. Platform import verified on Apple + Google; Outlook still gated.
+  - [x] A `PUT` changing none of those fields sends no reschedule email.
+  - [x] Rescheduling a series (`PUT /coaching_session_series/:id`) sends an email; opening the `.ics` updates the recurring event in place (same `<series_id>` UID, bumped SEQUENCE).
 
 ### Phase 6 — Net-new cancel emails (scenarios 5 & 6)
 - **Single (scenario 5):** in `coaching_session::delete`, bump `ical_sequence` and fire new `notify_session_cancelled` (`CANCEL`, `STATUS:CANCELLED`, bumped SEQUENCE) **before** the DB delete (record must still exist). New `SessionCancelled` impl + template.

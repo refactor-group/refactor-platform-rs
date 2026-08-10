@@ -1,8 +1,9 @@
-# Manual Test Plan — `.ics` Calendar Invites (Phases 0-4)
+# Manual Test Plan — `.ics` Calendar Invites (Phases 0-5)
 
-Covers what is implemented so far: a `.ics` calendar invite attached to the **create**
-emails for a single coaching session and for a recurring series. Reschedule, cancel, and
-per-occurrence flows are NOT implemented yet (Phases 5-8), so do not expect them.
+Covers what is implemented so far: a `.ics` calendar invite attached to the **create** emails
+for a single coaching session and for a recurring series, plus **reschedule** invites for both
+(same UID, bumped `SEQUENCE`, so the calendar event updates in place). Cancellation and
+per-occurrence flows are NOT implemented yet (Phases 6-8), so do not expect them.
 
 Related: [implementation plan](../implementation-plans/ics-calendar-invites-coaching-sessions.md),
 issue #333.
@@ -187,9 +188,51 @@ best-effort and is logged (see RS2).
 
 ---
 
+## Reschedule — series (Phase 5b)
+
+Rescheduling a series (`PUT /coaching_session_series/:id`) re-sends the recurring invite to both
+participants with the **same UID** (`<series_id>@myrefactor.com`) and a **bumped `SEQUENCE`**, so the
+recurring calendar event is replaced in place. Uses the same `--rescheduled-email-template-id` template as
+the single-session case, distinguished by a `session_or_series=series` template variable.
+
+Unlike a single-session edit, there is **no** change-detection guard: the series reschedule endpoint only
+accepts scheduling fields, so every call sends an invite.
+
+### HR3 — Move a series to a new day/time (happy path)
+1. Create a weekly series (H3) and import its `.ics` (note `SEQUENCE:0` and the `RRULE`).
+2. Reschedule the series to a different start day/time.
+3. **Expect:** both coach and coachee receive a reschedule email whose `invite.ics` has the **same**
+   `UID:<series_id>@myrefactor.com` and `SEQUENCE:1`.
+4. Import it: the **existing** recurring event moves to the new schedule in place. You should have one
+   recurring event, not two.
+5. Reschedule again → `SEQUENCE:2`, same UID, updates in place again.
+
+### HR4 — Change the recurrence pattern
+1. Reschedule an existing weekly series to **biweekly** (or change the occurrence count).
+2. **Expect:** the new `.ics` carries the updated `RRULE` (e.g. `FREQ=WEEKLY;INTERVAL=2`) with the same UID
+   and a bumped `SEQUENCE`; the calendar event's repeat pattern changes in place.
+
+### HR5 — Series reschedule leaves past occurrences behind (known limitation, please confirm)
+1. Create a weekly series with at least one occurrence **already in the past**.
+2. Reschedule the series.
+3. **Expect in the app:** past sessions are still listed. A reschedule only re-materializes future sessions.
+4. **Expect in the calendar:** the past occurrences **disappear**, because the replacement recurring event
+   starts at the new start date. This is a known, accepted limitation of using one UID for the whole series.
+   Please confirm this is acceptable behavior for now, or flag it — per-occurrence handling is Phase 8.
+
+### RS3 — Reschedule that produces no future sessions (sad path)
+1. Reschedule a series such that the new rule yields zero future occurrences.
+2. **Expect:** no email is sent (there is nothing to invite anyone to), and the reschedule itself still
+   succeeds. No crash, no empty invite.
+
+### RS4 — Series reschedule with no template configured (sad path)
+1. Run the backend **without** `--rescheduled-email-template-id`, then reschedule a series.
+2. **Expect:** the reschedule succeeds and `ical_sequence` bumps; the email fails best-effort and is logged.
+
+---
+
 ## Not testable yet (later phases — expect NOTHING to happen)
 
-- **Editing a series** sends no reschedule invite yet (Phase 5b); single-session editing works (see HR1).
 - **Deleting** a session or series sends no cancellation `.ics` (Phase 6).
 - Cancelling **one occurrence** of a series (Phase 8).
 - The shared reschedule/cancel Resend templates + full env passthrough are finalized in Phase 7 (the
