@@ -52,7 +52,8 @@ pub async fn find_by_relationship(
 }
 
 /// Replaces the JSONB `rule` on an existing series and bumps `updated_at`.
-/// Used by the reschedule flow.
+/// Used by the reschedule flow. Every rule replacement moves the calendar, so
+/// `ical_sequence` (RFC 5545 SEQUENCE) is incremented in the same statement.
 pub async fn update_rule(
     db: &impl ConnectionTrait,
     id: Id,
@@ -62,7 +63,7 @@ pub async fn update_rule(
     let active_model = ActiveModel {
         id: Unchanged(existing.id),
         coaching_relationship_id: Unchanged(existing.coaching_relationship_id),
-        ical_sequence: Unchanged(existing.ical_sequence),
+        ical_sequence: Set(existing.ical_sequence + 1),
         rule: Set(rule),
         created_by_user_id: Unchanged(existing.created_by_user_id),
         created_at: Unchanged(existing.created_at),
@@ -80,7 +81,7 @@ pub async fn delete(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, Transaction, Value};
 
     fn sample_model() -> Model {
         let now = chrono::Utc::now();
@@ -166,6 +167,53 @@ mod tests {
         let result = update_rule(&db, existing.id, new_rule.clone()).await?;
         assert_eq!(result.id, existing.id);
         assert_eq!(result.rule, new_rule);
+        Ok(())
+    }
+
+    /// Collect every UPDATE of coaching_session_series from the transaction log,
+    /// returning each statement's bound values.
+    fn series_update_value_rows(log: &[Transaction]) -> Vec<Vec<Value>> {
+        log.iter()
+            .flat_map(|txn| txn.statements())
+            .filter(|stmt| {
+                stmt.sql.contains("UPDATE") && stmt.sql.contains(r#""coaching_session_series""#)
+            })
+            .filter_map(|stmt| stmt.values.as_ref().map(|values| values.0.clone()))
+            .collect()
+    }
+
+    /// A rule replacement is a calendar reschedule, so the emitted UPDATE must bind the
+    /// next `ical_sequence` alongside the new rule. Asserting on the returned model would
+    /// prove nothing: MockDatabase echoes whatever row the test appended.
+    #[tokio::test]
+    async fn update_rule_bumps_ical_sequence() -> Result<(), Error> {
+        let existing = Model {
+            ical_sequence: 7,
+            ..sample_model()
+        };
+        let new_rule = serde_json::json!({"frequency": "monthly"});
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .append_query_results(vec![vec![existing.clone()]])
+            .into_connection();
+
+        update_rule(&db, existing.id, new_rule.clone()).await?;
+
+        let rows = series_update_value_rows(&db.into_transaction_log());
+        assert_eq!(
+            rows.len(),
+            1,
+            "expected exactly one series UPDATE: {rows:?}"
+        );
+        // Only `Set` columns are bound, in entity declaration order: rule, ical_sequence,
+        // updated_at, then the WHERE id.
+        let binds = &rows[0];
+        assert_eq!(binds[0], Value::from(new_rule), "rule bind: {binds:?}");
+        assert_eq!(
+            binds[1],
+            Value::from(8_i32),
+            "ical_sequence not bumped: {binds:?}"
+        );
         Ok(())
     }
 }

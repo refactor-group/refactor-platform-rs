@@ -107,6 +107,21 @@ impl EmailNotification for SessionRescheduled {
     }
 }
 
+/// Shares the reschedule template with `SessionRescheduled`; the template branches
+/// on the `session_or_series` variable.
+struct SeriesRescheduled;
+impl EmailNotification for SeriesRescheduled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.rescheduled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "series rescheduled"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
+}
+
 struct ActionAssigned;
 impl EmailNotification for ActionAssigned {
     fn template_id(config: &Config) -> Option<String> {
@@ -820,6 +835,7 @@ pub async fn notify_session_rescheduled(
 /// Send a recurring-sessions-scheduled notification email to a single recipient.
 /// One email per recipient — coach and coachee each get their own summarizing
 /// the freshly scheduled series.
+#[allow(clippy::too_many_arguments)]
 async fn send_recurring_series_email_to_recipient(
     email_config: &ResolvedEmailConfig,
     recipient: &users::Model,
@@ -828,6 +844,7 @@ async fn send_recurring_series_email_to_recipient(
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
     ics_body: &str,
+    session_or_series: Option<&str>,
 ) -> Result<(), Error> {
     let first = sessions.first().ok_or_else(|| Error {
         source: None,
@@ -864,6 +881,7 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("last_session_date", last_session_date.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
+        .add_optional_variable("session_or_series", session_or_series)
         .add_ics_attachment(ics_body, &ical::Method::Request)
         .build()
         .await?;
@@ -905,8 +923,13 @@ fn build_series_invite_ics(
     ical::build(&invite)
 }
 
-/// Send recurring-sessions-scheduled notification emails to both coach and coachee.
-async fn send_recurring_sessions_scheduled_email(
+/// Send series invite emails to both coach and coachee. Generic over the notification
+/// type `N` so the scheduled and reschedule flows share one body; they differ only by
+/// template (via `N`) and the `session_or_series` template variable. A reschedule passes
+/// an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a stable
+/// `UID`.
+#[allow(clippy::too_many_arguments)]
+async fn send_series_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
@@ -914,15 +937,17 @@ async fn send_recurring_sessions_scheduled_email(
     coachee: &users::Model,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
+    session_or_series: Option<&str>,
 ) -> Result<(), Error> {
     info!(
-        "Initiating recurring sessions scheduled emails for {} sessions (coach: {}, coachee: {})",
+        "Initiating {} emails for {} sessions (coach: {}, coachee: {})",
+        N::notification_name(),
         sessions.len(),
         coach.email,
         coachee.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<RecurringSessionsScheduled>(config).await?;
+    let email_config = ResolvedEmailConfig::new::<N>(config).await?;
 
     let first = sessions.first().ok_or_else(|| Error {
         source: None,
@@ -972,11 +997,13 @@ async fn send_recurring_sessions_scheduled_email(
         sessions,
         organization,
         &ics_body,
+        session_or_series,
     )
     .await
     {
         warn!(
-            "Failed to send recurring sessions scheduled email to coachee {}: {e:?}",
+            "Failed to send {} email to coachee {}: {e:?}",
+            N::notification_name(),
             coachee.email
         );
     }
@@ -989,16 +1016,66 @@ async fn send_recurring_sessions_scheduled_email(
         sessions,
         organization,
         &ics_body,
+        session_or_series,
     )
     .await
     {
         warn!(
-            "Failed to send recurring sessions scheduled email to coach {}: {e:?}",
+            "Failed to send {} email to coach {}: {e:?}",
+            N::notification_name(),
             coach.email
         );
     }
 
     Ok(())
+}
+
+/// Send recurring-sessions-scheduled notification emails to both coach and coachee.
+async fn send_recurring_sessions_scheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    send_series_invite_email::<RecurringSessionsScheduled>(
+        db,
+        config,
+        series,
+        coach,
+        coachee,
+        sessions,
+        organization,
+        None,
+    )
+    .await
+}
+
+/// Send series-rescheduled notification emails to both coach and coachee. `series` must
+/// already carry the bumped `ical_sequence`, so the invite updates the recurring calendar
+/// event in place (same `UID`, next `SEQUENCE`).
+async fn send_series_rescheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    send_series_invite_email::<SeriesRescheduled>(
+        db,
+        config,
+        series,
+        coach,
+        coachee,
+        sessions,
+        organization,
+        Some("series"),
+    )
+    .await
 }
 
 /// Orchestrate sending recurring-sessions-scheduled emails (best-effort).
@@ -1036,6 +1113,43 @@ pub async fn notify_recurring_sessions_scheduled(
         warn!(
             "Failed to send recurring sessions scheduled emails for {} sessions: {e:?}",
             sessions.len()
+        );
+    }
+}
+
+/// Orchestrate sending series-rescheduled emails (best-effort).
+///
+/// `series` must be the post-update model, so its `ical_sequence` is already
+/// incremented. Looks up the coaching relationship, both users, and the organization,
+/// then re-sends the series invite to both coach and coachee so their recurring calendar
+/// event updates in place. A reschedule can legitimately leave no future sessions, in
+/// which case there is nothing to invite anyone to. Errors are logged internally and
+/// never block or fail the calling operation.
+pub async fn notify_series_rescheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    sessions: &[coaching_sessions::Model],
+) {
+    if sessions.is_empty() {
+        return;
+    }
+
+    let result: Result<(), Error> = async {
+        let relationship_id = sessions[0].coaching_relationship_id;
+        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+        send_series_rescheduled_email(db, config, series, &coach, &coachee, sessions, &org).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send series rescheduled emails for series {}: {e:?}",
+            series.id
         );
     }
 }
@@ -1123,6 +1237,7 @@ mod tests {
     /// partial-JSON on the template vars plus regexes requiring the `invite.ics`
     /// REQUEST attachment. The base64 `content` is intentionally not asserted
     /// (dtstamp is `now`).
+    #[cfg(feature = "mock")]
     fn expect_resend_body_with_ics(expected: serde_json::Value) -> mockito::Matcher {
         assert!(
             expected.get("subject").is_none(),
@@ -2049,6 +2164,7 @@ mod tests {
 
     // ── Recurring Sessions Scheduled Email Tests ───────────────────────
 
+    #[cfg(feature = "mock")]
     fn create_test_session_on(date: NaiveDate) -> coaching_sessions::Model {
         coaching_sessions::Model {
             id: Id::new_v4(),
@@ -2122,6 +2238,45 @@ mod tests {
         assert!(ics.contains("TZID:America/New_York"));
         assert!(ics.contains("DTSTART;TZID=America/New_York:20260915T150000"));
         assert!(ics.contains("View this session: https://app/x"));
+    }
+
+    /// A series reschedule bumps `ical_sequence`; the invite must carry the bumped
+    /// `SEQUENCE` under the same series-derived `UID` so calendar clients replace the
+    /// existing recurring event instead of duplicating it.
+    #[test]
+    fn test_build_series_invite_ics_carries_bumped_sequence() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let mut first = create_test_session();
+        first.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(19, 0, 0)
+            .unwrap();
+        first.duration_minutes = 60;
+        let org = create_test_organization();
+        let mut series = create_test_series();
+        series.ical_sequence = 3;
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let ics = build_series_invite_ics(
+            &coach,
+            &coachee,
+            &first,
+            &org,
+            &series,
+            "View this session: https://app/x".into(),
+            dtstamp,
+        )
+        .unwrap();
+
+        assert!(ics.contains("SEQUENCE:3"));
+        assert!(ics.contains(&format!("UID:{}@myrefactor.com", series.id)));
+        assert!(ics.contains("RRULE:FREQ=WEEKLY"));
+        assert!(ics.contains("METHOD:REQUEST"));
+        assert!(ics.contains("STATUS:CONFIRMED"));
     }
 
     #[cfg(feature = "mock")]
@@ -2205,6 +2360,105 @@ mod tests {
         // matched to prove the attachment-bearing bodies actually went out.
         mock_coachee.assert_async().await;
         mock_coach.assert_async().await;
+    }
+
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_series_rescheduled_email() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        // Series description loads only the first session's in-progress goals.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .into_connection();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+        // Already-bumped series: a reschedule invite carries SEQUENCE:3.
+        let mut series = create_test_series();
+        series.ical_sequence = 3;
+
+        let sessions = vec![
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+        ];
+
+        // Both recipients target the reschedule template and carry the
+        // `session_or_series=series` discriminant plus the `.ics` attachment.
+        let mock_coachee = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_role": "coach",
+                        "session_or_series": "series",
+                    }
+                }
+            })))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mock_coach = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(serde_json::json!({
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_role": "coachee",
+                        "session_or_series": "series",
+                    }
+                }
+            })))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let result =
+            send_series_rescheduled_email(&db, &config, &series, &coach, &coachee, &sessions, &org)
+                .await;
+        assert!(result.is_ok());
+
+        // The send swallows errors, so the mock assertions are what give this
+        // test teeth: they prove the reschedule template + attachment went out.
+        mock_coachee.assert_async().await;
+        mock_coach.assert_async().await;
+    }
+
+    /// A reschedule can legitimately leave zero future sessions. The early return must
+    /// happen before any lookup, so the connection sees no statements at all.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_notify_series_rescheduled_with_no_sessions_does_nothing() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let series = create_test_series();
+
+        // Zero appended results: any query would panic or error rather than pass.
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        notify_series_rescheduled(&db, &config, &series, &[]).await;
+
+        assert!(
+            db.into_transaction_log().is_empty(),
+            "an empty sessions slice must return before any statement runs"
+        );
     }
 
     #[cfg(feature = "mock")]
@@ -2321,6 +2575,7 @@ mod tests {
             &[],
             &org,
             "",
+            None,
         )
         .await;
 
