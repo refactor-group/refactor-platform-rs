@@ -245,7 +245,7 @@ pub async fn delete_with_future_sessions(
     cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
 
     if let Some(series) = series {
-        emails::notify_series_cancelled(db, config, &series, &future_sessions).await;
+        emails::notify_recurring_sessions_cancelled(db, config, &series, &future_sessions).await;
     }
 
     Ok(())

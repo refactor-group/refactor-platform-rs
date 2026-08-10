@@ -195,7 +195,7 @@ two paths send different variables, so one template cannot render both.
 Rescheduling a series (`PUT /coaching_session_series/:id`) re-sends the recurring invite to both
 participants with the **same UID** (`<series_id>@myrefactor.com`) and a **bumped `SEQUENCE`**, so the
 recurring calendar event is replaced in place. Uses its own template, configured via
-`--series-rescheduled-email-template-id`.
+`--recurring-sessions-rescheduled-email-template-id`.
 
 Unlike a single-session edit, there is **no** change-detection guard: the series reschedule endpoint only
 accepts scheduling fields, so every call sends an invite.
@@ -228,7 +228,7 @@ accepts scheduling fields, so every call sends an invite.
    succeeds. No crash, no empty invite.
 
 ### RS4 — Series reschedule with no template configured (sad path)
-1. Run the backend **without** `--series-rescheduled-email-template-id`, then reschedule a series.
+1. Run the backend **without** `--recurring-sessions-rescheduled-email-template-id`, then reschedule a series.
 2. **Expect:** the reschedule succeeds and `ical_sequence` bumps; the email fails best-effort and is logged.
 
 ---
@@ -241,7 +241,7 @@ the original, and a **bumped `SEQUENCE`**, so calendar clients remove the event.
 
 The email fires **after** the delete succeeds, so a failed delete never produces a cancellation notice.
 
-**Extra setup:** `--session-cancelled-email-template-id` and `--series-cancelled-email-template-id`.
+**Extra setup:** `--session-cancelled-email-template-id` and `--recurring-sessions-cancelled-email-template-id`.
 
 ### HC1 — Cancel a single session (happy path)
 1. Create a **future** single session (H1) and import its `.ics`.

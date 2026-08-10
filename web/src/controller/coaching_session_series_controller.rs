@@ -176,8 +176,13 @@ pub async fn update(
     )
     .await?;
 
-    EmailsApi::notify_series_rescheduled(db, &app_state.config, &updated_series, &new_sessions)
-        .await;
+    EmailsApi::notify_recurring_sessions_rescheduled(
+        db,
+        &app_state.config,
+        &updated_series,
+        &new_sessions,
+    )
+    .await;
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),

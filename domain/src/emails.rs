@@ -107,10 +107,10 @@ impl EmailNotification for SessionRescheduled {
     }
 }
 
-struct SeriesRescheduled;
-impl EmailNotification for SeriesRescheduled {
+struct RecurringSessionsRescheduled;
+impl EmailNotification for RecurringSessionsRescheduled {
     fn template_id(config: &Config) -> Option<String> {
-        config.series_rescheduled_email_template_id()
+        config.recurring_sessions_rescheduled_email_template_id()
     }
     fn notification_name() -> &'static str {
         "series rescheduled"
@@ -134,10 +134,10 @@ impl EmailNotification for SessionCancelled {
 
 /// Deliberately keeps the trait's `None` URL template: the series row is gone by the
 /// time a recipient could click through.
-struct SeriesCancelled;
-impl EmailNotification for SeriesCancelled {
+struct RecurringSessionsCancelled;
+impl EmailNotification for RecurringSessionsCancelled {
     fn template_id(config: &Config) -> Option<String> {
-        config.series_cancelled_email_template_id()
+        config.recurring_sessions_cancelled_email_template_id()
     }
     fn notification_name() -> &'static str {
         "series cancelled"
@@ -1245,10 +1245,10 @@ async fn send_recurring_sessions_scheduled_email(
     .await
 }
 
-/// Send series-rescheduled notification emails to both coach and coachee. `series` must
+/// Send series reschedule notification emails to both coach and coachee. `series` must
 /// already carry the bumped `ical_sequence`, so the invite updates the recurring calendar
 /// event in place (same `UID`, next `SEQUENCE`).
-async fn send_series_rescheduled_email(
+async fn send_recurring_sessions_rescheduled_email(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
@@ -1257,7 +1257,7 @@ async fn send_series_rescheduled_email(
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
 ) -> Result<(), Error> {
-    send_series_invite_email::<SeriesRescheduled>(
+    send_series_invite_email::<RecurringSessionsRescheduled>(
         db,
         config,
         series,
@@ -1309,7 +1309,7 @@ pub async fn notify_recurring_sessions_scheduled(
     }
 }
 
-/// Orchestrate sending series-rescheduled emails (best-effort).
+/// Orchestrate sending series reschedule emails (best-effort).
 ///
 /// `series` must be the post-update model, so its `ical_sequence` is already
 /// incremented. Looks up the coaching relationship, both users, and the organization,
@@ -1317,7 +1317,7 @@ pub async fn notify_recurring_sessions_scheduled(
 /// event updates in place. A reschedule can legitimately leave no future sessions, in
 /// which case there is nothing to invite anyone to. Errors are logged internally and
 /// never block or fail the calling operation.
-pub async fn notify_series_rescheduled(
+pub async fn notify_recurring_sessions_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
@@ -1334,7 +1334,10 @@ pub async fn notify_series_rescheduled(
         let coachee = user::find_by_id(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_series_rescheduled_email(db, config, series, &coach, &coachee, sessions, &org).await
+        send_recurring_sessions_rescheduled_email(
+            db, config, series, &coach, &coachee, sessions, &org,
+        )
+        .await
     }
     .await;
 
@@ -1383,9 +1386,9 @@ fn build_series_cancel_ics(
     ical::build(&invite)
 }
 
-/// Send a series-cancelled notification email to a single recipient. Carries fewer
+/// Send a series cancellation notification email to a single recipient. Carries fewer
 /// variables than the invite sends: no `session_url`, no duration, no first-session time.
-async fn send_series_cancelled_email_to_recipient(
+async fn send_recurring_sessions_cancelled_email_to_recipient(
     email_config: &ResolvedEmailConfig,
     recipient: &users::Model,
     other_user: &users::Model,
@@ -1428,9 +1431,9 @@ async fn send_series_cancelled_email_to_recipient(
     email_config.client.send_email(email_request).await
 }
 
-/// Send series-cancelled emails to both coach and coachee. Takes no database handle:
+/// Send series cancellation emails to both coach and coachee. Takes no database handle:
 /// a cancellation loads no topics, goals, or actions.
-async fn send_series_cancelled_email(
+async fn send_recurring_sessions_cancelled_email(
     config: &Config,
     series: &coaching_session_series::Model,
     coach: &users::Model,
@@ -1445,7 +1448,7 @@ async fn send_series_cancelled_email(
         coachee.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<SeriesCancelled>(config).await?;
+    let email_config = ResolvedEmailConfig::new::<RecurringSessionsCancelled>(config).await?;
 
     let first = sessions.first().ok_or_else(|| Error {
         source: None,
@@ -1464,7 +1467,7 @@ async fn send_series_cancelled_email(
         chrono::Utc::now().naive_utc(),
     )?;
 
-    if let Err(e) = send_series_cancelled_email_to_recipient(
+    if let Err(e) = send_recurring_sessions_cancelled_email_to_recipient(
         &email_config,
         coachee,
         coach,
@@ -1481,7 +1484,7 @@ async fn send_series_cancelled_email(
         );
     }
 
-    if let Err(e) = send_series_cancelled_email_to_recipient(
+    if let Err(e) = send_recurring_sessions_cancelled_email_to_recipient(
         &email_config,
         coach,
         coachee,
@@ -1501,13 +1504,13 @@ async fn send_series_cancelled_email(
     Ok(())
 }
 
-/// Orchestrate sending series-cancelled emails (best-effort).
+/// Orchestrate sending series cancellation emails (best-effort).
 ///
 /// Call this with the in-memory models after the delete has committed. A series row is
 /// deleted even when nothing upcoming remains, so an empty `sessions` slice returns
 /// before any lookup rather than announcing zero cancelled sessions. Errors are logged
 /// internally and never block the caller.
-pub async fn notify_series_cancelled(
+pub async fn notify_recurring_sessions_cancelled(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
@@ -1524,7 +1527,8 @@ pub async fn notify_series_cancelled(
         let coachee = user::find_by_id(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_series_cancelled_email(config, series, &coach, &coachee, sessions, &org).await
+        send_recurring_sessions_cancelled_email(config, series, &coach, &coachee, sessions, &org)
+            .await
     }
     .await;
 
@@ -1737,9 +1741,9 @@ mod tests {
             "--session-scheduled-email-template-id=session_template_456",
             "--recurring-sessions-scheduled-email-template-id=recurring_template_xyz",
             "--session-rescheduled-email-template-id=session_reschedule_template_abc",
-            "--series-rescheduled-email-template-id=series_reschedule_template_abc",
+            "--recurring-sessions-rescheduled-email-template-id=series_reschedule_template_abc",
             "--session-cancelled-email-template-id=session_cancel_template_abc",
-            "--series-cancelled-email-template-id=series_cancel_template_abc",
+            "--recurring-sessions-cancelled-email-template-id=series_cancel_template_abc",
             "--action-assigned-email-template-id=action_template_789",
             "--frontend-base-url=https://app.example.com",
             &format!("--resend-base-url={server_url}"),
@@ -2915,7 +2919,7 @@ mod tests {
 
     #[cfg(feature = "mock")]
     #[tokio::test]
-    async fn test_send_series_rescheduled_email() {
+    async fn test_send_recurring_sessions_rescheduled_email() {
         use sea_orm::{DatabaseBackend, MockDatabase};
 
         let mut server = setup_test_server().await;
@@ -2985,9 +2989,10 @@ mod tests {
             .create_async()
             .await;
 
-        let result =
-            send_series_rescheduled_email(&db, &config, &series, &coach, &coachee, &sessions, &org)
-                .await;
+        let result = send_recurring_sessions_rescheduled_email(
+            &db, &config, &series, &coach, &coachee, &sessions, &org,
+        )
+        .await;
         assert!(result.is_ok());
 
         // The send swallows errors, so the mock assertions are what give this
@@ -3000,7 +3005,7 @@ mod tests {
     /// happen before any lookup, so the connection sees no statements at all.
     #[cfg(feature = "mock")]
     #[tokio::test]
-    async fn test_notify_series_rescheduled_with_no_sessions_does_nothing() {
+    async fn test_notify_recurring_sessions_rescheduled_with_no_sessions_does_nothing() {
         use sea_orm::{DatabaseBackend, MockDatabase};
 
         let server = setup_test_server().await;
@@ -3010,7 +3015,7 @@ mod tests {
         // Zero appended results: any query would panic or error rather than pass.
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-        notify_series_rescheduled(&db, &config, &series, &[]).await;
+        notify_recurring_sessions_rescheduled(&db, &config, &series, &[]).await;
 
         assert!(
             db.into_transaction_log().is_empty(),
@@ -3060,13 +3065,13 @@ mod tests {
 
     #[cfg(feature = "mock")]
     #[tokio::test]
-    async fn test_send_series_cancelled_email() {
+    async fn test_send_recurring_sessions_cancelled_email() {
         let mut server = setup_test_server().await;
         let config = create_full_config_with_mock(&server.url());
 
         // No session link: the rows are gone by the time a recipient could click one.
         assert!(
-            SeriesCancelled::url_path_template(&config).is_none(),
+            RecurringSessionsCancelled::url_path_template(&config).is_none(),
             "a cancellation must not carry a session URL template"
         );
 
@@ -3137,8 +3142,10 @@ mod tests {
             .create_async()
             .await;
 
-        let result =
-            send_series_cancelled_email(&config, &series, &coach, &coachee, &sessions, &org).await;
+        let result = send_recurring_sessions_cancelled_email(
+            &config, &series, &coach, &coachee, &sessions, &org,
+        )
+        .await;
         assert!(result.is_ok());
 
         // The send swallows errors, so the mock assertions are what give this test teeth.
@@ -3150,7 +3157,7 @@ mod tests {
     /// happen before any lookup, so the connection sees no statements at all.
     #[cfg(feature = "mock")]
     #[tokio::test]
-    async fn test_notify_series_cancelled_with_no_sessions_does_nothing() {
+    async fn test_notify_recurring_sessions_cancelled_with_no_sessions_does_nothing() {
         use sea_orm::{DatabaseBackend, MockDatabase};
 
         let server = setup_test_server().await;
@@ -3160,7 +3167,7 @@ mod tests {
         // Zero appended results: any query would panic or error rather than pass.
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-        notify_series_cancelled(&db, &config, &series, &[]).await;
+        notify_recurring_sessions_cancelled(&db, &config, &series, &[]).await;
 
         assert!(
             db.into_transaction_log().is_empty(),
