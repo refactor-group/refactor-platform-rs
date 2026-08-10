@@ -145,6 +145,7 @@ mod tests {
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
             ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: 60,

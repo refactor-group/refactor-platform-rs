@@ -57,6 +57,7 @@ fn invite<'a>(
         attendee: coachee,
         location_url: None,
         recurrence,
+        recurrence_id: None,
     }
 }
 
@@ -132,6 +133,50 @@ fn cancel_shape() {
     let out = build(&inv).unwrap();
     assert!(out.contains("METHOD:CANCEL"));
     assert!(out.contains("STATUS:CANCELLED"));
+}
+
+/// A mismatched DTSTART/RECURRENCE-ID form is the classic reason clients fail to match
+/// an override, so both must use the same zoned or `Z` representation.
+#[test]
+fn recurrence_id_matches_dtstart_timezone_form() {
+    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
+    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
+
+    let mut zoned = invite(&coach, &coachee, New_York, None);
+    zoned.recurrence_id = Some(dt(2026, 9, 8, 19, 0));
+    let out = build(&zoned).unwrap();
+    assert!(out.contains("DTSTART;TZID=America/New_York:20260915T150000"));
+    assert!(out.contains("RECURRENCE-ID;TZID=America/New_York:20260908T150000"));
+
+    let mut utc = invite(&coach, &coachee, chrono_tz::UTC, None);
+    utc.recurrence_id = Some(dt(2026, 9, 8, 19, 0));
+    let out = build(&utc).unwrap();
+    assert!(out.contains("DTSTART:20260915T190000Z"));
+    assert!(out.contains("RECURRENCE-ID:20260908T190000Z"));
+    assert!(!out.contains("TZID="));
+}
+
+/// An override instance addresses a single occurrence, so any RRULE is dropped.
+#[test]
+fn override_instance_never_carries_an_rrule() {
+    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
+    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
+    let rule = Recurrence {
+        frequency: Frequency::Weekly,
+        interval: 1,
+        by_weekdays: None,
+        count: None,
+        until: None,
+    };
+    let mut inv = invite(&coach, &coachee, New_York, Some(rule));
+    inv.recurrence_id = Some(dt(2026, 9, 8, 19, 0));
+    let out = build(&inv).unwrap();
+
+    // Slice the VEVENT: the spliced VTIMEZONE carries its own daylight-saving RRULEs.
+    let start = out.find("BEGIN:VEVENT").unwrap();
+    let end = out.find("END:VEVENT").unwrap();
+    assert!(!out[start..end].contains("RRULE"));
+    assert!(out.contains("RECURRENCE-ID;TZID=America/New_York:20260908T150000"));
 }
 
 /// RFC 5545 line unfolding: remove the CRLF followed by a leading space/tab.

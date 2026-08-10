@@ -43,6 +43,9 @@ pub struct IcsInvite<'a> {
     pub attendee: &'a entity::users::Model,
     pub location_url: Option<String>,
     pub recurrence: Option<Recurrence>,
+    /// RFC 5545 `RECURRENCE-ID`: the original start of the occurrence this invite
+    /// overrides. Mutually exclusive with `recurrence`.
+    pub recurrence_id: Option<NaiveDateTime>,
 }
 
 /// One open action rendered into the DESCRIPTION.
@@ -62,6 +65,7 @@ pub struct DescriptionParts<'a> {
 }
 
 const UTC_BASIC: &str = "%Y%m%dT%H%M%SZ";
+const LOCAL_BASIC: &str = "%Y%m%dT%H%M%S";
 
 fn internal(msg: &str) -> Error {
     Error {
@@ -176,6 +180,18 @@ pub fn build(invite: &IcsInvite) -> Result<String, Error> {
                 .naive_local();
             event.starts(CalendarDateTime::from((start_local, invite.anchor_tz)));
             event.ends(CalendarDateTime::from((end_local, invite.anchor_tz)));
+            // Must mirror DTSTART's form or clients fail to match the override.
+            if let Some(recurrence_id) = invite.recurrence_id {
+                let local = Utc
+                    .from_utc_datetime(&recurrence_id)
+                    .with_timezone(&invite.anchor_tz)
+                    .naive_local();
+                event.append_property(
+                    Property::new("RECURRENCE-ID", local.format(LOCAL_BASIC).to_string())
+                        .add_parameter("TZID", invite.anchor_tz.name())
+                        .done(),
+                );
+            }
         }
         None => {
             if invite.anchor_tz != chrono_tz::UTC {
@@ -186,6 +202,9 @@ pub fn build(invite: &IcsInvite) -> Result<String, Error> {
             }
             event.starts(Utc.from_utc_datetime(&invite.start));
             event.ends(Utc.from_utc_datetime(&end));
+            if let Some(recurrence_id) = invite.recurrence_id {
+                event.add_property("RECURRENCE-ID", recurrence_id.format(UTC_BASIC).to_string());
+            }
         }
     }
 
@@ -215,8 +234,13 @@ pub fn build(invite: &IcsInvite) -> Result<String, Error> {
         );
     }
 
-    if let Some(rule) = &invite.recurrence {
-        event.add_property("RRULE", rrule_value(rule));
+    // An override instance addresses a single occurrence, so it carries no RRULE.
+    match (&invite.recurrence, invite.recurrence_id) {
+        (Some(rule), None) => {
+            event.add_property("RRULE", rrule_value(rule));
+        }
+        (Some(_), Some(_)) => warn!("dropping RRULE from an invite that carries a RECURRENCE-ID"),
+        (None, _) => {}
     }
 
     let event = event.done();

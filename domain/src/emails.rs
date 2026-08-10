@@ -566,6 +566,45 @@ fn build_session_invite_ics(
         attendee,
         location_url: session.meeting_url.clone(),
         recurrence: None,
+        recurrence_id: None,
+    };
+    ical::build(&invite)
+}
+
+/// Build the `.ics` body that moves ONE occurrence of a recurring series. Addressed by
+/// the series `UID` plus the occurrence's original start as `RECURRENCE-ID`, so clients
+/// override the existing instance instead of creating a standalone duplicate.
+/// Pure: `dtstamp` is injected.
+fn build_occurrence_reschedule_ics(
+    organizer: &users::Model,
+    attendee: &users::Model,
+    session: &coaching_sessions::Model,
+    series_id: Id,
+    organization: &organizations::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = organizer
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .unwrap_or(chrono_tz::UTC);
+    let invite = ical::IcsInvite {
+        uid: format!("{series_id}@myrefactor.com"),
+        sequence: session.ical_sequence,
+        method: ical::Method::Request,
+        status: ical::EventStatus::Confirmed,
+        summary: format!("Coaching Session: {}", organization.name),
+        description,
+        anchor_tz,
+        dtstamp,
+        // The NEW start; `recurrence_id` keeps addressing the original slot.
+        start: session.date,
+        duration_minutes: session.duration_minutes,
+        organizer,
+        attendee,
+        location_url: session.meeting_url.clone(),
+        recurrence: None,
+        recurrence_id: session.ical_recurrence_id,
     };
     ical::build(&invite)
 }
@@ -632,14 +671,22 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         anchor_tz,
     });
 
-    let ics_body = build_session_invite_ics(
-        coach,
-        coachee,
-        session,
-        organization,
-        description,
-        chrono::Utc::now().naive_utc(),
-    )?;
+    let dtstamp = chrono::Utc::now().naive_utc();
+    // A session inside a series is addressed as an override of its occurrence.
+    let ics_body = match session.coaching_session_series_id {
+        Some(series_id) => build_occurrence_reschedule_ics(
+            coach,
+            coachee,
+            session,
+            series_id,
+            organization,
+            description,
+            dtstamp,
+        )?,
+        None => {
+            build_session_invite_ics(coach, coachee, session, organization, description, dtstamp)?
+        }
+    };
 
     // Email to coachee: "Your coach, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
@@ -811,6 +858,14 @@ pub async fn notify_session_scheduled(
     config: &Config,
     session: &coaching_sessions::Model,
 ) {
+    if lacks_occurrence_address(session) {
+        warn!(
+            "Skipping scheduled invite for session {}: series member has no ical_recurrence_id",
+            session.id
+        );
+        return;
+    }
+
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
@@ -830,6 +885,12 @@ pub async fn notify_session_scheduled(
     }
 }
 
+/// True when a session belongs to a series but predates `ical_recurrence_id`, so no
+/// valid `RECURRENCE-ID` exists. Sending anything would address the wrong occurrence.
+fn lacks_occurrence_address(session: &coaching_sessions::Model) -> bool {
+    session.coaching_session_series_id.is_some() && session.ical_recurrence_id.is_none()
+}
+
 /// Orchestrate sending session-rescheduled emails (best-effort).
 ///
 /// `session` must already carry the bumped `ical_sequence`. Looks up the coaching
@@ -841,6 +902,14 @@ pub async fn notify_session_rescheduled(
     config: &Config,
     session: &coaching_sessions::Model,
 ) {
+    if lacks_occurrence_address(session) {
+        warn!(
+            "Skipping reschedule invite for session {}: series member has no ical_recurrence_id",
+            session.id
+        );
+        return;
+    }
+
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
@@ -891,6 +960,44 @@ fn build_session_cancel_ics(
         attendee,
         location_url: session.meeting_url.clone(),
         recurrence: None,
+        recurrence_id: None,
+    };
+    ical::build(&invite)
+}
+
+/// Build the `.ics` body that cancels ONE occurrence of a recurring series. Addressed by
+/// the series `UID` plus the occurrence's original start as `RECURRENCE-ID`, so clients
+/// remove the instance they already hold. Pure: `dtstamp` is injected.
+fn build_occurrence_cancel_ics(
+    organizer: &users::Model,
+    attendee: &users::Model,
+    session: &coaching_sessions::Model,
+    series_id: Id,
+    organization: &organizations::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = organizer
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .unwrap_or(chrono_tz::UTC);
+    let invite = ical::IcsInvite {
+        uid: format!("{series_id}@myrefactor.com"),
+        // In-memory bump only: the row is being deleted, so persisting it is a wasted write.
+        sequence: session.ical_sequence + 1,
+        method: ical::Method::Cancel,
+        status: ical::EventStatus::Cancelled,
+        summary: format!("Coaching Session: {}", organization.name),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: session.date,
+        duration_minutes: session.duration_minutes,
+        organizer,
+        attendee,
+        location_url: session.meeting_url.clone(),
+        recurrence: None,
+        recurrence_id: session.ical_recurrence_id,
     };
     ical::build(&invite)
 }
@@ -945,14 +1052,27 @@ async fn send_session_cancelled_email(
 
     let email_config = ResolvedEmailConfig::new::<SessionCancelled>(config).await?;
 
-    let ics_body = build_session_cancel_ics(
-        coach,
-        coachee,
-        session,
-        organization,
-        SESSION_CANCELLED_DESCRIPTION.to_string(),
-        chrono::Utc::now().naive_utc(),
-    )?;
+    let dtstamp = chrono::Utc::now().naive_utc();
+    // A session inside a series is addressed as an override of its occurrence.
+    let ics_body = match session.coaching_session_series_id {
+        Some(series_id) => build_occurrence_cancel_ics(
+            coach,
+            coachee,
+            session,
+            series_id,
+            organization,
+            SESSION_CANCELLED_DESCRIPTION.to_string(),
+            dtstamp,
+        )?,
+        None => build_session_cancel_ics(
+            coach,
+            coachee,
+            session,
+            organization,
+            SESSION_CANCELLED_DESCRIPTION.to_string(),
+            dtstamp,
+        )?,
+    };
 
     if let Err(e) = send_session_cancelled_email_to_recipient(
         &email_config,
@@ -1002,6 +1122,13 @@ pub async fn notify_session_cancelled(
     session: &coaching_sessions::Model,
 ) {
     if session.date < chrono::Utc::now().naive_utc() {
+        return;
+    }
+    if lacks_occurrence_address(session) {
+        warn!(
+            "Skipping cancellation for session {}: series member has no ical_recurrence_id",
+            session.id
+        );
         return;
     }
 
@@ -1111,6 +1238,7 @@ fn build_series_invite_ics(
         attendee,
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
+        recurrence_id: None,
     };
     ical::build(&invite)
 }
@@ -1382,6 +1510,7 @@ fn build_series_cancel_ics(
         attendee,
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
+        recurrence_id: None,
     };
     ical::build(&invite)
 }
@@ -1695,6 +1824,7 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             coaching_session_series_id: None,
             ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: NaiveDate::from_ymd_opt(2026, 3, 4)
                 .unwrap()
@@ -1707,6 +1837,19 @@ mod tests {
             created_at: chrono::Utc::now().fixed_offset(),
             updated_at: chrono::Utc::now().fixed_offset(),
             hydrated_at: Some(chrono::Utc::now().fixed_offset()),
+        }
+    }
+
+    /// A session materialized inside a recurring series, sitting at its original start.
+    fn create_test_series_session(
+        series_id: Id,
+        original_start: NaiveDateTime,
+    ) -> coaching_sessions::Model {
+        coaching_sessions::Model {
+            coaching_session_series_id: Some(series_id),
+            ical_recurrence_id: Some(original_start),
+            date: original_start,
+            ..create_test_session()
         }
     }
 
@@ -2329,6 +2472,225 @@ mod tests {
         mock_coach.assert_async().await;
     }
 
+    // ── Per-Occurrence (Series Member) Tests ───────────────────────────
+
+    /// The VEVENT span only. A spliced VTIMEZONE block carries its own daylight-saving
+    /// `RRULE` lines, so whole-calendar RRULE assertions would be meaningless.
+    fn vevent(ics: &str) -> &str {
+        let start = ics.find("BEGIN:VEVENT").expect("no BEGIN:VEVENT");
+        let end = ics.find("END:VEVENT").expect("no END:VEVENT");
+        &ics[start..end]
+    }
+
+    /// Cancelling one occurrence must address the SERIES event plus a RECURRENCE-ID.
+    /// A session-id UID names an event no calendar holds.
+    #[test]
+    fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let series_id = Id::new_v4();
+        let original_start = NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(19, 0, 0)
+            .unwrap();
+        let mut session = create_test_series_session(series_id, original_start);
+        session.ical_sequence = 2;
+        session.duration_minutes = 60;
+        let org = create_test_organization();
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let ics = build_occurrence_cancel_ics(
+            &coach,
+            &coachee,
+            &session,
+            series_id,
+            &org,
+            SESSION_CANCELLED_DESCRIPTION.to_string(),
+            dtstamp,
+        )
+        .unwrap();
+
+        assert!(ics.contains(&format!("UID:{series_id}@myrefactor.com")));
+        assert!(!ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+        assert!(ics.contains("RECURRENCE-ID;TZID=America/New_York:20260915T150000"));
+        assert!(ics.contains("METHOD:CANCEL"));
+        assert!(ics.contains("STATUS:CANCELLED"));
+        assert!(ics.contains("SEQUENCE:3"));
+        assert!(!vevent(&ics).contains("RRULE"));
+    }
+
+    /// Moving one occurrence: DTSTART carries the NEW time while RECURRENCE-ID keeps
+    /// naming the original slot, which is what makes it an override and not a duplicate.
+    #[test]
+    fn test_build_occurrence_reschedule_ics_keeps_original_recurrence_id() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let series_id = Id::new_v4();
+        let original_start = NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(19, 0, 0)
+            .unwrap();
+        let mut session = create_test_series_session(series_id, original_start);
+        session.ical_sequence = 3;
+        session.duration_minutes = 60;
+        session.date = NaiveDate::from_ymd_opt(2026, 9, 17)
+            .unwrap()
+            .and_hms_opt(20, 0, 0)
+            .unwrap();
+        let org = create_test_organization();
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let ics = build_occurrence_reschedule_ics(
+            &coach,
+            &coachee,
+            &session,
+            series_id,
+            &org,
+            "View this session: https://app/x".into(),
+            dtstamp,
+        )
+        .unwrap();
+
+        assert!(ics.contains("DTSTART;TZID=America/New_York:20260917T160000"));
+        assert!(ics.contains("RECURRENCE-ID;TZID=America/New_York:20260915T150000"));
+        assert_ne!(session.date, original_start);
+        assert!(ics.contains(&format!("UID:{series_id}@myrefactor.com")));
+        assert!(!ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+        assert!(ics.contains("METHOD:REQUEST"));
+        assert!(ics.contains("SEQUENCE:3"));
+        assert!(!vevent(&ics).contains("RRULE"));
+    }
+
+    /// Standalone sessions keep their own UID and gain no RECURRENCE-ID.
+    #[test]
+    fn test_standalone_session_ics_carries_no_recurrence_id() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session = create_test_session();
+        let org = create_test_organization();
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        assert!(session.coaching_session_series_id.is_none());
+
+        let invite =
+            build_session_invite_ics(&coach, &coachee, &session, &org, "desc".into(), dtstamp)
+                .unwrap();
+        assert!(invite.contains(&format!("UID:{}@myrefactor.com", session.id)));
+        assert!(!invite.contains("RECURRENCE-ID"));
+
+        let cancel =
+            build_session_cancel_ics(&coach, &coachee, &session, &org, "desc".into(), dtstamp)
+                .unwrap();
+        assert!(cancel.contains(&format!("UID:{}@myrefactor.com", session.id)));
+        assert!(!cancel.contains("RECURRENCE-ID"));
+    }
+
+    /// A series member with no `ical_recurrence_id` has no valid slot to address, so the
+    /// guard must fire before any lookup and nothing may be sent.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_notify_session_cancelled_skips_series_member_without_recurrence_id() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let mut session = create_test_session();
+        session.coaching_session_series_id = Some(Id::new_v4());
+        session.ical_recurrence_id = None;
+        // Future-dated so the past-session guard cannot be what stops the send.
+        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+        // Zero appended results: any query would panic or error rather than pass.
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        notify_session_cancelled(&db, &config, &session).await;
+
+        assert!(
+            db.into_transaction_log().is_empty(),
+            "a series member without a RECURRENCE-ID must return before any statement runs"
+        );
+    }
+
+    /// Per-occurrence cancellations are still one session being cancelled, so they use the
+    /// session template and the CANCEL attachment, not any series-level variant.
+    #[tokio::test]
+    async fn test_send_occurrence_cancelled_email_uses_session_template() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+        let series_id = Id::new_v4();
+        let original_start = NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+        let session = create_test_series_session(series_id, original_start);
+        let org = create_test_organization();
+
+        let mock_coachee = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "to": ["\"Jane Doe\" <jane@example.com>"],
+                    "template": {
+                        "id": "session_cancel_template_abc",
+                        "variables": {
+                            "first_name": "Jane",
+                            "other_user_role": "coach",
+                            "session_date": "Wednesday, March 4, 2026",
+                            "session_time": "10:00 AM",
+                        }
+                    }
+                }),
+                &ical::Method::Cancel,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mock_coach = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "to": ["\"Alex Smith\" <alex@example.com>"],
+                    "template": {
+                        "id": "session_cancel_template_abc",
+                        "variables": {
+                            "first_name": "Alex",
+                            "other_user_role": "coachee",
+                            "session_date": "Thursday, March 5, 2026",
+                            "session_time": "12:00 AM",
+                        }
+                    }
+                }),
+                &ical::Method::Cancel,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+        assert!(result.is_ok());
+
+        // The send swallows errors, so the mock assertions are what give this test teeth.
+        mock_coachee.assert_async().await;
+        mock_coach.assert_async().await;
+    }
+
     /// Deleting an already-completed session is housekeeping, not a cancellation. The
     /// guard must fire before any lookup, so the connection sees no statements at all.
     #[cfg(feature = "mock")]
@@ -2720,6 +3082,7 @@ mod tests {
             coaching_relationship_id: Id::new_v4(),
             coaching_session_series_id: None,
             ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: date.and_hms_opt(15, 0, 0).unwrap(),
             duration_minutes: crate::duration::Duration::default_minutes(),
