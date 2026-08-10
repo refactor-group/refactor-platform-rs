@@ -355,21 +355,32 @@ per-occurrence `RECURRENCE-ID` overrides, which is the Phase 8 surface.
   - [x] A `PUT` changing none of those fields sends no reschedule email.
   - [x] Rescheduling a series (`PUT /coaching_session_series/:id`) sends an email; opening the `.ics` updates the recurring event in place (same `<series_id>` UID, bumped SEQUENCE).
 
-### Phase 6 — Net-new cancel emails (scenarios 5 & 6)
-- **Single (scenario 5):** in `coaching_session::delete`, bump `ical_sequence` and fire new `notify_session_cancelled` (`CANCEL`, `STATUS:CANCELLED`, bumped SEQUENCE) **before** the DB delete (record must still exist). New `SessionCancelled` impl + template.
-- **Series (scenario 6):** in `series::delete_with_future_sessions`, bump series `ical_sequence` and fire new `notify_series_cancelled` (`CANCEL` + `RRULE`, UID `<series_id>`) before delete. Note #356 keeps past sessions as orphans; the series `CANCEL` removes the recurring event from calendars (past occurrences already happened — acceptable).
+### Phase 6 — Net-new cancel emails (scenarios 5 & 6) — DONE ✅ (commit `73cf64f7`, overseer-verified)
+- **Single (scenario 5):** in `coaching_session::delete`, fire `notify_session_cancelled` (`CANCEL`, `STATUS:CANCELLED`, bumped SEQUENCE). New `SessionCancelled` impl + template.
+- **Series (scenario 6):** in `series::delete_with_future_sessions`, fire `notify_series_cancelled` (`CANCEL` + `RRULE`, UID `<series_id>`). Note #356 keeps past sessions as orphans; the series `CANCEL` removes the recurring event from calendars.
+
+**Three decisions that changed from the original plan text above:**
+1. **Fire AFTER the delete commits, not before.** The plan said "before the DB delete (record must still exist)". It does not need to: the models are already in memory. Firing first risks announcing a cancellation that a failing delete then contradicts. Both call sites now notify after success, alongside where `cleanup_orphaned_docs` already runs.
+2. **The SEQUENCE bump is in-memory only.** No `increment_ical_sequence`, no `update_rule`. Persisting a bump to a row being deleted in the same operation is a wasted write. `build_*_cancel_ics` passes `model.ical_sequence + 1` straight into the builder.
+3. **Cancellation emails carry no link and no CTA.** The row is gone by the time a recipient clicks. Both markers keep the trait's `None` `url_path_template` rather than overriding it, and the cancel sends never call `build_session_url`. They also load no topics/goals/actions: identifying the event is enough, so the cancel path adds no DB queries beyond the participant lookups.
+
+**Two guards keep the emails honest:** `notify_session_cancelled` returns early when `session.date` is in the past (deleting a completed session is housekeeping, not a cancellation), and `notify_series_cancelled` returns early on an empty `sessions` slice (the series row is deleted even when nothing upcoming remains, and the template would otherwise say "0 upcoming sessions cancelled"). The series path captures the series model best-effort via `.ok()` before the transaction, so deleting a nonexistent series still succeeds silently as it did before.
+
+**Also in this commit: the reschedule template flag was split.** `rescheduled_email_template_id` became `session_rescheduled_email_template_id` + `series_rescheduled_email_template_id`. Resend templates have **no conditional syntax** (verified against Resend docs: `{{{VAR}}}` substitution with per-variable fallbacks, `{{var | default}}`, and nothing else), and the two reschedule paths send disjoint variables (single: `session_date`/`session_time`; series: `session_count`/`first_session_date`/`first_session_time`/`last_session_date`). One shared template would render empty fallback lines for whichever shape it wasn't written for. This retires the "share one template, differentiate by a wording variable" decision recorded under Phase 7, and makes the `session_or_series` variable added in 5a/5b vestigial (harmless, left in place).
+
+Tests: pure cancel `.ics` structure for both (bumped SEQUENCE, `METHOD:CANCEL`, `STATUS:CANCELLED`, stable UID, series keeps its `RRULE`), mockito sends for both with `.assert_async()` teeth and a `Method`-parameterized body matcher, and both guards asserted via an empty transaction log. Overseer independently mutated four behaviors (each guard, the cancel content-type, and re-sharing the reschedule flag) and confirmed the corresponding test fails in every case. Full mock suite 265/286/162; all six gates clean.
+
 - **Acceptance:**
-  - [ ] Deleting a single session sends a cancellation; opening the `.ics` removes the event from all three platforms.
-  - [ ] Deleting a series (`DELETE /coaching_session_series/:id`) sends a cancellation; opening the `.ics` removes the recurring event.
-  - [ ] `STATUS:CANCELLED` + bumped SEQUENCE asserted; the email fires before the DB delete.
+  - [x] Deleting a single session sends a cancellation; opening the `.ics` removes the event. Platform verification owed on Apple + Google + Outlook.
+  - [x] Deleting a series (`DELETE /coaching_session_series/:id`) sends a cancellation; opening the `.ics` removes the recurring event.
+  - [x] `STATUS:CANCELLED` + bumped SEQUENCE asserted. The email fires after the DB delete, per decision 1 above.
 
 ### Phase 7 — Config / env passthrough + manual setup
-- New template-id flags for the net-new emails (Phases 5/6). **Templates shared as much as logical:** single and series share a `rescheduled` template and a `cancelled` template, differentiated by a singular/series wording variable (rather than dedicated templates each). Add only the flags this implies.
-- Wire every new flag through **all** layers per `.claude/CLAUDE.md`: `service/src/config.rs` (flag list, struct fields, `debug_field`, getters); `docker-compose.yaml`; `docker-compose.pr-preview.yaml`; `.github/workflows/deploy_to_do.yml` (.env heredoc); `.github/workflows/ci-deploy-pr-preview.yml` (heredoc + `secrets:`/inputs). Secret values → `production` + `PR_PREVIEW_*`.
-- Create the Resend templates (subjects on the template; never in payload).
+- **Four template-id flags, not two.** The "share one `rescheduled` and one `cancelled` template" decision is retired (see Phase 6). All four already exist in `service/src/config.rs` and all four Resend templates are created: `session_rescheduled_email_template_id`, `series_rescheduled_email_template_id`, `session_cancelled_email_template_id`, `series_cancelled_email_template_id`. Phase 7's remaining job is deployment passthrough only.
+- Wire every new flag through **all** layers per `.claude/CLAUDE.md`: `docker-compose.yaml`; `docker-compose.pr-preview.yaml`; `.github/workflows/deploy_to_do.yml` (.env heredoc); `.github/workflows/ci-deploy-pr-preview.yml` (heredoc + `secrets:`/inputs). Secret values → `production` + `PR_PREVIEW_*`.
 - **Acceptance:**
   - [ ] `cargo run -- --help` shows every new flag; each new var name appears in both compose files and both deploy workflows.
-  - [ ] Reschedule and cancel emails render correctly in a PR preview env with the shared templates.
+  - [ ] Reschedule and cancel emails render correctly in a PR preview env.
 
 ### Phase 8 — Per-occurrence cancellation within a series (scenario 7)
 Cancel a single coaching session that belongs to a series, sending an `.ics` update that removes only

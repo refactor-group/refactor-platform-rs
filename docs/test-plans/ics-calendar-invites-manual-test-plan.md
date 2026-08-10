@@ -1,9 +1,10 @@
-# Manual Test Plan — `.ics` Calendar Invites (Phases 0-5)
+# Manual Test Plan — `.ics` Calendar Invites (Phases 0-6)
 
 Covers what is implemented so far: a `.ics` calendar invite attached to the **create** emails
-for a single coaching session and for a recurring series, plus **reschedule** invites for both
-(same UID, bumped `SEQUENCE`, so the calendar event updates in place). Cancellation and
-per-occurrence flows are NOT implemented yet (Phases 6-8), so do not expect them.
+for a single coaching session and for a recurring series, **reschedule** invites for both (same
+UID, bumped `SEQUENCE`, so the calendar event updates in place), and **cancellation** invites for
+both (`METHOD:CANCEL`, so the event is removed). Per-occurrence cancellation within a series is
+NOT implemented yet (Phase 8), so do not expect it.
 
 Related: [implementation plan](../implementation-plans/ics-calendar-invites-coaching-sessions.md),
 issue #333.
@@ -160,9 +161,11 @@ Editing a single session now re-sends an updated invite (`METHOD:REQUEST`, **sam
 `SEQUENCE`**) so calendar clients update the event in place. Fires only when a calendar-relevant field
 changed: `date`, `duration_minutes`, `meeting_url`, or `title`.
 
-**Extra setup:** configure `--rescheduled-email-template-id=<your Resend template>` (single + series share
-this one reschedule template). Without it, the edit still succeeds but the reschedule email fails
-best-effort and is logged (see RS2).
+**Extra setup:** configure `--session-rescheduled-email-template-id=<your Resend template>`. Without it, the
+edit still succeeds but the reschedule email fails best-effort and is logged (see RS2).
+
+Single and series use **separate** reschedule templates. Resend templates have no conditional syntax and the
+two paths send different variables, so one template cannot render both.
 
 ### HR1 — Edit a session's time (happy path)
 1. Create a single session (H1), import its `.ics` (note `SEQUENCE:0`).
@@ -182,7 +185,7 @@ best-effort and is logged (see RS2).
 2. **Expect:** **no** reschedule email is sent (nothing calendar-relevant changed); `SEQUENCE` does not bump.
 
 ### RS2 — Reschedule template not configured (sad path)
-1. Run the backend **without** `--rescheduled-email-template-id`, then edit a session's time.
+1. Run the backend **without** `--session-rescheduled-email-template-id`, then edit a session's time.
 2. **Expect:** the edit succeeds (session updates, `ical_sequence` bumps); the reschedule email fails
    best-effort and is logged. No crash, no partial email.
 
@@ -192,8 +195,8 @@ best-effort and is logged (see RS2).
 
 Rescheduling a series (`PUT /coaching_session_series/:id`) re-sends the recurring invite to both
 participants with the **same UID** (`<series_id>@myrefactor.com`) and a **bumped `SEQUENCE`**, so the
-recurring calendar event is replaced in place. Uses the same `--rescheduled-email-template-id` template as
-the single-session case, distinguished by a `session_or_series=series` template variable.
+recurring calendar event is replaced in place. Uses its own template, configured via
+`--series-rescheduled-email-template-id`.
 
 Unlike a single-session edit, there is **no** change-detection guard: the series reschedule endpoint only
 accepts scheduling fields, so every call sends an invite.
@@ -226,17 +229,66 @@ accepts scheduling fields, so every call sends an invite.
    succeeds. No crash, no empty invite.
 
 ### RS4 — Series reschedule with no template configured (sad path)
-1. Run the backend **without** `--rescheduled-email-template-id`, then reschedule a series.
+1. Run the backend **without** `--series-rescheduled-email-template-id`, then reschedule a series.
 2. **Expect:** the reschedule succeeds and `ical_sequence` bumps; the email fails best-effort and is logged.
+
+---
+
+## Cancellation (Phase 6)
+
+Deleting a session or a series sends a `METHOD:CANCEL` invite with `STATUS:CANCELLED`, the **same UID** as
+the original, and a **bumped `SEQUENCE`**, so calendar clients remove the event. The cancellation email has
+**no link and no button**: the session no longer exists, so a link would 404.
+
+The email fires **after** the delete succeeds, so a failed delete never produces a cancellation notice.
+
+**Extra setup:** `--session-cancelled-email-template-id` and `--series-cancelled-email-template-id`.
+
+### HC1 — Cancel a single session (happy path)
+1. Create a **future** single session (H1) and import its `.ics`.
+2. Delete the session.
+3. **Expect:** both coach and coachee receive a cancellation email with `invite.ics` containing
+   `METHOD:CANCEL`, `STATUS:CANCELLED`, the unchanged `UID:<session_id>@myrefactor.com`, and a `SEQUENCE`
+   one higher than the last invite.
+4. Open it: the event is removed from (or shown as cancelled in) your calendar.
+5. Confirm the email contains **no** session link or CTA button.
+
+### HC2 — Cancel a series (happy path)
+1. Create a weekly series with future occurrences and import its `.ics`.
+2. Delete the series.
+3. **Expect:** a cancellation email stating how many upcoming sessions were cancelled, with the first and
+   last dates of that range. The `.ics` carries `METHOD:CANCEL` and the same `UID:<series_id>@myrefactor.com`.
+4. Open it: the whole recurring event is removed from your calendar.
+5. **In the app:** any sessions that already happened are still listed, with their notes. Only future
+   sessions are deleted.
+
+### SC1 — Deleting a past session sends nothing (sad path)
+1. Delete a session whose date has **already passed**.
+2. **Expect:** **no** cancellation email. Deleting a completed session is housekeeping, not a cancellation,
+   and mailing "your session has been cancelled" about a meeting that already happened would be wrong.
+
+### SC2 — Deleting a series with no future sessions sends nothing (sad path)
+1. Delete a series whose occurrences are all in the past.
+2. **Expect:** the series is deleted and **no** cancellation email is sent (there is nothing upcoming to
+   cancel). Past sessions survive in the app.
+
+### SC3 — Cancel template not configured (sad path)
+1. Run the backend **without** the cancellation template flags, then delete a future session.
+2. **Expect:** the delete succeeds; the email fails best-effort and is logged. No crash.
+
+### SC4 — Series cancel also clears past occurrences from the calendar (known limitation)
+1. Cancel a series that had at least one occurrence in the past.
+2. **Expect in the calendar:** the entire recurring event disappears, including occurrences that already
+   happened. **Expect in the app:** those past sessions remain, with notes. Same single-UID limitation as
+   HR5. Please confirm this is acceptable, or flag it.
 
 ---
 
 ## Not testable yet (later phases — expect NOTHING to happen)
 
-- **Deleting** a session or series sends no cancellation `.ics` (Phase 6).
 - Cancelling **one occurrence** of a series (Phase 8).
-- The shared reschedule/cancel Resend templates + full env passthrough are finalized in Phase 7 (the
-  `--rescheduled-email-template-id` flag exists now; you supply a template to exercise HR1/HR2).
+- Full env passthrough for the four template flags is finalized in Phase 7. The flags exist now, so you can
+  supply template ids directly to exercise everything above.
 
 ## Outlook gate (please record the result)
 
