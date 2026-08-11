@@ -219,6 +219,9 @@ pub async fn get_valid_access_token(
 /// grant is revoked but the delete fails, the next token use fails as `TokenRevoked` and
 /// `get_valid_access_token` drops the row then.
 ///
+/// A refresh or reconnect that writes to the row while revocation is in flight is deleted along
+/// with it: the grant it belongs to has already been revoked, so the disconnect wins.
+///
 /// # Errors
 ///
 /// Returns `RecordNotFound` when the user has no connection for `provider`.
