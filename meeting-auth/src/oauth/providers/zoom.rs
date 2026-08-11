@@ -277,9 +277,11 @@ impl crate::oauth::Provider for Provider {
     async fn revoke_token(&self, token: &str) -> Result<(), Error> {
         debug!("Revoking Zoom token");
 
+        // Unlike Google's, Zoom's revoke endpoint authenticates the client with HTTP Basic.
         let response = self
             .http_client
             .post(REVOKE_URL)
+            .basic_auth(&self.client_id, Some(self.client_secret.expose_secret()))
             .form(&[("token", token)])
             .send()
             .await

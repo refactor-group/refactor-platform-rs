@@ -4,7 +4,7 @@ use crate::meeting_provider::Provider as MeetingProvider;
 use crate::oauth_connections::Model as OauthConnectionModel;
 use crate::oauth_token_storage::DbOAuthTokenStorage;
 use crate::Id;
-use entity_api::oauth_connection;
+use entity_api::oauth_connection as ConnectionApi;
 use log::*;
 use meeting_auth::oauth::token::{encryption, Manager, Plain};
 use meeting_auth::oauth::UserInfo;
@@ -92,11 +92,11 @@ pub async fn exchange_and_store_tokens(
             )),
         })?;
 
-    let existing = oauth_connection::find_by_user_and_provider(db, user_id, provider).await?;
+    let existing = ConnectionApi::find_by_user_and_provider(db, user_id, provider).await?;
 
     match existing {
         Some(conn) => {
-            oauth_connection::update_tokens(
+            ConnectionApi::update_tokens(
                 db,
                 conn.id,
                 encrypted_access,
@@ -115,7 +115,7 @@ pub async fn exchange_and_store_tokens(
                 encrypted_access,
                 encrypted_refresh,
             );
-            oauth_connection::create(db, model).await?;
+            ConnectionApi::create(db, model).await?;
         }
     }
 
@@ -193,7 +193,7 @@ pub async fn get_valid_access_token(
             );
             // The provider already revoked this grant, so drop the row without a revoke round trip.
             if let Err(del_err) =
-                oauth_connection::delete_by_user_and_provider(db, user_id, provider).await
+                ConnectionApi::delete_by_user_and_provider(db, user_id, provider).await
             {
                 warn!(
                     "Failed to delete revoked OAuth connection for user {}: {:?}",
@@ -215,7 +215,9 @@ pub async fn get_valid_access_token(
 ///
 /// Revocation is best effort. It is attempted first so that a token is never orphaned at the
 /// provider, but a failure is logged rather than propagated: leaving the row behind would strand
-/// the user in a connected-but-broken state with no way to retry.
+/// the user in a connected-but-broken state with no way to retry. In the reverse case, where the
+/// grant is revoked but the delete fails, the next token use fails as `TokenRevoked` and
+/// `get_valid_access_token` drops the row then.
 ///
 /// # Errors
 ///
@@ -226,21 +228,25 @@ pub async fn delete_by_user_and_provider(
     user_id: Id,
     provider: MeetingProvider,
 ) -> Result<(), Error> {
-    if let Some(connection) =
-        oauth_connection::find_by_user_and_provider(db, user_id, provider).await?
-    {
-        revoke_stored_token(config, &connection, provider).await;
-    }
+    let connection = ConnectionApi::get_by_user_and_provider(db, user_id, provider).await?;
 
-    oauth_connection::delete_by_user_and_provider(db, user_id, provider).await?;
+    revoke_stored_tokens(config, &connection, provider).await;
+
+    // Delete by id rather than re-resolving the pair, so a concurrent disconnect that already
+    // removed the row still succeeds instead of surfacing a 404 after a completed revoke.
+    ConnectionApi::delete_by_id(db, connection.id).await?;
 
     info!("Disconnected {} for user {}", provider, user_id);
 
     Ok(())
 }
 
-/// Revoke a connection's stored token with the provider, logging and returning on any failure.
-async fn revoke_stored_token(
+/// Revoke a connection's stored grant with the provider, logging and returning on any failure.
+///
+/// Tries the refresh token first, since it outlives the access token, and falls back to the access
+/// token. Google revokes the whole grant given either, while Zoom documents only the access token,
+/// so trying both is what makes one code path correct for both providers.
+async fn revoke_stored_tokens(
     config: &Config,
     connection: &OauthConnectionModel,
     provider: MeetingProvider,
@@ -252,33 +258,41 @@ async fn revoke_stored_token(
         return;
     };
 
-    // Google and Zoom both revoke the whole grant given either token, so prefer the longer-lived
-    // refresh token and fall back to the access token when the connection has none.
-    let stored_token = connection
-        .refresh_token
-        .as_deref()
-        .unwrap_or(&connection.access_token);
+    let tokens = revocable_tokens(connection, &encryption_key);
+    if tokens.is_empty() {
+        warn!("Cannot revoke {provider} token for user {user_id}: no token could be decrypted");
+        return;
+    }
 
-    let token = match encryption::decrypt(stored_token, &encryption_key) {
-        Ok(token) => token,
-        Err(e) => {
-            warn!("Failed to decrypt {provider} token for user {user_id}: {e:?}");
-            return;
-        }
-    };
-
-    let result = match create_provider(config, provider) {
-        Ok(oauth_provider) => oauth_provider.revoke_token(&token).await,
+    let oauth_provider = match create_provider(config, provider) {
+        Ok(oauth_provider) => oauth_provider,
         Err(e) => {
             warn!("Cannot revoke {provider} token for user {user_id}: {e:?}");
             return;
         }
     };
 
-    match result {
-        Ok(()) => info!("Revoked {provider} token for user {user_id}"),
-        Err(e) => warn!("Failed to revoke {provider} token for user {user_id}: {e:?}"),
+    for token in &tokens {
+        match oauth_provider.revoke_token(token).await {
+            Ok(()) => {
+                info!("Revoked {provider} grant for user {user_id}");
+                return;
+            }
+            Err(e) => warn!("Failed to revoke {provider} token for user {user_id}: {e:?}"),
+        }
     }
+}
+
+/// The connection's decryptable tokens, refresh first, skipping any that fail to decrypt.
+fn revocable_tokens(connection: &OauthConnectionModel, encryption_key: &str) -> Vec<String> {
+    [
+        connection.refresh_token.as_deref(),
+        Some(connection.access_token.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|stored| encryption::decrypt(stored, encryption_key).ok())
+    .collect()
 }
 
 /// Create the OAuth provider implementation backing a meeting provider.
@@ -405,21 +419,24 @@ mod tests {
         }
     }
 
+    /// 32 bytes hex, matching what `encryption::encrypt` expects.
+    const TEST_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     /// An unusable revoke path must never strand the user in a connected-but-broken state.
     #[tokio::test]
     async fn delete_removes_the_connection_even_when_revocation_cannot_run() -> Result<(), Error> {
         let model = test_model();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // Our own lookup, then the one entity_api's delete performs.
-            .append_query_results(vec![vec![model.clone()], vec![model.clone()]])
+            .append_query_results(vec![vec![model.clone()]])
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
             }])
             .into_connection();
 
-        // A default Config has no encryption key or provider credentials, so revocation bails out.
+        // Neither stored token is valid ciphertext, so revocation bails before any network call
+        // regardless of what the ambient environment configures.
         delete_by_user_and_provider(
             &db,
             &Config::default(),
@@ -429,11 +446,51 @@ mod tests {
         .await
     }
 
+    #[test]
+    fn revocable_tokens_prefers_the_refresh_token() {
+        let model = OauthConnectionModel {
+            access_token: encryption::encrypt("access", TEST_KEY).unwrap(),
+            refresh_token: Some(encryption::encrypt("refresh", TEST_KEY).unwrap()),
+            ..test_model()
+        };
+
+        assert_eq!(
+            revocable_tokens(&model, TEST_KEY),
+            vec!["refresh", "access"]
+        );
+    }
+
+    #[test]
+    fn revocable_tokens_falls_back_to_the_access_token() {
+        let model = OauthConnectionModel {
+            access_token: encryption::encrypt("access", TEST_KEY).unwrap(),
+            refresh_token: None,
+            ..test_model()
+        };
+
+        assert_eq!(revocable_tokens(&model, TEST_KEY), vec!["access"]);
+    }
+
+    #[test]
+    fn revocable_tokens_skips_what_it_cannot_decrypt() {
+        let model = OauthConnectionModel {
+            access_token: encryption::encrypt("access", TEST_KEY).unwrap(),
+            refresh_token: Some("not-ciphertext".to_string()),
+            ..test_model()
+        };
+
+        assert_eq!(revocable_tokens(&model, TEST_KEY), vec!["access"]);
+    }
+
+    #[test]
+    fn revocable_tokens_is_empty_when_nothing_decrypts() {
+        assert!(revocable_tokens(&test_model(), TEST_KEY).is_empty());
+    }
+
     #[tokio::test]
     async fn delete_errors_when_the_user_has_no_connection_for_the_provider() {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results::<OauthConnectionModel, Vec<OauthConnectionModel>, _>(vec![
-                vec![],
                 vec![],
             ])
             .into_connection();
