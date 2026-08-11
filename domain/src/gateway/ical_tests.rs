@@ -58,38 +58,7 @@ fn invite<'a>(
         location_url: None,
         recurrence,
         recurrence_id: None,
-        sent_by: None,
     }
-}
-
-/// `SENT-BY` marks an agent sending on the organizer's behalf. Without it, a
-/// recipient sees the From address disagree with `ORGANIZER` and may refuse to
-/// apply the update. The value is quoted because a cal-address contains a colon.
-#[test]
-fn organizer_carries_sent_by_when_an_agent_sends() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-    let mut inv = invite(&coach, &coachee, New_York, None);
-    inv.sent_by = Some("hello@mail.myrefactor.com");
-    let out = build(&inv).unwrap().replace("\r\n ", "");
-
-    assert!(
-        out.contains("SENT-BY=\"mailto:hello@mail.myrefactor.com\""),
-        "expected a quoted SENT-BY cal-address: {out}"
-    );
-    assert!(
-        out.contains("mailto:coach@example.com"),
-        "organizer must stay the coach"
-    );
-}
-
-/// Omitting `sent_by` must leave the property exactly as before.
-#[test]
-fn organizer_omits_sent_by_when_absent() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-    let out = build(&invite(&coach, &coachee, New_York, None)).unwrap();
-    assert!(!out.contains("SENT-BY"));
 }
 
 #[test]
