@@ -40,19 +40,29 @@ account permissions page after disconnecting.
 Same shape as Scenario A, against Zoom's app management page
 (https://marketplace.zoom.us > Manage > Added Apps).
 
-This scenario carries the real risk. Zoom's revoke endpoint authenticates the
-client with HTTP Basic, and the request previously sent no client credentials at
-all, so it would have failed on every call. That code was unreachable until
-`revoke_token` gained a caller, so it had never run. The fix follows Zoom's
-documented requirement but has not been observed working.
+**Result: BLOCKED. Zoom OAuth is not configured in any environment.**
 
-Because failures are `warn!` only, a still-broken Zoom revoke looks identical to
-success in the UI. Check the backend log as well as the Zoom page.
+`GET /oauth/zoom/authorize` returns 500 because `create_zoom_provider` needs
+`ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` and `ZOOM_REDIRECT_URI`, and none of the
+three appear anywhere in the repository: not in `.env`, `docker-compose.yaml`,
+`docker-compose.pr-preview.yaml`, `deploy_to_do.yml`,
+`ci-deploy-pr-preview.yml` or `docs/setup.md`. Their Google counterparts are in
+all six. There is no Zoom connection to disconnect, so revocation cannot be
+exercised.
+
+Enabling Zoom means creating a Zoom Marketplace app and wiring those three
+variables through every layer. Until then Zoom revocation ships **unverified**.
+
+When Zoom is enabled, run this scenario before trusting it. Zoom's revoke
+endpoint authenticates the client with HTTP Basic, and the request previously
+sent no client credentials at all, so it would have failed on every call. That
+code was unreachable until `revoke_token` gained a caller. The fix follows
+Zoom's documented requirement but has never been observed working, and because
+failures are `warn!` only, a still-broken revoke looks identical to success in
+the UI.
 
 **Pass:** the app is gone from Added Apps, and the log shows
 `Revoked zoom grant for user <id>` rather than `Failed to revoke`.
-
-**Result: NOT YET RUN.**
 
 ## 4. Scenario C: A failed revoke still disconnects the user
 
