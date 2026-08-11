@@ -422,6 +422,20 @@ mod tests {
     /// 32 bytes hex, matching what `encryption::encrypt` expects.
     const TEST_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+    /// Every statement the mock saw, flattened across transactions.
+    fn statements(db: DatabaseConnection) -> Vec<String> {
+        db.into_transaction_log()
+            .iter()
+            .flat_map(|transaction| {
+                transaction
+                    .statements()
+                    .iter()
+                    .map(|statement| statement.sql.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     /// An unusable revoke path must never strand the user in a connected-but-broken state.
     #[tokio::test]
     async fn delete_removes_the_connection_even_when_revocation_cannot_run() -> Result<(), Error> {
@@ -435,15 +449,23 @@ mod tests {
             }])
             .into_connection();
 
-        // Neither stored token is valid ciphertext, so revocation bails before any network call
-        // regardless of what the ambient environment configures.
+        // Revocation cannot reach the network here whichever way the ambient environment is
+        // configured: without an encryption key it bails before decrypting, and with one it bails
+        // because neither stored token is valid ciphertext.
         delete_by_user_and_provider(
             &db,
             &Config::default(),
             model.user_id,
             MeetingProvider::Google,
         )
-        .await
+        .await?;
+
+        assert!(
+            statements(db).iter().any(|sql| sql.starts_with("DELETE")),
+            "the connection row must be deleted even when revocation cannot run"
+        );
+
+        Ok(())
     }
 
     #[test]
