@@ -53,8 +53,8 @@ fn invite<'a>(
         dtstamp: dt(2026, 6, 14, 12, 0),
         start: dt(2026, 9, 15, 19, 0),
         duration_minutes: 60,
-        organizer: coach,
-        attendee: coachee,
+        organizer: Participant::from_user(coach),
+        attendees: vec![Participant::from_user(coachee)],
         location_url: None,
         recurrence,
         recurrence_id: None,
@@ -198,6 +198,31 @@ fn attendee_organizer_lines() {
     assert!(out.contains("mailto:coachee@example.com"));
     assert!(out.contains("ATTENDEE"));
     assert!(out.contains("RSVP=TRUE"));
+}
+
+#[test]
+fn multiple_attendees_each_render_a_property() {
+    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
+    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
+
+    let mut inv = invite(&coach, &coachee, New_York, None);
+    inv.organizer = Participant::new("Refactor Coach", "hello@platform.example");
+    inv.attendees = vec![
+        Participant::from_user(&coach),
+        Participant::from_user(&coachee),
+    ];
+    let out = unfold(&build(&inv).unwrap());
+
+    assert_eq!(out.matches("ATTENDEE").count(), 2);
+    assert_eq!(out.matches("ROLE=REQ-PARTICIPANT").count(), 2);
+    assert_eq!(out.matches("PARTSTAT=NEEDS-ACTION").count(), 2);
+    assert_eq!(out.matches("RSVP=TRUE").count(), 2);
+    assert!(out.lines().any(|l| l.starts_with("ATTENDEE")
+        && l.contains("CN=Coach Casey")
+        && l.contains("mailto:coach@example.com")));
+    assert!(out.lines().any(|l| l.starts_with("ATTENDEE")
+        && l.contains("CN=Coachee Quinn")
+        && l.contains("mailto:coachee@example.com")));
 }
 
 #[test]

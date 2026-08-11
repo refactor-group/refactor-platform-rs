@@ -27,6 +27,33 @@ pub enum EventStatus {
     Cancelled,
 }
 
+/// One named calendar identity, either a user or the platform itself.
+pub struct Participant<'a> {
+    pub name: String,
+    pub email: &'a str,
+}
+
+impl<'a> Participant<'a> {
+    /// A participant with an explicit display name and address.
+    pub fn new(name: &str, email: &'a str) -> Self {
+        Self {
+            name: name.to_string(),
+            email,
+        }
+    }
+
+    /// A participant from a user: display name when set, else first and last name.
+    pub fn from_user(user: &'a entity::users::Model) -> Self {
+        Self {
+            name: user
+                .display_name
+                .clone()
+                .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name)),
+            email: &user.email,
+        }
+    }
+}
+
 /// Inputs for one calendar invite.
 pub struct IcsInvite<'a> {
     pub uid: String,
@@ -39,8 +66,8 @@ pub struct IcsInvite<'a> {
     pub dtstamp: NaiveDateTime,
     pub start: NaiveDateTime,
     pub duration_minutes: i16,
-    pub organizer: &'a entity::users::Model,
-    pub attendee: &'a entity::users::Model,
+    pub organizer: Participant<'a>,
+    pub attendees: Vec<Participant<'a>>,
     pub location_url: Option<String>,
     pub recurrence: Option<Recurrence>,
     /// RFC 5545 `RECURRENCE-ID`: the original start of the occurrence this invite
@@ -72,13 +99,6 @@ fn internal(msg: &str) -> Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(msg.to_string())),
     }
-}
-
-/// Display name when set, else first and last name.
-fn participant_name(u: &entity::users::Model) -> String {
-    u.display_name
-        .clone()
-        .unwrap_or_else(|| format!("{} {}", u.first_name, u.last_name))
 }
 
 /// Look up the `VTIMEZONE` block for `tz` and slice out the inner span (CRLF-normalized).
@@ -210,17 +230,20 @@ pub fn build(invite: &IcsInvite) -> Result<String, Error> {
 
     event.append_property(
         Property::new("ORGANIZER", format!("mailto:{}", invite.organizer.email))
-            .add_parameter("CN", &participant_name(invite.organizer))
+            .add_parameter("CN", &invite.organizer.name)
             .done(),
     );
-    event.append_property(
-        Property::new("ATTENDEE", format!("mailto:{}", invite.attendee.email))
-            .add_parameter("CN", &participant_name(invite.attendee))
-            .add_parameter("ROLE", "REQ-PARTICIPANT")
-            .add_parameter("PARTSTAT", "NEEDS-ACTION")
-            .add_parameter("RSVP", "TRUE")
-            .done(),
-    );
+    // Multi-property: plain `append_property` is keyed by name and would keep only the last.
+    invite.attendees.iter().for_each(|attendee| {
+        event.append_multi_property(
+            Property::new("ATTENDEE", format!("mailto:{}", attendee.email))
+                .add_parameter("CN", &attendee.name)
+                .add_parameter("ROLE", "REQ-PARTICIPANT")
+                .add_parameter("PARTSTAT", "NEEDS-ACTION")
+                .add_parameter("RSVP", "TRUE")
+                .done(),
+        );
+    });
 
     if let Some(url) = &invite.location_url {
         event.add_property("LOCATION", url);

@@ -430,6 +430,26 @@ const SERIES_CANCELLED_DESCRIPTION: &str =
 /// `myrefactor.com` apex aren't affected by Resend's sending infrastructure.
 const FROM_ADDRESS: &str = "hello@mail.myrefactor.com";
 
+/// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
+const FROM_DISPLAY_NAME: &str = "Refactor Coach";
+
+/// The platform organizes every invite: calendar clients only apply updates when the
+/// `ORGANIZER` matches the sending address.
+fn platform_organizer() -> ical::Participant<'static> {
+    ical::Participant::new(FROM_DISPLAY_NAME, FROM_ADDRESS)
+}
+
+/// Coach first, then coachee, so both humans see each other in the guest list.
+fn session_attendees<'a>(
+    coach: &'a users::Model,
+    coachee: &'a users::Model,
+) -> Vec<ical::Participant<'a>> {
+    vec![
+        ical::Participant::from_user(coach),
+        ical::Participant::from_user(coachee),
+    ]
+}
+
 /// Groups the base URL and path template for building session links in emails.
 struct SessionUrlBuilder {
     base_url: String,
@@ -540,14 +560,14 @@ async fn send_session_email_to_recipient(
 /// Build the single-session invite `.ics` body. Pure: `dtstamp` is injected so the
 /// output is deterministic for a given input.
 fn build_session_invite_ics(
-    organizer: &users::Model,
-    attendee: &users::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = organizer
+    let anchor_tz = coach
         .timezone
         .parse::<chrono_tz::Tz>()
         .unwrap_or(chrono_tz::UTC);
@@ -562,8 +582,8 @@ fn build_session_invite_ics(
         dtstamp,
         start: session.date,
         duration_minutes: session.duration_minutes,
-        organizer,
-        attendee,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: None,
@@ -576,15 +596,15 @@ fn build_session_invite_ics(
 /// override the existing instance instead of creating a standalone duplicate.
 /// Pure: `dtstamp` is injected.
 fn build_occurrence_reschedule_ics(
-    organizer: &users::Model,
-    attendee: &users::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
     organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = organizer
+    let anchor_tz = coach
         .timezone
         .parse::<chrono_tz::Tz>()
         .unwrap_or(chrono_tz::UTC);
@@ -600,8 +620,8 @@ fn build_occurrence_reschedule_ics(
         // The NEW start; `recurrence_id` keeps addressing the original slot.
         start: session.date,
         duration_minutes: session.duration_minutes,
-        organizer,
-        attendee,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: session.ical_recurrence_id,
@@ -633,7 +653,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
 
     let email_config = ResolvedEmailConfig::new::<N>(config).await?;
 
-    // Same VEVENT for both recipients (organizer = coach, attendee = coachee).
+    // Same VEVENT for both recipients.
     let topics = entity_api::coaching_session_topic::find_by_coaching_session_id(db, session.id)
         .await?
         .into_iter()
@@ -933,14 +953,14 @@ pub async fn notify_session_rescheduled(
 /// output is deterministic for a given input. Keeps the invite's `UID` and `DTSTART` so
 /// calendar clients match the cancellation to the event they already hold.
 fn build_session_cancel_ics(
-    organizer: &users::Model,
-    attendee: &users::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = organizer
+    let anchor_tz = coach
         .timezone
         .parse::<chrono_tz::Tz>()
         .unwrap_or(chrono_tz::UTC);
@@ -956,8 +976,8 @@ fn build_session_cancel_ics(
         dtstamp,
         start: session.date,
         duration_minutes: session.duration_minutes,
-        organizer,
-        attendee,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: None,
@@ -969,15 +989,15 @@ fn build_session_cancel_ics(
 /// the series `UID` plus the occurrence's original start as `RECURRENCE-ID`, so clients
 /// remove the instance they already hold. Pure: `dtstamp` is injected.
 fn build_occurrence_cancel_ics(
-    organizer: &users::Model,
-    attendee: &users::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
     organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = organizer
+    let anchor_tz = coach
         .timezone
         .parse::<chrono_tz::Tz>()
         .unwrap_or(chrono_tz::UTC);
@@ -993,8 +1013,8 @@ fn build_occurrence_cancel_ics(
         dtstamp,
         start: session.date,
         duration_minutes: session.duration_minutes,
-        organizer,
-        attendee,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: session.ical_recurrence_id,
@@ -1210,15 +1230,15 @@ async fn send_recurring_series_email_to_recipient(
 
 /// Build the series invite `.ics` body (VEVENT + RRULE). Pure: `dtstamp` injected.
 fn build_series_invite_ics(
-    organizer: &users::Model,
-    attendee: &users::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
     first_session: &coaching_sessions::Model,
     organization: &organizations::Model,
     series: &coaching_session_series::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = organizer
+    let anchor_tz = coach
         .timezone
         .parse::<chrono_tz::Tz>()
         .unwrap_or(chrono_tz::UTC);
@@ -1234,8 +1254,8 @@ fn build_series_invite_ics(
         dtstamp,
         start: first_session.date,
         duration_minutes: first_session.duration_minutes,
-        organizer,
-        attendee,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
         recurrence_id: None,
@@ -1481,15 +1501,15 @@ pub async fn notify_recurring_sessions_rescheduled(
 /// Keeps the invite's `UID`, `DTSTART`, and `RRULE` so calendar clients match the
 /// cancellation to the recurring event they already hold.
 fn build_series_cancel_ics(
-    organizer: &users::Model,
-    attendee: &users::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
     first_session: &coaching_sessions::Model,
     organization: &organizations::Model,
     series: &coaching_session_series::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = organizer
+    let anchor_tz = coach
         .timezone
         .parse::<chrono_tz::Tz>()
         .unwrap_or(chrono_tz::UTC);
@@ -1506,8 +1526,8 @@ fn build_series_cancel_ics(
         dtstamp,
         start: first_session.date,
         duration_minutes: first_session.duration_minutes,
-        organizer,
-        attendee,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
         recurrence_id: None,
@@ -2101,6 +2121,86 @@ mod tests {
     }
 
     // ── Session Scheduled Email Tests ──────────────────────────────────
+
+    /// RFC 5545 line unfolding: remove the CRLF followed by a leading space/tab.
+    fn unfold(s: &str) -> String {
+        s.replace("\r\n ", "").replace("\r\n\t", "")
+    }
+
+    /// A single-session invite from a New York coach and a Los Angeles coachee.
+    fn invite_ics_for_participants(coach: &users::Model, coachee: &users::Model) -> String {
+        let mut session = create_test_session();
+        session.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+            .unwrap()
+            .and_hms_opt(19, 0, 0)
+            .unwrap();
+        session.duration_minutes = 60;
+        let org = create_test_organization();
+        let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let ics = build_session_invite_ics(coach, coachee, &session, &org, "desc".into(), dtstamp)
+            .unwrap();
+        unfold(&ics)
+    }
+
+    /// The `ORGANIZER` must equal the sending address: when the two disagree, calendar
+    /// clients treat the invite as untrusted and silently drop reschedules.
+    #[test]
+    fn test_organizer_is_the_sending_address() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee =
+            create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+        let ics = invite_ics_for_participants(&coach, &coachee);
+
+        let organizer = ics
+            .lines()
+            .find(|l| l.starts_with("ORGANIZER"))
+            .expect("no ORGANIZER line");
+        assert!(
+            organizer.contains(&format!("mailto:{FROM_ADDRESS}")),
+            "ORGANIZER must carry FROM_ADDRESS, got: {organizer}"
+        );
+    }
+
+    #[test]
+    fn test_coach_and_coachee_are_both_attendees() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee =
+            create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+        let ics = invite_ics_for_participants(&coach, &coachee);
+
+        let attendees: Vec<&str> = ics.lines().filter(|l| l.starts_with("ATTENDEE")).collect();
+        assert_eq!(attendees.len(), 2);
+        assert!(attendees
+            .iter()
+            .any(|l| l.contains("mailto:alex@example.com")));
+        assert!(attendees
+            .iter()
+            .any(|l| l.contains("mailto:jane@example.com")));
+
+        let organizer = ics
+            .lines()
+            .find(|l| l.starts_with("ORGANIZER"))
+            .expect("no ORGANIZER line");
+        assert!(!organizer.contains("alex@example.com"));
+        assert!(!organizer.contains("jane@example.com"));
+    }
+
+    /// The platform organizer has no meaningful zone, so the anchor stays the coach's.
+    #[test]
+    fn test_anchor_timezone_still_follows_the_coach() {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee =
+            create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+        let ics = invite_ics_for_participants(&coach, &coachee);
+
+        assert!(ics.contains("DTSTART;TZID=America/New_York:"));
+        assert!(ics.contains("BEGIN:VTIMEZONE"));
+        assert!(ics.contains("TZID:America/New_York"));
+    }
 
     #[test]
     fn test_build_session_invite_ics_structure() {
