@@ -46,6 +46,10 @@ pub struct IcsInvite<'a> {
     /// RFC 5545 `RECURRENCE-ID`: the original start of the occurrence this invite
     /// overrides. Mutually exclusive with `recurrence`.
     pub recurrence_id: Option<NaiveDateTime>,
+    /// Address the invite is actually sent from, when that differs from the
+    /// organizer. Emitted as `SENT-BY` so clients can tell an agent is acting on
+    /// the organizer's behalf rather than treating the mismatch as spoofing.
+    pub sent_by: Option<&'a str>,
 }
 
 /// One open action rendered into the DESCRIPTION.
@@ -208,9 +212,16 @@ pub fn build(invite: &IcsInvite) -> Result<String, Error> {
         }
     }
 
+    // Quoted because a cal-address contains a colon (RFC 5545 3.2.18).
+    let sent_by = invite.sent_by.map(|addr| format!("\"mailto:{addr}\""));
     event.append_property(
-        Property::new("ORGANIZER", format!("mailto:{}", invite.organizer.email))
-            .add_parameter("CN", &participant_name(invite.organizer))
+        sent_by
+            .iter()
+            .fold(
+                Property::new("ORGANIZER", format!("mailto:{}", invite.organizer.email))
+                    .add_parameter("CN", &participant_name(invite.organizer)),
+                |organizer, addr| organizer.add_parameter("SENT-BY", addr),
+            )
             .done(),
     );
     event.append_property(

@@ -567,6 +567,7 @@ fn build_session_invite_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: None,
+        sent_by: Some(FROM_ADDRESS),
     };
     ical::build(&invite)
 }
@@ -605,6 +606,7 @@ fn build_occurrence_reschedule_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: session.ical_recurrence_id,
+        sent_by: Some(FROM_ADDRESS),
     };
     ical::build(&invite)
 }
@@ -961,6 +963,7 @@ fn build_session_cancel_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: None,
+        sent_by: Some(FROM_ADDRESS),
     };
     ical::build(&invite)
 }
@@ -998,6 +1001,7 @@ fn build_occurrence_cancel_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: session.ical_recurrence_id,
+        sent_by: Some(FROM_ADDRESS),
     };
     ical::build(&invite)
 }
@@ -1239,6 +1243,7 @@ fn build_series_invite_ics(
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
         recurrence_id: None,
+        sent_by: Some(FROM_ADDRESS),
     };
     ical::build(&invite)
 }
@@ -1511,6 +1516,7 @@ fn build_series_cancel_ics(
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
         recurrence_id: None,
+        sent_by: Some(FROM_ADDRESS),
     };
     ical::build(&invite)
 }
