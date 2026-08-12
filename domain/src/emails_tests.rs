@@ -2263,8 +2263,10 @@ async fn test_send_recurring_sessions_rescheduled_email() {
         &config,
         &series,
         &create_test_series(),
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &sessions,
         &org,
     )
@@ -2355,8 +2357,10 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from
         &config,
         &series,
         &previous_series,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &sessions,
         &org,
     )
@@ -2488,8 +2492,10 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from
         &config,
         &series,
         &previous_series,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &sessions,
         &org,
     )
@@ -2555,8 +2561,10 @@ async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
         &config,
         &series,
         &previous_series,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &sessions,
         &org,
     )
@@ -2892,9 +2900,11 @@ async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
 
     let result = send_recurring_series_email_to_recipient(
         &email_config,
-        &recipient,
-        &other,
-        "coach",
+        &Recipient {
+            user: &recipient,
+            other_user: &other,
+            other_user_role: "coach",
+        },
         &[],
         &org,
         "",

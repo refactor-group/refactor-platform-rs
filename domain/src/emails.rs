@@ -475,6 +475,24 @@ fn format_previous_recurrence_summary(previous: &str, current: &str) -> String {
 /// model is which: both are the same type, so bare references read ambiguously.
 pub struct PreviousSeries<'a>(pub &'a coaching_session_series::Model);
 
+/// The two people on a coaching session, carried as one named value rather than as an
+/// adjacent pair of `&users::Model`. A transposed pair still type-checks and would swap
+/// every "your coach" / "your coachee" phrase in the copy without failing a build.
+struct Participants<'a> {
+    coach: &'a users::Model,
+    coachee: &'a users::Model,
+}
+
+/// One addressee of a per-recipient send, plus the other party as that recipient sees them.
+/// These three always travel together and are meaningless apart: `other_user_role` labels
+/// `other_user`, not the recipient.
+struct Recipient<'a> {
+    user: &'a users::Model,
+    other_user: &'a users::Model,
+    /// How the copy refers to the other party: "coach" or "coachee".
+    other_user_role: &'a str,
+}
+
 /// Template variables carried only by the reschedule sends: the discriminant the
 /// shared template copy reads, plus the start the recipient previously held.
 struct RescheduleVars {
@@ -607,17 +625,15 @@ impl ResolvedEmailConfig {
 
 /// Send a session-scheduled notification email to a single recipient.
 /// This is called once per recipient (coach and coachee each get their own email).
-#[allow(clippy::too_many_arguments)]
 async fn send_session_email_to_recipient(
     email_config: &ResolvedEmailConfig,
-    recipient: &users::Model,
-    other_user: &users::Model,
-    other_user_role: &str,
+    to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     ics_body: &str,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
+    let recipient = to.user;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&session.id)?;
     let session_duration =
@@ -631,9 +647,9 @@ async fn send_session_email_to_recipient(
         )
         .template_id(&email_config.template_id)
         .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("other_user_first_name", other_user.first_name.as_str())
-        .add_variable("other_user_last_name", other_user.last_name.as_str())
-        .add_variable("other_user_role", other_user_role)
+        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
+        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
+        .add_variable("other_user_role", to.other_user_role)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -806,9 +822,11 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     // Email to coachee: "Your coach, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
-        coachee,
-        coach,
-        "coach",
+        &Recipient {
+            user: coachee,
+            other_user: coach,
+            other_user_role: "coach",
+        },
         session,
         organization,
         &ics_body,
@@ -826,9 +844,11 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     // Email to coach: "Your coachee, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
-        coach,
-        coachee,
-        "coachee",
+        &Recipient {
+            user: coach,
+            other_user: coachee,
+            other_user_role: "coachee",
+        },
         session,
         organization,
         &ics_body,
@@ -1272,18 +1292,16 @@ pub async fn notify_session_cancelled(
 /// Send a recurring-sessions-scheduled notification email to a single recipient.
 /// One email per recipient — coach and coachee each get their own summarizing
 /// the freshly scheduled series.
-#[allow(clippy::too_many_arguments)]
 async fn send_recurring_series_email_to_recipient(
     email_config: &ResolvedEmailConfig,
-    recipient: &users::Model,
-    other_user: &users::Model,
-    other_user_role: &str,
+    to: &Recipient<'_>,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
     ics_body: &str,
     recurrence_summary: &str,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
+    let recipient = to.user;
     let (first, last) = series_bounds(sessions)?;
 
     let (first_session_date, first_session_time) =
@@ -1303,9 +1321,9 @@ async fn send_recurring_series_email_to_recipient(
         )
         .template_id(&email_config.template_id)
         .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("other_user_first_name", other_user.first_name.as_str())
-        .add_variable("other_user_last_name", other_user.last_name.as_str())
-        .add_variable("other_user_role", other_user_role)
+        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
+        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
+        .add_variable("other_user_role", to.other_user_role)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
@@ -1379,17 +1397,16 @@ fn build_series_invite_ics(
 /// template (via `N`) and the `session_or_series` template variable. A reschedule passes
 /// an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a stable
 /// `UID`.
-#[allow(clippy::too_many_arguments)]
 async fn send_series_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
-    coach: &users::Model,
-    coachee: &users::Model,
+    participants: &Participants<'_>,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
+    let Participants { coach, coachee } = *participants;
     info!(
         "Initiating {} emails for {} sessions (coach: {}, coachee: {})",
         N::notification_name(),
@@ -1443,9 +1460,11 @@ async fn send_series_invite_email<N: EmailNotification>(
 
     if let Err(e) = send_recurring_series_email_to_recipient(
         &email_config,
-        coachee,
-        coach,
-        "coach",
+        &Recipient {
+            user: coachee,
+            other_user: coach,
+            other_user_role: "coach",
+        },
         sessions,
         organization,
         &ics_body,
@@ -1463,9 +1482,11 @@ async fn send_series_invite_email<N: EmailNotification>(
 
     if let Err(e) = send_recurring_series_email_to_recipient(
         &email_config,
-        coach,
-        coachee,
-        "coachee",
+        &Recipient {
+            user: coach,
+            other_user: coachee,
+            other_user_role: "coachee",
+        },
         sessions,
         organization,
         &ics_body,
@@ -1498,8 +1519,7 @@ async fn send_recurring_sessions_scheduled_email(
         db,
         config,
         series,
-        coach,
-        coachee,
+        &Participants { coach, coachee },
         sessions,
         organization,
         None,
@@ -1512,14 +1532,12 @@ async fn send_recurring_sessions_scheduled_email(
 /// event in place (same `UID`, next `SEQUENCE`). The previous start comes from
 /// `previous_series`, the pre-update model, and is shown alongside the new first
 /// occurrence.
-#[allow(clippy::too_many_arguments)]
 async fn send_recurring_sessions_rescheduled_email(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
     previous_series: &coaching_session_series::Model,
-    coach: &users::Model,
-    coachee: &users::Model,
+    participants: &Participants<'_>,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
 ) -> Result<(), Error> {
@@ -1529,8 +1547,7 @@ async fn send_recurring_sessions_rescheduled_email(
         db,
         config,
         series,
-        coach,
-        coachee,
+        participants,
         sessions,
         organization,
         Some(&RescheduleVars {
@@ -1613,8 +1630,10 @@ pub async fn notify_recurring_sessions_rescheduled(
             config,
             series,
             previous_series.0,
-            &coach,
-            &coachee,
+            &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
             sessions,
             &org,
         )
