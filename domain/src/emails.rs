@@ -568,15 +568,22 @@ fn platform_organizer() -> ical::Participant<'static> {
     ical::Participant::new(FROM_DISPLAY_NAME, FROM_ADDRESS)
 }
 
+/// A user as a calendar participant. The mapping lives here rather than on
+/// `ical::Participant` so the builder stays free of entity types.
+fn participant(user: &users::Model) -> ical::Participant<'_> {
+    let name = user
+        .display_name
+        .clone()
+        .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name));
+    ical::Participant::new(&name, &user.email)
+}
+
 /// Coach first, then coachee, so both humans see each other in the guest list.
 fn session_attendees<'a>(
     coach: &'a users::Model,
     coachee: &'a users::Model,
 ) -> Vec<ical::Participant<'a>> {
-    vec![
-        ical::Participant::from_user(coach),
-        ical::Participant::from_user(coachee),
-    ]
+    vec![participant(coach), participant(coachee)]
 }
 
 /// Groups the base URL and path template for building session links in emails.

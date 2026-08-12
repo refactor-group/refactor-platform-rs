@@ -2,12 +2,6 @@ use super::*;
 use crate::coaching_session::{Frequency, Recurrence};
 use chrono::{NaiveDate, NaiveDateTime, Weekday};
 use chrono_tz::America::New_York;
-use entity::users::Model;
-use sea_orm::prelude::DateTimeWithTimeZone;
-
-fn ts() -> DateTimeWithTimeZone {
-    DateTimeWithTimeZone::parse_from_rfc3339("2026-01-01T00:00:00Z").unwrap()
-}
 
 fn dt(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
     NaiveDate::from_ymd_opt(y, m, d)
@@ -16,29 +10,18 @@ fn dt(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
         .unwrap()
 }
 
-fn user(email: &str, first: &str, last: &str, display: Option<&str>) -> Model {
-    Model {
-        id: sea_orm::prelude::Uuid::nil(),
-        email: email.into(),
-        first_name: first.into(),
-        last_name: last.into(),
-        display_name: display.map(Into::into),
-        password: None,
-        github_username: None,
-        github_profile_url: None,
-        timezone: "UTC".into(),
-        default_coaching_session_duration_minutes: 60,
-        role: entity::roles::Role::User,
-        roles: vec![],
-        invite_status: None,
-        created_at: ts(),
-        updated_at: ts(),
-    }
+/// Named calendar participants. Plain data on purpose: the builder is a gateway and
+/// its tests must not need entity types to exercise it.
+const COACH: (&str, &str) = ("Coach Casey", "coach@example.com");
+const COACHEE: (&str, &str) = ("Coachee Quinn", "coachee@example.com");
+
+fn person<'a>(who: (&str, &'a str)) -> Participant<'a> {
+    Participant::new(who.0, who.1)
 }
 
 fn invite<'a>(
-    coach: &'a Model,
-    coachee: &'a Model,
+    organizer: Participant<'a>,
+    attendee: Participant<'a>,
     anchor_tz: chrono_tz::Tz,
     recurrence: Option<Recurrence>,
 ) -> IcsInvite<'a> {
@@ -53,8 +36,8 @@ fn invite<'a>(
         dtstamp: dt(2026, 6, 14, 12, 0),
         start: dt(2026, 9, 15, 19, 0),
         duration_minutes: 60,
-        organizer: Participant::from_user(coach),
-        attendees: vec![Participant::from_user(coachee)],
+        organizer,
+        attendees: vec![attendee],
         location_url: None,
         recurrence,
         recurrence_id: None,
@@ -63,9 +46,7 @@ fn invite<'a>(
 
 #[test]
 fn single_request_known_zone() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-    let out = build(&invite(&coach, &coachee, New_York, None)).unwrap();
+    let out = build(&invite(person(COACH), person(COACHEE), New_York, None)).unwrap();
 
     assert!(out.contains("BEGIN:VTIMEZONE"));
     assert!(out.contains("TZID:America/New_York"));
@@ -82,9 +63,13 @@ fn single_request_known_zone() {
 
 #[test]
 fn utc_anchor_falls_back_to_z() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-    let out = build(&invite(&coach, &coachee, chrono_tz::UTC, None)).unwrap();
+    let out = build(&invite(
+        person(COACH),
+        person(COACHEE),
+        chrono_tz::UTC,
+        None,
+    ))
+    .unwrap();
 
     assert!(!out.contains("BEGIN:VTIMEZONE"));
     assert!(!out.contains("TZID="));
@@ -93,8 +78,6 @@ fn utc_anchor_falls_back_to_z() {
 
 #[test]
 fn recurring_biweekly_rrule() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
     let rule = Recurrence {
         frequency: Frequency::Biweekly,
         interval: 1,
@@ -102,14 +85,18 @@ fn recurring_biweekly_rrule() {
         count: None,
         until: None,
     };
-    let out = build(&invite(&coach, &coachee, New_York, Some(rule))).unwrap();
+    let out = build(&invite(
+        person(COACH),
+        person(COACHEE),
+        New_York,
+        Some(rule),
+    ))
+    .unwrap();
     assert!(out.contains("RRULE:FREQ=WEEKLY;INTERVAL=2"));
 }
 
 #[test]
 fn recurring_weekly_byday_count() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
     let rule = Recurrence {
         frequency: Frequency::Weekly,
         interval: 1,
@@ -117,7 +104,13 @@ fn recurring_weekly_byday_count() {
         count: Some(8),
         until: None,
     };
-    let out = build(&invite(&coach, &coachee, New_York, Some(rule))).unwrap();
+    let out = build(&invite(
+        person(COACH),
+        person(COACHEE),
+        New_York,
+        Some(rule),
+    ))
+    .unwrap();
     assert!(out.contains("FREQ=WEEKLY"));
     assert!(out.contains("BYDAY=MO,WE"));
     assert!(out.contains("COUNT=8"));
@@ -165,9 +158,6 @@ fn summary_freq(summary: &str) -> &'static str {
 /// series repeats: the summary is what the email says, the RRULE is what the calendar does.
 #[test]
 fn summary_agrees_with_emitted_rrule() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-
     let cases = [
         (Frequency::Daily, 1u32),
         (Frequency::Daily, 3),
@@ -189,7 +179,13 @@ fn summary_agrees_with_emitted_rrule() {
             until: None,
         };
         let summary = rule.summary();
-        let out = build(&invite(&coach, &coachee, New_York, Some(rule))).unwrap();
+        let out = build(&invite(
+            person(COACH),
+            person(COACHEE),
+            New_York,
+            Some(rule),
+        ))
+        .unwrap();
         let rrule = vevent_rrule(&unfold(&out));
 
         assert!(
@@ -213,9 +209,7 @@ fn summary_agrees_with_emitted_rrule() {
 
 #[test]
 fn cancel_shape() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-    let mut inv = invite(&coach, &coachee, New_York, None);
+    let mut inv = invite(person(COACH), person(COACHEE), New_York, None);
     inv.method = Method::Cancel;
     inv.status = EventStatus::Cancelled;
     let out = build(&inv).unwrap();
@@ -227,16 +221,13 @@ fn cancel_shape() {
 /// an override, so both must use the same zoned or `Z` representation.
 #[test]
 fn recurrence_id_matches_dtstart_timezone_form() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-
-    let mut zoned = invite(&coach, &coachee, New_York, None);
+    let mut zoned = invite(person(COACH), person(COACHEE), New_York, None);
     zoned.recurrence_id = Some(dt(2026, 9, 8, 19, 0));
     let out = build(&zoned).unwrap();
     assert!(out.contains("DTSTART;TZID=America/New_York:20260915T150000"));
     assert!(out.contains("RECURRENCE-ID;TZID=America/New_York:20260908T150000"));
 
-    let mut utc = invite(&coach, &coachee, chrono_tz::UTC, None);
+    let mut utc = invite(person(COACH), person(COACHEE), chrono_tz::UTC, None);
     utc.recurrence_id = Some(dt(2026, 9, 8, 19, 0));
     let out = build(&utc).unwrap();
     assert!(out.contains("DTSTART:20260915T190000Z"));
@@ -247,8 +238,6 @@ fn recurrence_id_matches_dtstart_timezone_form() {
 /// An override instance addresses a single occurrence, so any RRULE is dropped.
 #[test]
 fn override_instance_never_carries_an_rrule() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
     let rule = Recurrence {
         frequency: Frequency::Weekly,
         interval: 1,
@@ -256,7 +245,7 @@ fn override_instance_never_carries_an_rrule() {
         count: None,
         until: None,
     };
-    let mut inv = invite(&coach, &coachee, New_York, Some(rule));
+    let mut inv = invite(person(COACH), person(COACHEE), New_York, Some(rule));
     inv.recurrence_id = Some(dt(2026, 9, 8, 19, 0));
     let out = build(&inv).unwrap();
 
@@ -274,9 +263,7 @@ fn unfold(s: &str) -> String {
 
 #[test]
 fn attendee_organizer_lines() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-    let raw = build(&invite(&coach, &coachee, New_York, None)).unwrap();
+    let raw = build(&invite(person(COACH), person(COACHEE), New_York, None)).unwrap();
     let out = unfold(&raw);
 
     assert!(out.contains("ORGANIZER;CN="));
@@ -290,15 +277,9 @@ fn attendee_organizer_lines() {
 
 #[test]
 fn multiple_attendees_each_render_a_property() {
-    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
-    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
-
-    let mut inv = invite(&coach, &coachee, New_York, None);
+    let mut inv = invite(person(COACH), person(COACHEE), New_York, None);
     inv.organizer = Participant::new("Refactor Coach", "hello@platform.example");
-    inv.attendees = vec![
-        Participant::from_user(&coach),
-        Participant::from_user(&coachee),
-    ];
+    inv.attendees = vec![person(COACH), person(COACHEE)];
     let out = unfold(&build(&inv).unwrap());
 
     assert_eq!(out.matches("ATTENDEE").count(), 2);

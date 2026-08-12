@@ -41,17 +41,6 @@ impl<'a> Participant<'a> {
             email,
         }
     }
-
-    /// A participant from a user: display name when set, else first and last name.
-    pub fn from_user(user: &'a entity::users::Model) -> Self {
-        Self {
-            name: user
-                .display_name
-                .clone()
-                .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name)),
-            email: &user.email,
-        }
-    }
 }
 
 /// Inputs for one calendar invite.
