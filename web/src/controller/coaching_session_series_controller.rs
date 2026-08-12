@@ -165,7 +165,7 @@ pub async fn update(
     let db = app_state.db_conn_ref();
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
-    let (updated_series, new_sessions) = CoachingSessionSeriesApi::reschedule(
+    let rescheduled = CoachingSessionSeriesApi::reschedule(
         db,
         &app_state.config,
         series.id,
@@ -176,20 +176,23 @@ pub async fn update(
     )
     .await?;
 
-    EmailsApi::notify_recurring_sessions_rescheduled(
-        db,
-        &app_state.config,
-        &updated_series,
-        EmailsApi::PreviousSeries(&series),
-        &new_sessions,
-    )
-    .await;
+    // A rule that matched the stored one moved nothing, so there is no update to invite to.
+    if rescheduled.changed {
+        EmailsApi::notify_recurring_sessions_rescheduled(
+            db,
+            &app_state.config,
+            &rescheduled.series,
+            EmailsApi::PreviousSeries(&series),
+            &rescheduled.sessions,
+        )
+        .await;
+    }
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
         SeriesWithSessions {
-            series: updated_series,
-            sessions: new_sessions,
+            series: rescheduled.series,
+            sessions: rescheduled.sessions,
         },
     )))
 }

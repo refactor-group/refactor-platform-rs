@@ -335,20 +335,29 @@ pub async fn update(
         existing.coaching_relationship_id
     );
     let old = existing.clone();
+    let old_date = old.date;
     let active_model = existing.into_active_model();
+
+    // The edit and its SEQUENCE bump commit together: a bump that failed on its own
+    // would leave the row mutated behind a failed request, and the next invite would
+    // reuse a SEQUENCE the client has already seen.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
-        db,
+        &txn,
         active_model,
         update_map,
     )
     .await?;
+    let calendar_relevant = is_calendar_relevant_change(&old, &updated);
+    let updated = match calendar_relevant {
+        true => coaching_session::increment_ical_sequence(&txn, updated.id).await?,
+        false => updated,
+    };
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    // On a calendar-relevant change, bump the invite SEQUENCE and re-send an
-    // updated `.ics` (best-effort) so calendar clients update the event in place.
-    if is_calendar_relevant_change(&old, &updated) {
-        let bumped = coaching_session::increment_ical_sequence(db, updated.id).await?;
-        emails::notify_session_rescheduled(db, config, &bumped, old.date).await;
-        return Ok(bumped);
+    // Best-effort re-send of an updated `.ics` so calendar clients move the event in place.
+    if calendar_relevant {
+        emails::notify_session_rescheduled(db, config, &updated, old_date).await;
     }
     Ok(updated)
 }
@@ -709,14 +718,13 @@ mod tests {
         let config = Config::default();
 
         // A title edit is calendar-relevant, so update runs the reschedule path:
-        // find_by_id → UPDATE ... RETURNING → increment_ical_sequence (find_by_id →
-        // UPDATE ... RETURNING) → best-effort notify whose relationship lookup
-        // returns empty (send skipped). Then the participant lookup
+        // find_by_id → UPDATE ... RETURNING → increment_ical_sequence (a single
+        // self-referential UPDATE ... RETURNING) → best-effort notify whose
+        // relationship lookup returns empty (send skipped). Then the participant lookup
         // (find_also_related) and the membership filter for the title-updated event.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
-            .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![bumped.clone()]])
             .append_query_results::<coaching_relationships::Model, Vec<coaching_relationships::Model>, _>(
                 vec![vec![]],

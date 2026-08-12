@@ -31,9 +31,12 @@ pub enum Status {
 }
 
 impl Status {
+    /// The completed statuses, for pushing an open/completed split into a query.
+    pub const COMPLETED: [Status; 2] = [Status::Completed, Status::WontDo];
+
     /// Returns `true` for the completed statuses (`Completed` or `WontDo`).
     pub fn is_completed(&self) -> bool {
-        matches!(self, Status::Completed | Status::WontDo)
+        Self::COMPLETED.contains(self)
     }
 }
 

@@ -155,20 +155,16 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
 }
 
 /// Open (not-completed) actions for a coaching session.
-/// "Open" reuses the shared `Status::is_completed()` definition; `Completed`
-/// and `WontDo` are excluded.
+/// "Open" reuses the shared `Status::COMPLETED` definition, filtered in SQL.
 pub async fn find_open_by_coaching_session_id(
     db: &DatabaseConnection,
     session_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    let actions = actions::Entity::find()
+    Ok(actions::Entity::find()
         .filter(actions::Column::CoachingSessionId.eq(session_id))
+        .filter(actions::Column::Status.is_not_in(Status::COMPLETED))
         .all(db)
-        .await?;
-    Ok(actions
-        .into_iter()
-        .filter(|a| !a.status.is_completed())
-        .collect())
+        .await?)
 }
 
 /// Creates a new action with optional assignees.
@@ -1851,50 +1847,44 @@ mod tests {
         Ok(())
     }
 
-    /// Open-actions query drops `Completed` and `WontDo`, keeps the rest.
+    /// The completed statuses are excluded by the query, not after it: this runs on the
+    /// invite path for every single-session email, so it must not load rows it discards.
+    /// Asserting on returned rows would prove nothing, since MockDatabase echoes back
+    /// whatever the test appends regardless of the filter.
     #[tokio::test]
-    async fn test_find_open_by_coaching_session_id_excludes_completed_and_wont_do(
-    ) -> Result<(), Error> {
-        let now = chrono::Utc::now();
+    async fn test_find_open_by_coaching_session_id_excludes_completed_in_sql() -> Result<(), Error>
+    {
         let session_id = Id::new_v4();
-
-        let action_for = |status: Status| Model {
-            id: Id::new_v4(),
-            user_id: Id::new_v4(),
-            coaching_session_id: session_id,
-            goal_id: None,
-            body: None,
-            due_by: None,
-            status_changed_at: now.into(),
-            status,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let rows = vec![
-            action_for(Status::NotStarted),
-            action_for(Status::InProgress),
-            action_for(Status::OnHold),
-            action_for(Status::Completed),
-            action_for(Status::WontDo),
-        ];
-
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![rows])
+            .append_query_results::<Model, _, _>(vec![vec![]])
             .into_connection();
 
-        let result = find_open_by_coaching_session_id(&db, session_id)
-            .await
-            .unwrap();
+        find_open_by_coaching_session_id(&db, session_id).await?;
 
-        assert_eq!(result.len(), 3);
-        assert!(result.iter().all(|a| !a.status.is_completed()));
+        let log = db.into_transaction_log();
+        let statement = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .find(|stmt| stmt.sql.contains(r#""actions""#))
+            .expect("expected a query against actions");
+        assert!(
+            statement.sql.contains(r#""actions"."status" NOT IN"#),
+            "the open/completed split must be pushed into SQL: {}",
+            statement.sql
+        );
 
-        let statuses: Vec<Status> = result.iter().map(|a| a.status.clone()).collect();
-        assert!(statuses.contains(&Status::NotStarted));
-        assert!(statuses.contains(&Status::InProgress));
-        assert!(statuses.contains(&Status::OnHold));
-
+        let bound: Vec<String> = statement
+            .values
+            .as_ref()
+            .map(|values| values.0.iter().map(|v| format!("{v:?}")).collect())
+            .unwrap_or_default();
+        for status in Status::COMPLETED {
+            let db_value = sea_orm::ActiveEnum::to_value(&status);
+            assert!(
+                bound.iter().any(|v| v.contains(&db_value)),
+                "{db_value} must be excluded by the query: {bound:?}"
+            );
+        }
         Ok(())
     }
 }

@@ -14,7 +14,7 @@ use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
 use chrono::NaiveDateTime;
 use entity_api::coaching_session_series;
-use log::warn;
+use log::{debug, warn};
 use sea_orm::{DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use service::config::Config;
@@ -118,11 +118,24 @@ pub async fn find_by_relationship(
     Ok(coaching_session_series::find_by_relationship(db, coaching_relationship_id).await?)
 }
 
+/// Outcome of a reschedule request.
+#[derive(Debug)]
+pub struct Rescheduled {
+    pub series: Model,
+    pub sessions: Vec<coaching_sessions::Model>,
+    /// False when the requested rule already matched the stored one, so nothing was
+    /// re-materialized and no invites are owed.
+    pub changed: bool,
+}
+
 /// Replace the rule on an existing series and re-materialize its future
 /// sessions. Future sessions are deleted unconditionally — notes, goal
 /// links, recordings, and transcriptions cascade via the FK; Tiptap
 /// documents are cleaned up best-effort after the DB transaction commits.
 ///
+/// A request whose rule matches the stored one short-circuits: re-materializing
+/// would destroy live session rows and their notes to recreate an identical
+/// schedule, and would re-send invites under a burned SEQUENCE.
 pub async fn reschedule(
     db: &DatabaseConnection,
     config: &Config,
@@ -131,7 +144,7 @@ pub async fn reschedule(
     new_start_at: NaiveDateTime,
     new_recurrence: Recurrence,
     new_requested_duration: Option<Duration>,
-) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
+) -> Result<Rescheduled, Error> {
     // Validate new inputs before any DB write. A reschedule only ever touches
     // future sessions (past sessions are left untouched), so a past
     // `new_start_at` would re-materialize the past on top of surviving history
@@ -148,11 +161,11 @@ pub async fn reschedule(
     // omits a duration, reuse the value persisted on the existing series rule
     // rather than re-deriving the coach's *current* default (which may have
     // changed since the series was created). An explicit request still wins.
+    let existing = coaching_session_series::find_by_id(db, series_id).await?;
     let resolved_duration = match new_requested_duration {
         Some(duration) => duration,
         None => {
-            let existing = coaching_session_series::find_by_id(db, series_id).await?;
-            let existing_rule: SeriesRule = serde_json::from_value(existing.rule)?;
+            let existing_rule: SeriesRule = serde_json::from_value(existing.rule.clone())?;
             Duration::from_minutes_unchecked(existing_rule.duration_minutes)
         }
     };
@@ -167,6 +180,15 @@ pub async fn reschedule(
     let future_sessions =
         entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
             .await?;
+
+    if new_rule == existing.rule {
+        debug!("Reschedule of series {series_id} matches the stored rule; nothing to do");
+        return Ok(Rescheduled {
+            series: existing,
+            sessions: future_sessions,
+            changed: false,
+        });
+    }
 
     // Snapshot Tiptap docs to clean up *after* the DB txn commits.
     let doc_names_to_cleanup: Vec<String> = future_sessions
@@ -199,7 +221,11 @@ pub async fn reschedule(
 
     cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names_to_cleanup).await;
 
-    Ok((updated_series, new_sessions))
+    Ok(Rescheduled {
+        series: updated_series,
+        sessions: new_sessions,
+        changed: true,
+    })
 }
 
 /// Delete the series row and its future sessions. Past sessions survive as
@@ -493,8 +519,7 @@ mod tests {
             make_session(start() + chrono::Duration::days(14), None),
         ];
 
-        // The series row as returned by update_rule's internal find_by_id, then again
-        // by the UPDATE ... RETURNING.
+        // The series row as returned by update_rule's UPDATE ... RETURNING.
         let updated_series = Model {
             id: series_id,
             coaching_relationship_id: relationship_id,
@@ -536,8 +561,7 @@ mod tests {
                 last_insert_id: 0,
                 rows_affected: 2,
             }])
-            // 6. update_rule → internal find_by_id (SELECT) → UPDATE ... RETURNING
-            .append_query_results(vec![vec![updated_series.clone()]])
+            // 6. update_rule → a single UPDATE ... RETURNING
             .append_query_results(vec![vec![updated_series.clone()]])
             // 7. bulk_create_recurring → INSERT ... RETURNING
             .append_query_results(vec![new_sessions.clone()])
@@ -548,7 +572,7 @@ mod tests {
             }])
             .into_connection();
 
-        let (returned_series, returned_sessions) = reschedule(
+        let rescheduled = reschedule(
             &db,
             &test_config(),
             series_id,
@@ -559,11 +583,94 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(returned_series.id, series_id);
-        assert_eq!(returned_sessions.len(), 3);
-        assert!(returned_sessions
+        assert!(rescheduled.changed);
+        assert_eq!(rescheduled.series.id, series_id);
+        assert_eq!(rescheduled.sessions.len(), 3);
+        assert!(rescheduled
+            .sessions
             .iter()
             .all(|s| s.coaching_session_series_id == Some(series_id)));
+        Ok(())
+    }
+
+    /// A reschedule whose rule matches the stored one must not re-materialize.
+    /// Doing so would delete live session rows (taking their notes and goal links
+    /// with them) only to recreate an identical schedule, and would burn a
+    /// SEQUENCE re-inviting both people to a meeting that never moved.
+    /// Proven by the transaction log: no BEGIN, no DELETE, no UPDATE.
+    #[tokio::test]
+    async fn reschedule_with_an_unchanged_rule_is_a_no_op() -> Result<(), Error> {
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        // One `start()` value, reused: the helper is `now() + 7d`, so two calls differ.
+        let start_at = start();
+        let stored_rule = serde_json::to_value(SeriesRule {
+            start_at,
+            recurrence: weekly_rule_count(3),
+            duration_minutes: 60,
+        })?;
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: Id::new_v4(),
+            rule: stored_rule,
+            ical_sequence: 4,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let future_session = coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: existing_series.coaching_relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: start_at + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![future_session.clone()]])
+            .into_connection();
+
+        let rescheduled = reschedule(
+            &db,
+            &test_config(),
+            series_id,
+            Id::new_v4(),
+            start_at,
+            weekly_rule_count(3),
+            None,
+        )
+        .await?;
+
+        assert!(!rescheduled.changed, "an identical rule changed nothing");
+        assert_eq!(rescheduled.series.ical_sequence, 4, "SEQUENCE not burned");
+        assert_eq!(
+            rescheduled.sessions,
+            vec![future_session],
+            "the surviving sessions are returned, not recreated ones"
+        );
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert!(
+            !sql.iter()
+                .any(|s| s.contains("DELETE") || s.contains("UPDATE") || s.contains("INSERT")),
+            "a no-op reschedule must not write: {sql:?}"
+        );
         Ok(())
     }
 

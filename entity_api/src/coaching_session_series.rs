@@ -3,11 +3,7 @@ pub use entity::coaching_session_series::Model;
 use entity::coaching_session_series::{ActiveModel, Column, Entity};
 use entity::Id;
 use log::debug;
-use sea_orm::{
-    entity::prelude::*,
-    ActiveValue::{Set, Unchanged},
-    ConnectionTrait, QueryOrder, TryIntoModel,
-};
+use sea_orm::{entity::prelude::*, ActiveValue::Set, ConnectionTrait, QueryOrder, TryIntoModel};
 
 /// Inserts a new coaching_session_series row. The `id`, `created_at`, and
 /// `updated_at` fields on `model` are ignored — the DB assigns them.
@@ -53,23 +49,31 @@ pub async fn find_by_relationship(
 
 /// Replaces the JSONB `rule` on an existing series and bumps `updated_at`.
 /// Used by the reschedule flow. Every rule replacement moves the calendar, so
-/// `ical_sequence` (RFC 5545 SEQUENCE) is incremented in the same statement.
+/// `ical_sequence` (RFC 5545 SEQUENCE) is incremented in the same statement, as a
+/// column expression rather than a read-then-write: two concurrent reschedules
+/// must not land on the same SEQUENCE, or a calendar client drops the second
+/// invite as a duplicate.
 pub async fn update_rule(
     db: &impl ConnectionTrait,
     id: Id,
     rule: serde_json::Value,
 ) -> Result<Model, Error> {
-    let existing = find_by_id(db, id).await?;
-    let active_model = ActiveModel {
-        id: Unchanged(existing.id),
-        coaching_relationship_id: Unchanged(existing.coaching_relationship_id),
-        ical_sequence: Set(existing.ical_sequence + 1),
-        rule: Set(rule),
-        created_by_user_id: Unchanged(existing.created_by_user_id),
-        created_at: Unchanged(existing.created_at),
-        updated_at: Set(chrono::Utc::now().into()),
-    };
-    Ok(active_model.update(db).await?.try_into_model()?)
+    Entity::update_many()
+        .col_expr(Column::Rule, Expr::value(rule))
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .col_expr(
+            Column::UpdatedAt,
+            Expr::value::<DateTimeWithTimeZone>(chrono::Utc::now().into()),
+        )
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
 }
 
 pub async fn delete(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
@@ -81,7 +85,7 @@ pub async fn delete(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction, Value};
+    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
     fn sample_model() -> Model {
         let now = chrono::Utc::now();
@@ -160,7 +164,6 @@ mod tests {
             ..existing.clone()
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![existing.clone()]])
             .append_query_results(vec![vec![after.clone()]])
             .into_connection();
 
@@ -170,49 +173,43 @@ mod tests {
         Ok(())
     }
 
-    /// Collect every UPDATE of coaching_session_series from the transaction log,
-    /// returning each statement's bound values.
-    fn series_update_value_rows(log: &[Transaction]) -> Vec<Vec<Value>> {
+    /// Collect the SQL of every UPDATE of coaching_session_series in the transaction log.
+    fn series_update_sql(log: &[Transaction]) -> Vec<String> {
         log.iter()
             .flat_map(|txn| txn.statements())
             .filter(|stmt| {
                 stmt.sql.contains("UPDATE") && stmt.sql.contains(r#""coaching_session_series""#)
             })
-            .filter_map(|stmt| stmt.values.as_ref().map(|values| values.0.clone()))
+            .map(|stmt| stmt.sql.clone())
             .collect()
     }
 
-    /// A rule replacement is a calendar reschedule, so the emitted UPDATE must bind the
-    /// next `ical_sequence` alongside the new rule. Asserting on the returned model would
-    /// prove nothing: MockDatabase echoes whatever row the test appended.
+    /// A rule replacement is a calendar reschedule, so the emitted UPDATE must bump
+    /// `ical_sequence` relative to its own stored value rather than to a value read in
+    /// an earlier statement. Two concurrent reschedules that both read N would both
+    /// write N+1, and a calendar client drops the second invite as a duplicate.
+    /// Asserting on the returned model would prove nothing: MockDatabase echoes
+    /// whatever row the test appended.
     #[tokio::test]
-    async fn update_rule_bumps_ical_sequence() -> Result<(), Error> {
-        let existing = Model {
-            ical_sequence: 7,
-            ..sample_model()
-        };
+    async fn update_rule_bumps_ical_sequence_atomically() -> Result<(), Error> {
+        let existing = sample_model();
         let new_rule = serde_json::json!({"frequency": "monthly"});
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![existing.clone()]])
             .append_query_results(vec![vec![existing.clone()]])
             .into_connection();
 
         update_rule(&db, existing.id, new_rule.clone()).await?;
 
-        let rows = series_update_value_rows(&db.into_transaction_log());
+        let statements = series_update_sql(&db.into_transaction_log());
         assert_eq!(
-            rows.len(),
+            statements.len(),
             1,
-            "expected exactly one series UPDATE: {rows:?}"
+            "expected exactly one series UPDATE: {statements:?}"
         );
-        // Only `Set` columns are bound, in entity declaration order: rule, ical_sequence,
-        // updated_at, then the WHERE id.
-        let binds = &rows[0];
-        assert_eq!(binds[0], Value::from(new_rule), "rule bind: {binds:?}");
-        assert_eq!(
-            binds[1],
-            Value::from(8_i32),
-            "ical_sequence not bumped: {binds:?}"
+        assert!(
+            statements[0].contains(r#""ical_sequence" = "ical_sequence" + "#),
+            "SEQUENCE must be incremented in SQL, not read-then-written: {}",
+            statements[0]
         );
         Ok(())
     }

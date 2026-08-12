@@ -388,12 +388,22 @@ pub async fn update_meeting(
 }
 
 /// Bump a session's `ical_sequence` by 1 (RFC 5545 SEQUENCE for calendar updates).
-pub async fn increment_ical_sequence(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
-    let existing = find_by_id(db, id).await?;
-    let next_sequence = existing.ical_sequence + 1;
-    let mut active_model: ActiveModel = existing.into();
-    active_model.ical_sequence = Set(next_sequence);
-    Ok(active_model.update(db).await?.try_into_model()?)
+///
+/// The increment is a column expression, not a read-then-write, so concurrent
+/// edits cannot both land on the same next value. A repeated SEQUENCE reads to a
+/// calendar client as a duplicate of the previous invite and is silently dropped.
+pub async fn increment_ical_sequence(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::update_many()
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
 }
 
 /// Find the most recent meeting URL for a coaching relationship and provider.
@@ -1328,12 +1338,31 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![existing.clone()]]) // find_by_id
             .append_query_results(vec![vec![bumped.clone()]]) // UPDATE ... RETURNING
             .into_connection();
 
         let result = increment_ical_sequence(&db, existing.id).await?;
         assert_eq!(result.ical_sequence, 5);
+
+        // The bump must be self-referential in SQL. A read-then-write lets two concurrent
+        // edits both land on the same next SEQUENCE, and a calendar client drops the
+        // second invite as a duplicate of the first.
+        let statements: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert_eq!(
+            statements.len(),
+            1,
+            "expected a single statement, no prior read: {statements:?}"
+        );
+        assert!(
+            statements[0].contains(r#""ical_sequence" = "ical_sequence" + "#),
+            "SEQUENCE must be incremented in SQL: {}",
+            statements[0]
+        );
         Ok(())
     }
 
