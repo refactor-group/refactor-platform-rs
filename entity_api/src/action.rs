@@ -154,6 +154,19 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     })
 }
 
+/// Open (not-completed) actions for a coaching session.
+/// "Open" reuses the shared `Status::COMPLETED` definition, filtered in SQL.
+pub async fn find_open_by_coaching_session_id(
+    db: &DatabaseConnection,
+    session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(actions::Entity::find()
+        .filter(actions::Column::CoachingSessionId.eq(session_id))
+        .filter(actions::Column::Status.is_not_in(Status::COMPLETED))
+        .all(db)
+        .await?)
+}
+
 /// Creates a new action with optional assignees.
 ///
 /// # Arguments
@@ -1831,6 +1844,47 @@ mod tests {
         assert_eq!(coachee_side.len(), 1);
         assert_eq!(coachee_side[0].action.id, action_in_b_user_assigned);
 
+        Ok(())
+    }
+
+    /// The completed statuses are excluded by the query, not after it: this runs on the
+    /// invite path for every single-session email, so it must not load rows it discards.
+    /// Asserting on returned rows would prove nothing, since MockDatabase echoes back
+    /// whatever the test appends regardless of the filter.
+    #[tokio::test]
+    async fn test_find_open_by_coaching_session_id_excludes_completed_in_sql() -> Result<(), Error>
+    {
+        let session_id = Id::new_v4();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<Model, _, _>(vec![vec![]])
+            .into_connection();
+
+        find_open_by_coaching_session_id(&db, session_id).await?;
+
+        let log = db.into_transaction_log();
+        let statement = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .find(|stmt| stmt.sql.contains(r#""actions""#))
+            .expect("expected a query against actions");
+        assert!(
+            statement.sql.contains(r#""actions"."status" NOT IN"#),
+            "the open/completed split must be pushed into SQL: {}",
+            statement.sql
+        );
+
+        let bound: Vec<String> = statement
+            .values
+            .as_ref()
+            .map(|values| values.0.iter().map(|v| format!("{v:?}")).collect())
+            .unwrap_or_default();
+        for status in Status::COMPLETED {
+            let db_value = sea_orm::ActiveEnum::to_value(&status);
+            assert!(
+                bound.iter().any(|v| v.contains(&db_value)),
+                "{db_value} must be excluded by the query: {bound:?}"
+            );
+        }
         Ok(())
     }
 }

@@ -1,4 +1,5 @@
 pub mod google_meet;
+pub(crate) mod ical;
 pub mod oauth;
 pub mod recall_ai;
 pub(crate) mod resend;

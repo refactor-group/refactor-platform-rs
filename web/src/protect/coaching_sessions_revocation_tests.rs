@@ -50,6 +50,8 @@ fn create_test_session(session_id: Id, relationship_id: Id) -> coaching_sessions
         id: session_id,
         coaching_relationship_id: relationship_id,
         coaching_session_series_id: None,
+        ical_sequence: 0,
+        ical_recurrence_id: None,
         collab_document_name: None,
         date: now.naive_utc(),
         duration_minutes: domain::duration::Duration::default_minutes(),

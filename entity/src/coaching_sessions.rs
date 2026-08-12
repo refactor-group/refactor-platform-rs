@@ -16,6 +16,12 @@ pub struct Model {
     pub coaching_relationship_id: Id,
     pub coaching_session_series_id: Option<Id>,
     #[serde(skip_deserializing)]
+    pub ical_sequence: i32,
+    /// RFC 5545 `RECURRENCE-ID`: this occurrence's original start, naive UTC like
+    /// `date`. `None` for standalone sessions; never rewritten once set.
+    #[serde(skip_deserializing)]
+    pub ical_recurrence_id: Option<DateTime>,
+    #[serde(skip_deserializing)]
     pub collab_document_name: Option<String>,
     pub date: DateTime,
     /// Session duration in minutes. Validated `1..=480` via

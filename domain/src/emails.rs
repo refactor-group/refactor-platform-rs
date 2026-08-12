@@ -5,9 +5,12 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_session, coaching_sessions,
+    actions, coaching_relationship, coaching_session, coaching_session_series,
+    coaching_session_series::SeriesRule,
+    coaching_sessions,
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
+    gateway::ical::{self, DescriptionParts, OpenAction},
     gateway::resend::{Client as ResendClient, SendEmailRequestBuilder},
     goal, organization, organizations, user, users,
     users::Role,
@@ -17,6 +20,10 @@ use crate::{
 #[cfg(test)]
 #[path = "emails_added_to_organization_tests.rs"]
 mod added_to_organization_tests;
+
+#[cfg(test)]
+#[path = "emails_tests.rs"]
+mod tests;
 
 /// Trait for email notifications that need common config prerequisites.
 ///
@@ -88,6 +95,56 @@ impl EmailNotification for RecurringSessionsScheduled {
     }
     fn url_path_template(config: &Config) -> Option<String> {
         Some(config.session_scheduled_email_url_path().to_owned())
+    }
+}
+
+struct SessionRescheduled;
+impl EmailNotification for SessionRescheduled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.session_rescheduled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "session rescheduled"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
+}
+
+struct RecurringSessionsRescheduled;
+impl EmailNotification for RecurringSessionsRescheduled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.recurring_sessions_rescheduled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "series rescheduled"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
+}
+
+/// Deliberately keeps the trait's `None` URL template: the session row is gone by the
+/// time a recipient could click through.
+struct SessionCancelled;
+impl EmailNotification for SessionCancelled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.session_cancelled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "session cancelled"
+    }
+}
+
+/// Deliberately keeps the trait's `None` URL template: the series row is gone by the
+/// time a recipient could click through.
+struct RecurringSessionsCancelled;
+impl EmailNotification for RecurringSessionsCancelled {
+    fn template_id(config: &Config) -> Option<String> {
+        config.recurring_sessions_cancelled_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "series cancelled"
     }
 }
 
@@ -341,6 +398,23 @@ pub(crate) async fn send_password_reset_email(
     email_config.client.send_email(email_request).await
 }
 
+/// The first and last session of a series slice, which every series email needs to
+/// render its date range. Unreachable in practice: each `notify_*` caller returns
+/// early on an empty slice. One guard rather than three keeps that fact in one place.
+fn series_bounds(
+    sessions: &[coaching_sessions::Model],
+) -> Result<(&coaching_sessions::Model, &coaching_sessions::Model), Error> {
+    match (sessions.first(), sessions.last()) {
+        (Some(first), Some(last)) => Ok((first, last)),
+        _ => Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Cannot send series email: sessions slice is empty".to_string(),
+            )),
+        }),
+    }
+}
+
 /// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
 /// Falls back to UTC formatting if the timezone string is invalid.
 fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, String) {
@@ -362,14 +436,155 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
     }
 }
 
+/// One-line start, e.g. `Tuesday, February 9, 2027 at 4:00 PM`, in the recipient's
+/// timezone. The connector lives inside the value because Resend templates cannot
+/// suppress literal text around a variable.
+fn format_session_when(date: NaiveDateTime, timezone: &str) -> String {
+    let (date_str, time_str) = format_session_date_time(date, timezone);
+    format!("{date_str} at {time_str}")
+}
+
+/// Rendered as the `previous_session_when` value when the start did not move.
+const UNCHANGED_SESSION_WHEN: &str = "Unchanged";
+
+/// The previous start in the recipient's timezone, or [`UNCHANGED_SESSION_WHEN`] when
+/// the start did not move (a title, meeting URL, or duration-only reschedule).
+fn format_previous_session_when(
+    previous_start: NaiveDateTime,
+    current_start: NaiveDateTime,
+    timezone: &str,
+) -> String {
+    if previous_start != current_start {
+        format_session_when(previous_start, timezone)
+    } else {
+        UNCHANGED_SESSION_WHEN.to_string()
+    }
+}
+
+/// The previous cadence phrase, or [`UNCHANGED_SESSION_WHEN`] when the series still
+/// repeats as often as it did.
+fn format_previous_recurrence_summary(previous: &str, current: &str) -> String {
+    if previous != current {
+        previous.to_string()
+    } else {
+        UNCHANGED_SESSION_WHEN.to_string()
+    }
+}
+
+/// The series as it stood before a reschedule. A newtype so the call site names which
+/// model is which: both are the same type, so bare references read ambiguously.
+pub struct PreviousSeries<'a>(pub &'a coaching_session_series::Model);
+
+/// True when an edit changes something the invite carries, so the calendar needs a fresh
+/// `.ics` under the next `SEQUENCE`.
+///
+/// Lives here rather than with the session entity because it is a statement about invite
+/// content, not about the session: `title` qualifies only because it rides in the `.ics`
+/// DESCRIPTION. Anything added to an invite has to be added here too.
+///
+/// Known gap: the DESCRIPTION also carries topics, goals, and open actions, which are
+/// edited through their own endpoints and so cannot be seen by a before/after comparison
+/// of the session row. Editing those does not currently re-send.
+///
+/// Must stay pure and synchronous. The caller runs it inside the update transaction to
+/// decide whether to bump `SEQUENCE`, which commits with the edit; the email that follows
+/// is best-effort and cannot be what makes the decision.
+pub fn affects_invite(old: &coaching_sessions::Model, new: &coaching_sessions::Model) -> bool {
+    old.date != new.date
+        || old.duration_minutes != new.duration_minutes
+        || old.meeting_url != new.meeting_url
+        || old.title != new.title
+}
+
+/// The two people on a coaching session, carried as one named value rather than as an
+/// adjacent pair of `&users::Model`. A transposed pair still type-checks and would swap
+/// every "your coach" / "your coachee" phrase in the copy without failing a build.
+struct Participants<'a> {
+    coach: &'a users::Model,
+    coachee: &'a users::Model,
+}
+
+/// One addressee of a per-recipient send, plus the other party as that recipient sees them.
+/// These three always travel together and are meaningless apart: `other_user_role` labels
+/// `other_user`, not the recipient.
+struct Recipient<'a> {
+    user: &'a users::Model,
+    other_user: &'a users::Model,
+    /// How the copy refers to the other party: "coach" or "coachee".
+    other_user_role: &'a str,
+}
+
+/// Template variables carried only by the reschedule sends: the discriminant the
+/// shared template copy reads, plus the start the recipient previously held.
+struct RescheduleVars {
+    session_or_series: &'static str,
+    previous_start: NaiveDateTime,
+    /// How the series repeated before the reschedule. `None` for a single session,
+    /// which has no cadence to report.
+    previous_recurrence_summary: Option<String>,
+}
+
 const TOKEN_PLACEHOLDER: &str = "{token}";
 const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
 const ORGANIZATION_ID_PLACEHOLDER: &str = "{organization_id}";
+
+/// `.ics` DESCRIPTION for a cancellation. A cancellation only needs to identify the
+/// event, so no topics, goals, or actions are loaded.
+const SESSION_CANCELLED_DESCRIPTION: &str = "This coaching session has been cancelled.";
+const SERIES_CANCELLED_DESCRIPTION: &str =
+    "This recurring coaching session series has been cancelled.";
 
 /// The `From:` address used for every transactional email sent through this module.
 /// Kept on the `mail.` subdomain so production DMARC/SPF/DKIM records for the
 /// `myrefactor.com` apex aren't affected by Resend's sending infrastructure.
 const FROM_ADDRESS: &str = "hello@mail.myrefactor.com";
+
+/// `UID` domain. Not a sending address: RFC 5545 only requires global uniqueness.
+const UID_DOMAIN: &str = "myrefactor.com";
+
+/// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
+const FROM_DISPLAY_NAME: &str = "Refactor Coach";
+
+/// The zone every `.ics` for a session is anchored to. The coach owns the schedule, so
+/// their zone is the one whose DST rules the emitted `VTIMEZONE` must follow.
+fn anchor_tz(coach: &users::Model) -> chrono_tz::Tz {
+    coach.timezone.parse().unwrap_or(chrono_tz::UTC)
+}
+
+/// A globally unique, stable `UID` for a calendar event. Stability is the whole
+/// mechanism: a client matches an update to the event it supersedes by `UID`.
+fn ics_uid(id: Id) -> String {
+    format!("{id}@{UID_DOMAIN}")
+}
+
+/// The event title as it appears on a calendar.
+fn session_summary(organization: &organizations::Model) -> String {
+    format!("Coaching Session: {}", organization.name)
+}
+
+/// The platform organizes every invite: calendar clients only apply updates when the
+/// `ORGANIZER` matches the sending address.
+fn platform_organizer() -> ical::Participant<'static> {
+    ical::Participant::new(FROM_DISPLAY_NAME, FROM_ADDRESS)
+}
+
+/// A user as a calendar participant. The mapping lives here rather than on
+/// `ical::Participant` so the builder stays free of entity types.
+fn participant(user: &users::Model) -> ical::Participant<'_> {
+    let name = user
+        .display_name
+        .clone()
+        .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name));
+    ical::Participant::new(&name, &user.email)
+}
+
+/// Coach first, then coachee, so both humans see each other in the guest list.
+fn session_attendees<'a>(
+    coach: &'a users::Model,
+    coachee: &'a users::Model,
+) -> Vec<ical::Participant<'a>> {
+    vec![participant(coach), participant(coachee)]
+}
 
 /// Groups the base URL and path template for building session links in emails.
 struct SessionUrlBuilder {
@@ -440,18 +655,19 @@ impl ResolvedEmailConfig {
 /// This is called once per recipient (coach and coachee each get their own email).
 async fn send_session_email_to_recipient(
     email_config: &ResolvedEmailConfig,
-    recipient: &users::Model,
-    other_user: &users::Model,
-    other_user_role: &str,
+    to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
+    ics_body: &str,
+    reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
+    let recipient = to.user;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&session.id)?;
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
 
-    let email_request = SendEmailRequestBuilder::new()
+    let builder = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
         .to_with_name(
             &recipient.email,
@@ -459,48 +675,196 @@ async fn send_session_email_to_recipient(
         )
         .template_id(&email_config.template_id)
         .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("other_user_first_name", other_user.first_name.as_str())
-        .add_variable("other_user_last_name", other_user.last_name.as_str())
-        .add_variable("other_user_role", other_user_role)
+        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
+        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
+        .add_variable("other_user_role", to.other_user_role)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
-        .build()
-        .await?;
+        .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
+        .add_ics_attachment(ics_body, &ical::Method::Request);
+
+    // The reschedule template declares both keys, so they ship together or not at all.
+    let email_request = match reschedule {
+        Some(r) => builder
+            .add_variable(
+                "session_when",
+                format_session_when(session.date, &recipient.timezone),
+            )
+            .add_variable(
+                "previous_session_when",
+                format_previous_session_when(r.previous_start, session.date, &recipient.timezone),
+            ),
+        None => builder,
+    }
+    .build()
+    .await?;
 
     email_config.client.send_email(email_request).await
 }
 
-/// Send session-scheduled notification emails to both coach and coachee.
-async fn send_session_scheduled_email(
+/// Build the single-session invite `.ics` body. Pure: `dtstamp` is injected so the
+/// output is deterministic for a given input.
+fn build_session_invite_ics(
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = anchor_tz(coach);
+    let invite = ical::IcsInvite {
+        uid: ics_uid(session.id),
+        sequence: session.ical_sequence,
+        method: ical::Method::Request,
+        status: ical::EventStatus::Confirmed,
+        summary: session_summary(organization),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: session.date,
+        duration_minutes: session.duration_minutes,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
+        location_url: session.meeting_url.clone(),
+        recurrence: None,
+        recurrence_id: None,
+    };
+    ical::build(&invite)
+}
+
+/// Build the `.ics` body that moves ONE occurrence of a recurring series. Addressed by
+/// the series `UID` plus the occurrence's original start as `RECURRENCE-ID`, so clients
+/// override the existing instance instead of creating a standalone duplicate.
+/// Pure: `dtstamp` is injected.
+fn build_occurrence_reschedule_ics(
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    series_id: Id,
+    organization: &organizations::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = anchor_tz(coach);
+    let invite = ical::IcsInvite {
+        uid: ics_uid(series_id),
+        sequence: session.ical_sequence,
+        method: ical::Method::Request,
+        status: ical::EventStatus::Confirmed,
+        summary: session_summary(organization),
+        description,
+        anchor_tz,
+        dtstamp,
+        // The NEW start; `recurrence_id` keeps addressing the original slot.
+        start: session.date,
+        duration_minutes: session.duration_minutes,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
+        location_url: session.meeting_url.clone(),
+        recurrence: None,
+        recurrence_id: session.ical_recurrence_id,
+    };
+    ical::build(&invite)
+}
+
+/// Send single-session invite emails to both coach and coachee. Generic over the
+/// notification type `N` so the scheduled and reschedule flows share one body; they
+/// differ only by template (via `N`) and the `session_or_series` template variable.
+/// A reschedule passes an already-bumped `session`, so the `.ics` carries the next
+/// `SEQUENCE` under a stable `UID`.
+async fn send_single_session_invite_email<N: EmailNotification>(
+    db: &DatabaseConnection,
     config: &Config,
     coach: &users::Model,
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
+    reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     info!(
-        "Initiating session scheduled emails for session: {} (coach: {}, coachee: {})",
-        session.id, coach.email, coachee.email
+        "Initiating {} emails for session: {} (coach: {}, coachee: {})",
+        N::notification_name(),
+        session.id,
+        coach.email,
+        coachee.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<SessionScheduled>(config).await?;
+    let email_config = ResolvedEmailConfig::new::<N>(config).await?;
+
+    // Same VEVENT for both recipients.
+    let topics = entity_api::coaching_session_topic::find_by_coaching_session_id(db, session.id)
+        .await?
+        .into_iter()
+        .map(|t| t.body)
+        .collect::<Vec<String>>();
+    let goal_titles =
+        entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+            db, session.id,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|g| g.title)
+        .collect::<Vec<String>>();
+    let open_actions = entity_api::action::find_open_by_coaching_session_id(db, session.id)
+        .await?
+        .into_iter()
+        .filter_map(|a| {
+            a.body.map(|body| OpenAction {
+                body,
+                due_by: a.due_by.map(|d| d.naive_utc()),
+            })
+        })
+        .collect::<Vec<OpenAction>>();
+
+    let anchor_tz = anchor_tz(coach);
+    let description = ical::compose_description(&DescriptionParts {
+        session_url: email_config.build_session_url(&session.id)?,
+        title: session.title.as_deref(),
+        topics: &topics,
+        goal_titles: &goal_titles,
+        open_actions: &open_actions,
+        anchor_tz,
+    });
+
+    let dtstamp = chrono::Utc::now().naive_utc();
+    // A session inside a series is addressed as an override of its occurrence.
+    let ics_body = match session.coaching_session_series_id {
+        Some(series_id) => build_occurrence_reschedule_ics(
+            coach,
+            coachee,
+            session,
+            series_id,
+            organization,
+            description,
+            dtstamp,
+        )?,
+        None => {
+            build_session_invite_ics(coach, coachee, session, organization, description, dtstamp)?
+        }
+    };
 
     // Email to coachee: "Your coach, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
-        coachee,
-        coach,
-        "coach",
+        &Recipient {
+            user: coachee,
+            other_user: coach,
+            other_user_role: "coach",
+        },
         session,
         organization,
+        &ics_body,
+        reschedule,
     )
     .await
     {
         warn!(
-            "Failed to send session scheduled email to coachee {}: {e:?}",
+            "Failed to send {} email to coachee {}: {e:?}",
+            N::notification_name(),
             coachee.email
         );
     }
@@ -508,21 +872,76 @@ async fn send_session_scheduled_email(
     // Email to coach: "Your coachee, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
-        coach,
-        coachee,
-        "coachee",
+        &Recipient {
+            user: coach,
+            other_user: coachee,
+            other_user_role: "coachee",
+        },
         session,
         organization,
+        &ics_body,
+        reschedule,
     )
     .await
     {
         warn!(
-            "Failed to send session scheduled email to coach {}: {e:?}",
+            "Failed to send {} email to coach {}: {e:?}",
+            N::notification_name(),
             coach.email
         );
     }
 
     Ok(())
+}
+
+/// Send session-scheduled notification emails to both coach and coachee.
+async fn send_session_scheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    send_single_session_invite_email::<SessionScheduled>(
+        db,
+        config,
+        coach,
+        coachee,
+        session,
+        organization,
+        None,
+    )
+    .await
+}
+
+/// Send session-rescheduled notification emails to both coach and coachee. `session`
+/// must already carry the bumped `ical_sequence`, so the invite updates the calendar
+/// event in place (same `UID`, next `SEQUENCE`). `previous_start` is the start the
+/// recipients last saw; equal to the new start when only a non-time field changed.
+async fn send_session_rescheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    previous_start: NaiveDateTime,
+) -> Result<(), Error> {
+    send_single_session_invite_email::<SessionRescheduled>(
+        db,
+        config,
+        coach,
+        coachee,
+        session,
+        organization,
+        Some(&RescheduleVars {
+            session_or_series: "session",
+            previous_start,
+            previous_recurrence_summary: None,
+        }),
+    )
+    .await
 }
 
 /// Context for an action-assigned email, bundling the action-specific data
@@ -608,6 +1027,14 @@ pub async fn notify_session_scheduled(
     config: &Config,
     session: &coaching_sessions::Model,
 ) {
+    if lacks_occurrence_address(session) {
+        warn!(
+            "Skipping scheduled invite for session {}: series member has no ical_recurrence_id",
+            session.id
+        );
+        return;
+    }
+
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
@@ -615,7 +1042,7 @@ pub async fn notify_session_scheduled(
         let coachee = user::find_by_id(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_session_scheduled_email(config, &coach, &coachee, session, &org).await
+        send_session_scheduled_email(db, config, &coach, &coachee, session, &org).await
     }
     .await;
 
@@ -627,24 +1054,285 @@ pub async fn notify_session_scheduled(
     }
 }
 
+/// True when a session belongs to a series but predates `ical_recurrence_id`, so no
+/// valid `RECURRENCE-ID` exists. Sending anything would address the wrong occurrence.
+fn lacks_occurrence_address(session: &coaching_sessions::Model) -> bool {
+    session.coaching_session_series_id.is_some() && session.ical_recurrence_id.is_none()
+}
+
+/// Orchestrate sending session-rescheduled emails (best-effort).
+///
+/// `session` must already carry the bumped `ical_sequence`. Looks up the coaching
+/// relationship, both users, and the organization, then re-sends the invite to both
+/// coach and coachee so their calendar event updates in place. `previous_start` is the
+/// pre-update start, shown alongside the new one. Errors are logged internally and never
+/// block or fail the calling operation.
+pub async fn notify_session_rescheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+    previous_start: NaiveDateTime,
+) {
+    if lacks_occurrence_address(session) {
+        warn!(
+            "Skipping reschedule invite for session {}: series member has no ical_recurrence_id",
+            session.id
+        );
+        return;
+    }
+
+    let result: Result<(), Error> = async {
+        let relationship =
+            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+        send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
+            .await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send session rescheduled emails for session {}: {e:?}",
+            session.id
+        );
+    }
+}
+
+/// Build the single-session cancellation `.ics` body. Pure: `dtstamp` is injected so the
+/// output is deterministic for a given input. Keeps the invite's `UID` and `DTSTART` so
+/// calendar clients match the cancellation to the event they already hold.
+fn build_session_cancel_ics(
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = anchor_tz(coach);
+    let invite = ical::IcsInvite {
+        uid: ics_uid(session.id),
+        // Already bumped by the caller inside the delete transaction, so the cancellation
+        // outranks any edit that committed alongside it.
+        sequence: session.ical_sequence,
+        method: ical::Method::Cancel,
+        status: ical::EventStatus::Cancelled,
+        summary: session_summary(organization),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: session.date,
+        duration_minutes: session.duration_minutes,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
+        location_url: session.meeting_url.clone(),
+        recurrence: None,
+        recurrence_id: None,
+    };
+    ical::build(&invite)
+}
+
+/// Build the `.ics` body that cancels ONE occurrence of a recurring series. Addressed by
+/// the series `UID` plus the occurrence's original start as `RECURRENCE-ID`, so clients
+/// remove the instance they already hold. Pure: `dtstamp` is injected.
+fn build_occurrence_cancel_ics(
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    series_id: Id,
+    organization: &organizations::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = anchor_tz(coach);
+    let invite = ical::IcsInvite {
+        uid: ics_uid(series_id),
+        // Already bumped by the caller inside the delete transaction, so the cancellation
+        // outranks any edit that committed alongside it.
+        sequence: session.ical_sequence,
+        method: ical::Method::Cancel,
+        status: ical::EventStatus::Cancelled,
+        summary: session_summary(organization),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: session.date,
+        duration_minutes: session.duration_minutes,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
+        location_url: session.meeting_url.clone(),
+        recurrence: None,
+        recurrence_id: session.ical_recurrence_id,
+    };
+    ical::build(&invite)
+}
+
+/// Send a session-cancelled notification email to a single recipient. Carries fewer
+/// variables than the invite sends: no `session_url` (the row is gone) and no duration.
+async fn send_session_cancelled_email_to_recipient(
+    email_config: &ResolvedEmailConfig,
+    recipient: &users::Model,
+    other_user: &users::Model,
+    other_user_role: &str,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    ics_body: &str,
+) -> Result<(), Error> {
+    let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from(FROM_ADDRESS)
+        .to_with_name(
+            &recipient.email,
+            format!("{} {}", recipient.first_name, recipient.last_name),
+        )
+        .template_id(&email_config.template_id)
+        .add_variable("first_name", recipient.first_name.as_str())
+        .add_variable("other_user_first_name", other_user.first_name.as_str())
+        .add_variable("other_user_last_name", other_user.last_name.as_str())
+        .add_variable("other_user_role", other_user_role)
+        .add_variable("organization_name", organization.name.as_str())
+        .add_variable("session_date", session_date.as_str())
+        .add_variable("session_time", session_time.as_str())
+        .add_ics_attachment(ics_body, &ical::Method::Cancel)
+        .build()
+        .await?;
+
+    email_config.client.send_email(email_request).await
+}
+
+/// Send session-cancelled emails to both coach and coachee. Takes no database handle:
+/// a cancellation loads no topics, goals, or actions.
+async fn send_session_cancelled_email(
+    config: &Config,
+    coach: &users::Model,
+    coachee: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    info!(
+        "Initiating session cancelled emails for session: {} (coach: {}, coachee: {})",
+        session.id, coach.email, coachee.email
+    );
+
+    let email_config = ResolvedEmailConfig::new::<SessionCancelled>(config).await?;
+
+    let dtstamp = chrono::Utc::now().naive_utc();
+    // A session inside a series is addressed as an override of its occurrence.
+    let ics_body = match session.coaching_session_series_id {
+        Some(series_id) => build_occurrence_cancel_ics(
+            coach,
+            coachee,
+            session,
+            series_id,
+            organization,
+            SESSION_CANCELLED_DESCRIPTION.to_string(),
+            dtstamp,
+        )?,
+        None => build_session_cancel_ics(
+            coach,
+            coachee,
+            session,
+            organization,
+            SESSION_CANCELLED_DESCRIPTION.to_string(),
+            dtstamp,
+        )?,
+    };
+
+    if let Err(e) = send_session_cancelled_email_to_recipient(
+        &email_config,
+        coachee,
+        coach,
+        "coach",
+        session,
+        organization,
+        &ics_body,
+    )
+    .await
+    {
+        warn!(
+            "Failed to send session cancelled email to coachee {}: {e:?}",
+            coachee.email
+        );
+    }
+
+    if let Err(e) = send_session_cancelled_email_to_recipient(
+        &email_config,
+        coach,
+        coachee,
+        "coachee",
+        session,
+        organization,
+        &ics_body,
+    )
+    .await
+    {
+        warn!(
+            "Failed to send session cancelled email to coach {}: {e:?}",
+            coach.email
+        );
+    }
+
+    Ok(())
+}
+
+/// Orchestrate sending session-cancelled emails (best-effort).
+///
+/// Call this with the in-memory model after the delete has committed. Deleting a session
+/// whose date has already passed is housekeeping rather than a cancellation, so that case
+/// returns before any lookup. Errors are logged internally and never block the caller.
+pub async fn notify_session_cancelled(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) {
+    if session.date < chrono::Utc::now().naive_utc() {
+        return;
+    }
+    if lacks_occurrence_address(session) {
+        warn!(
+            "Skipping cancellation for session {}: series member has no ical_recurrence_id",
+            session.id
+        );
+        return;
+    }
+
+    let result: Result<(), Error> = async {
+        let relationship =
+            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+        send_session_cancelled_email(config, &coach, &coachee, session, &org).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send session cancelled emails for session {}: {e:?}",
+            session.id
+        );
+    }
+}
+
 /// Send a recurring-sessions-scheduled notification email to a single recipient.
 /// One email per recipient — coach and coachee each get their own summarizing
 /// the freshly scheduled series.
 async fn send_recurring_series_email_to_recipient(
     email_config: &ResolvedEmailConfig,
-    recipient: &users::Model,
-    other_user: &users::Model,
-    other_user_role: &str,
+    to: &Recipient<'_>,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
+    ics_body: &str,
+    recurrence_summary: &str,
+    reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
-    let first = sessions.first().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-            "Cannot send recurring sessions email: sessions slice is empty".to_string(),
-        )),
-    })?;
-    let last = sessions.last().expect("non-empty slice already checked");
+    let recipient = to.user;
+    let (first, last) = series_bounds(sessions)?;
 
     let (first_session_date, first_session_time) =
         format_session_date_time(first.date, &recipient.timezone);
@@ -654,6 +1342,394 @@ async fn send_recurring_series_email_to_recipient(
     // All sessions in a recurring series share the same duration.
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(first.duration_minutes).to_string();
+
+    let builder = SendEmailRequestBuilder::new()
+        .from(FROM_ADDRESS)
+        .to_with_name(
+            &recipient.email,
+            format!("{} {}", recipient.first_name, recipient.last_name),
+        )
+        .template_id(&email_config.template_id)
+        .add_variable("first_name", recipient.first_name.as_str())
+        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
+        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
+        .add_variable("other_user_role", to.other_user_role)
+        .add_variable("organization_name", organization.name.as_str())
+        .add_variable("session_count", sessions.len() as u64)
+        .add_variable("first_session_date", first_session_date.as_str())
+        .add_variable("first_session_time", first_session_time.as_str())
+        .add_variable("last_session_date", last_session_date.as_str())
+        .add_variable("session_duration", session_duration.as_str())
+        .add_variable("session_url", session_url.as_str())
+        .add_variable("recurrence_summary", recurrence_summary)
+        .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
+        .add_ics_attachment(ics_body, &ical::Method::Request);
+
+    // The reschedule template declares these keys, so they ship together or not at all.
+    let email_request = match reschedule {
+        Some(r) => builder
+            .add_variable(
+                "session_when",
+                format_session_when(first.date, &recipient.timezone),
+            )
+            .add_variable(
+                "previous_session_when",
+                format_previous_session_when(r.previous_start, first.date, &recipient.timezone),
+            )
+            .add_optional_variable(
+                "previous_recurrence_summary",
+                r.previous_recurrence_summary.as_deref().map(|previous| {
+                    format_previous_recurrence_summary(previous, recurrence_summary)
+                }),
+            ),
+        None => builder,
+    }
+    .build()
+    .await?;
+
+    email_config.client.send_email(email_request).await
+}
+
+/// Build the series invite `.ics` body (VEVENT + RRULE). Pure: `dtstamp` injected.
+fn build_series_invite_ics(
+    coach: &users::Model,
+    coachee: &users::Model,
+    first_session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    series: &coaching_session_series::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = anchor_tz(coach);
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
+    let invite = ical::IcsInvite {
+        uid: ics_uid(series.id),
+        sequence: series.ical_sequence,
+        method: ical::Method::Request,
+        status: ical::EventStatus::Confirmed,
+        summary: session_summary(organization),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: first_session.date,
+        duration_minutes: first_session.duration_minutes,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
+        location_url: first_session.meeting_url.clone(),
+        recurrence: Some(rule.recurrence),
+        recurrence_id: None,
+    };
+    ical::build(&invite)
+}
+
+/// Send series invite emails to both coach and coachee. Generic over the notification
+/// type `N` so the scheduled and reschedule flows share one body; they differ only by
+/// template (via `N`) and the `session_or_series` template variable. A reschedule passes
+/// an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a stable
+/// `UID`.
+async fn send_series_invite_email<N: EmailNotification>(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    participants: &Participants<'_>,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+    reschedule: Option<&RescheduleVars>,
+) -> Result<(), Error> {
+    let Participants { coach, coachee } = *participants;
+    info!(
+        "Initiating {} emails for {} sessions (coach: {}, coachee: {})",
+        N::notification_name(),
+        sessions.len(),
+        coach.email,
+        coachee.email
+    );
+
+    let email_config = ResolvedEmailConfig::new::<N>(config).await?;
+
+    let first = sessions.first().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            "Cannot send recurring sessions email: sessions slice is empty".to_string(),
+        )),
+    })?;
+
+    // Series description links to the first session and lists only its in-progress goals.
+    let first_goal_titles =
+        entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+            db, first.id,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|g| g.title)
+        .collect::<Vec<String>>();
+
+    let anchor_tz = anchor_tz(coach);
+    let description = ical::compose_description(&DescriptionParts {
+        session_url: email_config.build_session_url(&first.id)?,
+        title: None,
+        topics: &[],
+        goal_titles: &first_goal_titles,
+        open_actions: &[],
+        anchor_tz,
+    });
+
+    let ics_body = build_series_invite_ics(
+        coach,
+        coachee,
+        first,
+        organization,
+        series,
+        description,
+        chrono::Utc::now().naive_utc(),
+    )?;
+
+    // Timezone-independent, so it is computed once rather than per recipient.
+    let current_rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
+    let recurrence_summary = current_rule.recurrence.summary();
+
+    if let Err(e) = send_recurring_series_email_to_recipient(
+        &email_config,
+        &Recipient {
+            user: coachee,
+            other_user: coach,
+            other_user_role: "coach",
+        },
+        sessions,
+        organization,
+        &ics_body,
+        &recurrence_summary,
+        reschedule,
+    )
+    .await
+    {
+        warn!(
+            "Failed to send {} email to coachee {}: {e:?}",
+            N::notification_name(),
+            coachee.email
+        );
+    }
+
+    if let Err(e) = send_recurring_series_email_to_recipient(
+        &email_config,
+        &Recipient {
+            user: coach,
+            other_user: coachee,
+            other_user_role: "coachee",
+        },
+        sessions,
+        organization,
+        &ics_body,
+        &recurrence_summary,
+        reschedule,
+    )
+    .await
+    {
+        warn!(
+            "Failed to send {} email to coach {}: {e:?}",
+            N::notification_name(),
+            coach.email
+        );
+    }
+
+    Ok(())
+}
+
+/// Send recurring-sessions-scheduled notification emails to both coach and coachee.
+async fn send_recurring_sessions_scheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    coach: &users::Model,
+    coachee: &users::Model,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    send_series_invite_email::<RecurringSessionsScheduled>(
+        db,
+        config,
+        series,
+        &Participants { coach, coachee },
+        sessions,
+        organization,
+        None,
+    )
+    .await
+}
+
+/// Send series reschedule notification emails to both coach and coachee. `series` must
+/// already carry the bumped `ical_sequence`, so the invite updates the recurring calendar
+/// event in place (same `UID`, next `SEQUENCE`). The previous start comes from
+/// `previous_series`, the pre-update model, and is shown alongside the new first
+/// occurrence.
+async fn send_recurring_sessions_rescheduled_email(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    previous_series: &coaching_session_series::Model,
+    participants: &Participants<'_>,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    let previous_rule: SeriesRule = serde_json::from_value(previous_series.rule.clone())?;
+
+    send_series_invite_email::<RecurringSessionsRescheduled>(
+        db,
+        config,
+        series,
+        participants,
+        sessions,
+        organization,
+        Some(&RescheduleVars {
+            session_or_series: "series",
+            previous_start: previous_rule.start_at,
+            previous_recurrence_summary: Some(previous_rule.recurrence.summary()),
+        }),
+    )
+    .await
+}
+
+/// Orchestrate sending recurring-sessions-scheduled emails (best-effort).
+///
+/// Looks up the coaching relationship, both users, and the organization,
+/// then sends a single summary email per recipient covering the whole series — count.
+///
+/// Errors are logged internally — email delivery must never block or fail
+/// the calling operation.
+pub async fn notify_recurring_sessions_scheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    sessions: &[coaching_sessions::Model],
+) {
+    if sessions.is_empty() {
+        return;
+    }
+
+    let result: Result<(), Error> = async {
+        let relationship_id = sessions[0].coaching_relationship_id;
+        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+        send_recurring_sessions_scheduled_email(
+            db, config, series, &coach, &coachee, sessions, &org,
+        )
+        .await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send recurring sessions scheduled emails for {} sessions: {e:?}",
+            sessions.len()
+        );
+    }
+}
+
+/// Orchestrate sending series reschedule emails (best-effort).
+///
+/// `series` must be the post-update model, so its `ical_sequence` is already
+/// incremented. Looks up the coaching relationship, both users, and the organization,
+/// then re-sends the series invite to both coach and coachee so their recurring calendar
+/// event updates in place. A reschedule can legitimately leave no future sessions, in
+/// which case there is nothing to invite anyone to. `previous_series` is the pre-update
+/// model: its rule carries the start the recipients last saw. Errors are logged
+/// internally and never block or fail the calling operation.
+pub async fn notify_recurring_sessions_rescheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    previous_series: PreviousSeries<'_>,
+    sessions: &[coaching_sessions::Model],
+) {
+    if sessions.is_empty() {
+        return;
+    }
+
+    let result: Result<(), Error> = async {
+        let relationship_id = sessions[0].coaching_relationship_id;
+        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
+        let coach = user::find_by_id(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+        send_recurring_sessions_rescheduled_email(
+            db,
+            config,
+            series,
+            previous_series.0,
+            &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            sessions,
+            &org,
+        )
+        .await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            "Failed to send series rescheduled emails for series {}: {e:?}",
+            series.id
+        );
+    }
+}
+
+/// Build the series cancellation `.ics` body (VEVENT + RRULE). Pure: `dtstamp` injected.
+/// Keeps the invite's `UID`, `DTSTART`, and `RRULE` so calendar clients match the
+/// cancellation to the recurring event they already hold.
+fn build_series_cancel_ics(
+    coach: &users::Model,
+    coachee: &users::Model,
+    first_session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    series: &coaching_session_series::Model,
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = anchor_tz(coach);
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
+    let invite = ical::IcsInvite {
+        uid: ics_uid(series.id),
+        // Already bumped by the caller inside the delete transaction, so the cancellation
+        // outranks any edit that committed alongside it.
+        sequence: series.ical_sequence,
+        method: ical::Method::Cancel,
+        status: ical::EventStatus::Cancelled,
+        summary: session_summary(organization),
+        description,
+        anchor_tz,
+        dtstamp,
+        start: first_session.date,
+        duration_minutes: first_session.duration_minutes,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
+        location_url: first_session.meeting_url.clone(),
+        recurrence: Some(rule.recurrence),
+        recurrence_id: None,
+    };
+    ical::build(&invite)
+}
+
+/// Send a series cancellation notification email to a single recipient. Carries fewer
+/// variables than the invite sends: no `session_url`, no duration, no first-session time.
+async fn send_recurring_sessions_cancelled_email_to_recipient(
+    email_config: &ResolvedEmailConfig,
+    recipient: &users::Model,
+    other_user: &users::Model,
+    other_user_role: &str,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+    ics_body: &str,
+) -> Result<(), Error> {
+    let (first, last) = series_bounds(sessions)?;
+
+    let (first_session_date, _) = format_session_date_time(first.date, &recipient.timezone);
+    let (last_session_date, _) = format_session_date_time(last.date, &recipient.timezone);
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
@@ -669,61 +1745,75 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
-        .add_variable("first_session_time", first_session_time.as_str())
         .add_variable("last_session_date", last_session_date.as_str())
-        .add_variable("session_duration", session_duration.as_str())
-        .add_variable("session_url", session_url.as_str())
+        .add_ics_attachment(ics_body, &ical::Method::Cancel)
         .build()
         .await?;
 
     email_config.client.send_email(email_request).await
 }
 
-/// Send recurring-sessions-scheduled notification emails to both coach and coachee.
-async fn send_recurring_sessions_scheduled_email(
+/// Send series cancellation emails to both coach and coachee. Takes no database handle:
+/// a cancellation loads no topics, goals, or actions.
+async fn send_recurring_sessions_cancelled_email(
     config: &Config,
+    series: &coaching_session_series::Model,
     coach: &users::Model,
     coachee: &users::Model,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
 ) -> Result<(), Error> {
     info!(
-        "Initiating recurring sessions scheduled emails for {} sessions (coach: {}, coachee: {})",
+        "Initiating series cancelled emails for {} sessions (coach: {}, coachee: {})",
         sessions.len(),
         coach.email,
         coachee.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<RecurringSessionsScheduled>(config).await?;
+    let email_config = ResolvedEmailConfig::new::<RecurringSessionsCancelled>(config).await?;
 
-    if let Err(e) = send_recurring_series_email_to_recipient(
+    let (first, _) = series_bounds(sessions)?;
+
+    let ics_body = build_series_cancel_ics(
+        coach,
+        coachee,
+        first,
+        organization,
+        series,
+        SERIES_CANCELLED_DESCRIPTION.to_string(),
+        chrono::Utc::now().naive_utc(),
+    )?;
+
+    if let Err(e) = send_recurring_sessions_cancelled_email_to_recipient(
         &email_config,
         coachee,
         coach,
         "coach",
         sessions,
         organization,
+        &ics_body,
     )
     .await
     {
         warn!(
-            "Failed to send recurring sessions scheduled email to coachee {}: {e:?}",
+            "Failed to send series cancelled email to coachee {}: {e:?}",
             coachee.email
         );
     }
 
-    if let Err(e) = send_recurring_series_email_to_recipient(
+    if let Err(e) = send_recurring_sessions_cancelled_email_to_recipient(
         &email_config,
         coach,
         coachee,
         "coachee",
         sessions,
         organization,
+        &ics_body,
     )
     .await
     {
         warn!(
-            "Failed to send recurring sessions scheduled email to coach {}: {e:?}",
+            "Failed to send series cancelled email to coach {}: {e:?}",
             coach.email
         );
     }
@@ -731,16 +1821,16 @@ async fn send_recurring_sessions_scheduled_email(
     Ok(())
 }
 
-/// Orchestrate sending recurring-sessions-scheduled emails (best-effort).
+/// Orchestrate sending series cancellation emails (best-effort).
 ///
-/// Looks up the coaching relationship, both users, and the organization,
-/// then sends a single summary email per recipient covering the whole series — count.
-///
-/// Errors are logged internally — email delivery must never block or fail
-/// the calling operation.
-pub async fn notify_recurring_sessions_scheduled(
+/// Call this with the in-memory models after the delete has committed. A series row is
+/// deleted even when nothing upcoming remains, so an empty `sessions` slice returns
+/// before any lookup rather than announcing zero cancelled sessions. Errors are logged
+/// internally and never block the caller.
+pub async fn notify_recurring_sessions_cancelled(
     db: &DatabaseConnection,
     config: &Config,
+    series: &coaching_session_series::Model,
     sessions: &[coaching_sessions::Model],
 ) {
     if sessions.is_empty() {
@@ -754,14 +1844,15 @@ pub async fn notify_recurring_sessions_scheduled(
         let coachee = user::find_by_id(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_recurring_sessions_scheduled_email(config, &coach, &coachee, sessions, &org).await
+        send_recurring_sessions_cancelled_email(config, series, &coach, &coachee, sessions, &org)
+            .await
     }
     .await;
 
     if let Err(e) = result {
         warn!(
-            "Failed to send recurring sessions scheduled emails for {} sessions: {e:?}",
-            sessions.len()
+            "Failed to send series cancelled emails for series {}: {e:?}",
+            series.id
         );
     }
 }
@@ -820,1007 +1911,5 @@ pub async fn notify_action_assigned(
             "Failed to send action assigned emails for action {}: {e:?}",
             action.id
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{coaching_sessions, organizations, users, Id};
-    use chrono::NaiveDate;
-    use mockito::{Server, ServerGuard};
-    use service::config::Config;
-
-    async fn setup_test_server() -> ServerGuard {
-        Server::new_async().await
-    }
-
-    /// `Matcher::Json` for a Resend body that guards against a `subject` key —
-    /// Resend templates own the subject line; payload-level subject is a bug.
-    fn expect_resend_body(expected: serde_json::Value) -> mockito::Matcher {
-        assert!(
-            expected.get("subject").is_none(),
-            "test bug: expected body must not include `subject`",
-        );
-        mockito::Matcher::Json(expected)
-    }
-
-    fn create_test_user() -> users::Model {
-        users::Model {
-            id: Id::new_v4(),
-            first_name: "John".to_string(),
-            last_name: "Doe".to_string(),
-            email: "john.doe@example.com".to_string(),
-            display_name: Some("John Doe".to_string()),
-            password: Some("hashed_password".to_string()),
-            github_username: None,
-            github_profile_url: None,
-            timezone: "UTC".to_string(),
-            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            role: users::Role::User,
-            roles: vec![],
-            invite_status: None,
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-        }
-    }
-
-    fn create_test_user_with(
-        first_name: &str,
-        last_name: &str,
-        email: &str,
-        timezone: &str,
-    ) -> users::Model {
-        users::Model {
-            id: Id::new_v4(),
-            first_name: first_name.to_string(),
-            last_name: last_name.to_string(),
-            email: email.to_string(),
-            display_name: Some(format!("{first_name} {last_name}")),
-            password: Some("hashed_password".to_string()),
-            github_username: None,
-            github_profile_url: None,
-            timezone: timezone.to_string(),
-            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            role: users::Role::User,
-            roles: vec![],
-            invite_status: None,
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-        }
-    }
-
-    fn create_test_session() -> coaching_sessions::Model {
-        coaching_sessions::Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            coaching_session_series_id: None,
-            collab_document_name: None,
-            date: NaiveDate::from_ymd_opt(2026, 3, 4)
-                .unwrap()
-                .and_hms_opt(15, 0, 0)
-                .unwrap(),
-            duration_minutes: crate::duration::Duration::default_minutes(),
-            title: None,
-            meeting_url: None,
-            provider: None,
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-            hydrated_at: Some(chrono::Utc::now().fixed_offset()),
-        }
-    }
-
-    fn create_test_organization() -> organizations::Model {
-        organizations::Model {
-            id: Id::new_v4(),
-            name: "Acme Corp".to_string(),
-            logo: None,
-            slug: "acme-corp".to_string(),
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-            archived_at: None,
-            archived_by: None,
-        }
-    }
-
-    fn create_config_with_mock(server_url: &str) -> Config {
-        Config::from_args([
-            "test",
-            "--resend-api-key=test_api_key_123",
-            "--welcome-email-template-id=template_123",
-            "--frontend-base-url=https://app.example.com",
-            &format!("--resend-base-url={server_url}"),
-        ])
-    }
-
-    fn create_full_config_with_mock(server_url: &str) -> Config {
-        Config::from_args([
-            "test",
-            "--resend-api-key=test_api_key_123",
-            "--welcome-email-template-id=template_123",
-            "--session-scheduled-email-template-id=session_template_456",
-            "--recurring-sessions-scheduled-email-template-id=recurring_template_xyz",
-            "--action-assigned-email-template-id=action_template_789",
-            "--frontend-base-url=https://app.example.com",
-            &format!("--resend-base-url={server_url}"),
-        ])
-    }
-
-    #[tokio::test]
-    async fn test_send_welcome_email_success() {
-        let mut server = setup_test_server().await;
-        let user = create_test_user();
-        let inviter = create_test_user_with("Sarah", "Coach", "sarah.coach@example.com", "UTC");
-        let config = create_config_with_mock(&server.url());
-
-        let _mock = server
-            .mock("POST", "/emails")
-            .match_header("authorization", "Bearer test_api_key_123")
-            .match_header("content-type", "application/json")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"John Doe\" <john.doe@example.com>"],
-                "template": {
-                    "id": "template_123",
-                    "variables": {
-                        "first_name": "John",
-                        "last_name": "Doe",
-                        "coach_first_name": "Sarah",
-                        "coach_full_name": "Sarah Coach",
-                        "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"email_msg_123456789"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_welcome_email_missing_api_key() {
-        let config = Config::from_args(["test", "--welcome-email-template-id=template_123"]);
-        assert!(config.resend_api_key().is_none(), "API key should be None");
-
-        let user = create_test_user();
-        let inviter = create_test_user();
-
-        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
-        assert!(result.is_err());
-
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_send_welcome_email_missing_template_id() {
-        let config = Config::from_args(["test", "--resend-api-key=test_api_key_123"]);
-        assert!(
-            config.resend_api_key().is_some(),
-            "API key should be present"
-        );
-        assert!(
-            config.welcome_email_template_id().is_none(),
-            "Template ID should be None"
-        );
-
-        let user = create_test_user();
-        let inviter = create_test_user();
-
-        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
-        assert!(result.is_err());
-
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_send_welcome_email_http_error() {
-        let mut server = setup_test_server().await;
-        let user = create_test_user();
-        let inviter = create_test_user();
-        let config = create_config_with_mock(&server.url());
-
-        let _mock = server
-            .mock("POST", "/emails")
-            .with_status(400)
-            .with_body(r#"{"message": "Invalid request"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        // HTTP 400 from Resend should propagate as an error that carries the
-        // response body — that body is the caller's only diagnostic.
-        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
-        let err = result.unwrap_err();
-        match err.error_kind {
-            DomainErrorKind::Internal(InternalErrorKind::Other(text)) => assert!(
-                text.contains("Invalid request"),
-                "response body not propagated into error, got: {text}"
-            ),
-            other => panic!("expected Internal(Other), got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_send_welcome_email_escapes_name_with_specials() {
-        // Integration-level counterpart to gateway::resend's
-        // `test_format_mailbox_quotes_and_escapes_specials`: a user whose
-        // assembled name contains a comma must land in the `to` field as a
-        // quoted-string, not as two malformed mailboxes.
-        let mut server = setup_test_server().await;
-        let user = create_test_user_with("Jane", "Doe, Jr.", "jane.jr@example.com", "UTC");
-        let inviter = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let config = create_config_with_mock(&server.url());
-
-        let _mock = server
-            .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Jane Doe, Jr.\" <jane.jr@example.com>"],
-                "template": {
-                    "id": "template_123",
-                    "variables": {
-                        "first_name": "Jane",
-                        "last_name": "Doe, Jr.",
-                        "coach_first_name": "Alex",
-                        "coach_full_name": "Alex Smith",
-                        "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
-        assert!(result.is_ok());
-    }
-
-    // ── Password Reset Email Tests ─────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_send_password_reset_email_wire_contract() {
-        // Pins the wire contract that the Resend template depends on. The
-        // gateway-level tests already prove the builder/HTTP plumbing works;
-        // this test exists to catch regressions that are unique to *how this
-        // function wires up* the request:
-        //   1. `from` is the `mail.` subdomain — apex would not be verified
-        //      in Resend and prod sends would silently fail.
-        //   2. Variable keys are exactly `first_name`, `last_name`,
-        //      `password_reset_url` — a rename would render to empty strings
-        //      in the recipient's inbox (Resend still returns 200).
-        //   3. The URL substitutes `{token}` (not `{session_id}` like other
-        //      email types) — a copy-paste regression would send a malformed
-        //      reset link.
-        //   4. No `subject` field is present in the JSON payload — main moved
-        //      subjects to be template-owned (commit 172907a); re-adding
-        //      `.subject(...)` here would override the template default.
-        let mut server = setup_test_server().await;
-        let user = create_test_user_with("John", "Doe", "john@example.com", "UTC");
-        let config = Config::from_args([
-            "test",
-            "--resend-api-key=test_api_key_123",
-            "--password-reset-email-template-id=pw_reset_template_test",
-            "--password-reset-email-url-path=/reset-password/{token}",
-            "--frontend-base-url=https://app.example.com",
-            &format!("--resend-base-url={}", server.url()),
-        ]);
-
-        // `Matcher::Json` is structural — any extra field (e.g. an
-        // accidentally-readded `subject`) or missing/renamed variable will
-        // fail the mock match and the test will hang on `expect(1)`.
-        let _mock = server
-            .mock("POST", "/emails")
-            .match_header("authorization", "Bearer test_api_key_123")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"John Doe\" <john@example.com>"],
-                "template": {
-                    "id": "pw_reset_template_test",
-                    "variables": {
-                        "first_name": "John",
-                        "last_name": "Doe",
-                        "password_reset_url": "https://app.example.com/reset-password/raw-reset-token-abc"
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_pw_reset"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = send_password_reset_email(&config, &user, "raw-reset-token-abc").await;
-        assert!(
-            result.is_ok(),
-            "send_password_reset_email failed: {result:?}"
-        );
-    }
-
-    // ── Session Scheduled Email Tests ──────────────────────────────────
-
-    #[tokio::test]
-    async fn test_send_session_scheduled_email_variables() {
-        let mut server = setup_test_server().await;
-        let config = create_full_config_with_mock(&server.url());
-
-        // Coach and coachee in different timezones so a single body-match per
-        // recipient proves BOTH the role swap (coach <-> coachee) AND that each
-        // recipient's own timezone is used. Session is 2026-03-04 15:00 UTC:
-        //   - coachee (America/New_York, EST): 10:00 AM, Wed March 4
-        //   - coach   (Asia/Tokyo):            12:00 AM, Thu March 5 (date rolls)
-        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
-        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
-        let session = create_test_session();
-        let org = create_test_organization();
-
-        let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
-
-        // Email to coachee — other_user is the coach, formatted in NY time.
-        let _mock_coachee = server
-            .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Jane Doe\" <jane@example.com>"],
-                "template": {
-                    "id": "session_template_456",
-                    "variables": {
-                        "first_name": "Jane",
-                        "other_user_first_name": "Alex",
-                        "other_user_last_name": "Smith",
-                        "other_user_role": "coach",
-                        "organization_name": "Acme Corp",
-                        "session_date": "Wednesday, March 4, 2026",
-                        "session_time": "10:00 AM",
-                        "session_duration": "1 hour",
-                        "session_url": session_url.clone(),
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        // Email to coach — other_user is the coachee, formatted in Tokyo time
-        // (the session date rolls forward a day).
-        let _mock_coach = server
-            .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Alex Smith\" <alex@example.com>"],
-                "template": {
-                    "id": "session_template_456",
-                    "variables": {
-                        "first_name": "Alex",
-                        "other_user_first_name": "Jane",
-                        "other_user_last_name": "Doe",
-                        "other_user_role": "coachee",
-                        "organization_name": "Acme Corp",
-                        "session_date": "Thursday, March 5, 2026",
-                        "session_time": "12:00 AM",
-                        "session_duration": "1 hour",
-                        "session_url": session_url.clone(),
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_session_scheduled_email_missing_template_id() {
-        // Config has an API key and frontend base URL but no session-scheduled
-        // template id — mirrors the welcome/action missing-template-id tests.
-        let server = setup_test_server().await;
-        let config = Config::from_args([
-            "test",
-            "--resend-api-key=test_api_key_123",
-            &format!("--resend-base-url={}", server.url()),
-            "--frontend-base-url=https://app.example.com",
-        ]);
-
-        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let session = create_test_session();
-        let org = create_test_organization();
-
-        let result = send_session_scheduled_email(&config, &coach, &coachee, &session, &org).await;
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    // ── Action Assigned Email Tests ────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_send_action_assigned_email_success() {
-        let mut server = setup_test_server().await;
-        let config = create_full_config_with_mock(&server.url());
-
-        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let session_id = Id::new_v4();
-        let org = create_test_organization();
-
-        let session_url =
-            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
-        let due_by: DateTime<FixedOffset> = NaiveDate::from_ymd_opt(2026, 3, 7)
-            .unwrap()
-            .and_hms_opt(17, 0, 0)
-            .unwrap()
-            .and_utc()
-            .fixed_offset();
-
-        let _mock = server
-            .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Jane Doe\" <jane@example.com>"],
-                "template": {
-                    "id": "action_template_789",
-                    "variables": {
-                        "first_name": "Jane",
-                        "action_body": "Read chapters 3-5 of Radical Candor",
-                        "due_date": "Saturday, March 7, 2026",
-                        "assigner_first_name": "Alex",
-                        "assigner_last_name": "Smith",
-                        "organization_name": "Acme Corp",
-                        "goal": "Improve communication",
-                        "session_url": session_url,
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let ctx = ActionEmailContext {
-            action_body: "Read chapters 3-5 of Radical Candor",
-            due_by: Some(due_by),
-            session_id,
-            organization: &org,
-            goal: Some("Improve communication"),
-        };
-
-        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_action_assigned_email_no_due_date() {
-        let mut server = setup_test_server().await;
-        let config = create_full_config_with_mock(&server.url());
-
-        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let session_id = Id::new_v4();
-        let org = create_test_organization();
-
-        let session_url =
-            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
-
-        let _mock = server
-            .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Jane Doe\" <jane@example.com>"],
-                "template": {
-                    "id": "action_template_789",
-                    "variables": {
-                        "first_name": "Jane",
-                        "action_body": "Follow up with team",
-                        "due_date": "No due date set",
-                        "assigner_first_name": "Alex",
-                        "assigner_last_name": "Smith",
-                        "organization_name": "Acme Corp",
-                        "session_url": session_url,
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let ctx = ActionEmailContext {
-            action_body: "Follow up with team",
-            due_by: None,
-            session_id,
-            organization: &org,
-            goal: None,
-        };
-
-        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_action_assigned_email_multiple_assignees() {
-        let mut server = setup_test_server().await;
-        let config = create_full_config_with_mock(&server.url());
-
-        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let assignee1 = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let assignee2 = create_test_user_with("Bob", "Jones", "bob@example.com", "UTC");
-        let session_id = Id::new_v4();
-        let org = create_test_organization();
-
-        let session_url =
-            format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
-
-        // Each assignee must get their OWN email with their OWN first_name and
-        // recipient address. Body-match per recipient so a regression that sends
-        // both emails to the same person (or with swapped variables) fails here.
-        let _mock_jane = server
-            .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Jane Doe\" <jane@example.com>"],
-                "template": {
-                    "id": "action_template_789",
-                    "variables": {
-                        "first_name": "Jane",
-                        "action_body": "Complete the survey",
-                        "due_date": "No due date set",
-                        "assigner_first_name": "Alex",
-                        "assigner_last_name": "Smith",
-                        "organization_name": "Acme Corp",
-                        "session_url": session_url.clone(),
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let _mock_bob = server
-            .mock("POST", "/emails")
-            .match_body(expect_resend_body(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Bob Jones\" <bob@example.com>"],
-                "template": {
-                    "id": "action_template_789",
-                    "variables": {
-                        "first_name": "Bob",
-                        "action_body": "Complete the survey",
-                        "due_date": "No due date set",
-                        "assigner_first_name": "Alex",
-                        "assigner_last_name": "Smith",
-                        "organization_name": "Acme Corp",
-                        "session_url": session_url.clone(),
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let ctx = ActionEmailContext {
-            action_body: "Complete the survey",
-            due_by: None,
-            session_id,
-            organization: &org,
-            goal: None,
-        };
-
-        let result =
-            send_action_assigned_email(&config, &[assignee1, assignee2], &assigner, &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_action_assigned_email_missing_template_id() {
-        let server = setup_test_server().await;
-        let config = Config::from_args([
-            "test",
-            "--resend-api-key=test_api_key_123",
-            &format!("--resend-base-url={}", server.url()),
-            "--frontend-base-url=https://app.example.com",
-        ]);
-
-        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let session_id = Id::new_v4();
-        let org = create_test_organization();
-
-        let ctx = ActionEmailContext {
-            action_body: "Some action",
-            due_by: None,
-            session_id,
-            organization: &org,
-            goal: None,
-        };
-
-        let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_send_action_assigned_email_empty_assignees_sends_nothing() {
-        let mut server = setup_test_server().await;
-        let config = create_full_config_with_mock(&server.url());
-
-        let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let session_id = Id::new_v4();
-        let org = create_test_organization();
-
-        // Expect exactly zero calls — no assignees means no emails
-        let _mock = server
-            .mock("POST", "/emails")
-            .expect(0)
-            .create_async()
-            .await;
-
-        let ctx = ActionEmailContext {
-            action_body: "Some action",
-            due_by: None,
-            session_id,
-            organization: &org,
-            goal: None,
-        };
-
-        let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    // ── build_session_url Unit Tests ────────────────────────────────────
-
-    /// Helper to construct a `ResolvedEmailConfig` with an optional
-    /// `SessionUrlBuilder`, without needing a real Resend client.
-    async fn create_test_email_config(
-        server_url: &str,
-        url_builder: Option<SessionUrlBuilder>,
-    ) -> ResolvedEmailConfig {
-        let config = create_config_with_mock(server_url);
-        ResolvedEmailConfig {
-            client: ResendClient::new(&config).await.unwrap(),
-            template_id: "test_template".to_string(),
-            session_url_builder: url_builder,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_build_session_url_success() {
-        let server = setup_test_server().await;
-        let email_config = create_test_email_config(
-            &server.url(),
-            Some(SessionUrlBuilder {
-                base_url: "https://app.example.com".to_string(),
-                path_template: "/coaching-sessions/{session_id}".to_string(),
-            }),
-        )
-        .await;
-
-        let session_id = Id::new_v4();
-        let result = email_config.build_session_url(&session_id);
-
-        assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap(),
-            format!("https://app.example.com/coaching-sessions/{session_id}")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_build_session_url_custom_path_template() {
-        let server = setup_test_server().await;
-        let email_config = create_test_email_config(
-            &server.url(),
-            Some(SessionUrlBuilder {
-                base_url: "https://app.example.com".to_string(),
-                path_template: "/sessions/{session_id}?tab=actions".to_string(),
-            }),
-        )
-        .await;
-
-        let session_id = Id::new_v4();
-        let result = email_config.build_session_url(&session_id).unwrap();
-
-        assert_eq!(
-            result,
-            format!("https://app.example.com/sessions/{session_id}?tab=actions")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_build_session_url_no_url_builder() {
-        let server = setup_test_server().await;
-        let email_config = create_test_email_config(&server.url(), None).await;
-
-        let result = email_config.build_session_url(&Id::new_v4());
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    // ── Recurring Sessions Scheduled Email Tests ───────────────────────
-
-    fn create_test_session_on(date: NaiveDate) -> coaching_sessions::Model {
-        coaching_sessions::Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            coaching_session_series_id: None,
-            collab_document_name: None,
-            date: date.and_hms_opt(15, 0, 0).unwrap(),
-            duration_minutes: crate::duration::Duration::default_minutes(),
-            title: None,
-            meeting_url: None,
-            provider: None,
-            created_at: chrono::Utc::now().fixed_offset(),
-            updated_at: chrono::Utc::now().fixed_offset(),
-            hydrated_at: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_send_recurring_sessions_scheduled_email_personalization() {
-        let mut server = setup_test_server().await;
-        let config = create_full_config_with_mock(&server.url());
-
-        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let org = create_test_organization();
-
-        let sessions = vec![
-            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
-            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
-            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
-        ];
-
-        let first_session_url = format!(
-            "https://app.example.com/coaching-sessions/{}",
-            sessions[0].id
-        );
-
-        // Email to coachee — other_user is the coach. Body-match per recipient
-        // proves the role swap.
-        let _mock_coachee = server
-            .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Json(serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Jane Doe\" <jane@example.com>"],
-                "template": {
-                    "id": "recurring_template_xyz",
-                    "variables": {
-                        "first_name": "Jane",
-                        "other_user_first_name": "Alex",
-                        "other_user_last_name": "Smith",
-                        "other_user_role": "coach",
-                        "organization_name": "Acme Corp",
-                        "session_count": 3,
-                        "first_session_date": "Wednesday, March 4, 2026",
-                        "first_session_time": "3:00 PM",
-                        "last_session_date": "Wednesday, March 18, 2026",
-                        "session_duration": "1 hour",
-                        "session_url": first_session_url,
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        // Email to coach — only verify it was sent.
-        let _mock_coach = server
-            .mock("POST", "/emails")
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result =
-            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
-                .await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_recurring_sessions_scheduled_email_single_session() {
-        let mut server = setup_test_server().await;
-        let config = create_full_config_with_mock(&server.url());
-
-        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let org = create_test_organization();
-
-        let sessions = vec![create_test_session_on(
-            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
-        )];
-
-        // With a single session, first and last dates must match.
-        let _mock_coachee = server
-            .mock("POST", "/emails")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "template": {
-                    "variables": {
-                        "session_count": 1,
-                        "first_session_date": "Wednesday, March 4, 2026",
-                        "last_session_date": "Wednesday, March 4, 2026",
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let _mock_coach = server
-            .mock("POST", "/emails")
-            .with_status(200)
-            .with_body(r#"{"id":"email_test"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result =
-            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
-                .await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
-        let server = setup_test_server().await;
-        let config = Config::from_args([
-            "test",
-            "--resend-api-key=test_api_key_123",
-            &format!("--resend-base-url={}", server.url()),
-            "--frontend-base-url=https://app.example.com",
-        ]);
-
-        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let org = create_test_organization();
-        let sessions = vec![create_test_session_on(
-            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
-        )];
-
-        let result =
-            send_recurring_sessions_scheduled_email(&config, &coach, &coachee, &sessions, &org)
-                .await;
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-                _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
-        let server = setup_test_server().await;
-        let email_config = create_test_email_config(
-            &server.url(),
-            Some(SessionUrlBuilder {
-                base_url: "https://app.example.com".to_string(),
-                path_template: "/coaching-sessions/{session_id}".to_string(),
-            }),
-        )
-        .await;
-
-        let recipient = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-        let other = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-        let org = create_test_organization();
-
-        let result = send_recurring_series_email_to_recipient(
-            &email_config,
-            &recipient,
-            &other,
-            "coach",
-            &[],
-            &org,
-        )
-        .await;
-
-        assert!(result.is_err());
-        if let Err(e) = result {
-            match e.error_kind {
-                DomainErrorKind::Internal(InternalErrorKind::Other(msg)) => {
-                    assert!(msg.contains("sessions slice is empty"));
-                }
-                _ => panic!("Expected Internal(Other) error, got: {:?}", e.error_kind),
-            }
-        }
-    }
-
-    // ── format_session_date_time Unit Tests ────────────────────────────
-
-    #[test]
-    fn test_format_session_date_time_utc() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 4)
-            .unwrap()
-            .and_hms_opt(15, 0, 0)
-            .unwrap();
-        let (date_str, time_str) = format_session_date_time(date, "UTC");
-        assert_eq!(date_str, "Wednesday, March 4, 2026");
-        assert_eq!(time_str, "3:00 PM");
-    }
-
-    #[test]
-    fn test_format_session_date_time_eastern() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 4)
-            .unwrap()
-            .and_hms_opt(15, 0, 0)
-            .unwrap();
-        let (date_str, time_str) = format_session_date_time(date, "America/New_York");
-        assert_eq!(date_str, "Wednesday, March 4, 2026");
-        assert_eq!(time_str, "10:00 AM");
-    }
-
-    #[test]
-    fn test_format_session_date_time_invalid_timezone_falls_back_to_utc() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 4)
-            .unwrap()
-            .and_hms_opt(15, 0, 0)
-            .unwrap();
-        let (date_str, time_str) = format_session_date_time(date, "Invalid/Timezone");
-        assert_eq!(date_str, "Wednesday, March 4, 2026");
-        assert_eq!(time_str, "3:00 PM UTC");
-    }
-
-    #[test]
-    fn test_format_session_date_time_date_rolls_over_with_timezone() {
-        // 2026-03-07 23:00 UTC → 2026-03-08 08:00 in Asia/Tokyo (UTC+9)
-        let date = NaiveDate::from_ymd_opt(2026, 3, 7)
-            .unwrap()
-            .and_hms_opt(23, 0, 0)
-            .unwrap();
-        let (date_str, time_str) = format_session_date_time(date, "Asia/Tokyo");
-        assert_eq!(date_str, "Sunday, March 8, 2026");
-        assert_eq!(time_str, "8:00 AM");
     }
 }

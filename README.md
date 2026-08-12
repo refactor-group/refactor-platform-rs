@@ -92,6 +92,10 @@ The platform uses Resend for transactional emails. To configure email functional
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
    - `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for session-scheduled notification emails
    - `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for recurring-sessions-scheduled notification emails
+   - `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for single-session reschedule notification emails
+   - `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for series reschedule notification emails
+   - `SESSION_CANCELLED_EMAIL_TEMPLATE_ID`: The template ID for single-session cancellation notification emails
+   - `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID`: The template ID for series cancellation notification emails
    - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
    - `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID`: The template ID for added-to-organization notification emails
    - `ADDED_TO_ORGANIZATION_EMAIL_URL_PATH`: URL path for the link in added-to-organization emails (default: `/dashboard`)

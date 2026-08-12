@@ -262,6 +262,7 @@ mod tests {
             id: Id::new_v4(),
             coaching_relationship_id,
             rule: serde_json::json!({}),
+            ical_sequence: 0,
             created_by_user_id,
             created_at: now.into(),
             updated_at: now.into(),

@@ -13,7 +13,6 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::{
     coaching_session as CoachingSessionApi, coaching_session_series as CoachingSessionSeriesApi,
-    emails as EmailsApi,
 };
 use serde::Serialize;
 use service::config::ApiVersion;
@@ -58,6 +57,7 @@ pub async fn create(
 
     let (series, sessions) = CoachingSessionSeriesApi::create_with_sessions(
         db,
+        &app_state.config,
         params.coaching_relationship_id,
         user.id,
         params.start_at,
@@ -65,8 +65,6 @@ pub async fn create(
         requested_duration,
     )
     .await?;
-
-    EmailsApi::notify_recurring_sessions_scheduled(db, &app_state.config, &sessions).await;
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
@@ -165,7 +163,7 @@ pub async fn update(
     let db = app_state.db_conn_ref();
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
-    let (updated_series, new_sessions) = CoachingSessionSeriesApi::reschedule(
+    let rescheduled = CoachingSessionSeriesApi::reschedule(
         db,
         &app_state.config,
         series.id,
@@ -179,8 +177,8 @@ pub async fn update(
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
         SeriesWithSessions {
-            series: updated_series,
-            sessions: new_sessions,
+            series: rescheduled.series,
+            sessions: rescheduled.sessions,
         },
     )))
 }

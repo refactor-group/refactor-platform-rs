@@ -5,6 +5,7 @@ use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
 };
 use crate::coaching_sessions::Model;
+use crate::emails;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
@@ -134,6 +135,8 @@ pub async fn create(
     match result {
         Ok((session, events)) => {
             publish_events(event_publisher, events).await;
+            // Best-effort, after commit: a failed invite must not undo a created session.
+            emails::notify_session_scheduled(db, config, &session).await;
             Ok(session)
         }
         Err(e) => {
@@ -307,6 +310,7 @@ where
 
 pub async fn update(
     db: &DatabaseConnection,
+    config: &Config,
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
@@ -318,20 +322,37 @@ pub async fn update(
     coaching_session::normalize_title_in_update_map(&mut update_map);
     coaching_session::validate_title_length_in_update_map(&update_map)?;
 
-    let coaching_session = coaching_session::find_by_id(db, id).await?;
+    let existing = coaching_session::find_by_id(db, id).await?;
     debug!(
         "Domain update coaching_session id={id} relationship_id={} update_map={update_map:?}",
-        coaching_session.coaching_relationship_id
+        existing.coaching_relationship_id
     );
-    let active_model = coaching_session.into_active_model();
-    Ok(
-        mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
-            db,
-            active_model,
-            update_map,
-        )
-        .await?,
+    let old = existing.clone();
+    let old_date = old.date;
+    let active_model = existing.into_active_model();
+
+    // The edit and its SEQUENCE bump commit together: a bump that failed on its own
+    // would leave the row mutated behind a failed request, and the next invite would
+    // reuse a SEQUENCE the client has already seen.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+        &txn,
+        active_model,
+        update_map,
     )
+    .await?;
+    let calendar_relevant = emails::affects_invite(&old, &updated);
+    let updated = match calendar_relevant {
+        true => coaching_session::increment_ical_sequence(&txn, updated.id).await?,
+        false => updated,
+    };
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Best-effort re-send of an updated `.ics` so calendar clients move the event in place.
+    if calendar_relevant {
+        emails::notify_session_rescheduled(db, config, &updated, old_date).await;
+    }
+    Ok(updated)
 }
 
 /// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
@@ -364,11 +385,12 @@ async fn publish_coaching_session_title_updated(
 /// [`update`], which intentionally emits no event.
 pub async fn update_title(
     db: &DatabaseConnection,
+    config: &Config,
     event_publisher: &EventPublisher,
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
-    let coaching_session = update(db, id, params).await?;
+    let coaching_session = update(db, config, id, params).await?;
     publish_coaching_session_title_updated(db, event_publisher, coaching_session.id).await;
     Ok(coaching_session)
 }
@@ -379,12 +401,25 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
         "Domain delete coaching_session id={id} relationship_id={} tiptap_doc={:?}",
         coaching_session.coaching_relationship_id, coaching_session.collab_document_name,
     );
-    if let Some(document_name) = coaching_session.collab_document_name {
+    if let Some(document_name) = coaching_session.collab_document_name.as_deref() {
         let tiptap = TiptapDocument::new(config).await?;
-        tiptap.delete(&document_name).await?;
+        tiptap.delete(document_name).await?;
     }
 
-    coaching_session::delete(db, id).await?;
+    // Bump the SEQUENCE and delete in one transaction, and take the number from the DB
+    // rather than from the model read above. An edit committing between that read and
+    // this delete would otherwise claim the same next SEQUENCE as the cancellation, and a
+    // calendar client that already applied the edit drops the equal-SEQUENCE cancellation
+    // as a duplicate, stranding a deleted session on both calendars. The window is not
+    // theoretical: the Tiptap call above sits inside it. The bump takes the row lock, so a
+    // competing edit either lands first with a lower SEQUENCE or blocks and finds no row.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let cancelled = coaching_session::increment_ical_sequence(&txn, id).await?;
+    coaching_session::delete(&txn, id).await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Announce only once the delete has committed.
+    emails::notify_session_cancelled(db, config, &cancelled).await;
     Ok(())
 }
 
@@ -567,6 +602,8 @@ mod tests {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Local::now().naive_utc(),
             duration_minutes: crate::duration::Duration::default_minutes(),
@@ -608,14 +645,26 @@ mod tests {
             title: Some("Renamed".to_string()),
             ..session.clone()
         };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: 1,
+            ..updated.clone()
+        };
 
         let (publisher, events) = recording_publisher();
+        let config = Config::default();
 
-        // update: find_by_id → UPDATE ... RETURNING; then the participant lookup
-        // (find_also_related) and the membership filter.
+        // A title edit is calendar-relevant, so update runs the reschedule path:
+        // find_by_id → UPDATE ... RETURNING → increment_ical_sequence (a single
+        // self-referential UPDATE ... RETURNING) → best-effort notify whose
+        // relationship lookup returns empty (send skipped). Then the participant lookup
+        // (find_also_related) and the membership filter for the title-updated event.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_query_results::<coaching_relationships::Model, Vec<coaching_relationships::Model>, _>(
+                vec![vec![]],
+            )
             .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
             .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
@@ -626,7 +675,7 @@ mod tests {
             Some(sea_orm::Value::String(Some(Box::new("Renamed".into())))),
         );
 
-        let result = update_title(&db, &publisher, session.id, TestParams(map)).await;
+        let result = update_title(&db, &config, &publisher, session.id, TestParams(map)).await;
         assert!(result.is_ok());
 
         let recorded = events.lock().unwrap();
@@ -928,6 +977,8 @@ mod tests {
             id: Id::new_v4(),
             coaching_relationship_id: relationship.id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: Some("old-doc".to_string()),
             date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
             duration_minutes: crate::duration::Duration::default_minutes(),
@@ -1227,8 +1278,23 @@ mod tests {
             ..test_session(Id::new_v4(), None)
         };
 
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        // find_by_id, BEGIN, the SEQUENCE bump (UPDATE ... RETURNING), DELETE, COMMIT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -1238,6 +1304,71 @@ mod tests {
         delete(&db, &config, session.id).await?;
 
         tiptap_mock.assert_async().await;
+        Ok(())
+    }
+
+    /// A cancellation must outrank the invite it supersedes, or a calendar client drops it
+    /// as a duplicate and the deleted session stays on both participants' calendars. The
+    /// bump therefore has to come from the DB inside the delete transaction, not from
+    /// `model.ical_sequence + 1` computed off a read taken before it: an edit committing in
+    /// that window would claim the same number. Asserting on SQL rather than on a returned
+    /// model, since MockDatabase echoes whatever the test appends.
+    #[tokio::test]
+    async fn delete_bumps_ical_sequence_in_sql_before_deleting() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let _tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            ..test_session(Id::new_v4(), None)
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+
+        let bump = sql
+            .iter()
+            .position(|q| q.contains(r#""ical_sequence" = "ical_sequence" + "#))
+            .unwrap_or_else(|| panic!("no self-referential SEQUENCE bump: {sql:?}"));
+        let del = sql
+            .iter()
+            .position(|q| q.contains("DELETE"))
+            .unwrap_or_else(|| panic!("no DELETE: {sql:?}"));
+        assert!(bump < del, "the bump must precede the delete: {sql:?}");
         Ok(())
     }
 

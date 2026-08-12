@@ -30,6 +30,16 @@ pub enum Status {
     WontDo,
 }
 
+impl Status {
+    /// The completed statuses, for pushing an open/completed split into a query.
+    pub const COMPLETED: [Status; 2] = [Status::Completed, Status::WontDo];
+
+    /// Returns `true` for the completed statuses (`Completed` or `WontDo`).
+    pub fn is_completed(&self) -> bool {
+        Self::COMPLETED.contains(self)
+    }
+}
+
 impl From<&str> for Status {
     fn from(value: &str) -> Self {
         match value {
@@ -54,3 +64,7 @@ impl std::fmt::Display for Status {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "status_tests.rs"]
+mod tests;
