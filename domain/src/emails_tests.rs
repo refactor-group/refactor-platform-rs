@@ -1,8 +1,13 @@
 use super::*;
 use crate::{coaching_sessions, organizations, users, Id};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use chrono::NaiveDate;
 use mockito::{Server, ServerGuard};
 use service::config::Config;
+#[cfg(feature = "mock")]
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 async fn setup_test_server() -> ServerGuard {
     Server::new_async().await
@@ -41,6 +46,55 @@ fn expect_resend_body_with_ics(
             r#""content_type":"text/calendar; method={method_name}; charset=UTF-8""#
         )),
     ])
+}
+
+/// Captures the decoded `.ics` from the request Resend receives, so a test can assert
+/// *which* invite was attached. Without this, the base64 payload is opaque and swapping
+/// the two arms of an occurrence-vs-standalone dispatch changes nothing observable.
+#[derive(Clone, Default)]
+struct IcsCapture(Arc<Mutex<Option<String>>>);
+
+impl IcsCapture {
+    /// A `match_request` predicate that records and always matches: capturing is a
+    /// side effect, and letting it reject would surface as a confusing mock miss.
+    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
+        let slot = self.0.clone();
+        move |req| {
+            let decoded = req
+                .body()
+                .ok()
+                .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+                .and_then(|payload| {
+                    payload["attachments"][0]["content"]
+                        .as_str()
+                        .and_then(|content| STANDARD.decode(content).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                })
+                // Unfolded: RFC 5545 wraps at 75 octets, and a UID is long enough to split.
+                .map(|ics| ics.replace("\r\n ", "").replace("\r\n\t", ""));
+            *slot.lock().unwrap() = decoded;
+            true
+        }
+    }
+
+    fn ics(&self) -> String {
+        self.0
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("no .ics attachment was captured")
+    }
+
+    /// Just the VEVENT. A spliced VTIMEZONE carries its own RRULE for DST, so a
+    /// whole-document search for "RRULE" matches even on an override instance.
+    fn vevent(&self) -> String {
+        let ics = self.ics();
+        let start = ics
+            .find("BEGIN:VEVENT")
+            .expect("no VEVENT in captured .ics");
+        let end = ics.find("END:VEVENT").expect("unterminated VEVENT");
+        ics[start..end].to_string()
+    }
 }
 
 fn create_test_user() -> users::Model {
@@ -743,6 +797,35 @@ fn reject_template_variables(keys: &'static [&'static str]) -> impl Fn(&mockito:
     }
 }
 
+/// The exact set of template variables the payload may declare, plus the absence of a
+/// payload-level `subject`. The body matcher is a subset match (the base64 attachment
+/// cannot be predicted), so on its own it cannot see a renamed or stray variable. That
+/// matters in production: Resend fails a send with 422 when the template declares a
+/// variable the payload does not supply.
+#[cfg(feature = "mock")]
+fn expect_exact_template_variables(
+    keys: &'static [&'static str],
+) -> impl Fn(&mockito::Request) -> bool {
+    move |request| {
+        request
+            .utf8_lossy_body()
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|payload| {
+                let actual: BTreeSet<&str> = payload["template"]["variables"]
+                    .as_object()?
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                Some(
+                    actual == keys.iter().copied().collect::<BTreeSet<&str>>()
+                        && payload.get("subject").is_none(),
+                )
+            })
+            .unwrap_or(false)
+    }
+}
+
 /// T1: both `when` variables ride along on a reschedule, each rendered in the
 /// recipient's own timezone.
 #[cfg(feature = "mock")]
@@ -1008,6 +1091,22 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
             "recurrence_summary",
             "previous_recurrence_summary",
         ]))
+        // The full contract for a single-session reschedule. A variable renamed on one
+        // side of the template boundary is a 422 in production, invisible to a subset match.
+        .match_request(expect_exact_template_variables(&[
+            "first_name",
+            "organization_name",
+            "other_user_first_name",
+            "other_user_last_name",
+            "other_user_role",
+            "previous_session_when",
+            "session_date",
+            "session_duration",
+            "session_or_series",
+            "session_time",
+            "session_url",
+            "session_when",
+        ]))
         .with_status(200)
         .with_body(r#"{"id":"email_test"}"#)
         .expect(2)
@@ -1027,6 +1126,67 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
     assert!(result.is_ok());
 
     mock.assert_async().await;
+}
+
+/// Moving one meeting of a series must address that occurrence, not the whole series:
+/// the invite carries the SERIES UID plus a `RECURRENCE-ID` naming the original start,
+/// and must not restate the `RRULE` (which would redefine the series from this
+/// occurrence forward). Decoding the attachment is the only way to see this: the
+/// template variables are identical either way.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = mock_description_loaders();
+    let capture = IcsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let series_id = Id::new_v4();
+    let original_start = NaiveDate::from_ymd_opt(2026, 3, 4)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+    let session = create_test_series_session(series_id, original_start);
+    let org = create_test_organization();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_rescheduled_email(
+        &db,
+        &config,
+        &coach,
+        &coachee,
+        &session,
+        &org,
+        original_start,
+    )
+    .await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("UID:{series_id}@")),
+        "an occurrence move must address the series UID: {ics}"
+    );
+    assert!(
+        ics.contains("RECURRENCE-ID"),
+        "without RECURRENCE-ID this rewrites the whole series: {ics}"
+    );
+    assert!(ics.contains("METHOD:REQUEST"), "{ics}");
+    assert!(
+        !capture.vevent().contains("RRULE"),
+        "an override instance must not restate the series rule: {ics}"
+    );
 }
 
 // ── Session Cancelled Email Tests ──────────────────────────────────
@@ -1076,6 +1236,7 @@ async fn test_send_session_cancelled_email() {
         "a cancellation must not carry a session URL template"
     );
 
+    let capture = IcsCapture::default();
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
     let session = create_test_session();
@@ -1131,6 +1292,7 @@ async fn test_send_session_cancelled_email() {
             }),
             &ical::Method::Cancel,
         ))
+        .match_request(capture.recorder())
         .with_status(200)
         .with_body(r#"{"id":"email_test"}"#)
         .expect(1)
@@ -1143,6 +1305,20 @@ async fn test_send_session_cancelled_email() {
     // The send swallows errors, so the mock assertions are what give this test teeth.
     mock_coachee.assert_async().await;
     mock_coach.assert_async().await;
+
+    // Decoding the attachment is what separates this from its per-occurrence sibling:
+    // a standalone cancellation must address the session's own UID and must NOT name an
+    // occurrence, or a client would look for a parent series that does not exist.
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("UID:{}@", session.id)),
+        "a standalone cancellation must carry the session UID: {ics}"
+    );
+    assert!(
+        !ics.contains("RECURRENCE-ID"),
+        "a standalone session has no occurrence to name: {ics}"
+    );
+    assert!(ics.contains("METHOD:CANCEL"), "{ics}");
 }
 
 /// T5: a cancellation keeps its existing variables and carries neither `when`
@@ -1335,11 +1511,15 @@ async fn test_notify_session_cancelled_skips_series_member_without_recurrence_id
 }
 
 /// Per-occurrence cancellations are still one session being cancelled, so they use the
-/// session template and the CANCEL attachment, not any series-level variant.
+/// session template and the CANCEL attachment, not any series-level variant. The
+/// attachment itself is decoded: a cancellation of one occurrence must address the
+/// *series* UID and name the occurrence by `RECURRENCE-ID`, or a calendar client would
+/// cancel the whole series instead of the single meeting.
 #[tokio::test]
 async fn test_send_occurrence_cancelled_email_uses_session_template() {
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
+    let capture = IcsCapture::default();
 
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
@@ -1391,6 +1571,7 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
             }),
             &ical::Method::Cancel,
         ))
+        .match_request(capture.recorder())
         .with_status(200)
         .with_body(r#"{"id":"email_test"}"#)
         .expect(1)
@@ -1403,6 +1584,21 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
     // The send swallows errors, so the mock assertions are what give this test teeth.
     mock_coachee.assert_async().await;
     mock_coach.assert_async().await;
+
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("UID:{series_id}@")),
+        "an occurrence override must carry the series UID: {ics}"
+    );
+    assert!(
+        ics.contains("RECURRENCE-ID"),
+        "without RECURRENCE-ID this cancels the whole series: {ics}"
+    );
+    assert!(ics.contains("METHOD:CANCEL"), "{ics}");
+    assert!(
+        !capture.vevent().contains("RRULE"),
+        "an override instance must not restate the series rule: {ics}"
+    );
 }
 
 /// Deleting an already-completed session is housekeeping, not a cancellation. The
@@ -2128,6 +2324,26 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from
             }),
             &ical::Method::Request,
         ))
+        // The full contract for a series reschedule, including both Phase 11 recurrence
+        // variables. This is the widest payload we send, so a rename hides most easily here.
+        .match_request(expect_exact_template_variables(&[
+            "first_name",
+            "first_session_date",
+            "first_session_time",
+            "last_session_date",
+            "organization_name",
+            "other_user_first_name",
+            "other_user_last_name",
+            "other_user_role",
+            "previous_recurrence_summary",
+            "previous_session_when",
+            "recurrence_summary",
+            "session_count",
+            "session_duration",
+            "session_or_series",
+            "session_url",
+            "session_when",
+        ]))
         .with_status(200)
         .with_body(r#"{"id":"email_test"}"#)
         .expect(2)

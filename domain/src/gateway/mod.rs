@@ -1,5 +1,4 @@
 pub mod google_meet;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod ical;
 pub mod oauth;
 pub mod recall_ai;

@@ -58,8 +58,9 @@ pub struct Recurrence {
 
 impl Recurrence {
     /// The step count in the frequency's own unit. `Biweekly` steps two weeks per
-    /// `interval`, so it must stay in lockstep with the `RRULE` interval.
-    fn effective_interval(&self) -> u32 {
+    /// `interval`. Shared with the `RRULE` builder so the emitted calendar rule and
+    /// the human summary can never disagree about how often a series repeats.
+    pub(crate) fn effective_interval(&self) -> u32 {
         match self.frequency {
             Frequency::Biweekly => 2 * self.interval,
             _ => self.interval,

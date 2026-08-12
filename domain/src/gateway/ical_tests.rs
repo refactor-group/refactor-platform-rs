@@ -320,7 +320,9 @@ fn description_full_single() {
     let actions = vec![
         OpenAction {
             body: "Draft doc".into(),
-            due_by: Some(dt(2026, 9, 15, 19, 0)),
+            // 02:00 UTC is still Sep 14 in New York, so the rendered date differs
+            // from the naive one and the anchor timezone is genuinely exercised.
+            due_by: Some(dt(2026, 9, 15, 2, 0)),
         },
         OpenAction {
             body: "Email team".into(),
@@ -345,7 +347,7 @@ fn description_full_single() {
     assert!(out.contains("Goals you're working toward:"));
     assert!(out.contains("- Ship v2"));
     assert!(out.contains("Actions due for this session:"));
-    assert!(out.contains("- Draft doc (due Sep 15, 2026)"));
+    assert!(out.contains("- Draft doc (due Sep 14, 2026)"));
     assert!(out.contains("- Email team (no due date)"));
 }
 

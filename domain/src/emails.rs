@@ -398,6 +398,23 @@ pub(crate) async fn send_password_reset_email(
     email_config.client.send_email(email_request).await
 }
 
+/// The first and last session of a series slice, which every series email needs to
+/// render its date range. Unreachable in practice: each `notify_*` caller returns
+/// early on an empty slice. One guard rather than three keeps that fact in one place.
+fn series_bounds(
+    sessions: &[coaching_sessions::Model],
+) -> Result<(&coaching_sessions::Model, &coaching_sessions::Model), Error> {
+    match (sessions.first(), sessions.last()) {
+        (Some(first), Some(last)) => Ok((first, last)),
+        _ => Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Cannot send series email: sessions slice is empty".to_string(),
+            )),
+        }),
+    }
+}
+
 /// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
 /// Falls back to UTC formatting if the timezone string is invalid.
 fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, String) {
@@ -483,11 +500,31 @@ const SERIES_CANCELLED_DESCRIPTION: &str =
 /// `myrefactor.com` apex aren't affected by Resend's sending infrastructure.
 const FROM_ADDRESS: &str = "hello@mail.myrefactor.com";
 
+/// `UID` domain. Not a sending address: RFC 5545 only requires global uniqueness.
+const UID_DOMAIN: &str = "myrefactor.com";
+
 /// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
 const FROM_DISPLAY_NAME: &str = "Refactor Coach";
 
 /// The platform organizes every invite: calendar clients only apply updates when the
 /// `ORGANIZER` matches the sending address.
+/// The zone every `.ics` for a session is anchored to. The coach owns the schedule, so
+/// their zone is the one whose DST rules the emitted `VTIMEZONE` must follow.
+fn anchor_tz(coach: &users::Model) -> chrono_tz::Tz {
+    coach.timezone.parse().unwrap_or(chrono_tz::UTC)
+}
+
+/// A globally unique, stable `UID` for a calendar event. Stability is the whole
+/// mechanism: a client matches an update to the event it supersedes by `UID`.
+fn ics_uid(id: Id) -> String {
+    format!("{id}@{UID_DOMAIN}")
+}
+
+/// The event title as it appears on a calendar.
+fn session_summary(organization: &organizations::Model) -> String {
+    format!("Coaching Session: {}", organization.name)
+}
+
 fn platform_organizer() -> ical::Participant<'static> {
     ical::Participant::new(FROM_DISPLAY_NAME, FROM_ADDRESS)
 }
@@ -634,16 +671,13 @@ fn build_session_invite_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
-        uid: format!("{}@myrefactor.com", session.id),
+        uid: ics_uid(session.id),
         sequence: session.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: format!("Coaching Session: {}", organization.name),
+        summary: session_summary(organization),
         description,
         anchor_tz,
         dtstamp,
@@ -671,16 +705,13 @@ fn build_occurrence_reschedule_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
-        uid: format!("{series_id}@myrefactor.com"),
+        uid: ics_uid(series_id),
         sequence: session.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: format!("Coaching Session: {}", organization.name),
+        summary: session_summary(organization),
         description,
         anchor_tz,
         dtstamp,
@@ -745,10 +776,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         })
         .collect::<Vec<OpenAction>>();
 
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
@@ -1036,17 +1064,14 @@ fn build_session_cancel_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
-        uid: format!("{}@myrefactor.com", session.id),
+        uid: ics_uid(session.id),
         // In-memory bump only: the row is being deleted, so persisting it is a wasted write.
         sequence: session.ical_sequence + 1,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: format!("Coaching Session: {}", organization.name),
+        summary: session_summary(organization),
         description,
         anchor_tz,
         dtstamp,
@@ -1073,17 +1098,14 @@ fn build_occurrence_cancel_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
-        uid: format!("{series_id}@myrefactor.com"),
+        uid: ics_uid(series_id),
         // In-memory bump only: the row is being deleted, so persisting it is a wasted write.
         sequence: session.ical_sequence + 1,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: format!("Coaching Session: {}", organization.name),
+        summary: session_summary(organization),
         description,
         anchor_tz,
         dtstamp,
@@ -1262,13 +1284,7 @@ async fn send_recurring_series_email_to_recipient(
     recurrence_summary: &str,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
-    let first = sessions.first().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-            "Cannot send recurring sessions email: sessions slice is empty".to_string(),
-        )),
-    })?;
-    let last = sessions.last().expect("non-empty slice already checked");
+    let (first, last) = series_bounds(sessions)?;
 
     let (first_session_date, first_session_time) =
         format_session_date_time(first.date, &recipient.timezone);
@@ -1336,17 +1352,14 @@ fn build_series_invite_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
     let invite = ical::IcsInvite {
-        uid: format!("{}@myrefactor.com", series.id),
+        uid: ics_uid(series.id),
         sequence: series.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: format!("Coaching Session: {}", organization.name),
+        summary: session_summary(organization),
         description,
         anchor_tz,
         dtstamp,
@@ -1404,10 +1417,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         .filter_map(|g| g.title)
         .collect::<Vec<String>>();
 
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
@@ -1632,18 +1642,15 @@ fn build_series_cancel_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = coach
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .unwrap_or(chrono_tz::UTC);
+    let anchor_tz = anchor_tz(coach);
     let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
     let invite = ical::IcsInvite {
-        uid: format!("{}@myrefactor.com", series.id),
+        uid: ics_uid(series.id),
         // In-memory bump only: the row is being deleted, so persisting it is a wasted write.
         sequence: series.ical_sequence + 1,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: format!("Coaching Session: {}", organization.name),
+        summary: session_summary(organization),
         description,
         anchor_tz,
         dtstamp,
@@ -1669,14 +1676,7 @@ async fn send_recurring_sessions_cancelled_email_to_recipient(
     organization: &organizations::Model,
     ics_body: &str,
 ) -> Result<(), Error> {
-    let (Some(first), Some(last)) = (sessions.first(), sessions.last()) else {
-        return Err(Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Cannot send series cancelled email: sessions slice is empty".to_string(),
-            )),
-        });
-    };
+    let (first, last) = series_bounds(sessions)?;
 
     let (first_session_date, _) = format_session_date_time(first.date, &recipient.timezone);
     let (last_session_date, _) = format_session_date_time(last.date, &recipient.timezone);
@@ -1722,12 +1722,7 @@ async fn send_recurring_sessions_cancelled_email(
 
     let email_config = ResolvedEmailConfig::new::<RecurringSessionsCancelled>(config).await?;
 
-    let first = sessions.first().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-            "Cannot send series cancelled email: sessions slice is empty".to_string(),
-        )),
-    })?;
+    let (first, _) = series_bounds(sessions)?;
 
     let ics_body = build_series_cancel_ics(
         coach,

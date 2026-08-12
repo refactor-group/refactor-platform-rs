@@ -136,13 +136,12 @@ fn weekday_code(wd: Weekday) -> &'static str {
 
 /// Build the `RRULE:` value from a recurrence rule, mirroring the series materializer.
 fn rrule_value(rule: &Recurrence) -> String {
-    let (freq, base_interval) = match rule.frequency {
-        Frequency::Daily => ("DAILY", 1),
-        Frequency::Weekly => ("WEEKLY", 1),
-        Frequency::Biweekly => ("WEEKLY", 2),
-        Frequency::Monthly => ("MONTHLY", 1),
+    let freq = match rule.frequency {
+        Frequency::Daily => "DAILY",
+        Frequency::Weekly | Frequency::Biweekly => "WEEKLY",
+        Frequency::Monthly => "MONTHLY",
     };
-    let effective_interval = base_interval * rule.interval;
+    let effective_interval = rule.effective_interval();
 
     let mut parts = vec![format!("FREQ={freq}")];
     if effective_interval > 1 {
