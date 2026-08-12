@@ -306,15 +306,6 @@ where
         .collect())
 }
 
-/// True when a calendar-relevant field changed (drives a reschedule invite).
-/// Title rides in the `.ics` DESCRIPTION, so a title edit counts as calendar-relevant.
-fn is_calendar_relevant_change(old: &Model, new: &Model) -> bool {
-    old.date != new.date
-        || old.duration_minutes != new.duration_minutes
-        || old.meeting_url != new.meeting_url
-        || old.title != new.title
-}
-
 pub async fn update(
     db: &DatabaseConnection,
     config: &Config,
@@ -348,7 +339,7 @@ pub async fn update(
         update_map,
     )
     .await?;
-    let calendar_relevant = is_calendar_relevant_change(&old, &updated);
+    let calendar_relevant = emails::affects_invite(&old, &updated);
     let updated = match calendar_relevant {
         true => coaching_session::increment_ical_sequence(&txn, updated.id).await?,
         false => updated,
@@ -558,74 +549,6 @@ fn generate_document_name(
     unique_id: Id,
 ) -> String {
     format!("{organization_slug}.{relationship_slug}.{unique_id}-v0")
-}
-
-#[cfg(test)]
-mod calendar_change_tests {
-    use super::*;
-
-    fn sample_model() -> Model {
-        let now = chrono::Utc::now();
-        Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            coaching_session_series_id: None,
-            ical_sequence: 0,
-            ical_recurrence_id: None,
-            collab_document_name: None,
-            date: chrono::NaiveDate::from_ymd_opt(2026, 3, 4)
-                .unwrap()
-                .and_hms_opt(15, 0, 0)
-                .unwrap(),
-            duration_minutes: 60,
-            title: None,
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: Some(now.into()),
-        }
-    }
-
-    #[test]
-    fn test_is_calendar_relevant_change() {
-        let base = sample_model();
-
-        // Identical models: no calendar-relevant change.
-        assert!(!is_calendar_relevant_change(&base, &base.clone()));
-
-        // Each calendar-relevant field flips the result to true.
-        let date_changed = Model {
-            date: base.date + chrono::Duration::hours(1),
-            ..base.clone()
-        };
-        assert!(is_calendar_relevant_change(&base, &date_changed));
-
-        let duration_changed = Model {
-            duration_minutes: base.duration_minutes + 15,
-            ..base.clone()
-        };
-        assert!(is_calendar_relevant_change(&base, &duration_changed));
-
-        let url_changed = Model {
-            meeting_url: Some("https://meet.example/new".to_string()),
-            ..base.clone()
-        };
-        assert!(is_calendar_relevant_change(&base, &url_changed));
-
-        let title_changed = Model {
-            title: Some("A title".to_string()),
-            ..base.clone()
-        };
-        assert!(is_calendar_relevant_change(&base, &title_changed));
-
-        // A non-calendar field (updated_at) does not count.
-        let updated_at_changed = Model {
-            updated_at: base.updated_at + chrono::Duration::hours(2),
-            ..base.clone()
-        };
-        assert!(!is_calendar_relevant_change(&base, &updated_at_changed));
-    }
 }
 
 #[cfg(test)]

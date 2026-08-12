@@ -1189,6 +1189,48 @@ async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
     );
 }
 
+/// The predicate that decides whether an edit earns a fresh invite. Each field it names
+/// is one the `.ics` actually carries, and `updated_at` is the control: a field the invite
+/// does not carry must not trigger a re-send.
+#[test]
+fn affects_invite_tracks_only_fields_the_invite_carries() {
+    let base = create_test_session();
+    assert!(!affects_invite(&base, &base.clone()));
+
+    let date_changed = coaching_sessions::Model {
+        date: base.date + chrono::Duration::hours(1),
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &date_changed), "DTSTART moved");
+
+    let duration_changed = coaching_sessions::Model {
+        duration_minutes: base.duration_minutes + 15,
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &duration_changed), "DTEND moved");
+
+    let url_changed = coaching_sessions::Model {
+        meeting_url: Some("https://meet.example/new".to_string()),
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &url_changed), "LOCATION/CONFERENCE");
+
+    let title_changed = coaching_sessions::Model {
+        title: Some("A title".to_string()),
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &title_changed), "DESCRIPTION");
+
+    let updated_at_changed = coaching_sessions::Model {
+        updated_at: base.updated_at + chrono::Duration::hours(2),
+        ..base.clone()
+    };
+    assert!(
+        !affects_invite(&base, &updated_at_changed),
+        "updated_at is not in the invite, so it must not re-send"
+    );
+}
+
 // ── Session Cancelled Email Tests ──────────────────────────────────
 
 /// A cancellation must supersede the invite it replaces: same `UID`, next `SEQUENCE`.

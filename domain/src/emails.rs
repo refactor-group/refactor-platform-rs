@@ -475,6 +475,27 @@ fn format_previous_recurrence_summary(previous: &str, current: &str) -> String {
 /// model is which: both are the same type, so bare references read ambiguously.
 pub struct PreviousSeries<'a>(pub &'a coaching_session_series::Model);
 
+/// True when an edit changes something the invite carries, so the calendar needs a fresh
+/// `.ics` under the next `SEQUENCE`.
+///
+/// Lives here rather than with the session entity because it is a statement about invite
+/// content, not about the session: `title` qualifies only because it rides in the `.ics`
+/// DESCRIPTION. Anything added to an invite has to be added here too.
+///
+/// Known gap: the DESCRIPTION also carries topics, goals, and open actions, which are
+/// edited through their own endpoints and so cannot be seen by a before/after comparison
+/// of the session row. Editing those does not currently re-send.
+///
+/// Must stay pure and synchronous. The caller runs it inside the update transaction to
+/// decide whether to bump `SEQUENCE`, which commits with the edit; the email that follows
+/// is best-effort and cannot be what makes the decision.
+pub fn affects_invite(old: &coaching_sessions::Model, new: &coaching_sessions::Model) -> bool {
+    old.date != new.date
+        || old.duration_minutes != new.duration_minutes
+        || old.meeting_url != new.meeting_url
+        || old.title != new.title
+}
+
 /// The two people on a coaching session, carried as one named value rather than as an
 /// adjacent pair of `&users::Model`. A transposed pair still type-checks and would swap
 /// every "your coach" / "your coachee" phrase in the copy without failing a build.
