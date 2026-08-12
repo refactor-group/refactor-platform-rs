@@ -46,6 +46,30 @@ The anchor timezone is the **coach's `users.timezone` at send time**.
 
 ---
 
+## ⚠️ Running this plan sends real email
+
+**A local backend using the dev `.env` mails real people.** The dev config carries live Resend
+template ids, and every create, reschedule, and cancel mails **both** participants. This is not
+obvious from a local run, and it has already caught someone out: a first pass through this plan
+generated an estimated 60 to 90 real sends before anyone noticed.
+
+Two ways to avoid it, in order of preference:
+
+1. **Point the backend at a mock Resend** and assert on the captured payload. `RESEND_BASE_URL`
+   is configurable (`service/src/config.rs`), so this needs no code change. Run a second backend
+   on another port so normal local development is undisturbed:
+   ```
+   RESEND_BASE_URL=http://localhost:4555 RESEND_API_KEY=re_mock_capture_key \
+     ./target/debug/refactor_platform_rs -l INFO --port 4001
+   ```
+   A key must be present or the client refuses to build; the mock never checks its value. The
+   invite arrives base64-encoded in `attachments[0].content`. This is the right default for
+   anything except the calendar-client cases.
+2. **Use a relationship where you own both inboxes**, so every send lands somewhere harmless.
+
+The calendar-client half of this plan (does an update apply in place?) genuinely requires real
+delivery, so use option 2 for those cases specifically.
+
 ## Setup / prerequisites
 
 1. **Resend config** (real key so emails actually send): `--resend-api-key`,
@@ -221,6 +245,17 @@ two paths send different variables, so one template cannot render both.
 ---
 
 ## Reschedule: series (Phase 5b)
+
+> 🔴 **Blocked for any series that has content.** A session carrying a note, action, or agreement
+> cannot be deleted, because those tables reference `coaching_sessions.id` with
+> `ON DELETE NO ACTION`. Series reschedule and cancel both bulk-delete future sessions, so both
+> return **503** once real coaching has happened in the series. Tracked as
+> `refactor-platform-fe#446`; **pre-existing on `main`, not introduced by this work**, and awaiting
+> a cascade-or-block product decision.
+>
+> Practical effect on this plan: every series case below can only be exercised on a **content-free**
+> series. Note that this inverts RS5's premise, which worries that a reschedule destroys notes; the
+> foreign key currently makes such a series impossible to reschedule at all.
 
 Rescheduling a series (`PUT /coaching_session_series/:id`) re-sends the recurring invite to both
 participants with the **same UID** (`<series_id>@myrefactor.com`) and a **bumped `SEQUENCE`**, so the
@@ -477,6 +512,33 @@ in **Outlook desktop** is the outstanding verification gate before this work mer
 event renders at the coach's correct local time with the `VTIMEZONE` respected.
 
 ---
+
+## Already automated (frontend, 2026-08-12)
+
+Three Playwright specs live in the frontend repo, 13 tests, all green against a backend built from
+this branch on real Postgres. They use the mock-Resend harness described at the top, so they assert
+on the invite itself rather than only on app state:
+
+- `__tests__/e2e/ics-invite-attachment-live.spec.ts` plus `support/mock-resend.ts`: create,
+  **RS1** (proven as *zero emails sent*, not merely an unchanged sequence), **HR1**, **HC1**,
+  **RS6**, and **H2** (`DTSTART;TZID=America/Chicago:20270707T120000`, confirming the DST-aware
+  conversion is correct rather than merely present, and the inverse UTC case emitting a bare `Z`
+  with no `VTIMEZONE`).
+- `ics-session-reschedule-live.spec.ts` and `ics-session-delete-live.spec.ts`: the same cases
+  driven through the real UI, plus the email-failure sad path.
+
+**RS5 passed including an edge case worth knowing:** the frontend omits `interval` when it is 1,
+while the stored rule normalizes to `interval: 1`. The compare-by-meaning guard handles it; a
+JSON-blob comparison would not have.
+
+⚠️ **Known concurrency caveat, outside what RS6 asks.** With five edits genuinely in flight at
+once, `SEQUENCE` still advanced correctly and without gaps, but the stored date settled on the
+fourth edit rather than the fifth. Last-write-wins is not guaranteed to match last-submitted when
+two people edit simultaneously. The invite is consistent with whatever the row ends up holding, so
+no calendar diverges from the app; it is the row itself that picks a winner non-deterministically.
+
+Still not covered anywhere: HE1 to HE5 and SE1 (email body copy), and every series case, blocked
+by `refactor-platform-fe#446` above.
 
 ## Automating this with Playwright
 
