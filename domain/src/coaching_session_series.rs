@@ -28,7 +28,7 @@ pub use entity_api::coaching_session_series::Model;
 /// `duration_minutes` is captured here — a coach who updates their default
 /// duration between create and reschedule shouldn't see the existing series
 /// flip durations under them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SeriesRule {
     pub start_at: NaiveDateTime,
     pub recurrence: Recurrence,
@@ -162,12 +162,16 @@ pub async fn reschedule(
     // rather than re-deriving the coach's *current* default (which may have
     // changed since the series was created). An explicit request still wins.
     let existing = coaching_session_series::find_by_id(db, series_id).await?;
-    let resolved_duration = match new_requested_duration {
-        Some(duration) => duration,
-        None => {
-            let existing_rule: SeriesRule = serde_json::from_value(existing.rule.clone())?;
-            Duration::from_minutes_unchecked(existing_rule.duration_minutes)
-        }
+    // An unreadable stored rule is treated as "differs", which re-materializes rather
+    // than wrongly reporting no change.
+    let existing_rule: Option<SeriesRule> = serde_json::from_value(existing.rule.clone()).ok();
+    let resolved_duration = match (new_requested_duration, &existing_rule) {
+        (Some(duration), _) => duration,
+        (None, Some(rule)) => Duration::from_minutes_unchecked(rule.duration_minutes),
+        // Only reachable when the stored rule is unreadable; re-parse so the caller
+        // sees the actual deserialization error rather than an invented one.
+        (None, None) => serde_json::from_value::<SeriesRule>(existing.rule.clone())
+            .map(|rule| Duration::from_minutes_unchecked(rule.duration_minutes))?,
     };
 
     let new_rule = SeriesRule {
@@ -175,13 +179,14 @@ pub async fn reschedule(
         recurrence: new_recurrence,
         duration_minutes: resolved_duration.minutes(),
     };
-    let new_rule = serde_json::to_value(&new_rule)?;
 
     let future_sessions =
         entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
             .await?;
 
-    if new_rule == existing.rule {
+    // Compared as parsed rules, not as JSON: field order, an omitted-vs-null optional, or
+    // a field that gained a serde default would all read as "changed" on a blob compare.
+    if existing_rule.as_ref() == Some(&new_rule) {
         debug!("Reschedule of series {series_id} matches the stored rule; nothing to do");
         return Ok(Rescheduled {
             series: existing,
@@ -189,6 +194,8 @@ pub async fn reschedule(
             changed: false,
         });
     }
+
+    let new_rule = serde_json::to_value(&new_rule)?;
 
     // Snapshot Tiptap docs to clean up *after* the DB txn commits.
     let doc_names_to_cleanup: Vec<String> = future_sessions
@@ -671,6 +678,74 @@ mod tests {
                 .any(|s| s.contains("DELETE") || s.contains("UPDATE") || s.contains("INSERT")),
             "a no-op reschedule must not write: {sql:?}"
         );
+        Ok(())
+    }
+
+    /// The stored rule is compared as a parsed `SeriesRule`, not as a JSON blob. Here it
+    /// carries an extra key that serde ignores, so the rules mean the same thing while
+    /// their JSON differs. A blob comparison would call this a change and destroy every
+    /// future session to rebuild an identical schedule.
+    #[tokio::test]
+    async fn reschedule_compares_rules_by_meaning_not_by_json() -> Result<(), Error> {
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let start_at = start();
+        let mut stored_rule = serde_json::to_value(SeriesRule {
+            start_at,
+            recurrence: weekly_rule_count(3),
+            duration_minutes: 60,
+        })?;
+        // A field written by some other version of this struct.
+        stored_rule["legacy_field"] = serde_json::json!("ignored");
+
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: Id::new_v4(),
+            rule: stored_rule,
+            ical_sequence: 9,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let future_session = coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: existing_series.coaching_relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: start_at + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![future_session]])
+            .into_connection();
+
+        let rescheduled = reschedule(
+            &db,
+            &test_config(),
+            series_id,
+            Id::new_v4(),
+            start_at,
+            weekly_rule_count(3),
+            None,
+        )
+        .await?;
+
+        assert!(
+            !rescheduled.changed,
+            "an ignored extra key does not change what the rule means"
+        );
+        assert_eq!(rescheduled.series.ical_sequence, 9, "SEQUENCE not burned");
         Ok(())
     }
 

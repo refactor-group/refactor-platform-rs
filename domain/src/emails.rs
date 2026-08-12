@@ -506,8 +506,6 @@ const UID_DOMAIN: &str = "myrefactor.com";
 /// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
 const FROM_DISPLAY_NAME: &str = "Refactor Coach";
 
-/// The platform organizes every invite: calendar clients only apply updates when the
-/// `ORGANIZER` matches the sending address.
 /// The zone every `.ics` for a session is anchored to. The coach owns the schedule, so
 /// their zone is the one whose DST rules the emitted `VTIMEZONE` must follow.
 fn anchor_tz(coach: &users::Model) -> chrono_tz::Tz {
@@ -525,6 +523,8 @@ fn session_summary(organization: &organizations::Model) -> String {
     format!("Coaching Session: {}", organization.name)
 }
 
+/// The platform organizes every invite: calendar clients only apply updates when the
+/// `ORGANIZER` matches the sending address.
 fn platform_organizer() -> ical::Participant<'static> {
     ical::Participant::new(FROM_DISPLAY_NAME, FROM_ADDRESS)
 }
