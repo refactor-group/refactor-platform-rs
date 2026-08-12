@@ -440,6 +440,16 @@ fn format_previous_session_when(
     }
 }
 
+/// The previous cadence phrase, or [`UNCHANGED_SESSION_WHEN`] when the series still
+/// repeats as often as it did.
+fn format_previous_recurrence_summary(previous: &str, current: &str) -> String {
+    if previous != current {
+        previous.to_string()
+    } else {
+        UNCHANGED_SESSION_WHEN.to_string()
+    }
+}
+
 /// The series as it stood before a reschedule. A newtype so the call site names which
 /// model is which: both are the same type, so bare references read ambiguously.
 pub struct PreviousSeries<'a>(pub &'a coaching_session_series::Model);
@@ -449,6 +459,9 @@ pub struct PreviousSeries<'a>(pub &'a coaching_session_series::Model);
 struct RescheduleVars {
     session_or_series: &'static str,
     previous_start: NaiveDateTime,
+    /// How the series repeated before the reschedule. `None` for a single session,
+    /// which has no cadence to report.
+    previous_recurrence_summary: Option<String>,
 }
 
 const TOKEN_PLACEHOLDER: &str = "{token}";
@@ -845,6 +858,7 @@ async fn send_session_rescheduled_email(
         Some(&RescheduleVars {
             session_or_series: "session",
             previous_start,
+            previous_recurrence_summary: None,
         }),
     )
     .await
@@ -1241,6 +1255,7 @@ async fn send_recurring_series_email_to_recipient(
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
     ics_body: &str,
+    recurrence_summary: &str,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     let first = sessions.first().ok_or_else(|| Error {
@@ -1278,10 +1293,11 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("last_session_date", last_session_date.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
+        .add_variable("recurrence_summary", recurrence_summary)
         .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
         .add_ics_attachment(ics_body, &ical::Method::Request);
 
-    // The reschedule template declares both keys, so they ship together or not at all.
+    // The reschedule template declares these keys, so they ship together or not at all.
     let email_request = match reschedule {
         Some(r) => builder
             .add_variable(
@@ -1291,6 +1307,12 @@ async fn send_recurring_series_email_to_recipient(
             .add_variable(
                 "previous_session_when",
                 format_previous_session_when(r.previous_start, first.date, &recipient.timezone),
+            )
+            .add_optional_variable(
+                "previous_recurrence_summary",
+                r.previous_recurrence_summary.as_deref().map(|previous| {
+                    format_previous_recurrence_summary(previous, recurrence_summary)
+                }),
             ),
         None => builder,
     }
@@ -1401,6 +1423,10 @@ async fn send_series_invite_email<N: EmailNotification>(
         chrono::Utc::now().naive_utc(),
     )?;
 
+    // Timezone-independent, so it is computed once rather than per recipient.
+    let current_rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
+    let recurrence_summary = current_rule.recurrence.summary();
+
     if let Err(e) = send_recurring_series_email_to_recipient(
         &email_config,
         coachee,
@@ -1409,6 +1435,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         sessions,
         organization,
         &ics_body,
+        &recurrence_summary,
         reschedule,
     )
     .await
@@ -1428,6 +1455,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         sessions,
         organization,
         &ics_body,
+        &recurrence_summary,
         reschedule,
     )
     .await
@@ -1494,6 +1522,7 @@ async fn send_recurring_sessions_rescheduled_email(
         Some(&RescheduleVars {
             session_or_series: "series",
             previous_start: previous_rule.start_at,
+            previous_recurrence_summary: Some(previous_rule.recurrence.summary()),
         }),
     )
     .await
@@ -2820,6 +2849,62 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Frequency is meaningless for a one-off session, so neither recurrence variable
+    /// ships on the single-session reschedule.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = mock_description_loaders();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session = create_test_session();
+        let org = create_test_organization();
+        let previous_start = NaiveDate::from_ymd_opt(2026, 3, 2)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "session_reschedule_template_abc",
+                        "variables": {
+                            "previous_session_when": "Monday, March 2, 2026 at 3:00 PM",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .match_request(reject_template_variables(&[
+                "recurrence_summary",
+                "previous_recurrence_summary",
+            ]))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_session_rescheduled_email(
+            &db,
+            &config,
+            &coach,
+            &coachee,
+            &session,
+            &org,
+            previous_start,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
     // ── Session Cancelled Email Tests ──────────────────────────────────
 
     /// A cancellation must supersede the invite it replaces: same `UID`, next `SEQUENCE`.
@@ -3947,6 +4032,206 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// A series with a biweekly rule, starting on the given date.
+    #[cfg(feature = "mock")]
+    fn create_test_series_with_rule(rule: serde_json::Value) -> coaching_session_series::Model {
+        coaching_session_series::Model {
+            rule,
+            ..create_test_series()
+        }
+    }
+
+    /// The create path states the cadence and, having no previous rule, must not
+    /// declare `previous_recurrence_summary`.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_recurring_sessions_scheduled_email_carries_recurrence_summary() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .into_connection();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+        let series = create_test_series_with_rule(serde_json::json!({
+            "start_at": "2026-03-04T15:00:00",
+            "recurrence": { "frequency": "weekly", "interval": 2 },
+            "duration_minutes": 60,
+        }));
+        let sessions = vec![
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+        ];
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "recurring_template_xyz",
+                        "variables": { "recurrence_summary": "Every 2 weeks" }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .match_request(reject_template_variables(&["previous_recurrence_summary"]))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_recurring_sessions_scheduled_email(
+            &db, &config, &series, &coach, &coachee, &sessions, &org,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
+    /// A frequency-only reschedule: the previous cadence comes from the OLD rule, so the
+    /// change is visible even though the start never moved.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from_old_rule() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .into_connection();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+
+        // Same start, weekly becomes biweekly.
+        let previous_series = create_test_series_with_rule(serde_json::json!({
+            "start_at": "2026-03-04T15:00:00",
+            "recurrence": { "frequency": "weekly", "interval": 1 },
+            "duration_minutes": 60,
+        }));
+        let mut series = create_test_series_with_rule(serde_json::json!({
+            "start_at": "2026-03-04T15:00:00",
+            "recurrence": { "frequency": "biweekly", "interval": 1 },
+            "duration_minutes": 60,
+        }));
+        series.ical_sequence = 1;
+        let sessions = vec![
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+        ];
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "series_reschedule_template_abc",
+                        "variables": {
+                            "recurrence_summary": "Every 2 weeks",
+                            "previous_recurrence_summary": "Weekly",
+                            "previous_session_when": "Unchanged",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_recurring_sessions_rescheduled_email(
+            &db,
+            &config,
+            &series,
+            &previous_series,
+            &coach,
+            &coachee,
+            &sessions,
+            &org,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
+    /// A start-only move keeps the cadence, so the previous cadence reads `Unchanged`
+    /// while the previous start still shows a real date. The two checks are independent.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .into_connection();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+
+        // Weekly both before and after; only the start moves.
+        let previous_series = create_test_series();
+        let mut series = create_test_series_with_rule(serde_json::json!({
+            "start_at": "2026-10-06T15:00:00",
+            "recurrence": { "frequency": "weekly", "interval": 1 },
+            "duration_minutes": 60,
+        }));
+        series.ical_sequence = 1;
+        let sessions = vec![
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 6).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 13).unwrap()),
+        ];
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "series_reschedule_template_abc",
+                        "variables": {
+                            "recurrence_summary": "Weekly",
+                            "previous_recurrence_summary": "Unchanged",
+                            "previous_session_when": "Tuesday, September 15, 2026 at 3:00 PM",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_recurring_sessions_rescheduled_email(
+            &db,
+            &config,
+            &series,
+            &previous_series,
+            &coach,
+            &coachee,
+            &sessions,
+            &org,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
     /// A reschedule can legitimately leave zero future sessions. The early return must
     /// happen before any lookup, so the connection sees no statements at all.
     #[cfg(feature = "mock")]
@@ -4100,6 +4385,49 @@ mod tests {
         mock_coach.assert_async().await;
     }
 
+    /// A cancelled series needs no cadence, so neither recurrence variable ships.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_recurring_sessions_cancelled_email_omits_recurrence_variables() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+        let series = create_test_series();
+        let sessions = vec![
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+        ];
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": { "id": "series_cancel_template_abc" }
+                }),
+                &ical::Method::Cancel,
+            ))
+            .match_request(reject_template_variables(&[
+                "recurrence_summary",
+                "previous_recurrence_summary",
+            ]))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_recurring_sessions_cancelled_email(
+            &config, &series, &coach, &coachee, &sessions, &org,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
     /// The series row is deleted even when nothing upcoming remains. The early return must
     /// happen before any lookup, so the connection sees no statements at all.
     #[cfg(feature = "mock")]
@@ -4236,6 +4564,7 @@ mod tests {
             &[],
             &org,
             "",
+            "Weekly",
             None,
         )
         .await;

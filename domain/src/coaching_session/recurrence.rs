@@ -56,6 +56,57 @@ pub struct Recurrence {
     pub until: Option<NaiveDateTime>,
 }
 
+impl Recurrence {
+    /// The step count in the frequency's own unit. `Biweekly` steps two weeks per
+    /// `interval`, so it must stay in lockstep with the `RRULE` interval.
+    fn effective_interval(&self) -> u32 {
+        match self.frequency {
+            Frequency::Biweekly => 2 * self.interval,
+            _ => self.interval,
+        }
+    }
+
+    /// Human phrase for how often the rule repeats, e.g. `Every 2 weeks on Monday and
+    /// Wednesday`. Terminators (`count`, `until`) are deliberately left out.
+    pub fn summary(&self) -> String {
+        let cadence = match (self.frequency, self.effective_interval()) {
+            (Frequency::Daily, 1) => "Daily".to_string(),
+            (Frequency::Daily, n) => format!("Every {n} days"),
+            (Frequency::Weekly | Frequency::Biweekly, 1) => "Weekly".to_string(),
+            (Frequency::Weekly | Frequency::Biweekly, n) => format!("Every {n} weeks"),
+            (Frequency::Monthly, 1) => "Monthly".to_string(),
+            (Frequency::Monthly, n) => format!("Every {n} months"),
+        };
+        match self.by_weekdays.as_deref() {
+            Some([]) | None => cadence,
+            Some(days) => format!("{cadence} on {}", join_weekdays(days)),
+        }
+    }
+}
+
+/// Full English weekday name.
+fn weekday_name(wd: Weekday) -> &'static str {
+    match wd {
+        Weekday::Mon => "Monday",
+        Weekday::Tue => "Tuesday",
+        Weekday::Wed => "Wednesday",
+        Weekday::Thu => "Thursday",
+        Weekday::Fri => "Friday",
+        Weekday::Sat => "Saturday",
+        Weekday::Sun => "Sunday",
+    }
+}
+
+/// `Monday`, `Monday and Wednesday`, `Monday, Wednesday and Friday`.
+fn join_weekdays(days: &[Weekday]) -> String {
+    let names: Vec<&str> = days.iter().map(|d| weekday_name(*d)).collect();
+    match names.split_last() {
+        Some((last, [])) => last.to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
 fn default_interval() -> u32 {
     1
 }
@@ -341,6 +392,104 @@ mod tests {
             count: Some(3),
             until: None,
         }
+    }
+
+    /// A rule with the given frequency and interval, no weekdays.
+    fn cadence(frequency: Frequency, interval: u32) -> Recurrence {
+        Recurrence {
+            frequency,
+            interval,
+            ..rule(frequency)
+        }
+    }
+
+    // ───── summary ─────
+
+    #[test]
+    fn summary_daily() {
+        assert_eq!(cadence(Frequency::Daily, 1).summary(), "Daily");
+        assert_eq!(cadence(Frequency::Daily, 2).summary(), "Every 2 days");
+        assert_eq!(cadence(Frequency::Daily, 5).summary(), "Every 5 days");
+    }
+
+    #[test]
+    fn summary_weekly() {
+        assert_eq!(cadence(Frequency::Weekly, 1).summary(), "Weekly");
+        assert_eq!(cadence(Frequency::Weekly, 2).summary(), "Every 2 weeks");
+        assert_eq!(cadence(Frequency::Weekly, 3).summary(), "Every 3 weeks");
+    }
+
+    #[test]
+    fn summary_biweekly_doubles_the_interval() {
+        assert_eq!(cadence(Frequency::Biweekly, 1).summary(), "Every 2 weeks");
+        assert_eq!(cadence(Frequency::Biweekly, 2).summary(), "Every 4 weeks");
+    }
+
+    #[test]
+    fn summary_monthly() {
+        assert_eq!(cadence(Frequency::Monthly, 1).summary(), "Monthly");
+        assert_eq!(cadence(Frequency::Monthly, 2).summary(), "Every 2 months");
+        assert_eq!(cadence(Frequency::Monthly, 6).summary(), "Every 6 months");
+    }
+
+    /// The same cadence spelled two ways must read identically.
+    #[test]
+    fn summary_biweekly_matches_weekly_interval_2() {
+        assert_eq!(
+            cadence(Frequency::Biweekly, 1).summary(),
+            cadence(Frequency::Weekly, 2).summary()
+        );
+    }
+
+    #[test]
+    fn summary_appends_weekdays_in_listed_order() {
+        let one = Recurrence {
+            by_weekdays: Some(vec![Weekday::Mon]),
+            ..cadence(Frequency::Weekly, 1)
+        };
+        assert_eq!(one.summary(), "Weekly on Monday");
+
+        let two = Recurrence {
+            by_weekdays: Some(vec![Weekday::Mon, Weekday::Wed]),
+            ..cadence(Frequency::Weekly, 1)
+        };
+        assert_eq!(two.summary(), "Weekly on Monday and Wednesday");
+
+        let three = Recurrence {
+            by_weekdays: Some(vec![Weekday::Wed, Weekday::Mon, Weekday::Fri]),
+            ..cadence(Frequency::Weekly, 2)
+        };
+        assert_eq!(
+            three.summary(),
+            "Every 2 weeks on Wednesday, Monday and Friday"
+        );
+    }
+
+    /// An empty list carries no information, so the cadence stands alone.
+    #[test]
+    fn summary_ignores_empty_weekdays() {
+        let r = Recurrence {
+            by_weekdays: Some(vec![]),
+            ..cadence(Frequency::Weekly, 1)
+        };
+        assert_eq!(r.summary(), "Weekly");
+    }
+
+    /// Terminators belong to other template variables, never to the cadence phrase.
+    #[test]
+    fn summary_omits_terminators() {
+        let counted = Recurrence {
+            count: Some(12),
+            ..cadence(Frequency::Weekly, 1)
+        };
+        assert_eq!(counted.summary(), "Weekly");
+
+        let dated = Recurrence {
+            count: None,
+            until: Some(dt(2026, 12, 1, 10, 0)),
+            ..cadence(Frequency::Weekly, 1)
+        };
+        assert_eq!(dated.summary(), "Weekly");
     }
 
     // ───── validate_recurrence ─────

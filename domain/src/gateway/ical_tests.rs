@@ -123,6 +123,94 @@ fn recurring_weekly_byday_count() {
     assert!(out.contains("COUNT=8"));
 }
 
+/// The RRULE line inside the VEVENT. The spliced VTIMEZONE carries its own RRULEs.
+fn vevent_rrule(ics: &str) -> String {
+    let start = ics.find("BEGIN:VEVENT").unwrap();
+    let end = ics.find("END:VEVENT").unwrap();
+    ics[start..end]
+        .lines()
+        .find(|line| line.starts_with("RRULE:"))
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+/// `INTERVAL=n` from an RRULE, defaulting to 1 when the property is absent.
+fn rrule_interval(rrule: &str) -> u32 {
+    rrule
+        .split(';')
+        .find_map(|part| part.strip_prefix("INTERVAL="))
+        .map_or(1, |n| n.parse().unwrap())
+}
+
+/// The `n` in `Every n <unit>`, or 1 for `Daily`, `Weekly`, `Monthly`.
+fn summary_interval(summary: &str) -> u32 {
+    summary
+        .strip_prefix("Every ")
+        .map_or(1, |rest| rest.split(' ').next().unwrap().parse().unwrap())
+}
+
+/// The `FREQ` unit a summary phrase implies.
+fn summary_freq(summary: &str) -> &'static str {
+    if summary.starts_with("Daily") || summary.contains(" days") {
+        "DAILY"
+    } else if summary.starts_with("Weekly") || summary.contains(" weeks") {
+        "WEEKLY"
+    } else {
+        "MONTHLY"
+    }
+}
+
+/// The human summary and the emitted RRULE must never disagree about how often a
+/// series repeats: the summary is what the email says, the RRULE is what the calendar does.
+#[test]
+fn summary_agrees_with_emitted_rrule() {
+    let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
+    let coachee = user("coachee@example.com", "Coachee", "Quinn", None);
+
+    let cases = [
+        (Frequency::Daily, 1u32),
+        (Frequency::Daily, 3),
+        (Frequency::Weekly, 1),
+        (Frequency::Weekly, 2),
+        (Frequency::Weekly, 5),
+        (Frequency::Biweekly, 1),
+        (Frequency::Biweekly, 3),
+        (Frequency::Monthly, 1),
+        (Frequency::Monthly, 2),
+    ];
+
+    for (frequency, interval) in cases {
+        let rule = Recurrence {
+            frequency,
+            interval,
+            by_weekdays: None,
+            count: Some(4),
+            until: None,
+        };
+        let summary = rule.summary();
+        let out = build(&invite(&coach, &coachee, New_York, Some(rule))).unwrap();
+        let rrule = vevent_rrule(&unfold(&out));
+
+        assert!(
+            rrule.contains(&format!("FREQ={}", summary_freq(&summary))),
+            "summary {summary:?} disagrees with {rrule:?} on the unit"
+        );
+        assert_eq!(
+            rrule_interval(&rrule),
+            summary_interval(&summary),
+            "summary {summary:?} disagrees with {rrule:?} on the interval"
+        );
+        // A cadence with no multiplier must not emit an INTERVAL at all.
+        if summary_interval(&summary) == 1 {
+            assert!(
+                !rrule.contains("INTERVAL="),
+                "unexpected INTERVAL in {rrule:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn cancel_shape() {
     let coach = user("coach@example.com", "Coach", "Casey", Some("Coach Casey"));
