@@ -180,6 +180,7 @@ pub async fn update(
         db,
         &app_state.config,
         &updated_series,
+        EmailsApi::PreviousSeries(&series),
         &new_sessions,
     )
     .await;

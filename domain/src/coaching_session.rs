@@ -347,7 +347,7 @@ pub async fn update(
     // updated `.ics` (best-effort) so calendar clients update the event in place.
     if is_calendar_relevant_change(&old, &updated) {
         let bumped = coaching_session::increment_ical_sequence(db, updated.id).await?;
-        emails::notify_session_rescheduled(db, config, &bumped).await;
+        emails::notify_session_rescheduled(db, config, &bumped, old.date).await;
         return Ok(bumped);
     }
     Ok(updated)

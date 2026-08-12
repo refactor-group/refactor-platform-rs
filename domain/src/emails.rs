@@ -415,6 +415,42 @@ fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, Str
     }
 }
 
+/// One-line start, e.g. `Tuesday, February 9, 2027 at 4:00 PM`, in the recipient's
+/// timezone. The connector lives inside the value because Resend templates cannot
+/// suppress literal text around a variable.
+fn format_session_when(date: NaiveDateTime, timezone: &str) -> String {
+    let (date_str, time_str) = format_session_date_time(date, timezone);
+    format!("{date_str} at {time_str}")
+}
+
+/// Rendered as the `previous_session_when` value when the start did not move.
+const UNCHANGED_SESSION_WHEN: &str = "Unchanged";
+
+/// The previous start in the recipient's timezone, or [`UNCHANGED_SESSION_WHEN`] when
+/// the start did not move (a title, meeting URL, or duration-only reschedule).
+fn format_previous_session_when(
+    previous_start: NaiveDateTime,
+    current_start: NaiveDateTime,
+    timezone: &str,
+) -> String {
+    if previous_start != current_start {
+        format_session_when(previous_start, timezone)
+    } else {
+        UNCHANGED_SESSION_WHEN.to_string()
+    }
+}
+
+/// The series as it stood before a reschedule. A newtype so the call site names which
+/// model is which: both are the same type, so bare references read ambiguously.
+pub struct PreviousSeries<'a>(pub &'a coaching_session_series::Model);
+
+/// Template variables carried only by the reschedule sends: the discriminant the
+/// shared template copy reads, plus the start the recipient previously held.
+struct RescheduleVars {
+    session_or_series: &'static str,
+    previous_start: NaiveDateTime,
+}
+
 const TOKEN_PLACEHOLDER: &str = "{token}";
 const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
 const ORGANIZATION_ID_PLACEHOLDER: &str = "{organization_id}";
@@ -526,14 +562,14 @@ async fn send_session_email_to_recipient(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     ics_body: &str,
-    session_or_series: Option<&str>,
+    reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_url = email_config.build_session_url(&session.id)?;
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
 
-    let email_request = SendEmailRequestBuilder::new()
+    let builder = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
         .to_with_name(
             &recipient.email,
@@ -549,10 +585,24 @@ async fn send_session_email_to_recipient(
         .add_variable("session_time", session_time.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
-        .add_optional_variable("session_or_series", session_or_series)
-        .add_ics_attachment(ics_body, &ical::Method::Request)
-        .build()
-        .await?;
+        .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
+        .add_ics_attachment(ics_body, &ical::Method::Request);
+
+    // The reschedule template declares both keys, so they ship together or not at all.
+    let email_request = match reschedule {
+        Some(r) => builder
+            .add_variable(
+                "session_when",
+                format_session_when(session.date, &recipient.timezone),
+            )
+            .add_variable(
+                "previous_session_when",
+                format_previous_session_when(r.previous_start, session.date, &recipient.timezone),
+            ),
+        None => builder,
+    }
+    .build()
+    .await?;
 
     email_config.client.send_email(email_request).await
 }
@@ -641,7 +691,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    session_or_series: Option<&str>,
+    reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
@@ -717,7 +767,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         session,
         organization,
         &ics_body,
-        session_or_series,
+        reschedule,
     )
     .await
     {
@@ -737,7 +787,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         session,
         organization,
         &ics_body,
-        session_or_series,
+        reschedule,
     )
     .await
     {
@@ -774,7 +824,8 @@ async fn send_session_scheduled_email(
 
 /// Send session-rescheduled notification emails to both coach and coachee. `session`
 /// must already carry the bumped `ical_sequence`, so the invite updates the calendar
-/// event in place (same `UID`, next `SEQUENCE`).
+/// event in place (same `UID`, next `SEQUENCE`). `previous_start` is the start the
+/// recipients last saw; equal to the new start when only a non-time field changed.
 async fn send_session_rescheduled_email(
     db: &DatabaseConnection,
     config: &Config,
@@ -782,6 +833,7 @@ async fn send_session_rescheduled_email(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
+    previous_start: NaiveDateTime,
 ) -> Result<(), Error> {
     send_single_session_invite_email::<SessionRescheduled>(
         db,
@@ -790,7 +842,10 @@ async fn send_session_rescheduled_email(
         coachee,
         session,
         organization,
-        Some("session"),
+        Some(&RescheduleVars {
+            session_or_series: "session",
+            previous_start,
+        }),
     )
     .await
 }
@@ -915,12 +970,14 @@ fn lacks_occurrence_address(session: &coaching_sessions::Model) -> bool {
 ///
 /// `session` must already carry the bumped `ical_sequence`. Looks up the coaching
 /// relationship, both users, and the organization, then re-sends the invite to both
-/// coach and coachee so their calendar event updates in place. Errors are logged
-/// internally and never block or fail the calling operation.
+/// coach and coachee so their calendar event updates in place. `previous_start` is the
+/// pre-update start, shown alongside the new one. Errors are logged internally and never
+/// block or fail the calling operation.
 pub async fn notify_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
+    previous_start: NaiveDateTime,
 ) {
     if lacks_occurrence_address(session) {
         warn!(
@@ -937,7 +994,8 @@ pub async fn notify_session_rescheduled(
         let coachee = user::find_by_id(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_session_rescheduled_email(db, config, &coach, &coachee, session, &org).await
+        send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
+            .await
     }
     .await;
 
@@ -1183,7 +1241,7 @@ async fn send_recurring_series_email_to_recipient(
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
     ics_body: &str,
-    session_or_series: Option<&str>,
+    reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     let first = sessions.first().ok_or_else(|| Error {
         source: None,
@@ -1202,7 +1260,7 @@ async fn send_recurring_series_email_to_recipient(
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(first.duration_minutes).to_string();
 
-    let email_request = SendEmailRequestBuilder::new()
+    let builder = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
         .to_with_name(
             &recipient.email,
@@ -1220,10 +1278,24 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("last_session_date", last_session_date.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
-        .add_optional_variable("session_or_series", session_or_series)
-        .add_ics_attachment(ics_body, &ical::Method::Request)
-        .build()
-        .await?;
+        .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
+        .add_ics_attachment(ics_body, &ical::Method::Request);
+
+    // The reschedule template declares both keys, so they ship together or not at all.
+    let email_request = match reschedule {
+        Some(r) => builder
+            .add_variable(
+                "session_when",
+                format_session_when(first.date, &recipient.timezone),
+            )
+            .add_variable(
+                "previous_session_when",
+                format_previous_session_when(r.previous_start, first.date, &recipient.timezone),
+            ),
+        None => builder,
+    }
+    .build()
+    .await?;
 
     email_config.client.send_email(email_request).await
 }
@@ -1277,7 +1349,7 @@ async fn send_series_invite_email<N: EmailNotification>(
     coachee: &users::Model,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
-    session_or_series: Option<&str>,
+    reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     info!(
         "Initiating {} emails for {} sessions (coach: {}, coachee: {})",
@@ -1337,7 +1409,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         sessions,
         organization,
         &ics_body,
-        session_or_series,
+        reschedule,
     )
     .await
     {
@@ -1356,7 +1428,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         sessions,
         organization,
         &ics_body,
-        session_or_series,
+        reschedule,
     )
     .await
     {
@@ -1395,16 +1467,22 @@ async fn send_recurring_sessions_scheduled_email(
 
 /// Send series reschedule notification emails to both coach and coachee. `series` must
 /// already carry the bumped `ical_sequence`, so the invite updates the recurring calendar
-/// event in place (same `UID`, next `SEQUENCE`).
+/// event in place (same `UID`, next `SEQUENCE`). The previous start comes from
+/// `previous_series`, the pre-update model, and is shown alongside the new first
+/// occurrence.
+#[allow(clippy::too_many_arguments)]
 async fn send_recurring_sessions_rescheduled_email(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
+    previous_series: &coaching_session_series::Model,
     coach: &users::Model,
     coachee: &users::Model,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
 ) -> Result<(), Error> {
+    let previous_rule: SeriesRule = serde_json::from_value(previous_series.rule.clone())?;
+
     send_series_invite_email::<RecurringSessionsRescheduled>(
         db,
         config,
@@ -1413,7 +1491,10 @@ async fn send_recurring_sessions_rescheduled_email(
         coachee,
         sessions,
         organization,
-        Some("series"),
+        Some(&RescheduleVars {
+            session_or_series: "series",
+            previous_start: previous_rule.start_at,
+        }),
     )
     .await
 }
@@ -1463,12 +1544,14 @@ pub async fn notify_recurring_sessions_scheduled(
 /// incremented. Looks up the coaching relationship, both users, and the organization,
 /// then re-sends the series invite to both coach and coachee so their recurring calendar
 /// event updates in place. A reschedule can legitimately leave no future sessions, in
-/// which case there is nothing to invite anyone to. Errors are logged internally and
-/// never block or fail the calling operation.
+/// which case there is nothing to invite anyone to. `previous_series` is the pre-update
+/// model: its rule carries the start the recipients last saw. Errors are logged
+/// internally and never block or fail the calling operation.
 pub async fn notify_recurring_sessions_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
+    previous_series: PreviousSeries<'_>,
     sessions: &[coaching_sessions::Model],
 ) {
     if sessions.is_empty() {
@@ -1483,7 +1566,14 @@ pub async fn notify_recurring_sessions_rescheduled(
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_rescheduled_email(
-            db, config, series, &coach, &coachee, sessions, &org,
+            db,
+            config,
+            series,
+            previous_series.0,
+            &coach,
+            &coachee,
+            sessions,
+            &org,
         )
         .await
     }
@@ -2446,14 +2536,288 @@ mod tests {
             .create_async()
             .await;
 
-        let result =
-            send_session_rescheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
+        // The start moved forward from March 2.
+        let previous_start = NaiveDate::from_ymd_opt(2026, 3, 2)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+        let result = send_session_rescheduled_email(
+            &db,
+            &config,
+            &coach,
+            &coachee,
+            &session,
+            &org,
+            previous_start,
+        )
+        .await;
         assert!(result.is_ok());
 
         // The send swallows errors, so the mock assertions are what give this
         // test teeth: they prove the reschedule template + attachment went out.
         mock_coachee.assert_async().await;
         mock_coach.assert_async().await;
+    }
+
+    /// Loaders for the single-session `.ics` description: topics, goals, actions.
+    #[cfg(feature = "mock")]
+    fn mock_description_loaders() -> DatabaseConnection {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+            .into_connection()
+    }
+
+    /// mockito has no negative body matcher, so absence of a template variable rides on
+    /// `match_request`. An unreadable or unparsable body fails the match.
+    fn reject_template_variables(
+        keys: &'static [&'static str],
+    ) -> impl Fn(&mockito::Request) -> bool {
+        move |request| {
+            request
+                .utf8_lossy_body()
+                .ok()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                .map(|payload| {
+                    keys.iter()
+                        .all(|key| payload["template"]["variables"].get(key).is_none())
+                })
+                .unwrap_or(false)
+        }
+    }
+
+    /// T1: both `when` variables ride along on a reschedule, each rendered in the
+    /// recipient's own timezone.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_session_rescheduled_email_carries_both_when_variables_per_recipient() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = mock_description_loaders();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Chicago");
+        // New start 2026-03-04 15:00 UTC: 9:00 AM Central, 10:00 AM Eastern.
+        let session = create_test_session();
+        let org = create_test_organization();
+        // Old start 2026-02-25 20:00 UTC: 2:00 PM Central, 3:00 PM Eastern.
+        let previous_start = NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(20, 0, 0)
+            .unwrap();
+
+        let mock_coachee = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "to": ["\"Jane Doe\" <jane@example.com>"],
+                    "template": {
+                        "id": "session_reschedule_template_abc",
+                        "variables": {
+                            "first_name": "Jane",
+                            "session_when": "Wednesday, March 4, 2026 at 9:00 AM",
+                            "previous_session_when": "Wednesday, February 25, 2026 at 2:00 PM",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mock_coach = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "to": ["\"Alex Smith\" <alex@example.com>"],
+                    "template": {
+                        "id": "session_reschedule_template_abc",
+                        "variables": {
+                            "first_name": "Alex",
+                            "session_when": "Wednesday, March 4, 2026 at 10:00 AM",
+                            "previous_session_when": "Wednesday, February 25, 2026 at 3:00 PM",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let result = send_session_rescheduled_email(
+            &db,
+            &config,
+            &coach,
+            &coachee,
+            &session,
+            &org,
+            previous_start,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock_coachee.assert_async().await;
+        mock_coach.assert_async().await;
+    }
+
+    /// T2: a title-only reschedule leaves the start where it was, so the previous time
+    /// reads `Unchanged` while the new time still shows the real start.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_session_rescheduled_email_unmoved_start_renders_unchanged() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = mock_description_loaders();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let mut session = create_test_session();
+        session.title = Some("Renamed session".to_string());
+        let org = create_test_organization();
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "session_reschedule_template_abc",
+                        "variables": {
+                            "session_when": "Wednesday, March 4, 2026 at 3:00 PM",
+                            "previous_session_when": "Unchanged",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_session_rescheduled_email(
+            &db,
+            &config,
+            &coach,
+            &coachee,
+            &session,
+            &org,
+            session.date,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
+    /// T3: a moved start must render the old time, never the `Unchanged` literal.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_session_rescheduled_email_moved_start_is_not_unchanged() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = mock_description_loaders();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session = create_test_session();
+        let org = create_test_organization();
+        let previous_start = NaiveDate::from_ymd_opt(2026, 3, 2)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "session_reschedule_template_abc",
+                        "variables": {
+                            "session_when": "Wednesday, March 4, 2026 at 3:00 PM",
+                            "previous_session_when": "Monday, March 2, 2026 at 3:00 PM",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_session_rescheduled_email(
+            &db,
+            &config,
+            &coach,
+            &coachee,
+            &session,
+            &org,
+            previous_start,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
+    }
+
+    /// T5: the scheduled path keeps its existing variables and carries neither
+    /// `when` variable, whose template does not declare them.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_session_scheduled_email_omits_when_variables() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let db = mock_description_loaders();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session = create_test_session();
+        let org = create_test_organization();
+        let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "session_template_456",
+                        "variables": {
+                            "organization_name": "Acme Corp",
+                            "session_date": "Wednesday, March 4, 2026",
+                            "session_time": "3:00 PM",
+                            "session_duration": "1 hour",
+                            "session_url": session_url,
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .match_request(reject_template_variables(&[
+                "session_when",
+                "previous_session_when",
+            ]))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result =
+            send_session_scheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
     }
 
     // ── Session Cancelled Email Tests ──────────────────────────────────
@@ -2570,6 +2934,49 @@ mod tests {
         // The send swallows errors, so the mock assertions are what give this test teeth.
         mock_coachee.assert_async().await;
         mock_coach.assert_async().await;
+    }
+
+    /// T5: a cancellation keeps its existing variables and carries neither `when`
+    /// variable, whose template does not declare them.
+    #[tokio::test]
+    async fn test_send_session_cancelled_email_omits_when_variables() {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let session = create_test_session();
+        let org = create_test_organization();
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "session_cancel_template_abc",
+                        "variables": {
+                            "organization_name": "Acme Corp",
+                            "session_date": "Wednesday, March 4, 2026",
+                            "session_time": "3:00 PM",
+                        }
+                    }
+                }),
+                &ical::Method::Cancel,
+            ))
+            .match_request(reject_template_variables(&[
+                "session_when",
+                "previous_session_when",
+            ]))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
     }
 
     // ── Per-Occurrence (Series Member) Tests ───────────────────────────
@@ -3453,7 +3860,14 @@ mod tests {
             .await;
 
         let result = send_recurring_sessions_rescheduled_email(
-            &db, &config, &series, &coach, &coachee, &sessions, &org,
+            &db,
+            &config,
+            &series,
+            &create_test_series(),
+            &coach,
+            &coachee,
+            &sessions,
+            &org,
         )
         .await;
         assert!(result.is_ok());
@@ -3462,6 +3876,75 @@ mod tests {
         // test teeth: they prove the reschedule template + attachment went out.
         mock_coachee.assert_async().await;
         mock_coach.assert_async().await;
+    }
+
+    /// T4: the series reschedule shows the OLD rule's `start_at` as the previous time and
+    /// the new first occurrence as the new time.
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from_old_rule() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+
+        // Series description loads only the first session's in-progress goals.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            .into_connection();
+
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+
+        // Old rule starts 2026-09-15 15:00; the replacement rule starts three weeks later.
+        let previous_series = create_test_series();
+        let mut series = create_test_series();
+        series.ical_sequence = 1;
+        series.rule = serde_json::json!({
+            "start_at": "2026-10-06T15:00:00",
+            "recurrence": { "frequency": "weekly", "interval": 1 },
+            "duration_minutes": 60,
+        });
+        let sessions = vec![
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 6).unwrap()),
+            create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 13).unwrap()),
+        ];
+
+        let mock = server
+            .mock("POST", "/emails")
+            .match_body(expect_resend_body_with_ics(
+                serde_json::json!({
+                    "template": {
+                        "id": "series_reschedule_template_abc",
+                        "variables": {
+                            "session_when": "Tuesday, October 6, 2026 at 3:00 PM",
+                            "previous_session_when": "Tuesday, September 15, 2026 at 3:00 PM",
+                        }
+                    }
+                }),
+                &ical::Method::Request,
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let result = send_recurring_sessions_rescheduled_email(
+            &db,
+            &config,
+            &series,
+            &previous_series,
+            &coach,
+            &coachee,
+            &sessions,
+            &org,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        mock.assert_async().await;
     }
 
     /// A reschedule can legitimately leave zero future sessions. The early return must
@@ -3478,7 +3961,8 @@ mod tests {
         // Zero appended results: any query would panic or error rather than pass.
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-        notify_recurring_sessions_rescheduled(&db, &config, &series, &[]).await;
+        notify_recurring_sessions_rescheduled(&db, &config, &series, PreviousSeries(&series), &[])
+            .await;
 
         assert!(
             db.into_transaction_log().is_empty(),
