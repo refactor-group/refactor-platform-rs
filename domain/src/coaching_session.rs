@@ -413,9 +413,20 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
         tiptap.delete(document_name).await?;
     }
 
-    coaching_session::delete(db, id).await?;
-    // Announce only once the delete has committed, using the in-memory model.
-    emails::notify_session_cancelled(db, config, &coaching_session).await;
+    // Bump the SEQUENCE and delete in one transaction, and take the number from the DB
+    // rather than from the model read above. An edit committing between that read and
+    // this delete would otherwise claim the same next SEQUENCE as the cancellation, and a
+    // calendar client that already applied the edit drops the equal-SEQUENCE cancellation
+    // as a duplicate, stranding a deleted session on both calendars. The window is not
+    // theoretical: the Tiptap call above sits inside it. The bump takes the row lock, so a
+    // competing edit either lands first with a lower SEQUENCE or blocks and finds no row.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let cancelled = coaching_session::increment_ical_sequence(&txn, id).await?;
+    coaching_session::delete(&txn, id).await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Announce only once the delete has committed.
+    emails::notify_session_cancelled(db, config, &cancelled).await;
     Ok(())
 }
 
@@ -1342,8 +1353,23 @@ mod tests {
             ..test_session(Id::new_v4(), None)
         };
 
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        // find_by_id, BEGIN, the SEQUENCE bump (UPDATE ... RETURNING), DELETE, COMMIT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -1353,6 +1379,71 @@ mod tests {
         delete(&db, &config, session.id).await?;
 
         tiptap_mock.assert_async().await;
+        Ok(())
+    }
+
+    /// A cancellation must outrank the invite it supersedes, or a calendar client drops it
+    /// as a duplicate and the deleted session stays on both participants' calendars. The
+    /// bump therefore has to come from the DB inside the delete transaction, not from
+    /// `model.ical_sequence + 1` computed off a read taken before it: an edit committing in
+    /// that window would claim the same number. Asserting on SQL rather than on a returned
+    /// model, since MockDatabase echoes whatever the test appends.
+    #[tokio::test]
+    async fn delete_bumps_ical_sequence_in_sql_before_deleting() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let _tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            ..test_session(Id::new_v4(), None)
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+
+        let bump = sql
+            .iter()
+            .position(|q| q.contains(r#""ical_sequence" = "ical_sequence" + "#))
+            .unwrap_or_else(|| panic!("no self-referential SEQUENCE bump: {sql:?}"));
+        let del = sql
+            .iter()
+            .position(|q| q.contains("DELETE"))
+            .unwrap_or_else(|| panic!("no DELETE: {sql:?}"));
+        assert!(bump < del, "the bump must precede the delete: {sql:?}");
         Ok(())
     }
 

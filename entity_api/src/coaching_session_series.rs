@@ -76,6 +76,25 @@ pub async fn update_rule(
         })
 }
 
+/// Bump a series' `ical_sequence` by 1 without touching its rule.
+///
+/// Used by the cancellation path, which needs a SEQUENCE strictly higher than any
+/// concurrently-committed reschedule. Same column-expression increment as
+/// [`update_rule`], so the row lock orders it against a competing update.
+pub async fn increment_ical_sequence(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::update_many()
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
 pub async fn delete(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
     Entity::delete_by_id(id).exec(db).await?;
     Ok(())

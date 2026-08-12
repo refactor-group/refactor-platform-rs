@@ -1202,7 +1202,8 @@ fn test_build_session_cancel_ics_structure() {
         .and_hms_opt(19, 0, 0)
         .unwrap();
     session.duration_minutes = 60;
-    session.ical_sequence = 2;
+    // The caller bumps in the delete transaction; the builder carries what it is given.
+    session.ical_sequence = 3;
     let org = create_test_organization();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
@@ -1386,7 +1387,8 @@ fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
         .and_hms_opt(19, 0, 0)
         .unwrap();
     let mut session = create_test_series_session(series_id, original_start);
-    session.ical_sequence = 2;
+    // The caller bumps in the delete transaction; the builder carries what it is given.
+    session.ical_sequence = 3;
     session.duration_minutes = 60;
     let org = create_test_organization();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
@@ -2613,7 +2615,8 @@ fn test_build_series_cancel_ics_structure() {
     first.duration_minutes = 60;
     let org = create_test_organization();
     let mut series = create_test_series();
-    series.ical_sequence = 4;
+    // The caller bumps in the delete transaction; the builder carries what it is given.
+    series.ical_sequence = 5;
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)

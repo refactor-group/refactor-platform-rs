@@ -1087,8 +1087,9 @@ fn build_session_cancel_ics(
     let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(session.id),
-        // In-memory bump only: the row is being deleted, so persisting it is a wasted write.
-        sequence: session.ical_sequence + 1,
+        // Already bumped by the caller inside the delete transaction, so the cancellation
+        // outranks any edit that committed alongside it.
+        sequence: session.ical_sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
         summary: session_summary(organization),
@@ -1121,8 +1122,9 @@ fn build_occurrence_cancel_ics(
     let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(series_id),
-        // In-memory bump only: the row is being deleted, so persisting it is a wasted write.
-        sequence: session.ical_sequence + 1,
+        // Already bumped by the caller inside the delete transaction, so the cancellation
+        // outranks any edit that committed alongside it.
+        sequence: session.ical_sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
         summary: session_summary(organization),
@@ -1665,8 +1667,9 @@ fn build_series_cancel_ics(
     let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
     let invite = ical::IcsInvite {
         uid: ics_uid(series.id),
-        // In-memory bump only: the row is being deleted, so persisting it is a wasted write.
-        sequence: series.ical_sequence + 1,
+        // Already bumped by the caller inside the delete transaction, so the cancellation
+        // outranks any edit that committed alongside it.
+        sequence: series.ical_sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
         summary: session_summary(organization),

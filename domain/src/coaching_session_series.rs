@@ -251,12 +251,6 @@ pub async fn delete_with_future_sessions(
         entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
             .await?;
 
-    // Best-effort: deleting a nonexistent series still succeeds silently, it just cannot
-    // announce a cancellation.
-    let series = coaching_session_series::find_by_id(db, series_id)
-        .await
-        .ok();
-
     let doc_names_to_cleanup: Vec<String> = future_sessions
         .iter()
         .filter_map(|s| s.collab_document_name.clone())
@@ -271,13 +265,23 @@ pub async fn delete_with_future_sessions(
 
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &future_ids).await?;
 
+    // Bump the SEQUENCE inside the delete transaction so the cancellation outranks any
+    // reschedule that commits alongside it. Reading the series before the transaction and
+    // adding one in memory would let a concurrent reschedule claim the same number, and a
+    // calendar client that already applied that reschedule drops the equal-SEQUENCE
+    // cancellation as a duplicate. Best-effort: deleting a nonexistent series still
+    // succeeds silently, it just cannot announce a cancellation.
+    let cancelled = coaching_session_series::increment_ical_sequence(&txn, series_id)
+        .await
+        .ok();
+
     coaching_session_series::delete(&txn, series_id).await?;
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
 
-    if let Some(series) = series {
+    if let Some(series) = cancelled {
         emails::notify_recurring_sessions_cancelled(db, config, &series, &future_sessions).await;
     }
 
