@@ -19,7 +19,10 @@ scheduled email, now carrying an attachment `invite.ics`:
 - `SUMMARY:Coaching Session: <organization name>`.
 - `DTSTART;TZID=<coach zone>:<local wall time>` + a spliced `VTIMEZONE` block (when the
   coach's zone is a known IANA zone other than UTC).
-- `ORGANIZER` = coach, `ATTENDEE` = coachee (`RSVP=TRUE`). Same `.ics` for both recipients.
+- `ORGANIZER` = the platform (`hello@mail.myrefactor.com`, shown as "Refactor Coach"); `ATTENDEE`
+  = **both** coach and coachee (`RSVP=TRUE`). Same `.ics` for both recipients.
+  The organizer must equal the sending address or calendar clients refuse to apply later updates
+  (see "Why the platform organizes" below).
 - `LOCATION` + `URL` + `CONFERENCE` from the session `meeting_url` (the calendar "Join" button).
 - `DESCRIPTION`, in order, each section omitted when empty: title line, `View this session: <url>`,
   `Topics to discuss:` + bullets, `Goals you're working toward:` + bullets,
@@ -53,6 +56,28 @@ throwaway spike, then import the file into Apple/Google/**Outlook**:
 `cargo run -p domain --example ics_spike` -> `target/ics-spike/invite.ics` (a hardcoded
 America/New_York single-session sample; proves the VTIMEZONE splice renders in your clients).
 
+## Why the platform organizes (read before testing updates)
+
+`ORGANIZER` is the platform address, **not the coach**, and both humans are attendees. This is
+load-bearing, not cosmetic.
+
+Calendar clients decide whether to apply an update by **identity**, not markup. We send from
+`hello@mail.myrefactor.com`; when the invite claimed the coach as organizer, the two disagreed and
+Google refused every reschedule despite a matching `UID` and a higher `SEQUENCE`. It matched the
+event and declined to mutate it. Verified live 2026-08-11. `ORGANIZER;SENT-BY=...` was tried and
+made it worse (Gmail stopped recognising the message as an invitation); do not reintroduce it.
+
+Two consequences to expect while testing, both correct:
+
+- **The coach RSVPs to their own session.** They are an attendee now. Owning the event and
+  receiving working updates are mutually exclusive over emailed iTIP: Google treats an account's
+  own events as authoritative and rejects external rewrites outright.
+- **Each person sees a one-time "Add to calendar" prompt** the first time they receive an invite
+  from `hello@mail.myrefactor.com`. Once per person, not per session. Coaches now see it too.
+
+**Sessions created before this change can never be updated or cancelled by us** - their invites
+named a coach as organizer. Use a freshly created session when testing updates.
+
 ## How to inspect a received `.ics`
 
 Save the `invite.ics` attachment and open it in a text editor. Confirm the fields listed
@@ -70,7 +95,7 @@ above. Watch for: exactly one `BEGIN:VTIMEZONE` (before `BEGIN:VEVENT`), `DTSTAR
 3. Open the `.ics`: `UID:<session_id>@myrefactor.com`, `METHOD:REQUEST`, `SEQUENCE:0`,
    `SUMMARY:Coaching Session: <org>`, one `BEGIN:VTIMEZONE` with `TZID:America/New_York`,
    `DTSTART;TZID=America/New_York:20260915T150000`.
-4. Import: event lands at **3:00 PM Eastern**, organizer = coach, attendee = coachee, the
+4. Import: event lands at **3:00 PM Eastern**, organizer = Refactor Coach, both Jims as guests, the
    Join button opens `meeting_url`, and the description has a working `View this session` link.
 
 ### H2 — Cross-timezone rendering (DST-aware)
@@ -100,7 +125,8 @@ above. Watch for: exactly one `BEGIN:VTIMEZONE` (before `BEGIN:VEVENT`), `DTSTAR
 
 ### H6 — Both recipients get the same event
 1. Any created session.
-2. **Expect:** coach's and coachee's `.ics` are the same VEVENT (organizer = coach, attendee
+2. **Expect:** coach's and coachee's `.ics` are the same VEVENT (organizer = the platform, both
+   coach and coachee listed as attendees
    = coachee in both), so accepting from either side references the same `UID`.
 
 ---
@@ -333,6 +359,26 @@ session moving or being cancelled.
 - Note the remaining known limitation in HR5 / SC4: a **series-level** reschedule or cancel still replaces
   or removes the whole recurring event, including past occurrences. Phase 8 fixed per-occurrence
   operations, not that.
+
+## Verified live (2026-08-11, real Resend to real Gmail/Google Calendar)
+
+Driven end to end against a real database with real email delivery, coach `jim@refactorgroup.com`
+(America/New_York) and coachee `james.hodapp@gmail.com` (America/Chicago):
+
+| Flow | Coachee | Coach |
+|---|---|---|
+| Create | pass | pass |
+| Reschedule, applied **in place** (no duplicate) | pass | pass |
+| Cancel, event removed | pass | pass |
+
+Also confirmed in that run: all six Resend templates render with no leftover placeholders;
+per-recipient timezone rendering (coachee 2:00 PM Central against coach 3:00 PM Eastern for the
+same meeting); `VTIMEZONE` conversion honoured by Google **and** Apple; and the `CONFERENCE`
+property rendering as a real "Join with Google Meet" button.
+
+Earlier Apple Calendar checks (file import) confirmed create, series create, the per-occurrence
+`RECURRENCE-ID` move, and series cancel. File import is a weak proxy for update semantics because
+it bypasses sender identity entirely, so prefer email delivery when testing updates.
 
 ## Outlook gate (please record the result)
 
