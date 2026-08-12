@@ -135,6 +135,8 @@ pub async fn create(
     match result {
         Ok((session, events)) => {
             publish_events(event_publisher, events).await;
+            // Best-effort, after commit: a failed invite must not undo a created session.
+            emails::notify_session_scheduled(db, config, &session).await;
             Ok(session)
         }
         Err(e) => {

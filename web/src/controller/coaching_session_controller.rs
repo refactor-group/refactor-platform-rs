@@ -12,7 +12,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{coaching_session as CoachingSessionApi, emails as EmailsApi, Id};
+use domain::{coaching_session as CoachingSessionApi, Id};
 use service::config::ApiVersion;
 
 use log::*;
@@ -174,13 +174,6 @@ pub async fn create(
     .await?;
 
     debug!("New Coaching Session: {coaching_session:?}");
-
-    EmailsApi::notify_session_scheduled(
-        app_state.db_conn_ref(),
-        &app_state.config,
-        &coaching_session,
-    )
-    .await;
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),

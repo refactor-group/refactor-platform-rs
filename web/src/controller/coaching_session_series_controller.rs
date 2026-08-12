@@ -13,7 +13,6 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::{
     coaching_session as CoachingSessionApi, coaching_session_series as CoachingSessionSeriesApi,
-    emails as EmailsApi,
 };
 use serde::Serialize;
 use service::config::ApiVersion;
@@ -58,6 +57,7 @@ pub async fn create(
 
     let (series, sessions) = CoachingSessionSeriesApi::create_with_sessions(
         db,
+        &app_state.config,
         params.coaching_relationship_id,
         user.id,
         params.start_at,
@@ -65,8 +65,6 @@ pub async fn create(
         requested_duration,
     )
     .await?;
-
-    EmailsApi::notify_recurring_sessions_scheduled(db, &app_state.config, &series, &sessions).await;
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
@@ -175,18 +173,6 @@ pub async fn update(
         requested_duration,
     )
     .await?;
-
-    // A rule that matched the stored one moved nothing, so there is no update to invite to.
-    if rescheduled.changed {
-        EmailsApi::notify_recurring_sessions_rescheduled(
-            db,
-            &app_state.config,
-            &rescheduled.series,
-            EmailsApi::PreviousSeries(&series),
-            &rescheduled.sessions,
-        )
-        .await;
-    }
 
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),

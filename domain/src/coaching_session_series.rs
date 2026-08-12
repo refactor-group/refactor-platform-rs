@@ -53,6 +53,7 @@ pub struct SeriesRule {
 /// `coaching_session::ensure_hydrated`.
 pub async fn create_with_sessions(
     db: &DatabaseConnection,
+    config: &Config,
     coaching_relationship_id: Id,
     acting_user_id: Id,
     start_at: NaiveDateTime,
@@ -106,6 +107,9 @@ pub async fn create_with_sessions(
     .await?;
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Best-effort, after commit: a failed invite must not undo a created series.
+    emails::notify_recurring_sessions_scheduled(db, config, &series, &sessions).await;
 
     Ok((series, sessions))
 }
@@ -227,6 +231,17 @@ pub async fn reschedule(
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names_to_cleanup).await;
+
+    // Best-effort, after commit. Fired here rather than from the caller because the
+    // previous rule is only in scope inside this function.
+    emails::notify_recurring_sessions_rescheduled(
+        db,
+        config,
+        &updated_series,
+        emails::PreviousSeries(&existing),
+        &new_sessions,
+    )
+    .await;
 
     Ok(Rescheduled {
         series: updated_series,
@@ -431,8 +446,16 @@ mod tests {
             }])
             .into_connection();
 
-        let (returned_series, returned_sessions) =
-            create_with_sessions(&db, relationship_id, coach_id, start(), rule, None).await?;
+        let (returned_series, returned_sessions) = create_with_sessions(
+            &db,
+            &test_config(),
+            relationship_id,
+            coach_id,
+            start(),
+            rule,
+            None,
+        )
+        .await?;
 
         assert_eq!(returned_series.id, series.id);
         assert_eq!(returned_sessions.len(), 3);
@@ -469,6 +492,7 @@ mod tests {
         };
         let result = create_with_sessions(
             &db,
+            &test_config(),
             relationship_id,
             coach_id,
             start(),
