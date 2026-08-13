@@ -31,7 +31,11 @@ use utoipa_rapidoc::RapiDoc;
 #[derive(OpenApi)]
 #[openapi(
         info(
-            title = "Refactor Platform API"
+            title = "Refactor Platform API",
+            license(
+                name = "GNU General Public License v3.0",
+                url = "https://www.gnu.org/licenses/gpl-3.0.en.html"
+            )
         ),
         paths(
             action_controller::create,
