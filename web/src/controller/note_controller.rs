@@ -20,7 +20,7 @@ use log::*;
     params(ApiVersion),
     request_body = domain::notes::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Note", body = [domain::notes::Model]),
+        (status = 201, description = "Successfully Created a New Note", body = domain::notes::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -57,7 +57,7 @@ pub async fn create(
     ),
     request_body = domain::notes::Model,
     responses(
-        (status = 200, description = "Successfully Updated Note", body = [domain::notes::Model]),
+        (status = 200, description = "Successfully Updated Note", body = domain::notes::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -92,7 +92,7 @@ pub async fn update(
         ("coaching_session_id" = Option<Uuid>, Query, description = "Filter by coaching_session_id")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Notes", body = [domain::coaching_sessions::Model]),
+        (status = 200, description = "Successfully retrieved all Notes", body = [domain::notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -128,7 +128,7 @@ pub async fn index(
         ("id" = inline(String), Path, description = "Note id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain Note by its id", body = [domain::notes::Model]),
+        (status = 200, description = "Successfully retrieved a certain Note by its id", body = domain::notes::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Note not found"),
         (status = 405, description = "Method not allowed"),

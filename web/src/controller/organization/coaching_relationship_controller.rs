@@ -89,7 +89,7 @@ pub async fn create(
         ("relationship_id" = inline(String), Path, description = "CoachingRelationship id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = [domain::coaching_relationships::Model]),
+        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = domain::coaching_relationships::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "CoachingRelationship not found"),
         (status = 405, description = "Method not allowed"),

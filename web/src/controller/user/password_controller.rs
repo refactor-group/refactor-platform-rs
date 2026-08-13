@@ -20,6 +20,7 @@ use service::config::ApiVersion;
         ApiVersion,
         ("user_id" = Uuid, Path, description = "User ID", example = "1234567890"),
     ),
+    request_body = UpdatePasswordParams,
     responses(
         (status = 200, description = "Successfully updated a User's password"),
         (status = 401, description = "Unauthorized"),

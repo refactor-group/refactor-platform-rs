@@ -5336,6 +5336,7 @@ dependencies = [
  "meeting-ai",
  "meeting-auth",
  "password-auth",
+ "regex",
  "reqwest",
  "sea-orm",
  "secrecy",

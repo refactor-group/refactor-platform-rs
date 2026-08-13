@@ -47,7 +47,7 @@ impl ActionRequest {
     params(ApiVersion),
     request_body = ActionRequest,
     responses(
-        (status = 201, description = "Successfully Created a New Action", body = [domain::action::ActionWithAssignees]),
+        (status = 201, description = "Successfully Created a New Action", body = domain::action::ActionWithAssignees),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -99,7 +99,7 @@ pub async fn create(
         ("id" = inline(String), Path, description = "Action id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Action by its id", body = [domain::action::ActionWithAssignees]),
+        (status = 200, description = "Successfully retrieved a specific Action by its id", body = domain::action::ActionWithAssignees),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed"),
@@ -169,7 +169,7 @@ async fn notify_added_assignees(
     ),
     request_body = ActionRequest,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [domain::action::ActionWithAssignees]),
+        (status = 200, description = "Successfully Updated Action", body = domain::action::ActionWithAssignees),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -225,9 +225,8 @@ pub async fn update(
         ("id" = Uuid, Path, description = "Id of action to update"),
         ("value" = Option<String>, Query, description = "Status value to update"),
     ),
-    request_body = domain::actions::Model,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [domain::actions::Model]),
+        (status = 200, description = "Successfully Updated Action", body = domain::actions::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -313,7 +312,7 @@ pub async fn index(
         ("id" = i32, Path, description = "Action id to delete")
     ),
     responses(
-        (status = 200, description = "Successfully deleted a certain Action by its id", body = [i32]),
+        (status = 200, description = "Successfully deleted a certain Action by its id", body = serde_json::Value),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed"),

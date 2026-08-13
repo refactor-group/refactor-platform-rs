@@ -54,7 +54,7 @@ pub async fn coaching_sessions_by_goal(
     params(ApiVersion),
     request_body = domain::goals::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Goal", body = [domain::goals::Model]),
+        (status = 201, description = "Successfully Created a New Goal", body = domain::goals::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -94,7 +94,7 @@ pub async fn create(
         ("id" = inline(String), Path, description = "Goal id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Goal by its id", body = [domain::goals::Model]),
+        (status = 200, description = "Successfully retrieved a specific Goal by its id", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Goal not found"),
         (status = 405, description = "Method not allowed"),
@@ -125,7 +125,7 @@ pub async fn read(
     ),
     request_body = domain::goals::Model,
     responses(
-        (status = 200, description = "Successfully Updated Goal", body = [domain::goals::Model]),
+        (status = 200, description = "Successfully Updated Goal", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -164,9 +164,8 @@ pub async fn update(
         ("id" = Uuid, Path, description = "Id of goal to update"),
         ("value" = Option<String>, Query, description = "Status value to update"),
     ),
-    request_body = domain::actions::Model,
     responses(
-        (status = 200, description = "Successfully Updated Goal", body = [domain::goals::Model]),
+        (status = 200, description = "Successfully Updated Goal", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")

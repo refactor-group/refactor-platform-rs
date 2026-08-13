@@ -28,7 +28,7 @@ use log::*;
     ),
     request_body = LinkParams,
     responses(
-        (status = 201, description = "Successfully linked goal to session", body = [domain::coaching_sessions_goals::Model]),
+        (status = 201, description = "Successfully linked goal to session", body = domain::coaching_sessions_goals::Model),
         (status = 401, description = "Unauthorized"),
         (status = 409, description = "Goal already linked to session"),
         (status = 422, description = "Unprocessable Entity"),

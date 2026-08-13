@@ -23,7 +23,7 @@ use log::*;
     params(ApiVersion),
     request_body = domain::agreements::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Agreement", body = [domain::agreements::Model]),
+        (status = 201, description = "Successfully Created a New Agreement", body = domain::agreements::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -69,7 +69,7 @@ pub async fn create(
         ("id" = inline(String), Path, description = "Agreement id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = [domain::notes::Model]),
+        (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = domain::agreements::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Agreement not found"),
         (status = 405, description = "Method not allowed"),
@@ -100,7 +100,7 @@ pub async fn read(
     ),
     request_body = domain::agreements::Model,
     responses(
-        (status = 200, description = "Successfully Updated Agreement", body = [domain::agreements::Model]),
+        (status = 200, description = "Successfully Updated Agreement", body = domain::agreements::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -183,7 +183,7 @@ pub async fn index(
         ("id" = i32, Path, description = "Agreement id to delete")
     ),
     responses(
-        (status = 200, description = "Successfully deleted a certain Agreement by its id", body = [i32]),
+        (status = 200, description = "Successfully deleted a certain Agreement by its id", body = serde_json::Value),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Agreement not found"),
         (status = 405, description = "Method not allowed"),

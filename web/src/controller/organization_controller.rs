@@ -63,7 +63,7 @@ pub async fn index(
         ("id" = inline(String), Path, description = "Organization id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = [domain::organizations::Model]),
+        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
@@ -132,7 +132,7 @@ pub async fn create(
     ),
     request_body = domain::organizations::Model,
     responses(
-        (status = 200, description = "Successfully updated a certain Organization by its id", body = [domain::organizations::Model]),
+        (status = 200, description = "Successfully updated a certain Organization by its id", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
@@ -172,7 +172,7 @@ pub async fn update(
         ("id" = i32, Path, description = "Organization id to delete")
     ),
     responses(
-        (status = 200, description = "Successfully deleted a certain Organization by its id", body = [i32]),
+        (status = 200, description = "Successfully deleted a certain Organization by its id", body = serde_json::Value),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
@@ -202,7 +202,7 @@ pub async fn delete(
     path = "/organizations/{id}/archive",
     params(ApiVersion, ("id" = inline(String), Path, description = "Organization id to archive")),
     responses(
-        (status = 200, description = "Organization archived", body = [domain::organizations::Model]),
+        (status = 200, description = "Organization archived", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden (not a SuperAdmin)"),
         (status = 404, description = "Organization not found"),
@@ -232,7 +232,7 @@ pub async fn archive(
     path = "/organizations/{id}/unarchive",
     params(ApiVersion, ("id" = inline(String), Path, description = "Organization id to unarchive")),
     responses(
-        (status = 200, description = "Organization unarchived", body = [domain::organizations::Model]),
+        (status = 200, description = "Organization unarchived", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden (not a SuperAdmin)"),
         (status = 404, description = "Organization not found"),
