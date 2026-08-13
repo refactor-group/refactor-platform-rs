@@ -77,6 +77,12 @@ impl IcsCapture {
         }
     }
 
+    /// The captured `.ics`, or `None` when the send carried no attachment.
+    #[cfg(feature = "mock")]
+    fn captured(&self) -> Option<String> {
+        self.0.lock().unwrap().clone()
+    }
+
     fn ics(&self) -> String {
         self.0
             .lock()
@@ -793,6 +799,20 @@ fn reject_template_variables(keys: &'static [&'static str]) -> impl Fn(&mockito:
                 keys.iter()
                     .all(|key| payload["template"]["variables"].get(key).is_none())
             })
+            .unwrap_or(false)
+    }
+}
+
+/// Asserts the payload carries no attachment. mockito has no negative body matcher, so
+/// absence rides on `match_request`; an unreadable or unparsable body fails the match.
+#[cfg(feature = "mock")]
+fn reject_attachments() -> impl Fn(&mockito::Request) -> bool {
+    move |request| {
+        request
+            .utf8_lossy_body()
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .map(|payload| payload.get("attachments").is_none())
             .unwrap_or(false)
     }
 }
@@ -1528,29 +1548,110 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
     assert!(!cancel.contains("RECURRENCE-ID"));
 }
 
-/// A series member with no `ical_recurrence_id` has no valid slot to address, so the
-/// guard must fire before any lookup and nothing may be sent.
+/// A series member that predates `ical_recurrence_id` cannot have its occurrence
+/// addressed, but the humans still need telling. The email goes out; only the `.ics` is
+/// withheld. This is the production case: series materialized before invites existed.
 #[cfg(feature = "mock")]
 #[tokio::test]
-async fn test_notify_session_cancelled_skips_series_member_without_recurrence_id() {
+async fn test_cancelling_a_legacy_series_member_emails_without_an_invite() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = IcsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+
+    // Both recipients still get mailed, and neither payload carries an attachment.
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(reject_attachments())
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    assert!(
+        capture.captured().is_none(),
+        "a session whose occurrence cannot be addressed must carry no invite"
+    );
+}
+
+/// The production regression, pinned at the layer where it occurred.
+///
+/// `notify_session_cancelled` used to return before any lookup when a series member had no
+/// `ical_recurrence_id`, so the coach and coachee were told nothing at all. With no mock
+/// results appended, the old code produced an empty transaction log; the new code must at
+/// least attempt the participant lookup. This is the exact inverse of the assertion the
+/// previous test made.
+///
+/// Driving the notify entry point matters: an earlier version of this test called
+/// `send_session_cancelled_email` directly and stayed green when the early return was put
+/// back. The full path cannot be mocked end to end because `user::find_by_id` uses
+/// `find_with_related`, which MockDatabase cannot express, so the send itself is covered
+/// separately by `test_cancelling_a_legacy_series_member_emails_without_an_invite`.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_notify_session_cancelled_no_longer_short_circuits_a_legacy_series_member() {
     use sea_orm::{DatabaseBackend, MockDatabase};
 
     let server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
+
     let mut session = create_test_session();
     session.coaching_session_series_id = Some(Id::new_v4());
     session.ical_recurrence_id = None;
-    // Future-dated so the past-session guard cannot be what stops the send.
+    // Future-dated, so the past-session guard cannot be what decides the outcome.
     session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
 
-    // Zero appended results: any query would panic or error rather than pass.
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
     notify_session_cancelled(&db, &config, &session).await;
 
     assert!(
-        db.into_transaction_log().is_empty(),
-        "a series member without a RECURRENCE-ID must return before any statement runs"
+        !db.into_transaction_log().is_empty(),
+        "a series member without a RECURRENCE-ID must still be looked up and emailed, \
+         not skipped before any statement runs"
+    );
+}
+
+/// The same regression on the other two entry points. All three shared the early return,
+/// so all three need the guard against it coming back.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_member() {
+    use sea_orm::{DatabaseBackend, MockDatabase};
+
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+    session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let scheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    notify_session_scheduled(&scheduled_db, &config, &session).await;
+    assert!(
+        !scheduled_db.into_transaction_log().is_empty(),
+        "scheduled must not skip a legacy series member"
+    );
+
+    let rescheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    notify_session_rescheduled(&rescheduled_db, &config, &session, session.date).await;
+    assert!(
+        !rescheduled_db.into_transaction_log().is_empty(),
+        "rescheduled must not skip a legacy series member"
     );
 }
 

@@ -243,6 +243,18 @@ impl SendEmailRequestBuilder {
         self
     }
 
+    /// Attach an `.ics` only when one could be built.
+    ///
+    /// `None` sends the email with no attachment. That is the right shape for a session
+    /// whose calendar event we cannot address: the recipient still needs to be told what
+    /// happened, even though no calendar client can act on it.
+    pub fn add_optional_ics_attachment(self, ics_body: Option<&str>, method: &Method) -> Self {
+        match ics_body {
+            Some(body) => self.add_ics_attachment(body, method),
+            None => self,
+        }
+    }
+
     /// Attach an .ics calendar invite (base64-inline). filename is always
     /// invite.ics; the content_type carries the iCal METHOD so clients treat
     /// it as an invite/cancellation.
