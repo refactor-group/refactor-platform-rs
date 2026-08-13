@@ -23,10 +23,10 @@ use log::*;
     path = "/coaching_sessions/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Coaching Session ID to retrieve")
+        ("id" = Uuid, Path, description = "Coaching Session ID to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a Coaching Session", body = coaching_sessions::Model),
+        (status = 200, description = "Successfully retrieved a Coaching Session", body = domain::coaching_sessions::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching Session not found"),
         (status = 405, description = "Method not allowed"),
@@ -64,7 +64,7 @@ pub async fn read(
     path = "/coaching_sessions/{coaching_session_id}/view",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Marker advanced; prior value returned", body = domain::coaching_session_view::MarkViewed),
@@ -90,7 +90,7 @@ pub async fn view(
     path = "/coaching_sessions",
     params(
         ApiVersion,
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching_relationship_id"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Filter by coaching_relationship_id"),
         ("from_date" = Option<NaiveDate>, Query, description = "Filter by from_date"),
         ("to_date" = Option<NaiveDate>, Query, description = "Filter by to_date"),
         ("sort_by" = Option<crate::params::coaching_session::SortField>, Query, description = "Sort by field. Valid values: 'date', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "date"),
@@ -187,7 +187,7 @@ pub async fn create(
     path = "/coaching_sessions/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Coaching Session ID to Update")
+        ("id" = Uuid, Path, description = "Coaching Session ID to Update")
     ),
     request_body = UpdateParams,
     responses(
@@ -226,11 +226,11 @@ pub async fn update(
     path = "/coaching_sessions/{id}/title",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Coaching Session ID to Update")
+        ("id" = Uuid, Path, description = "Coaching Session ID to Update")
     ),
     request_body = TitleUpdateParams,
     responses(
-        (status = 200, description = "Successfully updated the title", body = coaching_sessions::Model),
+        (status = 200, description = "Successfully updated the title", body = domain::coaching_sessions::Model),
         (status = 401, description = "Unauthorized"),
         (status = 422, description = "Title exceeds the maximum length"),
         (status = 503, description = "Service temporarily unavailable"),
@@ -260,7 +260,7 @@ pub async fn update_title(
 #[utoipa::path(
     delete,
     path = "/coaching_sessions/{id}",
-    params(ApiVersion, ("id" = Id, Path, description = "Coaching Session ID to Delete")),
+    params(ApiVersion, ("id" = Uuid, Path, description = "Coaching Session ID to Delete")),
     responses(
         (status = 204, description = "Successfully deleted a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),

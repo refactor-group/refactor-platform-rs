@@ -17,7 +17,7 @@ use service::config::ApiVersion;
     path = "/coaching_sessions/{coaching_session_id}/transcriptions",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Transcription metadata retrieved"),

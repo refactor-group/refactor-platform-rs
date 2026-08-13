@@ -31,9 +31,9 @@ use utoipa::ToSchema;
     path = "/users/{user_id}/coaching_sessions",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve coaching sessions for"),
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter sessions to only those in this coaching relationship"),
-        ("organization_id" = Option<Id>, Query, description = "Filter sessions to relationships in this organization. Omitted = unscoped."),
+        ("user_id" = Uuid, Path, description = "User ID to retrieve coaching sessions for"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Filter sessions to only those in this coaching relationship"),
+        ("organization_id" = Option<Uuid>, Query, description = "Filter sessions to relationships in this organization. Omitted = unscoped."),
         ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive). Evaluated in `tz` if supplied; otherwise UTC."),
         ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive at calendar-day precision). Evaluated in `tz` if supplied; otherwise UTC."),
         ("tz" = Option<String>, Query, description = "Optional IANA timezone identifier (e.g. 'America/Los_Angeles'). Interprets `from_date`/`to_date` as local-day boundaries in that zone. Invalid value → 400 invalid_timezone."),
@@ -138,13 +138,13 @@ pub(crate) struct CountsResponse {
     path = "/users/{user_id}/coaching_sessions/counts",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve counts for"),
+        ("user_id" = Uuid, Path, description = "User ID to retrieve counts for"),
         ("from_date" = chrono::NaiveDate, Query, description = "Start of the range (inclusive)"),
         ("to_date" = chrono::NaiveDate, Query, description = "End of the range (inclusive at calendar-day precision)"),
         ("group_by" = crate::params::user::coaching_session::GroupByParam, Query, description = "Aggregation grouping. v1 accepts only 'month'."),
-        ("tz" = String, Query, description = "IANA timezone identifier (e.g. 'America/Los_Angeles'). Invalid value → 400 invalid_timezone."),
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Narrow to a single coaching relationship."),
-        ("organization_id" = Option<Id>, Query, description = "Narrow to relationships in this organization. Omitted = unscoped.")
+        ("tz" = inline(String), Query, description = "IANA timezone identifier (e.g. 'America/Los_Angeles'). Invalid value → 400 invalid_timezone."),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Narrow to a single coaching relationship."),
+        ("organization_id" = Option<Uuid>, Query, description = "Narrow to relationships in this organization. Omitted = unscoped.")
     ),
     responses(
         (status = 200, description = "Monthly counts in the requested timezone", body = CountsResponse),

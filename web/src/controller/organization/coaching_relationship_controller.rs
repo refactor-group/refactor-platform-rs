@@ -37,9 +37,9 @@ mod authz_tests;
     params(
         ApiVersion,
     ),
-    request_body = entity::coaching_relationships::Model,
+    request_body = domain::coaching_relationships::Model,
     responses(
-        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = [coaching_relationships::Model]),
+        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = [domain::coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "Organization not found"),
@@ -85,11 +85,11 @@ pub async fn create(
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "Organization id to retrieve the CoachingRelationship under"),
-        ("relationship_id" = String, Path, description = "CoachingRelationship id to retrieve")
+        ("organization_id" = Uuid, Path, description = "Organization id to retrieve the CoachingRelationship under"),
+        ("relationship_id" = inline(String), Path, description = "CoachingRelationship id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = [coaching_relationships::Model]),
+        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = [domain::coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "CoachingRelationship not found"),
         (status = 405, description = "Method not allowed"),
@@ -123,10 +123,10 @@ pub async fn read(
     path = "/organizations/{organization_id}/coaching_relationships",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "Organization id to retrieve CoachingRelationships")
+        ("organization_id" = Uuid, Path, description = "Organization id to retrieve CoachingRelationships")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all CoachingRelationships", body = [coaching_relationships::Model]),
+        (status = 200, description = "Successfully retrieved all CoachingRelationships", body = [domain::coaching_relationships::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -168,14 +168,14 @@ pub async fn index(
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/goal_progress",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "Organization id"),
-        ("relationship_id" = Id, Path, description = "Coaching relationship id"),
+        ("organization_id" = Uuid, Path, description = "Organization id"),
+        ("relationship_id" = Uuid, Path, description = "Coaching relationship id"),
         ("status" = Option<domain::status::Status>, Query, description = "Filter by goal status (e.g., 'InProgress')"),
         ("sort_by" = Option<crate::params::coaching_relationship::goal_progress::SortField>, Query, description = "Sort by field. Valid values: 'updated_at', 'status_changed_at', 'created_at'.", example = "updated_at"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc', 'desc'.", example = "desc"),
         ("limit" = Option<u32>, Query, description = "Cap on the number of goals returned. Values above 100 are silently clamped. Omit for unbounded results.", example = 3),
         ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. Omit for relationship-wide counts."),
-        ("coaching_session_id" = Option<Id>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
+        ("coaching_session_id" = Option<Uuid>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
     ),
     responses(
         (status = 200, description = "Successfully retrieved goal progress for the coaching relationship"),

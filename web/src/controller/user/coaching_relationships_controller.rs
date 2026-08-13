@@ -19,7 +19,7 @@ use log::*;
     path = "/users/{user_id}/coaching-relationships",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve coaching relationships for"),
+        ("user_id" = Uuid, Path, description = "User ID to retrieve coaching relationships for"),
         ("role" = Option<String>, Query, description = "Filter by role: all, coach, or coachee (default: all)"),
     ),
     responses(

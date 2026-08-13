@@ -24,11 +24,11 @@ use log::*;
     path = "/coaching_sessions/{coaching_session_id}/goals",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     request_body = LinkParams,
     responses(
-        (status = 201, description = "Successfully linked goal to session", body = [entity::coaching_sessions_goals::Model]),
+        (status = 201, description = "Successfully linked goal to session", body = [domain::coaching_sessions_goals::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 409, description = "Goal already linked to session"),
         (status = 422, description = "Unprocessable Entity"),
@@ -67,8 +67,8 @@ pub async fn create(
     path = "/coaching_sessions/{coaching_session_id}/goals/{goal_id}",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("goal_id" = Id, Path, description = "Goal id to unlink from this session"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("goal_id" = Uuid, Path, description = "Goal id to unlink from this session"),
     ),
     responses(
         (status = 200, description = "Successfully unlinked goal from session"),
@@ -105,10 +105,10 @@ pub async fn delete(
     path = "/coaching_sessions/{coaching_session_id}/goals",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved goals linked to session", body = [entity::goals::Model]),
+        (status = 200, description = "Successfully retrieved goals linked to session", body = [domain::goals::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -141,7 +141,7 @@ pub async fn index(
     path = "/coaching_sessions/goals",
     params(
         ApiVersion,
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Coaching relationship ID — fetch goals for all sessions in this relationship"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Coaching relationship ID — fetch goals for all sessions in this relationship"),
         ("coaching_session_ids" = Option<String>, Query, description = "Comma-separated coaching session UUIDs"),
     ),
     responses(

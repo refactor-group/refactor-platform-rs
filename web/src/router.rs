@@ -196,6 +196,10 @@ use utoipa_rapidoc::RapiDoc;
     )]
 struct ApiDoc;
 
+#[cfg(test)]
+#[path = "router_tests.rs"]
+mod tests;
+
 struct SecurityAddon;
 
 // Defines our cookie session based authentication requirement for gaining access to our

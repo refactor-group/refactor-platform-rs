@@ -18,9 +18,9 @@ use log::*;
     post,
     path = "/notes",
     params(ApiVersion),
-    request_body = notes::Model,
+    request_body = domain::notes::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Note", body = [notes::Model]),
+        (status = 201, description = "Successfully Created a New Note", body = [domain::notes::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -53,11 +53,11 @@ pub async fn create(
     path = "/notes/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of note to update"),
+        ("id" = Uuid, Path, description = "Id of note to update"),
     ),
-    request_body = notes::Model,
+    request_body = domain::notes::Model,
     responses(
-        (status = 200, description = "Successfully Updated Note", body = [notes::Model]),
+        (status = 200, description = "Successfully Updated Note", body = [domain::notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -89,10 +89,10 @@ pub async fn update(
     path = "/notes",
     params(
         ApiVersion,
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id")
+        ("coaching_session_id" = Option<Uuid>, Query, description = "Filter by coaching_session_id")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Notes", body = [coaching_sessions::Model]),
+        (status = 200, description = "Successfully retrieved all Notes", body = [domain::coaching_sessions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -125,10 +125,10 @@ pub async fn index(
     path = "/notes/{id}",
     params(
         ApiVersion,
-        ("id" = String, Path, description = "Note id to retrieve")
+        ("id" = inline(String), Path, description = "Note id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain Note by its id", body = [notes::Model]),
+        (status = 200, description = "Successfully retrieved a certain Note by its id", body = [domain::notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Note not found"),
         (status = 405, description = "Method not allowed"),

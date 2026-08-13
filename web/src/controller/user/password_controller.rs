@@ -18,7 +18,7 @@ use service::config::ApiVersion;
     path = "/users/{user_id}/password",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID", example = "1234567890"),
+        ("user_id" = Uuid, Path, description = "User ID", example = "1234567890"),
     ),
     responses(
         (status = 200, description = "Successfully updated a User's password"),

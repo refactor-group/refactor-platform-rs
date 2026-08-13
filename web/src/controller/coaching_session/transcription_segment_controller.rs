@@ -18,8 +18,8 @@ use service::config::ApiVersion;
     path = "/coaching_sessions/{coaching_session_id}/transcriptions/{transcription_id}/transcription_segments",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("transcription_id" = Id, Path, description = "Transcription id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("transcription_id" = Uuid, Path, description = "Transcription id"),
     ),
     responses(
         (status = 200, description = "Transcript segments retrieved ordered by start time"),

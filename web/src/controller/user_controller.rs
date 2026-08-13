@@ -73,7 +73,7 @@ pub async fn index(
     path = "/users/{user_id}",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID", example = "1234567890"),
+        ("user_id" = Uuid, Path, description = "User ID", example = "1234567890"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved a User", body = domain::users::Model),

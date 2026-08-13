@@ -21,9 +21,9 @@ use log::*;
     post,
     path = "/agreements",
     params(ApiVersion),
-    request_body = agreements::Model,
+    request_body = domain::agreements::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Agreement", body = [agreements::Model]),
+        (status = 201, description = "Successfully Created a New Agreement", body = [domain::agreements::Model]),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -66,10 +66,10 @@ pub async fn create(
     path = "/agreements/{id}",
     params(
         ApiVersion,
-        ("id" = String, Path, description = "Agreement id to retrieve")
+        ("id" = inline(String), Path, description = "Agreement id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = [notes::Model]),
+        (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = [domain::notes::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Agreement not found"),
         (status = 405, description = "Method not allowed"),
@@ -96,11 +96,11 @@ pub async fn read(
     path = "/agreements/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of agreement to update"),
+        ("id" = Uuid, Path, description = "Id of agreement to update"),
     ),
-    request_body = agreements::Model,
+    request_body = domain::agreements::Model,
     responses(
-        (status = 200, description = "Successfully Updated Agreement", body = [agreements::Model]),
+        (status = 200, description = "Successfully Updated Agreement", body = [domain::agreements::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -138,12 +138,12 @@ pub async fn update(
     path = "/agreements",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Query, description = "Filter by coaching_session_id"),
+        ("coaching_session_id" = Uuid, Query, description = "Filter by coaching_session_id"),
         ("sort_by" = Option<crate::params::agreement::SortField>, Query, description = "Sort by field. Valid values: 'body', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "body"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Agreements", body = [agreements::Model]),
+        (status = 200, description = "Successfully retrieved all Agreements", body = [domain::agreements::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")

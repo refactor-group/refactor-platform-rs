@@ -1,8 +1,18 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, EnumIter, Deserialize, Default, Serialize, DeriveActiveEnum,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    EnumIter,
+    Deserialize,
+    Default,
+    Serialize,
+    DeriveActiveEnum,
+    ToSchema,
 )]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "role")]
 pub enum Role {

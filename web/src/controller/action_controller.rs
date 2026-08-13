@@ -96,7 +96,7 @@ pub async fn create(
     path = "/actions/{id}",
     params(
         ApiVersion,
-        ("id" = String, Path, description = "Action id to retrieve")
+        ("id" = inline(String), Path, description = "Action id to retrieve")
     ),
     responses(
         (status = 200, description = "Successfully retrieved a specific Action by its id", body = [domain::action::ActionWithAssignees]),
@@ -165,7 +165,7 @@ async fn notify_added_assignees(
     path = "/actions/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of action to update"),
+        ("id" = Uuid, Path, description = "Id of action to update"),
     ),
     request_body = ActionRequest,
     responses(
@@ -222,12 +222,12 @@ pub async fn update(
     path = "/actions/{id}/status",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of action to update"),
+        ("id" = Uuid, Path, description = "Id of action to update"),
         ("value" = Option<String>, Query, description = "Status value to update"),
     ),
-    request_body = actions::Model,
+    request_body = domain::actions::Model,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [actions::Model]),
+        (status = 200, description = "Successfully Updated Action", body = [domain::actions::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -263,8 +263,8 @@ pub async fn update_status(
     path = "/actions",
     params(
         ApiVersion,
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id"),
-        ("goal_id" = Option<Id>, Query, description = "Filter by goal_id"),
+        ("coaching_session_id" = Option<Uuid>, Query, description = "Filter by coaching_session_id"),
+        ("goal_id" = Option<Uuid>, Query, description = "Filter by goal_id"),
         ("sort_by" = Option<crate::params::action::SortField>, Query, description = "Sort by field. Valid values: 'due_by', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "due_by"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),

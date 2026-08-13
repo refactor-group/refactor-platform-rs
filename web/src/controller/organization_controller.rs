@@ -26,7 +26,7 @@ use log::debug;
         ("status" = Option<String>, Query, description = "active|archived|all (default active)")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Organizations", body = [organizations::Model]),
+        (status = 200, description = "Successfully retrieved all Organizations", body = [domain::organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -60,10 +60,10 @@ pub async fn index(
     path = "/organizations/{id}",
     params(
         ApiVersion,
-        ("id" = String, Path, description = "Organization id to retrieve")
+        ("id" = inline(String), Path, description = "Organization id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = [organizations::Model]),
+        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = [domain::organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
@@ -92,9 +92,9 @@ pub async fn read(
     params(
         ApiVersion,
     ),
-    request_body = organizations::Model,
+    request_body = domain::organizations::Model,
     responses(
-        (status = 200, description = "Successfully created a new Organization", body = [organizations::Model]),
+        (status = 200, description = "Successfully created a new Organization", body = [domain::organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -130,9 +130,9 @@ pub async fn create(
         ApiVersion,
         ("id" = i32, Path, description = "Organization id to update")
     ),
-    request_body = organizations::Model,
+    request_body = domain::organizations::Model,
     responses(
-        (status = 200, description = "Successfully updated a certain Organization by its id", body = [organizations::Model]),
+        (status = 200, description = "Successfully updated a certain Organization by its id", body = [domain::organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
@@ -200,9 +200,9 @@ pub async fn delete(
 #[utoipa::path(
     post,
     path = "/organizations/{id}/archive",
-    params(ApiVersion, ("id" = String, Path, description = "Organization id to archive")),
+    params(ApiVersion, ("id" = inline(String), Path, description = "Organization id to archive")),
     responses(
-        (status = 200, description = "Organization archived", body = [organizations::Model]),
+        (status = 200, description = "Organization archived", body = [domain::organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden (not a SuperAdmin)"),
         (status = 404, description = "Organization not found"),
@@ -230,9 +230,9 @@ pub async fn archive(
 #[utoipa::path(
     post,
     path = "/organizations/{id}/unarchive",
-    params(ApiVersion, ("id" = String, Path, description = "Organization id to unarchive")),
+    params(ApiVersion, ("id" = inline(String), Path, description = "Organization id to unarchive")),
     responses(
-        (status = 200, description = "Organization unarchived", body = [organizations::Model]),
+        (status = 200, description = "Organization unarchived", body = [domain::organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden (not a SuperAdmin)"),
         (status = 404, description = "Organization not found"),

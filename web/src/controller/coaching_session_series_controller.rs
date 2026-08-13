@@ -78,7 +78,7 @@ pub async fn create(
     path = "/coaching_session_series/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Series ID")
+        ("id" = Uuid, Path, description = "Series ID")
     ),
     responses(
         (status = 200, description = "Series", body = SeriesWithSessions),
@@ -110,7 +110,7 @@ pub async fn read(
     path = "/coaching_session_series",
     params(
         ApiVersion,
-        ("coaching_relationship_id" = Id, Query, description = "Filter by coaching relationship")
+        ("coaching_relationship_id" = Uuid, Query, description = "Filter by coaching relationship")
     ),
     responses(
         (status = 200, description = "Series list", body = [CoachingSessionSeriesApi::Model]),
@@ -137,7 +137,7 @@ pub async fn index(
     path = "/coaching_session_series/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Series ID")
+        ("id" = Uuid, Path, description = "Series ID")
     ),
     request_body = RescheduleParams,
     responses(
@@ -190,7 +190,7 @@ pub async fn update(
     path = "/coaching_session_series/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Series ID")
+        ("id" = Uuid, Path, description = "Series ID")
     ),
     responses(
         (status = 204, description = "Deleted"),

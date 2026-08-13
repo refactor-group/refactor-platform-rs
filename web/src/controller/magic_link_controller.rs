@@ -24,7 +24,7 @@ pub(crate) struct ValidateParams {
     get,
     path = "/magic-link/validate",
     params(
-        ("token" = String, Query, description = "Magic login token from the welcome email"),
+        ("token" = inline(String), Query, description = "Magic login token from the welcome email"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved a User", body = domain::users::Model),
