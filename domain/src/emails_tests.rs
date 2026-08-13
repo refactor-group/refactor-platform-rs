@@ -4,6 +4,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::NaiveDate;
 use mockito::{Server, ServerGuard};
+#[cfg(feature = "mock")]
+use sea_orm::{DatabaseBackend, MockDatabase};
 use service::config::Config;
 #[cfg(feature = "mock")]
 use std::collections::BTreeSet;
@@ -75,6 +77,12 @@ impl IcsCapture {
             *slot.lock().unwrap() = decoded;
             true
         }
+    }
+
+    /// The captured `.ics`, or `None` when the send carried no attachment.
+    #[cfg(feature = "mock")]
+    fn captured(&self) -> Option<String> {
+        self.0.lock().unwrap().clone()
     }
 
     fn ics(&self) -> String {
@@ -584,8 +592,6 @@ fn test_build_session_invite_ics_bumped_sequence() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_session_scheduled_email_variables() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
 
@@ -681,8 +687,6 @@ async fn test_send_session_scheduled_email_variables() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_session_rescheduled_email() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
 
@@ -772,8 +776,6 @@ async fn test_send_session_rescheduled_email() {
 /// Loaders for the single-session `.ics` description: topics, goals, actions.
 #[cfg(feature = "mock")]
 fn mock_description_loaders() -> DatabaseConnection {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
         .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
@@ -793,6 +795,20 @@ fn reject_template_variables(keys: &'static [&'static str]) -> impl Fn(&mockito:
                 keys.iter()
                     .all(|key| payload["template"]["variables"].get(key).is_none())
             })
+            .unwrap_or(false)
+    }
+}
+
+/// Asserts the payload carries no attachment. mockito has no negative body matcher, so
+/// absence rides on `match_request`; an unreadable or unparsable body fails the match.
+#[cfg(feature = "mock")]
+fn reject_attachments() -> impl Fn(&mockito::Request) -> bool {
+    move |request| {
+        request
+            .utf8_lossy_body()
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .map(|payload| payload.get("attachments").is_none())
             .unwrap_or(false)
     }
 }
@@ -1528,29 +1544,160 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
     assert!(!cancel.contains("RECURRENCE-ID"));
 }
 
-/// A series member with no `ical_recurrence_id` has no valid slot to address, so the
-/// guard must fire before any lookup and nothing may be sent.
+/// A series member that predates `ical_recurrence_id` cannot have its occurrence
+/// addressed, but the humans still need telling. The email goes out; only the `.ics` is
+/// withheld. This is the production case: series materialized before invites existed.
 #[cfg(feature = "mock")]
 #[tokio::test]
-async fn test_notify_session_cancelled_skips_series_member_without_recurrence_id() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
-    let server = setup_test_server().await;
+async fn test_cancelling_a_legacy_series_member_emails_without_an_invite() {
+    let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
+    let capture = IcsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
     let mut session = create_test_session();
     session.coaching_session_series_id = Some(Id::new_v4());
     session.ical_recurrence_id = None;
-    // Future-dated so the past-session guard cannot be what stops the send.
+
+    // Both recipients still get mailed, and neither payload carries an attachment.
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(reject_attachments())
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    assert!(
+        capture.captured().is_none(),
+        "a session whose occurrence cannot be addressed must carry no invite"
+    );
+}
+
+/// The scheduled and rescheduled sends, for a series member whose occurrence cannot be
+/// addressed. Both must mail each participant and neither may attach an invite. These
+/// exist because the transaction-log tests below only prove the notify entry points stopped
+/// short-circuiting; they do not prove an email actually leaves with no attachment.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_scheduling_and_rescheduling_a_legacy_series_member_omit_the_invite() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+
+    // Two sends per flow, four in total, none carrying an attachment.
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(reject_attachments())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(4)
+        .create_async()
+        .await;
+
+    let scheduled = send_session_scheduled_email(
+        &mock_description_loaders(),
+        &config,
+        &coach,
+        &coachee,
+        &session,
+        &org,
+    )
+    .await;
+    assert!(scheduled.is_ok());
+
+    let rescheduled = send_session_rescheduled_email(
+        &mock_description_loaders(),
+        &config,
+        &coach,
+        &coachee,
+        &session,
+        &org,
+        session.date - chrono::Duration::days(1),
+    )
+    .await;
+    assert!(rescheduled.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// The production regression, pinned at the layer where it occurred.
+///
+/// `notify_session_cancelled` used to return before any lookup when a series member had no
+/// `ical_recurrence_id`, so the coach and coachee were told nothing at all. With no mock
+/// results appended, the old code produced an empty transaction log; the new code must at
+/// least attempt the participant lookup. This is the exact inverse of the assertion the
+/// previous test made.
+///
+/// Driving the notify entry point matters: an earlier version of this test called
+/// `send_session_cancelled_email` directly and stayed green when the early return was put
+/// back. The full path cannot be mocked end to end because `user::find_by_id` uses
+/// `find_with_related`, which MockDatabase cannot express, so the send itself is covered
+/// separately by `test_cancelling_a_legacy_series_member_emails_without_an_invite`.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_notify_session_cancelled_no_longer_short_circuits_a_legacy_series_member() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+    // Future-dated, so the past-session guard cannot be what decides the outcome.
     session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
 
-    // Zero appended results: any query would panic or error rather than pass.
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
     notify_session_cancelled(&db, &config, &session).await;
 
     assert!(
-        db.into_transaction_log().is_empty(),
-        "a series member without a RECURRENCE-ID must return before any statement runs"
+        !db.into_transaction_log().is_empty(),
+        "a series member without a RECURRENCE-ID must still be looked up and emailed, \
+         not skipped before any statement runs"
+    );
+}
+
+/// The same regression on the other two entry points. All three shared the early return,
+/// so all three need the guard against it coming back.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_member() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+    session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let scheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    notify_session_scheduled(&scheduled_db, &config, &session).await;
+    assert!(
+        !scheduled_db.into_transaction_log().is_empty(),
+        "scheduled must not skip a legacy series member"
+    );
+
+    let rescheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    notify_session_rescheduled(&rescheduled_db, &config, &session, session.date).await;
+    assert!(
+        !rescheduled_db.into_transaction_log().is_empty(),
+        "rescheduled must not skip a legacy series member"
     );
 }
 
@@ -1650,8 +1797,6 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_notify_session_cancelled_skips_past_session() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
     let mut session = create_test_session();
@@ -1674,8 +1819,6 @@ async fn test_notify_session_cancelled_skips_past_session() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_session_scheduled_email_missing_template_id() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     // Config has an API key and frontend base URL but no session-scheduled
     // template id — mirrors the welcome/action missing-template-id tests.
     // Fails at config resolution, before any loader query runs.
@@ -2144,8 +2287,6 @@ fn test_build_series_invite_ics_carries_bumped_sequence() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_scheduled_email_personalization() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
 
@@ -2233,8 +2374,6 @@ async fn test_send_recurring_sessions_scheduled_email_personalization() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_rescheduled_email() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
 
@@ -2328,8 +2467,6 @@ async fn test_send_recurring_sessions_rescheduled_email() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from_old_rule() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
 
@@ -2428,8 +2565,6 @@ fn create_test_series_with_rule(rule: serde_json::Value) -> coaching_session_ser
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_scheduled_email_carries_recurrence_summary() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
     let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -2481,8 +2616,6 @@ async fn test_send_recurring_sessions_scheduled_email_carries_recurrence_summary
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from_old_rule() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
     let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -2554,8 +2687,6 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
     let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -2623,8 +2754,6 @@ async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_notify_recurring_sessions_rescheduled_with_no_sessions_does_nothing() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
     let series = create_test_series();
@@ -2820,8 +2949,6 @@ async fn test_send_recurring_sessions_cancelled_email_omits_recurrence_variables
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_notify_recurring_sessions_cancelled_with_no_sessions_does_nothing() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
     let series = create_test_series();
@@ -2840,8 +2967,6 @@ async fn test_notify_recurring_sessions_cancelled_with_no_sessions_does_nothing(
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_scheduled_email_single_session() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
 
@@ -2894,8 +3019,6 @@ async fn test_send_recurring_sessions_scheduled_email_single_session() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
-    use sea_orm::{DatabaseBackend, MockDatabase};
-
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
     let server = setup_test_server().await;
     let config = Config::from_args([

@@ -658,7 +658,7 @@ async fn send_session_email_to_recipient(
     to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    ics_body: &str,
+    ics_body: Option<&str>,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     let recipient = to.user;
@@ -684,7 +684,7 @@ async fn send_session_email_to_recipient(
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
         .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
-        .add_ics_attachment(ics_body, &ical::Method::Request);
+        .add_optional_ics_attachment(ics_body, &ical::Method::Request);
 
     // The reschedule template declares both keys, so they ship together or not at all.
     let email_request = match reschedule {
@@ -831,21 +831,27 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     });
 
     let dtstamp = chrono::Utc::now().naive_utc();
-    // A session inside a series is addressed as an override of its occurrence.
-    let ics_body = match session.coaching_session_series_id {
-        Some(series_id) => build_occurrence_reschedule_ics(
-            coach,
-            coachee,
-            session,
-            series_id,
-            organization,
-            description,
-            dtstamp,
-        )?,
-        None => {
-            build_session_invite_ics(coach, coachee, session, organization, description, dtstamp)?
-        }
-    };
+    // A session inside a series is addressed as an override of its occurrence. One that
+    // predates `ical_recurrence_id` has no such address, so it goes out without an
+    // attachment rather than not going out at all.
+    let ics_body = build_session_ics(
+        session,
+        description,
+        |series_id, description| {
+            build_occurrence_reschedule_ics(
+                coach,
+                coachee,
+                session,
+                series_id,
+                organization,
+                description,
+                dtstamp,
+            )
+        },
+        |description| {
+            build_session_invite_ics(coach, coachee, session, organization, description, dtstamp)
+        },
+    )?;
 
     // Email to coachee: "Your coach, ... has a session with you"
     if let Err(e) = send_session_email_to_recipient(
@@ -857,7 +863,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         },
         session,
         organization,
-        &ics_body,
+        ics_body.as_deref(),
         reschedule,
     )
     .await
@@ -879,7 +885,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         },
         session,
         organization,
-        &ics_body,
+        ics_body.as_deref(),
         reschedule,
     )
     .await
@@ -1027,14 +1033,6 @@ pub async fn notify_session_scheduled(
     config: &Config,
     session: &coaching_sessions::Model,
 ) {
-    if lacks_occurrence_address(session) {
-        warn!(
-            "Skipping scheduled invite for session {}: series member has no ical_recurrence_id",
-            session.id
-        );
-        return;
-    }
-
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
@@ -1054,10 +1052,43 @@ pub async fn notify_session_scheduled(
     }
 }
 
-/// True when a session belongs to a series but predates `ical_recurrence_id`, so no
-/// valid `RECURRENCE-ID` exists. Sending anything would address the wrong occurrence.
-fn lacks_occurrence_address(session: &coaching_sessions::Model) -> bool {
-    session.coaching_session_series_id.is_some() && session.ical_recurrence_id.is_none()
+/// The invite for one session, or `None` when its occurrence cannot be addressed.
+///
+/// A session inside a series is addressed as an override of its occurrence; a standalone
+/// one by its own `UID`. A series member materialized before `ical_recurrence_id` existed
+/// has neither, so it goes out with no attachment rather than not going out at all.
+///
+/// `description` is passed through to whichever builder runs, so it moves exactly once.
+fn build_session_ics(
+    session: &coaching_sessions::Model,
+    description: String,
+    build_occurrence: impl FnOnce(Id, String) -> Result<String, Error>,
+    build_standalone: impl FnOnce(String) -> Result<String, Error>,
+) -> Result<Option<String>, Error> {
+    match (
+        session.coaching_session_series_id,
+        session.ical_recurrence_id,
+    ) {
+        (Some(series_id), Some(_)) => build_occurrence(series_id, description).map(Some),
+        (Some(_), None) => {
+            warn_unaddressable(session);
+            Ok(None)
+        }
+        (None, _) => build_standalone(description).map(Some),
+    }
+}
+
+/// A series member that predates `ical_recurrence_id` has no valid `RECURRENCE-ID`, so no
+/// invite can address its occurrence. The email still goes out; only the attachment is
+/// withheld. These sessions were materialized before invites existed, so no calendar holds
+/// an event for them and a `CANCEL` or update naming the series `UID` would act on the
+/// wrong instance.
+fn warn_unaddressable(session: &coaching_sessions::Model) {
+    warn!(
+        "Sending email without an invite for session {}: series member predates \
+         ical_recurrence_id, so its occurrence cannot be addressed",
+        session.id
+    );
 }
 
 /// Orchestrate sending session-rescheduled emails (best-effort).
@@ -1073,14 +1104,6 @@ pub async fn notify_session_rescheduled(
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
 ) {
-    if lacks_occurrence_address(session) {
-        warn!(
-            "Skipping reschedule invite for session {}: series member has no ical_recurrence_id",
-            session.id
-        );
-        return;
-    }
-
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
@@ -1174,13 +1197,12 @@ fn build_occurrence_cancel_ics(
 /// variables than the invite sends: no `session_url` (the row is gone) and no duration.
 async fn send_session_cancelled_email_to_recipient(
     email_config: &ResolvedEmailConfig,
-    recipient: &users::Model,
-    other_user: &users::Model,
-    other_user_role: &str,
+    to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    ics_body: &str,
+    ics_body: Option<&str>,
 ) -> Result<(), Error> {
+    let recipient = to.user;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
 
     let email_request = SendEmailRequestBuilder::new()
@@ -1191,13 +1213,13 @@ async fn send_session_cancelled_email_to_recipient(
         )
         .template_id(&email_config.template_id)
         .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("other_user_first_name", other_user.first_name.as_str())
-        .add_variable("other_user_last_name", other_user.last_name.as_str())
-        .add_variable("other_user_role", other_user_role)
+        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
+        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
+        .add_variable("other_user_role", to.other_user_role)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
-        .add_ics_attachment(ics_body, &ical::Method::Cancel)
+        .add_optional_ics_attachment(ics_body, &ical::Method::Cancel)
         .build()
         .await?;
 
@@ -1222,34 +1244,35 @@ async fn send_session_cancelled_email(
 
     let dtstamp = chrono::Utc::now().naive_utc();
     // A session inside a series is addressed as an override of its occurrence.
-    let ics_body = match session.coaching_session_series_id {
-        Some(series_id) => build_occurrence_cancel_ics(
-            coach,
-            coachee,
-            session,
-            series_id,
-            organization,
-            SESSION_CANCELLED_DESCRIPTION.to_string(),
-            dtstamp,
-        )?,
-        None => build_session_cancel_ics(
-            coach,
-            coachee,
-            session,
-            organization,
-            SESSION_CANCELLED_DESCRIPTION.to_string(),
-            dtstamp,
-        )?,
-    };
+    let ics_body = build_session_ics(
+        session,
+        SESSION_CANCELLED_DESCRIPTION.to_string(),
+        |series_id, description| {
+            build_occurrence_cancel_ics(
+                coach,
+                coachee,
+                session,
+                series_id,
+                organization,
+                description,
+                dtstamp,
+            )
+        },
+        |description| {
+            build_session_cancel_ics(coach, coachee, session, organization, description, dtstamp)
+        },
+    )?;
 
     if let Err(e) = send_session_cancelled_email_to_recipient(
         &email_config,
-        coachee,
-        coach,
-        "coach",
+        &Recipient {
+            user: coachee,
+            other_user: coach,
+            other_user_role: "coach",
+        },
         session,
         organization,
-        &ics_body,
+        ics_body.as_deref(),
     )
     .await
     {
@@ -1261,12 +1284,14 @@ async fn send_session_cancelled_email(
 
     if let Err(e) = send_session_cancelled_email_to_recipient(
         &email_config,
-        coach,
-        coachee,
-        "coachee",
+        &Recipient {
+            user: coach,
+            other_user: coachee,
+            other_user_role: "coachee",
+        },
         session,
         organization,
-        &ics_body,
+        ics_body.as_deref(),
     )
     .await
     {
@@ -1292,14 +1317,6 @@ pub async fn notify_session_cancelled(
     if session.date < chrono::Utc::now().naive_utc() {
         return;
     }
-    if lacks_occurrence_address(session) {
-        warn!(
-            "Skipping cancellation for session {}: series member has no ical_recurrence_id",
-            session.id
-        );
-        return;
-    }
-
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
