@@ -397,7 +397,6 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".into(),
             default_coaching_session_duration_minutes: 60,
-            role: Default::default(),
             roles: vec![],
             invite_status: None,
             created_at: now.into(),

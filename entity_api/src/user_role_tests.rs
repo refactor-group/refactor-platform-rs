@@ -30,7 +30,6 @@ fn user_model(roles: Vec<Model>) -> entity::users::Model {
         default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
         created_at: now.into(),
         updated_at: now.into(),
-        role: Role::User,
         roles,
         invite_status: None,
     }
