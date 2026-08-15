@@ -38,10 +38,6 @@ pub struct Model {
     /// `NOT NULL DEFAULT 60` so it's optional on the wire (not an invalid `0`).
     #[serde(default = "crate::duration::Duration::default_minutes")]
     pub default_coaching_session_duration_minutes: i16,
-    #[sea_orm(default = "user")]
-    // This is a legacy field and will be removed in favor of roles
-    #[serde(skip_deserializing)]
-    pub role: Role,
     /// Associated user roles (populated via find_with_related)
     /// This field is ignored by SeaORM for database operations.
     #[sea_orm(ignore)]
@@ -117,7 +113,6 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".into(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            role: Role::default(),
             roles: vec![],
             invite_status: None,
             created_at: Utc::now().into(),

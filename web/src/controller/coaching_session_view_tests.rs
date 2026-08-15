@@ -32,7 +32,6 @@ fn test_user() -> users::Model {
         github_profile_url: None,
         timezone: "UTC".to_string(),
         default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(),
-        role: users::Role::User,
         roles: vec![],
         invite_status: None,
         created_at: now.into(),
