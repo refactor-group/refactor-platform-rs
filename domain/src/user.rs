@@ -12,7 +12,7 @@ use crate::{
     coaching_relationships,
     error::Error,
     error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
-    magic_link_token, magic_link_tokens, users, Id,
+    magic_link_token, magic_link_tokens, users, Actor, Id,
 };
 pub use entity_api::{
     user::{
@@ -135,13 +135,14 @@ pub async fn update_password(
 /// committed.
 pub async fn create_in_organization(
     db: &DatabaseConnection,
+    actor: Actor,
     organization_id: Id,
     user_model: users::Model,
     coach_id: Option<Id>,
 ) -> Result<users::Model, Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
-    let new_user = user::create_by_organization(&txn, organization_id, user_model).await?;
+    let new_user = user::create_by_organization(&txn, actor, organization_id, user_model).await?;
 
     if let Some(coach_id) = coach_id {
         coaching_relationship::create(
@@ -175,7 +176,16 @@ pub(crate) fn new_coaching_relationship(
     }
 }
 
-pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
+/// Deletes an account and every role it holds.
+///
+/// Returns the roles that were destroyed, so the caller can log them. Each is
+/// also written to the audit trail inside the transaction. A global SuperAdmin
+/// grant is among them, and that is the change most worth recording.
+pub async fn delete(
+    db: &DatabaseConnection,
+    actor: Actor,
+    user_id: Id,
+) -> Result<Vec<user_roles::Model>, Error> {
     let txn = db.begin().await.map_err(|e| Error {
         source: Some(Box::new(e)),
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
@@ -216,7 +226,7 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
     }
 
     coaching_relationship::delete_by_user_id(&txn, user_id).await?;
-    user_role::delete_by_user_id(&txn, user_id).await?;
+    let destroyed_roles = user_role::delete_by_user_id(&txn, actor, user_id).await?;
     user::delete(&txn, user_id).await?;
 
     txn.commit().await.map_err(|e| Error {
@@ -226,7 +236,7 @@ pub async fn delete(db: &DatabaseConnection, user_id: Id) -> Result<(), Error> {
         )),
     })?;
 
-    Ok(())
+    Ok(destroyed_roles)
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use axum_login::{
 };
 use chrono::Utc;
 use domain::user::Backend;
-use domain::{organizations, user_roles, users, Id};
+use domain::{organizations, user_role_changes, user_roles, users, Id};
 use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Value};
 use service::config::Config;
@@ -68,6 +68,25 @@ fn test_organization(organization_id: Id) -> organizations::Model {
 /// A single-column mock row, for the id-only selects the visibility probe runs.
 fn id_row(column: &str, value: Id) -> BTreeMap<String, Value> {
     BTreeMap::from([(column.to_string(), value.into())])
+}
+
+/// The audit row a grant or removal appends inside the domain transaction.
+fn role_change_row(
+    actor_user_id: Id,
+    target_user_id: Id,
+    organization_id: Id,
+    previous_role: Option<users::Role>,
+    new_role: Option<users::Role>,
+) -> user_role_changes::Model {
+    user_role_changes::Model {
+        id: Id::new_v4(),
+        actor_user_id: Some(actor_user_id),
+        target_user_id,
+        organization_id: Some(organization_id),
+        previous_role,
+        new_role,
+        changed_at: chrono::Utc::now().into(),
+    }
 }
 
 fn exec_result() -> MockExecResult {
@@ -224,6 +243,13 @@ async fn attach_returns_201_for_an_org_admin_who_can_see_the_target() {
             .append_query_results([vec![requester()]])
             .append_query_results([Vec::<user_roles::Model>::new()])
             .append_query_results([vec![granted.clone()]])
+            .append_query_results([vec![role_change_row(
+                user.id,
+                target_id,
+                organization_id,
+                None,
+                Some(users::Role::User),
+            )]])
             .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
                 requester(),
                 Some(granted),
@@ -306,6 +332,13 @@ async fn attach_returns_201_for_a_super_admin() {
             .append_query_results([vec![requester()]])
             .append_query_results([Vec::<user_roles::Model>::new()])
             .append_query_results([vec![granted.clone()]])
+            .append_query_results([vec![role_change_row(
+                user.id,
+                target_id,
+                organization_id,
+                None,
+                Some(users::Role::User),
+            )]])
             .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
                 requester(),
                 Some(granted),
@@ -418,6 +451,13 @@ async fn remove_returns_204_when_the_member_still_has_sessions() {
                 users::Role::User,
             )]])
             .append_exec_results([exec_result()])
+            .append_query_results([vec![role_change_row(
+                user.id,
+                target_id,
+                organization_id,
+                Some(users::Role::User),
+                None,
+            )]])
             .into_connection(),
     );
 
@@ -452,6 +492,13 @@ async fn remove_returns_204_for_another_member() {
                 users::Role::User,
             )]])
             .append_exec_results([exec_result()])
+            .append_query_results([vec![role_change_row(
+                user.id,
+                target_id,
+                organization_id,
+                Some(users::Role::User),
+                None,
+            )]])
             .into_connection(),
     );
 

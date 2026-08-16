@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 
 use crate::error::Error;
 use crate::user::{new_coaching_relationship, Role};
-use crate::{users, Id};
+use crate::{users, Actor, Id};
 
 /// Minimal projection of a user returned by an email lookup.
 ///
@@ -39,6 +39,7 @@ pub struct UserLookupResult {
 /// already holds a role there, plus any error from the coach assignment.
 pub async fn attach_to_organization(
     db: &DatabaseConnection,
+    actor: Actor,
     organization_id: Id,
     user_id: Id,
     role: Role,
@@ -71,7 +72,7 @@ pub async fn attach_to_organization(
         .into());
     }
 
-    user_role::create(&txn, user_id, organization_id, role).await?;
+    user_role::create(&txn, actor, user_id, organization_id, role).await?;
 
     if let Some(coach_id) = coach_id {
         coaching_relationship::create(
@@ -97,15 +98,18 @@ pub async fn attach_to_organization(
 /// sessions in the organization are deliberately preserved; authorization
 /// denies the removed user access to them.
 ///
+/// Returns the role that was removed, so callers can log the transition.
+///
 /// # Errors
 ///
 /// `NotFound` when the user holds no role in the organization,
 /// `LastOrganizationAdmin` when they are its only admin.
 pub async fn remove_from_organization(
     db: &DatabaseConnection,
+    actor: Actor,
     organization_id: Id,
     user_id: Id,
-) -> Result<(), Error> {
+) -> Result<Role, Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let Some(membership) =
@@ -128,11 +132,11 @@ pub async fn remove_from_organization(
         .into());
     }
 
-    user_role::delete_by_user_and_organization(&txn, user_id, organization_id).await?;
+    user_role::delete(&txn, actor, &membership).await?;
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
-    Ok(())
+    Ok(membership.role)
 }
 
 /// Looks up a user by email, limited to what the requester is allowed to see.

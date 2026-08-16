@@ -1,4 +1,5 @@
 use super::*;
+use crate::Actor;
 use crate::{coaching_relationships, organizations, user_roles};
 use sea_orm::{DatabaseBackend, DbErr, MockDatabase};
 
@@ -61,16 +62,36 @@ fn statements(db: sea_orm::DatabaseConnection) -> Vec<String> {
         .collect()
 }
 
-/// Mocks the queries `entity_api::user::create_by_organization` issues.
+/// Mocks the queries `entity_api::user::create_by_organization` issues,
+/// including the role-change audit insert.
 fn mock_user_creation(
     db: MockDatabase,
+    actor_user_id: Id,
     organization_id: Id,
     new_user: users::Model,
 ) -> MockDatabase {
     let role = user_role_model(new_user.id, organization_id);
+    let audit = role_change(actor_user_id, new_user.id, organization_id);
     db.append_query_results([[organization(organization_id)]])
         .append_query_results([[new_user]])
         .append_query_results([[role]])
+        .append_query_results([[audit]])
+}
+
+fn role_change(
+    actor_user_id: Id,
+    target_user_id: Id,
+    organization_id: Id,
+) -> entity::user_role_changes::Model {
+    entity::user_role_changes::Model {
+        id: Id::new_v4(),
+        actor_user_id: Some(actor_user_id),
+        target_user_id,
+        organization_id: Some(organization_id),
+        previous_role: None,
+        new_role: Some(Role::User),
+        changed_at: chrono::Utc::now().into(),
+    }
 }
 
 /// Mocks the lookups `entity_api::coaching_relationship::create` runs before it
@@ -100,14 +121,24 @@ async fn create_in_organization_without_a_coach_commits_the_user_and_role_only()
     let organization_id = Id::new_v4();
     let new_user = user(Id::new_v4());
 
+    let actor_user_id = Id::new_v4();
+
     let db = mock_user_creation(
         MockDatabase::new(DatabaseBackend::Postgres),
+        actor_user_id,
         organization_id,
         new_user.clone(),
     )
     .into_connection();
 
-    let created = create_in_organization(&db, organization_id, new_user.clone(), None).await?;
+    let created = create_in_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        new_user.clone(),
+        None,
+    )
+    .await?;
 
     assert_eq!(created.id, new_user.id);
 
@@ -123,6 +154,72 @@ async fn create_in_organization_without_a_coach_commits_the_user_and_role_only()
     Ok(())
 }
 
+/// The default role a new member gets is still a grant, so it is audited, and the
+/// audit row has to land before the commit.
+#[tokio::test]
+async fn create_in_organization_audits_the_default_role_inside_the_transaction() -> Result<(), Error>
+{
+    let organization_id = Id::new_v4();
+    let new_user = user(Id::new_v4());
+    let actor_user_id = Id::new_v4();
+
+    let db = mock_user_creation(
+        MockDatabase::new(DatabaseBackend::Postgres),
+        actor_user_id,
+        organization_id,
+        new_user.clone(),
+    )
+    .into_connection();
+
+    create_in_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        new_user.clone(),
+        None,
+    )
+    .await?;
+
+    let statements: Vec<sea_orm::Statement> = db
+        .into_transaction_log()
+        .iter()
+        .flat_map(|transaction| transaction.statements().to_vec())
+        .collect();
+
+    let audits: Vec<&sea_orm::Statement> = statements
+        .iter()
+        .filter(|statement| {
+            statement.sql.contains("INSERT") && statement.sql.contains("user_role_changes")
+        })
+        .collect();
+    assert_eq!(audits.len(), 1, "exactly one audit row per created member");
+
+    let index = statements
+        .iter()
+        .position(|statement| std::ptr::eq(statement, audits[0]))
+        .expect("the audit insert must be in the log");
+    let commit = statements
+        .iter()
+        .position(|statement| statement.sql == "COMMIT")
+        .expect("the creation must commit");
+    assert!(index < commit, "the audit row must precede the commit");
+
+    let values = audits[0]
+        .values
+        .as_ref()
+        .map(|values| values.0.clone())
+        .unwrap_or_default();
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(new_user.id)))));
+    // A first grant of the default role: no previous role.
+    assert!(values.contains(&sea_orm::Value::String(None)));
+    assert!(values.contains(&sea_orm::Value::String(Some(Box::new(
+        Role::User.to_string()
+    )))));
+
+    Ok(())
+}
+
 /// The assertion the whole atomic-add change rests on: if the relationship
 /// insert fails, nothing commits, so the caller never reaches the invite email.
 #[tokio::test]
@@ -130,10 +227,12 @@ async fn create_in_organization_rolls_back_when_the_relationship_insert_fails() 
     let organization_id = Id::new_v4();
     let new_user = user(Id::new_v4());
     let coach = user(Id::new_v4());
+    let actor_user_id = Id::new_v4();
 
     let db = mock_relationship_preflight(
         mock_user_creation(
             MockDatabase::new(DatabaseBackend::Postgres),
+            actor_user_id,
             organization_id,
             new_user.clone(),
         ),
@@ -144,9 +243,15 @@ async fn create_in_organization_rolls_back_when_the_relationship_insert_fails() 
     .append_query_errors([DbErr::Custom("relationship insert failed".to_owned())])
     .into_connection();
 
-    create_in_organization(&db, organization_id, new_user, Some(coach.id))
-        .await
-        .expect_err("expected the failed relationship insert to fail the whole call");
+    create_in_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        new_user,
+        Some(coach.id),
+    )
+    .await
+    .expect_err("expected the failed relationship insert to fail the whole call");
 
     let sql = statements(db);
     assert!(
@@ -171,10 +276,12 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
     let new_user = user(Id::new_v4());
     let coach = user(Id::new_v4());
     let now = chrono::Utc::now();
+    let actor_user_id = Id::new_v4();
 
     let db = mock_relationship_preflight(
         mock_user_creation(
             MockDatabase::new(DatabaseBackend::Postgres),
+            actor_user_id,
             organization_id,
             new_user.clone(),
         ),
@@ -193,7 +300,14 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
     }]])
     .into_connection();
 
-    create_in_organization(&db, organization_id, new_user, Some(coach.id)).await?;
+    create_in_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        new_user,
+        Some(coach.id),
+    )
+    .await?;
 
     let sql = statements(db);
     let commits = sql.iter().filter(|s| s.as_str() == "COMMIT").count();

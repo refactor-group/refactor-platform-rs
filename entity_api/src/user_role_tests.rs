@@ -49,7 +49,14 @@ fn count_row(count: i64) -> BTreeMap<String, Value> {
 async fn create_rejects_super_admin_without_touching_the_database() {
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-    let result = create(&db, Id::new_v4(), Id::new_v4(), Role::SuperAdmin).await;
+    let result = create(
+        &db,
+        Actor::new(Id::new_v4()),
+        Id::new_v4(),
+        Id::new_v4(),
+        Role::SuperAdmin,
+    )
+    .await;
 
     let err = result.expect_err("expected SuperAdmin rejection");
     assert!(matches!(
@@ -68,15 +75,49 @@ async fn create_inserts_an_organization_scoped_role() -> Result<(), Error> {
     let organization_id = Id::new_v4();
     let inserted = role_model(user_id, Some(organization_id), Role::Admin);
 
+    let actor_user_id = Id::new_v4();
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[inserted.clone()]])
+        .append_query_results([[entity::user_role_changes::Model {
+            id: Id::new_v4(),
+            actor_user_id: Some(actor_user_id),
+            target_user_id: user_id,
+            organization_id: Some(organization_id),
+            previous_role: None,
+            new_role: Some(Role::Admin),
+            changed_at: chrono::Utc::now().into(),
+        }]])
         .into_connection();
 
-    let created = create(&db, user_id, organization_id, Role::Admin).await?;
+    let created = create(
+        &db,
+        Actor::new(actor_user_id),
+        user_id,
+        organization_id,
+        Role::Admin,
+    )
+    .await?;
 
     assert_eq!(created.user_id, user_id);
     assert_eq!(created.organization_id, Some(organization_id));
     assert_eq!(created.role, Role::Admin);
+
+    // The grant audits itself, so no caller can create a role without a record.
+    let sql: Vec<String> = db
+        .into_transaction_log()
+        .iter()
+        .flat_map(|transaction| {
+            transaction
+                .statements()
+                .iter()
+                .map(|statement| statement.sql.clone())
+        })
+        .collect();
+    assert!(
+        sql.iter()
+            .any(|statement| statement.contains("user_role_changes")),
+        "create must audit the grant: {sql:?}"
+    );
 
     Ok(())
 }
@@ -120,9 +161,15 @@ async fn create_leaves_an_unparsed_database_error_as_a_system_error() {
         )])
         .into_connection();
 
-    let err = create(&db, Id::new_v4(), Id::new_v4(), Role::Admin)
-        .await
-        .expect_err("expected the unique violation to surface as an error");
+    let err = create(
+        &db,
+        Actor::new(Id::new_v4()),
+        Id::new_v4(),
+        Id::new_v4(),
+        Role::Admin,
+    )
+    .await
+    .expect_err("expected the unique violation to surface as an error");
 
     assert!(
         matches!(err.error_kind, EntityApiErrorKind::SystemError),
@@ -228,4 +275,94 @@ fn scope_roles_to_organization_keeps_only_the_target_org_and_global_roles() {
     let retained_ids: Vec<Id> = user.roles.iter().map(|role| role.id).collect();
     assert_eq!(user.roles.len(), 2, "retained: {retained_ids:?}");
     assert_eq!(retained_ids, vec![in_scope.id, global.id]);
+}
+
+/// A global SuperAdmin grant has a null `organization_id`. Filtering on it would
+/// render `organization_id = NULL`, which matches nothing, so the row would
+/// survive while the audit claimed it was removed.
+#[tokio::test]
+async fn delete_removes_a_global_role_by_primary_key() -> Result<(), Error> {
+    let global = role_model(Id::new_v4(), None, Role::SuperAdmin);
+    let actor = Actor::new(Id::new_v4());
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_exec_results([sea_orm::MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }])
+        .append_query_results([[entity::user_role_changes::Model {
+            id: Id::new_v4(),
+            actor_user_id: Some(actor.id()),
+            target_user_id: global.user_id,
+            organization_id: None,
+            previous_role: Some(Role::SuperAdmin),
+            new_role: None,
+            changed_at: chrono::Utc::now().into(),
+        }]])
+        .into_connection();
+
+    delete(&db, actor, &global).await?;
+
+    let sql: Vec<String> = db
+        .into_transaction_log()
+        .iter()
+        .flat_map(|transaction| {
+            transaction
+                .statements()
+                .iter()
+                .map(|statement| statement.sql.clone())
+        })
+        .collect();
+
+    let delete_sql = sql
+        .iter()
+        .find(|statement| statement.contains("DELETE"))
+        .expect("the membership must be deleted");
+    assert!(
+        delete_sql.contains(r#""id" = $1"#),
+        "must delete by primary key: {delete_sql}"
+    );
+    assert!(
+        !delete_sql.contains("organization_id"),
+        "a null organization_id must not reach the WHERE clause: {delete_sql}"
+    );
+    assert!(sql
+        .iter()
+        .any(|statement| statement.contains("user_role_changes")));
+
+    Ok(())
+}
+
+/// If the row is already gone the delete is a no-op, so auditing it would record
+/// a removal this caller did not perform.
+#[tokio::test]
+async fn delete_does_not_audit_when_no_row_was_removed() -> Result<(), Error> {
+    let membership = role_model(Id::new_v4(), Some(Id::new_v4()), Role::Admin);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_exec_results([sea_orm::MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 0,
+        }])
+        .into_connection();
+
+    delete(&db, Actor::new(Id::new_v4()), &membership).await?;
+
+    let sql: Vec<String> = db
+        .into_transaction_log()
+        .iter()
+        .flat_map(|transaction| {
+            transaction
+                .statements()
+                .iter()
+                .map(|statement| statement.sql.clone())
+        })
+        .collect();
+    assert!(
+        !sql.iter()
+            .any(|statement| statement.contains("user_role_changes")),
+        "nothing was deleted, so nothing may be audited: {sql:?}"
+    );
+
+    Ok(())
 }
