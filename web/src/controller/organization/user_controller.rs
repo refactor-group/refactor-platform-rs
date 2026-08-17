@@ -277,16 +277,17 @@ pub(crate) async fn attach_role(
         ("cookie_auth" = [])
     )
 )]
-// Unimplemented body; the names are the ones the implementation uses.
-#[allow(unused_variables, unreachable_code)]
 pub(crate) async fn read_role(
     CompareApiVersion(_v): CompareApiVersion,
     OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
     Path((_organization_id, user_id)): Path<(Id, Id)>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    let response: Json<ApiResponse<domain::user_roles::Model>> = todo!();
-    Ok(response)
+    let membership =
+        UserRoleApi::find_role_in_organization(app_state.db_conn_ref(), organization.id, user_id)
+            .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), membership)))
 }
 
 /// UPDATE the role a User holds in an organization.
@@ -314,8 +315,6 @@ pub(crate) async fn read_role(
         ("cookie_auth" = [])
     )
 )]
-// Unimplemented body; the names are the ones the implementation uses.
-#[allow(unused_variables, unreachable_code)]
 pub(crate) async fn update_role(
     CompareApiVersion(_v): CompareApiVersion,
     OrganizationAdminAccess {
@@ -326,8 +325,41 @@ pub(crate) async fn update_role(
     State(app_state): State<AppState>,
     Json(params): Json<UpdateRoleParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let response: Json<ApiResponse<domain::users::Model>> = todo!();
-    Ok(response)
+    if params.role == Role::SuperAdmin {
+        // The generic 422 log carries no actor or target, and no first-party client
+        // sends this role, so an attempt is worth attributing on its own.
+        warn!(
+            "role_change_denied actor={} target={} org={} attempted=super_admin \
+             reason=super_admin_not_grantable_in_organization",
+            authenticated_user.id, user_id, organization.id
+        );
+        return Err(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Validation(
+                "SuperAdmin cannot be granted within an organization.".into(),
+            ),
+        }
+        .into());
+    }
+
+    if user_id == authenticated_user.id {
+        return Err(Error::Web(WebErrorKind::Forbidden));
+    }
+
+    let user = UserRoleApi::update_role_in_organization(
+        app_state.db_conn_ref(),
+        Actor::new(authenticated_user.id),
+        organization.id,
+        user_id,
+        params.role.clone(),
+    )
+    .await?;
+    info!(
+        "role_change actor={} target={} org={} new={}",
+        authenticated_user.id, user_id, organization.id, params.role
+    );
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
 
 /// REMOVE a User from an organization, leaving their account intact.

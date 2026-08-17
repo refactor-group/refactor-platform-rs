@@ -34,8 +34,6 @@ pub struct AttachRoleParams {
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateRoleParams {
-    // Read once the handler body lands.
-    #[allow(dead_code)]
     pub role: Role,
 }
 
