@@ -4,8 +4,10 @@
 //! which is why each takes an [`Actor`]. Reads are unaffected. The one
 //! other writer of `user_roles` is `seed_database`, which is dev-only.
 //!
-//! Call the mutations inside a transaction: the audit row is written alongside
-//! the change, and only a shared transaction makes the pair atomic.
+//! The mutations take `&DatabaseTransaction` rather than the `&impl
+//! ConnectionTrait` the reads use. The audit row is a second statement, so only
+//! a shared transaction keeps it atomic with the change it describes; requiring
+//! the concrete type makes that a compile error instead of a convention.
 
 use super::actor::Actor;
 use super::error::{EntityApiErrorKind, Error};
@@ -14,8 +16,8 @@ use entity::roles::Role;
 use entity::user_roles::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait,
-    QueryFilter, QuerySelect, Set, SqlErr,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, DbErr,
+    EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set, SqlErr,
 };
 
 /// Partial unique index holding a user to one role per organization.
@@ -26,7 +28,7 @@ const ONE_ROLE_PER_ORGANIZATION_INDEX: &str = "user_roles_user_org_unique";
 /// Returns what was destroyed, so callers can report it without a second read.
 /// This is the only path that can erase a global SuperAdmin grant.
 pub async fn delete_by_user_id(
-    db: &impl ConnectionTrait,
+    db: &DatabaseTransaction,
     actor: Actor,
     user_id: Id,
 ) -> Result<Vec<Model>, Error> {
@@ -91,7 +93,7 @@ fn is_one_role_per_organization_violation(sql_err: Option<SqlErr>) -> bool {
 /// Returns `UserAlreadyInOrganization` when the user already holds a role there,
 /// including when two concurrent grants race past the application-level check.
 pub async fn create(
-    db: &impl ConnectionTrait,
+    db: &DatabaseTransaction,
     actor: Actor,
     user_id: Id,
     organization_id: Id,
@@ -166,7 +168,7 @@ pub async fn find_by_user_and_organization(
 /// in Postgres, and the audit row would then claim a removal that never happened.
 /// The row is only audited if it was actually deleted.
 pub async fn delete(
-    db: &impl ConnectionTrait,
+    db: &DatabaseTransaction,
     actor: Actor,
     membership: &Model,
 ) -> Result<(), Error> {
@@ -322,7 +324,7 @@ pub async fn retain_organization_members(
 mod test {
     use super::*;
     use entity::Id;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, TransactionTrait};
 
     #[tokio::test]
     async fn test_delete_by_user_id() -> Result<(), Error> {
@@ -332,7 +334,9 @@ mod test {
             .into_connection();
 
         let user_id = Id::new_v4();
-        let _ = delete_by_user_id(&db, Actor::new(Id::new_v4()), user_id).await;
+        let txn = db.begin().await.expect("mock transaction");
+        let _ = delete_by_user_id(&txn, Actor::new(Id::new_v4()), user_id).await;
+        txn.commit().await.expect("mock commit");
 
         let sql: Vec<String> = db
             .into_transaction_log()

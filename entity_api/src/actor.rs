@@ -11,10 +11,12 @@ use entity::Id;
 pub struct Actor(Id);
 
 impl Actor {
+    /// Marks `id` as the user to attribute an audited mutation to.
     pub fn new(id: Id) -> Self {
         Self(id)
     }
 
+    /// The attributed user's id, for writing to an audit row.
     pub fn id(&self) -> Id {
         self.0
     }

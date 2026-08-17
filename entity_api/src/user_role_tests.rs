@@ -1,7 +1,25 @@
 use super::*;
 use crate::user::scope_roles_to_organization;
-use sea_orm::{DatabaseBackend, MockDatabase, Value};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, TransactionTrait, Value};
 use std::collections::BTreeMap;
+
+/// The mutations take a transaction, so even a mock connection has to open one.
+async fn begin(db: &DatabaseConnection) -> DatabaseTransaction {
+    db.begin().await.expect("mock transaction")
+}
+
+/// Every statement the mock saw, in order.
+fn logged_sql(db: DatabaseConnection) -> Vec<String> {
+    db.into_transaction_log()
+        .iter()
+        .flat_map(|transaction| {
+            transaction
+                .statements()
+                .iter()
+                .map(|statement| statement.sql.clone())
+        })
+        .collect()
+}
 
 fn role_model(user_id: Id, organization_id: Option<Id>, role: Role) -> Model {
     let now = chrono::Utc::now();
@@ -49,23 +67,29 @@ fn count_row(count: i64) -> BTreeMap<String, Value> {
 async fn create_rejects_super_admin_without_touching_the_database() {
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
+    let txn = begin(&db).await;
     let result = create(
-        &db,
+        &txn,
         Actor::new(Id::new_v4()),
         Id::new_v4(),
         Id::new_v4(),
         Role::SuperAdmin,
     )
     .await;
+    txn.commit().await.expect("mock commit");
 
     let err = result.expect_err("expected SuperAdmin rejection");
     assert!(matches!(
         err.error_kind,
         EntityApiErrorKind::ValidationError { .. }
     ));
+    // Transaction control is all the mock should see; anything else is a query
+    // the rejection was supposed to precede.
+    let sql = logged_sql(db);
     assert!(
-        db.into_transaction_log().is_empty(),
-        "SuperAdmin must be rejected before any query runs"
+        sql.iter()
+            .all(|statement| matches!(statement.as_str(), "BEGIN" | "COMMIT" | "ROLLBACK")),
+        "SuperAdmin must be rejected before any query runs: {sql:?}"
     );
 }
 
@@ -89,30 +113,23 @@ async fn create_inserts_an_organization_scoped_role() -> Result<(), Error> {
         }]])
         .into_connection();
 
+    let txn = begin(&db).await;
     let created = create(
-        &db,
+        &txn,
         Actor::new(actor_user_id),
         user_id,
         organization_id,
         Role::Admin,
     )
     .await?;
+    txn.commit().await.expect("mock commit");
 
     assert_eq!(created.user_id, user_id);
     assert_eq!(created.organization_id, Some(organization_id));
     assert_eq!(created.role, Role::Admin);
 
     // The grant audits itself, so no caller can create a role without a record.
-    let sql: Vec<String> = db
-        .into_transaction_log()
-        .iter()
-        .flat_map(|transaction| {
-            transaction
-                .statements()
-                .iter()
-                .map(|statement| statement.sql.clone())
-        })
-        .collect();
+    let sql = logged_sql(db);
     assert!(
         sql.iter()
             .any(|statement| statement.contains("user_role_changes")),
@@ -161,8 +178,9 @@ async fn create_leaves_an_unparsed_database_error_as_a_system_error() {
         )])
         .into_connection();
 
+    let txn = begin(&db).await;
     let err = create(
-        &db,
+        &txn,
         Actor::new(Id::new_v4()),
         Id::new_v4(),
         Id::new_v4(),
@@ -170,6 +188,7 @@ async fn create_leaves_an_unparsed_database_error_as_a_system_error() {
     )
     .await
     .expect_err("expected the unique violation to surface as an error");
+    txn.commit().await.expect("mock commit");
 
     assert!(
         matches!(err.error_kind, EntityApiErrorKind::SystemError),
@@ -301,18 +320,11 @@ async fn delete_removes_a_global_role_by_primary_key() -> Result<(), Error> {
         }]])
         .into_connection();
 
-    delete(&db, actor, &global).await?;
+    let txn = begin(&db).await;
+    delete(&txn, actor, &global).await?;
+    txn.commit().await.expect("mock commit");
 
-    let sql: Vec<String> = db
-        .into_transaction_log()
-        .iter()
-        .flat_map(|transaction| {
-            transaction
-                .statements()
-                .iter()
-                .map(|statement| statement.sql.clone())
-        })
-        .collect();
+    let sql = logged_sql(db);
 
     let delete_sql = sql
         .iter()
@@ -346,18 +358,11 @@ async fn delete_does_not_audit_when_no_row_was_removed() -> Result<(), Error> {
         }])
         .into_connection();
 
-    delete(&db, Actor::new(Id::new_v4()), &membership).await?;
+    let txn = begin(&db).await;
+    delete(&txn, Actor::new(Id::new_v4()), &membership).await?;
+    txn.commit().await.expect("mock commit");
 
-    let sql: Vec<String> = db
-        .into_transaction_log()
-        .iter()
-        .flat_map(|transaction| {
-            transaction
-                .statements()
-                .iter()
-                .map(|statement| statement.sql.clone())
-        })
-        .collect();
+    let sql = logged_sql(db);
     assert!(
         !sql.iter()
             .any(|statement| statement.contains("user_role_changes")),
