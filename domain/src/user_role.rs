@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 
 use crate::error::Error;
 use crate::user::{new_coaching_relationship, Role};
-use crate::{users, Actor, Id};
+use crate::{user_roles, users, Actor, Id};
 
 /// Minimal projection of a user returned by an email lookup.
 ///
@@ -137,6 +137,46 @@ pub async fn remove_from_organization(
     txn.commit().await.map_err(EntityApiError::from)?;
 
     Ok(membership.role)
+}
+
+/// Reads the role a user holds in one organization.
+///
+/// A single read, so it takes any connection rather than opening a transaction.
+///
+/// # Errors
+///
+/// `NotFound` when the user holds no role in the organization.
+// Unimplemented body; the names are the ones the implementation uses.
+#[allow(unused_variables)]
+pub async fn find_role_in_organization(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    user_id: Id,
+) -> Result<user_roles::Model, Error> {
+    todo!()
+}
+
+/// Changes the role a user holds in one organization, in place.
+///
+/// Atomic where a remove-then-add pair is not, and it leaves the user's coaching
+/// relationships and sessions untouched.
+///
+/// # Errors
+///
+/// `NotFound` when the organization or the user does not exist, or the user holds
+/// no role in the organization; `OrganizationArchived` when the organization is
+/// archived; `LastOrganizationAdmin` when demoting the organization's only admin;
+/// `ValidationError` for `Role::SuperAdmin`.
+// Unimplemented body; the names are the ones the implementation uses.
+#[allow(unused_variables)]
+pub async fn update_role_in_organization(
+    db: &DatabaseConnection,
+    actor: Actor,
+    organization_id: Id,
+    user_id: Id,
+    role: Role,
+) -> Result<users::Model, Error> {
+    todo!()
 }
 
 /// Looks up a user by email, limited to what the requester is allowed to see.

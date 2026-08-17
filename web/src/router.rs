@@ -100,6 +100,8 @@ use utoipa_rapidoc::RapiDoc;
             organization::user_controller::resend_invite,
             organization::user_controller::delete,
             organization::user_controller::attach_role,
+            organization::user_controller::read_role,
+            organization::user_controller::update_role,
             organization::user_controller::remove_role,
             goal_controller::create,
             goal_controller::update,
@@ -157,6 +159,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::goal::SortField,
                 crate::params::sort::SortOrder,
                 crate::params::user::AttachRoleParams,
+                crate::params::user::UpdateRoleParams,
                 crate::params::user::CompleteSetupParams,
                 crate::params::user::CreateMemberParams,
                 crate::params::user::LookupParams,
@@ -183,6 +186,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::status::Status,
                 domain::user::Credentials,
                 domain::user_role::UserLookupResult,
+                domain::user_roles::Model,
                 domain::users::Model,
                 params::coaching_session::UpdateParams,
                 params::user::UpdateParams,
@@ -502,7 +506,9 @@ fn organization_user_routes(app_state: AppState) -> Router {
         )
         .route(
             "/organizations/:organization_id/users/:user_id/role",
-            post(organization::user_controller::attach_role)
+            get(organization::user_controller::read_role)
+                .post(organization::user_controller::attach_role)
+                .put(organization::user_controller::update_role)
                 .delete(organization::user_controller::remove_role),
         )
         .route_layer(from_fn(require_auth))

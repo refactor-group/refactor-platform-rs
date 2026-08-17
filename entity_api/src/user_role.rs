@@ -143,6 +143,29 @@ pub async fn create(
     Ok(granted)
 }
 
+/// Changes the role on a membership the caller has already read, and audits it.
+///
+/// Flips the role via `ActiveModel` + `Set(...)`, so the write binds as the
+/// Postgres enum. Takes the row rather than its keys so the audited
+/// `previous_role` comes from the record being changed.
+///
+/// # Errors
+///
+/// Returns `ValidationError` for `Role::SuperAdmin`, which is a global role and
+/// cannot be scoped to an organization. Rejected before any query runs, mirroring
+/// [`create`], so the caller gets a 422 rather than the 500 the entity-level
+/// `before_save` guard would produce.
+// Unimplemented body; the names are the ones the implementation uses.
+#[allow(unused_variables)]
+pub async fn update_role(
+    db: &DatabaseTransaction,
+    actor: Actor,
+    membership: &Model,
+    role: Role,
+) -> Result<Model, Error> {
+    todo!()
+}
+
 /// Finds the role a user holds in a specific organization, if any.
 pub async fn find_by_user_and_organization(
     db: &impl ConnectionTrait,

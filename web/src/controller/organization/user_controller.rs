@@ -5,7 +5,7 @@ use crate::extractors::organization_user_access::OrganizationUserAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::user::{AttachRoleParams, CreateMemberParams};
+use crate::params::user::{AttachRoleParams, CreateMemberParams, UpdateRoleParams};
 use crate::{controller::ApiResponse, AppState, Error};
 use axum::{
     extract::{Path, State},
@@ -253,6 +253,81 @@ pub(crate) async fn attach_role(
     .await;
 
     Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), user)))
+}
+
+/// READ the role a User holds in an organization.
+///
+/// Returns the membership row scoped to this organization. Roles the user holds
+/// elsewhere, and any global role, are not reported here.
+#[utoipa::path(
+    get,
+    path = "/organizations/{organization_id}/users/{user_id}/role",
+    params(
+        ApiVersion,
+        ("organization_id" = Id, Path, description = "The ID of the organization"),
+        ("user_id" = Id, Path, description = "The ID of the user whose role to read"),
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved the user's role", body = domain::user_roles::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller does not administer the organization"),
+        (status = 404, description = "User holds no role in the organization"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+// Unimplemented body; the names are the ones the implementation uses.
+#[allow(unused_variables, unreachable_code)]
+pub(crate) async fn read_role(
+    CompareApiVersion(_v): CompareApiVersion,
+    OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
+    Path((_organization_id, user_id)): Path<(Id, Id)>,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    let response: Json<ApiResponse<domain::user_roles::Model>> = todo!();
+    Ok(response)
+}
+
+/// UPDATE the role a User holds in an organization.
+///
+/// Changes the role in place, atomically, leaving the user's coaching
+/// relationships and sessions in the organization untouched.
+#[utoipa::path(
+    put,
+    path = "/organizations/{organization_id}/users/{user_id}/role",
+    params(
+        ApiVersion,
+        ("organization_id" = Id, Path, description = "The ID of the organization"),
+        ("user_id" = Id, Path, description = "The ID of the user whose role to change"),
+    ),
+    request_body = UpdateRoleParams,
+    responses(
+        (status = 200, description = "Role updated successfully", body = domain::users::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller does not administer the organization, or targeted themselves"),
+        (status = 404, description = "User holds no role in the organization"),
+        (status = 409, description = "User is the only admin of the organization, or the organization is archived"),
+        (status = 422, description = "SuperAdmin cannot be granted within an organization"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+// Unimplemented body; the names are the ones the implementation uses.
+#[allow(unused_variables, unreachable_code)]
+pub(crate) async fn update_role(
+    CompareApiVersion(_v): CompareApiVersion,
+    OrganizationAdminAccess {
+        organization,
+        authenticated_user,
+    }: OrganizationAdminAccess,
+    Path((_organization_id, user_id)): Path<(Id, Id)>,
+    State(app_state): State<AppState>,
+    Json(params): Json<UpdateRoleParams>,
+) -> Result<impl IntoResponse, Error> {
+    let response: Json<ApiResponse<domain::users::Model>> = todo!();
+    Ok(response)
 }
 
 /// REMOVE a User from an organization, leaving their account intact.
