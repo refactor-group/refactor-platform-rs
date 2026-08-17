@@ -17,7 +17,7 @@ use entity::user_roles::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, DbErr,
-    EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set, SqlErr,
+    EntityTrait, IntoActiveModel, PaginatorTrait, QueryFilter, QuerySelect, Set, SqlErr,
 };
 
 /// Partial unique index holding a user to one role per organization.
@@ -155,15 +155,37 @@ pub async fn create(
 /// cannot be scoped to an organization. Rejected before any query runs, mirroring
 /// [`create`], so the caller gets a 422 rather than the 500 the entity-level
 /// `before_save` guard would produce.
-// Unimplemented body; the names are the ones the implementation uses.
-#[allow(unused_variables)]
 pub async fn update_role(
     db: &DatabaseTransaction,
     actor: Actor,
     membership: &Model,
     role: Role,
 ) -> Result<Model, Error> {
-    todo!()
+    if role == Role::SuperAdmin {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "SuperAdmin cannot be granted within an organization.".into(),
+                details: None,
+            },
+        });
+    }
+
+    let mut changed = membership.clone().into_active_model();
+    changed.role = Set(role.clone());
+    let updated = changed.update(db).await?;
+
+    crate::user_role_change::record(
+        db,
+        Some(actor),
+        membership.user_id,
+        membership.organization_id,
+        Some(membership.role.clone()),
+        Some(role),
+    )
+    .await?;
+
+    Ok(updated)
 }
 
 /// Finds the role a user holds in a specific organization, if any.
