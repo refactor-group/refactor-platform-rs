@@ -146,14 +146,22 @@ pub async fn remove_from_organization(
 /// # Errors
 ///
 /// `NotFound` when the user holds no role in the organization.
-// Unimplemented body; the names are the ones the implementation uses.
-#[allow(unused_variables)]
 pub async fn find_role_in_organization(
     db: &impl ConnectionTrait,
     organization_id: Id,
     user_id: Id,
 ) -> Result<user_roles::Model, Error> {
-    todo!()
+    let Some(membership) =
+        user_role::find_by_user_and_organization(db, user_id, organization_id).await?
+    else {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        }
+        .into());
+    };
+
+    Ok(membership)
 }
 
 /// Changes the role a user holds in one organization, in place.
@@ -167,8 +175,6 @@ pub async fn find_role_in_organization(
 /// no role in the organization; `OrganizationArchived` when the organization is
 /// archived; `LastOrganizationAdmin` when demoting the organization's only admin;
 /// `ValidationError` for `Role::SuperAdmin`.
-// Unimplemented body; the names are the ones the implementation uses.
-#[allow(unused_variables)]
 pub async fn update_role_in_organization(
     db: &DatabaseConnection,
     actor: Actor,
@@ -176,7 +182,56 @@ pub async fn update_role_in_organization(
     user_id: Id,
     role: Role,
 ) -> Result<users::Model, Error> {
-    todo!()
+    let txn = db.begin().await.map_err(EntityApiError::from)?;
+
+    let organization = organization::find_by_id(&txn, organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::OrganizationArchived,
+        }
+        .into());
+    }
+
+    // Taken before the membership read and before the admin count, so this path
+    // locks users then user_roles like account deletion does and cannot deadlock.
+    user::find_by_id_for_update(&txn, user_id).await?;
+
+    let Some(membership) =
+        user_role::find_by_user_and_organization(&txn, user_id, organization_id).await?
+    else {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        }
+        .into());
+    };
+
+    // Only a demotion can leave the organization unadministrable, and the count
+    // locks every admin row, so a promotion must not pay for it.
+    if membership.role == Role::Admin
+        && role != Role::Admin
+        && user_role::count_admins_in_organization(&txn, organization_id).await? <= 1
+    {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::LastOrganizationAdmin { organization_id },
+        }
+        .into());
+    }
+
+    // Setting the role a member already holds is an idempotent no-op: no update,
+    // no audit row, and the same response as a real change.
+    if membership.role != role {
+        user_role::update_role(&txn, actor, &membership, role).await?;
+    }
+
+    let mut updated_user = user::find_by_id(&txn, user_id).await?;
+    user::scope_roles_to_organization(&mut updated_user, organization_id);
+
+    txn.commit().await.map_err(EntityApiError::from)?;
+
+    Ok(updated_user)
 }
 
 /// Looks up a user by email, limited to what the requester is allowed to see.
