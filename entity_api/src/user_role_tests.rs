@@ -401,3 +401,145 @@ async fn delete_does_not_audit_when_no_row_was_removed() -> Result<(), Error> {
 
     Ok(())
 }
+
+/// Mirrors the guard on [`create`]. The controller rejects `SuperAdmin` first, so
+/// this is the layer that still refuses if a future caller reaches past it, and it
+/// must refuse before the update rather than let `before_save` turn it into a 500.
+#[tokio::test]
+async fn update_role_rejects_super_admin_without_touching_the_database() {
+    let membership = role_model(Id::new_v4(), Some(Id::new_v4()), Role::User);
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+    let txn = begin(&db).await;
+    let result = update_role(
+        &txn,
+        Actor::new(Id::new_v4()),
+        &membership,
+        Role::SuperAdmin,
+    )
+    .await;
+    txn.commit().await.expect("mock commit");
+
+    let err = result.expect_err("expected SuperAdmin rejection");
+    assert!(matches!(
+        err.error_kind,
+        EntityApiErrorKind::ValidationError { .. }
+    ));
+    let sql = logged_sql(db);
+    assert!(
+        sql.iter()
+            .all(|statement| matches!(statement.as_str(), "BEGIN" | "COMMIT" | "ROLLBACK")),
+        "SuperAdmin must be rejected before any query runs: {sql:?}"
+    );
+}
+
+/// The audited `previous_role` has to come from the row being changed, not from
+/// the caller's belief about it. Reading it back after the update would record the
+/// new role twice and lose the transition, which is the only fact worth keeping.
+#[tokio::test]
+async fn update_role_audits_the_previous_and_the_new_role() -> Result<(), Error> {
+    let user_id = Id::new_v4();
+    let organization_id = Id::new_v4();
+    let actor = Actor::new(Id::new_v4());
+    let membership = role_model(user_id, Some(organization_id), Role::User);
+
+    let mut updated = membership.clone();
+    updated.role = Role::Admin;
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[updated.clone()]])
+        .append_query_results([[entity::user_role_changes::Model {
+            id: Id::new_v4(),
+            actor_user_id: Some(actor.id()),
+            target_user_id: user_id,
+            organization_id: Some(organization_id),
+            previous_role: Some(Role::User),
+            new_role: Some(Role::Admin),
+            changed_at: chrono::Utc::now().into(),
+        }]])
+        .into_connection();
+
+    let txn = begin(&db).await;
+    let result = update_role(&txn, actor, &membership, Role::Admin).await?;
+    txn.commit().await.expect("mock commit");
+
+    assert_eq!(result.role, Role::Admin);
+
+    let log = db.into_transaction_log();
+    let statements: Vec<sea_orm::Statement> = log
+        .iter()
+        .flat_map(|transaction| transaction.statements().to_vec())
+        .collect();
+
+    let update = statements
+        .iter()
+        .position(|statement| {
+            statement.sql.contains("UPDATE") && statement.sql.contains("user_roles")
+        })
+        .expect("the membership must be updated");
+    let audit = statements
+        .iter()
+        .position(|statement| {
+            statement.sql.contains("INSERT") && statement.sql.contains("user_role_changes")
+        })
+        .expect("the change must be audited");
+    assert!(update < audit, "the audit describes a change already made");
+
+    let values = statements[audit]
+        .values
+        .as_ref()
+        .map(|values| values.0.clone())
+        .unwrap_or_default();
+    let role_value = |role: Role| sea_orm::Value::String(Some(Box::new(role.to_string())));
+    assert!(
+        values.contains(&role_value(Role::User)),
+        "the previous role must be recorded: {values:?}"
+    );
+    assert!(
+        values.contains(&role_value(Role::Admin)),
+        "the new role must be recorded: {values:?}"
+    );
+    assert!(values.contains(&Value::Uuid(Some(Box::new(actor.id())))));
+
+    Ok(())
+}
+
+/// The update is pinned to the membership's primary key. Filtering on
+/// `organization_id` instead would render `organization_id = NULL` for a global
+/// role and silently match nothing, exactly the bug
+/// [`delete_removes_a_global_role_by_primary_key`] guards against.
+#[tokio::test]
+async fn update_role_targets_the_membership_by_primary_key() -> Result<(), Error> {
+    let membership = role_model(Id::new_v4(), Some(Id::new_v4()), Role::User);
+    let mut updated = membership.clone();
+    updated.role = Role::Admin;
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[updated]])
+        .append_query_results([[entity::user_role_changes::Model {
+            id: Id::new_v4(),
+            actor_user_id: Some(Id::new_v4()),
+            target_user_id: membership.user_id,
+            organization_id: membership.organization_id,
+            previous_role: Some(Role::User),
+            new_role: Some(Role::Admin),
+            changed_at: chrono::Utc::now().into(),
+        }]])
+        .into_connection();
+
+    let txn = begin(&db).await;
+    update_role(&txn, Actor::new(Id::new_v4()), &membership, Role::Admin).await?;
+    txn.commit().await.expect("mock commit");
+
+    let sql = logged_sql(db);
+    let update = sql
+        .iter()
+        .find(|statement| statement.contains("UPDATE") && statement.contains("user_roles"))
+        .expect("the membership must be updated");
+    assert!(
+        update.contains(r#""id" = $2"#),
+        "the update must be scoped by primary key: {update}"
+    );
+
+    Ok(())
+}
