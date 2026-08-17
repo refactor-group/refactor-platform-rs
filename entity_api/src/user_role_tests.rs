@@ -536,9 +536,59 @@ async fn update_role_targets_the_membership_by_primary_key() -> Result<(), Error
         .iter()
         .find(|statement| statement.contains("UPDATE") && statement.contains("user_roles"))
         .expect("the membership must be updated");
+    // Matched on the column rather than the parameter number, which only encodes how
+    // many columns the SET clause happens to carry.
     assert!(
-        update.contains(r#""id" = $2"#),
+        update.contains(r#"WHERE "user_roles"."id" ="#),
         "the update must be scoped by primary key: {update}"
+    );
+    assert!(
+        !update.contains(r#"WHERE "user_roles"."organization_id""#),
+        "a global role has a null organization_id and would match nothing: {update}"
+    );
+
+    Ok(())
+}
+
+/// `user_roles` is a state table with no history of its own, and nothing in the
+/// entity or the schema advances this column: `before_save` only validates the
+/// SuperAdmin invariant and the table carries no trigger. Left unwritten, a row
+/// reads as Admin while claiming it last changed on the day the member joined.
+#[tokio::test]
+async fn update_role_advances_the_membership_timestamp() -> Result<(), Error> {
+    let membership = role_model(Id::new_v4(), Some(Id::new_v4()), Role::User);
+    let mut updated = membership.clone();
+    updated.role = Role::Admin;
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[updated]])
+        .append_query_results([[entity::user_role_changes::Model {
+            id: Id::new_v4(),
+            actor_user_id: Some(Id::new_v4()),
+            target_user_id: membership.user_id,
+            organization_id: membership.organization_id,
+            previous_role: Some(Role::User),
+            new_role: Some(Role::Admin),
+            changed_at: chrono::Utc::now().into(),
+        }]])
+        .into_connection();
+
+    let txn = begin(&db).await;
+    update_role(&txn, Actor::new(Id::new_v4()), &membership, Role::Admin).await?;
+    txn.commit().await.expect("mock commit");
+
+    let sql = logged_sql(db);
+    let update = sql
+        .iter()
+        .find(|statement| statement.contains("UPDATE") && statement.contains("user_roles"))
+        .expect("the membership must be updated");
+    assert!(
+        update.contains(r#""updated_at""#),
+        "a role change must advance updated_at: {update}"
+    );
+    assert!(
+        !update.contains(r#""created_at""#),
+        "a role change is not a creation: {update}"
     );
 
     Ok(())
