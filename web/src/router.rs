@@ -198,9 +198,13 @@ use utoipa_rapidoc::RapiDoc;
             (name = "refactor_platform", description = "Refactor Coaching & Mentorship API")
         )
     )]
-struct ApiDoc;
+pub(crate) struct ApiDoc;
 
 struct SecurityAddon;
+
+#[cfg(test)]
+#[path = "router_tests.rs"]
+mod tests;
 
 // Defines our cookie session based authentication requirement for gaining access to our
 // API endpoints for OpenAPI.
