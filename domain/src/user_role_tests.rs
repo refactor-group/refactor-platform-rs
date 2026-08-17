@@ -1078,7 +1078,7 @@ async fn update_role_in_organization_demotes_an_admin_when_another_remains() -> 
     )
     .into_connection();
 
-    let updated = update_role_in_organization(
+    let (previous_role, updated) = update_role_in_organization(
         &db,
         Actor::new(actor_user_id),
         organization_id,
@@ -1089,6 +1089,9 @@ async fn update_role_in_organization_demotes_an_admin_when_another_remains() -> 
 
     assert_eq!(updated.roles.len(), 1);
     assert_eq!(updated.roles[0].role, Role::User);
+    // The role held beforehand, not the one just written. Returning the new role
+    // would make the caller's log line claim a transition that never happened.
+    assert_eq!(previous_role, Role::Admin);
 
     Ok(())
 }
@@ -1176,7 +1179,7 @@ async fn update_role_in_organization_scopes_the_returned_roles_to_the_target_org
     )
     .into_connection();
 
-    let updated = update_role_in_organization(
+    let (_previous_role, updated) = update_role_in_organization(
         &db,
         Actor::new(actor_user_id),
         organization_id,
@@ -1221,7 +1224,7 @@ async fn update_role_in_organization_writes_nothing_when_the_role_is_unchanged()
     )
     .into_connection();
 
-    update_role_in_organization(
+    let (previous_role, _) = update_role_in_organization(
         &db,
         Actor::new(Id::new_v4()),
         organization_id,
@@ -1229,6 +1232,10 @@ async fn update_role_in_organization_writes_nothing_when_the_role_is_unchanged()
         Role::Admin,
     )
     .await?;
+
+    // Equal to the requested role, which is how a caller tells a no-op from a real
+    // change without a second read, and therefore whether to log one.
+    assert_eq!(previous_role, Role::Admin);
 
     let sql = statements(db);
     assert!(

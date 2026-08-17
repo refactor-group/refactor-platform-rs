@@ -346,7 +346,7 @@ pub(crate) async fn update_role(
         return Err(Error::Web(WebErrorKind::Forbidden));
     }
 
-    let user = UserRoleApi::update_role_in_organization(
+    let (previous_role, user) = UserRoleApi::update_role_in_organization(
         app_state.db_conn_ref(),
         Actor::new(authenticated_user.id),
         organization.id,
@@ -354,10 +354,14 @@ pub(crate) async fn update_role(
         params.role.clone(),
     )
     .await?;
-    info!(
-        "role_change actor={} target={} org={} new={}",
-        authenticated_user.id, user_id, organization.id, params.role
-    );
+    // Silent on a no-op: nothing was written, and the audit table has no row to
+    // match a line claiming otherwise.
+    if previous_role != params.role {
+        info!(
+            "role_change actor={} target={} org={} previous={previous_role} new={}",
+            authenticated_user.id, user_id, organization.id, params.role
+        );
+    }
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }

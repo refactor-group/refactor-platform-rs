@@ -169,6 +169,9 @@ pub async fn find_role_in_organization(
 /// Atomic where a remove-then-add pair is not, and it leaves the user's coaching
 /// relationships and sessions untouched.
 ///
+/// Returns the role held beforehand alongside the updated user, so callers can log
+/// the transition and can tell a real change from a no-op without a second read.
+///
 /// # Errors
 ///
 /// `NotFound` when the organization or the user does not exist, or the user holds
@@ -181,7 +184,7 @@ pub async fn update_role_in_organization(
     organization_id: Id,
     user_id: Id,
     role: Role,
-) -> Result<users::Model, Error> {
+) -> Result<(Role, users::Model), Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let organization = organization::find_by_id(&txn, organization_id).await?;
@@ -207,10 +210,11 @@ pub async fn update_role_in_organization(
         .into());
     };
 
-    // Only a demotion can leave the organization unadministrable, and the count
-    // locks every admin row, so a promotion must not pay for it.
+    // Only Admin to User can leave the organization unadministrable, and the count
+    // locks every admin row, so nothing else may pay for it. Matching SuperAdmin here
+    // too would answer a rejected role with a conflict about admin counts.
     if membership.role == Role::Admin
-        && role != Role::Admin
+        && role == Role::User
         && user_role::count_admins_in_organization(&txn, organization_id).await? <= 1
     {
         return Err(EntityApiError {
@@ -222,7 +226,8 @@ pub async fn update_role_in_organization(
 
     // Setting the role a member already holds is an idempotent no-op: no update,
     // no audit row, and the same response as a real change.
-    if membership.role != role {
+    let previous_role = membership.role.clone();
+    if previous_role != role {
         user_role::update_role(&txn, actor, &membership, role).await?;
     }
 
@@ -231,7 +236,7 @@ pub async fn update_role_in_organization(
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
-    Ok(updated_user)
+    Ok((previous_role, updated_user))
 }
 
 /// Looks up a user by email, limited to what the requester is allowed to see.

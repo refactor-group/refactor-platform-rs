@@ -77,6 +77,21 @@ fn map_duplicate_role(err: DbErr, organization_id: Id) -> Error {
     Error::from(err)
 }
 
+/// Reports a membership that vanished mid-update as missing rather than as a fault.
+///
+/// A zero-row update means a concurrent removal deleted the row between the caller's
+/// read and this write. `RecordNotUpdated` has no domain mapping and would surface as
+/// a 500, but the row is genuinely gone, so not-found is the truthful answer.
+fn map_vanished_membership(err: DbErr) -> Error {
+    match err {
+        DbErr::RecordNotUpdated => Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        },
+        other => Error::from(other),
+    }
+}
+
 /// Whether a database error is a violation of the one-role-per-organization index.
 ///
 /// Split out from [`map_duplicate_role`] so the constraint-name policy is
@@ -95,8 +110,9 @@ fn is_one_role_per_organization_violation(sql_err: Option<SqlErr>) -> bool {
 ///
 /// Returns `ValidationError` for `Role::SuperAdmin`, which is a global role and
 /// cannot be scoped to an organization. Rejected before any query runs so the
-/// caller gets a 422 rather than the 500 the entity-level `before_save` guard
-/// would produce.
+/// entity-level `before_save` guard cannot turn it into a 500. `ValidationError`
+/// renders as 409; the 422 a client sees comes from the controller's own check,
+/// which runs first.
 ///
 /// Returns `UserAlreadyInOrganization` when the user already holds a role there,
 /// including when two concurrent grants race past the application-level check.
@@ -153,8 +169,12 @@ pub async fn create(
 ///
 /// Returns `ValidationError` for `Role::SuperAdmin`, which is a global role and
 /// cannot be scoped to an organization. Rejected before any query runs, mirroring
-/// [`create`], so the caller gets a 422 rather than the 500 the entity-level
-/// `before_save` guard would produce.
+/// [`create`], so the entity-level `before_save` guard cannot turn it into a 500.
+/// `ValidationError` renders as 409; the 422 a client sees comes from the
+/// controller's own check, which runs first.
+///
+/// Returns `RecordNotFound` when the membership was removed between the caller's
+/// read and this write.
 pub async fn update_role(
     db: &DatabaseTransaction,
     actor: Actor,
@@ -177,7 +197,8 @@ pub async fn update_role(
         ..membership.clone().into_active_model()
     }
     .update(db)
-    .await?;
+    .await
+    .map_err(map_vanished_membership)?;
 
     crate::user_role_change::record(
         db,

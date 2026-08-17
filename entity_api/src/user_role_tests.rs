@@ -597,3 +597,49 @@ async fn update_role_advances_the_membership_timestamp() -> Result<(), Error> {
 
     Ok(())
 }
+
+/// A concurrent removal can delete the membership between the caller's read and this
+/// write, because the removal path takes no lock the caller waits on. SeaORM reports
+/// the zero-row update as `RecordNotUpdated`, which has no domain mapping and would
+/// surface as a 500. The row is genuinely gone, so not-found is the truthful answer.
+#[tokio::test]
+async fn update_role_reports_a_membership_deleted_mid_update_as_missing() {
+    let membership = role_model(Id::new_v4(), Some(Id::new_v4()), Role::User);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_errors([sea_orm::DbErr::RecordNotUpdated])
+        .into_connection();
+
+    let txn = begin(&db).await;
+    let result = update_role(&txn, Actor::new(Id::new_v4()), &membership, Role::Admin).await;
+    txn.commit().await.expect("mock commit");
+
+    let err = result.expect_err("expected the vanished membership to surface as an error");
+    assert!(
+        matches!(err.error_kind, EntityApiErrorKind::RecordNotFound),
+        "a vanished membership must read as not-found, not as a fault: {:?}",
+        err.error_kind
+    );
+}
+
+/// Only a zero-row update means the row vanished. Any other database failure keeps
+/// its own mapping rather than being reported as a missing membership.
+#[tokio::test]
+async fn update_role_leaves_an_unrelated_database_error_alone() {
+    let membership = role_model(Id::new_v4(), Some(Id::new_v4()), Role::User);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_errors([sea_orm::DbErr::Custom("connection reset".to_string())])
+        .into_connection();
+
+    let txn = begin(&db).await;
+    let result = update_role(&txn, Actor::new(Id::new_v4()), &membership, Role::Admin).await;
+    txn.commit().await.expect("mock commit");
+
+    let err = result.expect_err("expected the error to surface");
+    assert!(
+        !matches!(err.error_kind, EntityApiErrorKind::RecordNotFound),
+        "only RecordNotUpdated may become not-found: {:?}",
+        err.error_kind
+    );
+}
