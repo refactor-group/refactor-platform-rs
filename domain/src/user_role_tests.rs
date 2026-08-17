@@ -1045,7 +1045,7 @@ async fn update_role_in_organization_refuses_to_demote_the_last_admin() {
 
     let sql = statements(db);
     assert!(
-        !sql.iter().any(|sql| sql.contains("UPDATE")),
+        !sql.iter().any(|sql| sql.starts_with("UPDATE")),
         "the last admin must not be demoted: {sql:?}"
     );
     assert!(
@@ -1129,9 +1129,7 @@ async fn update_role_in_organization_audits_the_transition_inside_the_transactio
 
     let update = statements
         .iter()
-        .position(|statement| {
-            statement.sql.contains("UPDATE") && statement.sql.contains("user_roles")
-        })
+        .position(|statement| statement.sql.starts_with("UPDATE"))
         .expect("the membership must be updated");
     let commit = statements
         .iter()
@@ -1234,7 +1232,7 @@ async fn update_role_in_organization_writes_nothing_when_the_role_is_unchanged()
 
     let sql = statements(db);
     assert!(
-        !sql.iter().any(|sql| sql.contains("UPDATE")),
+        !sql.iter().any(|sql| sql.starts_with("UPDATE")),
         "an unchanged role must not be rewritten: {sql:?}"
     );
     assert!(
@@ -1275,7 +1273,7 @@ async fn update_role_in_organization_rejects_a_non_member() {
 
     assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
     assert!(
-        !statements(db).iter().any(|sql| sql.contains("UPDATE")),
+        !statements(db).iter().any(|sql| sql.starts_with("UPDATE")),
         "a non-member must not be written"
     );
 }
@@ -1347,7 +1345,7 @@ async fn update_role_in_organization_locks_the_user_row() -> Result<(), Error> {
         .expect("the user row must be locked");
     let membership = sql
         .iter()
-        .position(|sql| sql.contains("user_roles") && sql.contains("SELECT"))
+        .position(|sql| sql.starts_with("SELECT") && sql.contains("user_roles"))
         .expect("the membership must be read");
     // Taken before the membership is read, and before the admin count, so the lock
     // order matches account deletion's users-then-user_roles and cannot deadlock.

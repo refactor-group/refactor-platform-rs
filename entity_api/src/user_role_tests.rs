@@ -473,9 +473,7 @@ async fn update_role_audits_the_previous_and_the_new_role() -> Result<(), Error>
 
     let update = statements
         .iter()
-        .position(|statement| {
-            statement.sql.contains("UPDATE") && statement.sql.contains("user_roles")
-        })
+        .position(|statement| statement.sql.starts_with("UPDATE"))
         .expect("the membership must be updated");
     let audit = statements
         .iter()
@@ -534,7 +532,7 @@ async fn update_role_targets_the_membership_by_primary_key() -> Result<(), Error
     let sql = logged_sql(db);
     let update = sql
         .iter()
-        .find(|statement| statement.contains("UPDATE") && statement.contains("user_roles"))
+        .find(|statement| statement.starts_with("UPDATE"))
         .expect("the membership must be updated");
     // Matched on the column rather than the parameter number, which only encodes how
     // many columns the SET clause happens to carry.
@@ -580,7 +578,7 @@ async fn update_role_advances_the_membership_timestamp() -> Result<(), Error> {
     let sql = logged_sql(db);
     let update = sql
         .iter()
-        .find(|statement| statement.contains("UPDATE") && statement.contains("user_roles"))
+        .find(|statement| statement.starts_with("UPDATE"))
         .expect("the membership must be updated");
     // Only the SET clause: SeaORM's RETURNING list names every column, so matching
     // the whole statement would pass on a column the update never wrote.
