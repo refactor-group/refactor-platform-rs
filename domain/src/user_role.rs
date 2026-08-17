@@ -112,6 +112,13 @@ pub async fn remove_from_organization(
 ) -> Result<Role, Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
+    // Every writer of `user_roles` takes this first, so they serialize here rather
+    // than racing. Removing a member the caller read as `User` otherwise takes no
+    // lock at all, and a concurrent role change would then be deleted out from under
+    // its own audit row, which would record the role this transaction happened to
+    // read instead of the one destroyed.
+    user::find_by_id_for_update(&txn, user_id).await?;
+
     let Some(membership) =
         user_role::find_by_user_and_organization(&txn, user_id, organization_id).await?
     else {

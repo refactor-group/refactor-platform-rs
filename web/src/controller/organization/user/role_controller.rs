@@ -5,11 +5,6 @@
 //! here, `PUT` changes one in place, `DELETE` removes the membership, and `GET`
 //! reports it.
 
-use crate::error::WebErrorKind;
-use crate::extractors::compare_api_version::CompareApiVersion;
-use crate::extractors::organization_admin_access::OrganizationAdminAccess;
-use crate::params::user::{AttachRoleParams, UpdateRoleParams};
-use crate::{controller::ApiResponse, AppState, Error};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -20,9 +15,14 @@ use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::users::Role;
 use domain::Actor;
 use domain::{emails as EmailsAPI, user_role as UserRoleApi, Id};
+use log::*;
 use service::config::ApiVersion;
 
-use log::*;
+use crate::error::WebErrorKind;
+use crate::extractors::compare_api_version::CompareApiVersion;
+use crate::extractors::organization_admin_access::OrganizationAdminAccess;
+use crate::params::user::{AttachRoleParams, UpdateRoleParams};
+use crate::{controller::ApiResponse, AppState, Error};
 
 /// ATTACH an existing User to an organization with a role.
 ///

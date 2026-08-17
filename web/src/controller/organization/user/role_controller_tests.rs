@@ -465,6 +465,7 @@ async fn remove_returns_204_when_the_member_still_has_sessions() {
     // handler runs the membership lookup and the one delete regardless.
     let db = Arc::new(
         mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![requester()]])
             .append_query_results([vec![test_role(
                 target_id,
                 Some(organization_id),
@@ -506,6 +507,7 @@ async fn remove_returns_204_for_another_member() {
 
     let db = Arc::new(
         mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![requester()]])
             .append_query_results([vec![test_role(
                 target_id,
                 Some(organization_id),

@@ -468,6 +468,7 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
     let user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .into_connection();
@@ -504,6 +505,7 @@ async fn remove_from_organization_succeeds_when_the_member_has_sessions() -> Res
     // The member's coaching history no longer factors into removal, so the
     // membership lookup and the one delete are all that run.
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_exec_results([exec_result(1)])
         .append_query_results([[role_change(
@@ -536,6 +538,7 @@ async fn remove_from_organization_deletes_only_the_target_org_membership() -> Re
     let actor_user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_exec_results([exec_result(1)])
         .append_query_results([[role_change(
@@ -573,6 +576,7 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
     let actor_user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .append_query_results([vec![
             user_role_model(user_id, Some(organization_id), Role::Admin),
@@ -1484,4 +1488,51 @@ async fn update_role_in_organization_does_not_treat_super_admin_as_a_demotion() 
             .any(|sql| sql.contains("user_roles") && sql.contains("FOR UPDATE")),
         "the admin rows must not be locked on the way to a rejection: {sql:?}"
     );
+}
+
+/// Removal is the path that had no lock of its own: a member holding `User` skips
+/// the admin count, so nothing serialized it against a concurrent role change. The
+/// change would then be deleted out from under its own audit row, and the removal
+/// would record the role it happened to read rather than the one destroyed.
+///
+/// Every writer of `user_roles` now takes the users row first, so the order is
+/// uniform (users, then the membership, then the admin rows) and no two of them can
+/// acquire the same rows in opposite orders.
+#[tokio::test]
+async fn remove_from_organization_locks_the_user_row_before_reading_the_membership(
+) -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_exec_results([exec_result(1)])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            Some(Role::User),
+            None,
+        )]])
+        .into_connection();
+
+    remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
+
+    let sql = statements(db);
+    let lock = sql
+        .iter()
+        .position(|sql| sql.contains(r#""users""#) && sql.contains("FOR UPDATE"))
+        .expect("the user row must be locked");
+    let membership = sql
+        .iter()
+        .position(|sql| sql.starts_with("SELECT") && sql.contains("user_roles"))
+        .expect("the membership must be read");
+    assert!(
+        lock < membership,
+        "the lock must precede the read it protects: {sql:?}"
+    );
+
+    Ok(())
 }
