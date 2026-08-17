@@ -187,6 +187,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::user::Credentials,
                 domain::user_role::UserLookupResult,
                 domain::user_roles::Model,
+                domain::users::Role,
                 domain::users::Model,
                 params::coaching_session::UpdateParams,
                 params::user::UpdateParams,
