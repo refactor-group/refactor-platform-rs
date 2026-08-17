@@ -5,6 +5,7 @@
 //! consistent interface for working with query filters within the domain layer, while encapsulating
 //! the underlying implementation details remain in the `entity_api` crate.
 pub use entity_api::{
+    actor::Actor,
     mutate::{IntoUpdateMap, UpdateMap},
     query::{FilterOnly, IntoQueryFilterMap, QueryFilterMap},
 };
@@ -15,7 +16,7 @@ pub use entity_api::{
     coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit,
     duration, goals, jwts, magic_link_tokens, meeting_provider, notes, oauth_connections,
     organizations, password_reset_attempts, pipeline_provider, query::QuerySort, status,
-    token_purpose, topic_priority, topic_status, user_roles, users, Id,
+    token_purpose, topic_priority, topic_status, user_role_changes, user_roles, users, Id,
 };
 
 pub mod action;

@@ -13,7 +13,7 @@ use axum_login::{
 use chrono::Utc;
 use domain::token_purpose::TokenPurpose;
 use domain::user::Backend;
-use domain::{magic_link_tokens, organizations, user_roles, users, Id};
+use domain::{magic_link_tokens, organizations, user_role_changes, user_roles, users, Id};
 use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, IntoMockRow, MockDatabase, MockExecResult, MockRow, Value};
 use service::config::Config;
@@ -129,6 +129,23 @@ fn merge(rows: impl IntoIterator<Item = MockRow>) -> BTreeMap<String, Value> {
     rows.into_iter()
         .flat_map(MockRow::into_column_value_tuples)
         .collect()
+}
+
+/// The audit row `create_by_organization` appends alongside the default role.
+fn role_change_row(
+    actor_user_id: Id,
+    target_user_id: Id,
+    organization_id: Id,
+) -> user_role_changes::Model {
+    user_role_changes::Model {
+        id: Id::new_v4(),
+        actor_user_id: Some(actor_user_id),
+        target_user_id,
+        organization_id: Some(organization_id),
+        previous_role: None,
+        new_role: Some(users::Role::User),
+        changed_at: chrono::Utc::now().into(),
+    }
 }
 
 /// The two user lookups every request makes: login, then the session load.
@@ -268,7 +285,17 @@ async fn create_succeeds_for_an_organization_admin() {
                 row(new_user.clone()),
             ])]])
             .append_query_results([vec![merge([row(new_user.clone()), row(new_role.clone())])]])
-            .append_query_results([vec![merge([row(new_role.clone())])]])
+            // The org admin path consumes one more result than the super admin one,
+            // so the audit row is both merged here and appended below.
+            .append_query_results([vec![merge([
+                row(new_role.clone()),
+                row(role_change_row(user.id, new_user.id, organization_id)),
+            ])]])
+            .append_query_results([vec![merge([row(role_change_row(
+                user.id,
+                new_user.id,
+                organization_id,
+            ))])]])
             .into_connection(),
     );
 
@@ -302,6 +329,11 @@ async fn create_succeeds_for_a_super_admin() {
             .append_query_results([vec![merge([row(organization.clone())])]])
             .append_query_results([vec![merge([row(new_user.clone())])]])
             .append_query_results([vec![merge([row(new_role.clone())])]])
+            .append_query_results([vec![merge([row(role_change_row(
+                user.id,
+                new_user.id,
+                organization_id,
+            ))])]])
             .into_connection(),
     );
 
@@ -441,6 +473,14 @@ async fn delete_succeeds_for_an_organization_admin_targeting_another_member() {
             .append_query_results([vec![merge([row(target.clone())])]])
             .append_query_results([vec![requester_row_with_count, target_row]])
             .append_query_results([vec![merge([count_row(1)])]])
+            // The roles the deletion is about to destroy, read before they are gone,
+            // then the audit row each one owes.
+            .append_query_results([vec![merge([row(target_role.clone())])]])
+            .append_query_results([vec![merge([row(role_change_row(
+                user.id,
+                target.id,
+                organization_id,
+            ))])]])
             .append_exec_results([exec_result(), exec_result(), exec_result()])
             .into_connection(),
     );

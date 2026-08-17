@@ -15,6 +15,7 @@ use axum::{
 };
 use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::users::Role;
+use domain::Actor;
 use domain::{emails as EmailsAPI, user as UserApi, user_role as UserRoleApi, Id};
 use service::config::ApiVersion;
 
@@ -85,12 +86,21 @@ pub(crate) async fn create(
 ) -> Result<impl IntoResponse, Error> {
     let user = UserApi::create_in_organization(
         app_state.db_conn_ref(),
+        Actor::new(authenticated_user.id),
         organization.id,
         params.user,
         params.coach_id,
     )
     .await?;
-    info!("User created: {user:?}");
+    // Id only. The Debug form of the model carries the hashed password.
+    info!("User created: {}", user.id);
+    info!(
+        "role_change actor={} target={} org={} previous=none new={}",
+        authenticated_user.id,
+        user.id,
+        organization.id,
+        Role::User
+    );
 
     // Must stay after the commit: a failed coach assignment invites nobody.
     EmailsAPI::notify_welcome_email(
@@ -195,6 +205,13 @@ pub(crate) async fn attach_role(
     Json(params): Json<AttachRoleParams>,
 ) -> Result<impl IntoResponse, Error> {
     if params.role == Role::SuperAdmin {
+        // The generic 422 log carries no actor or target, and no first-party client
+        // sends this role, so an attempt is worth attributing on its own.
+        warn!(
+            "role_change_denied actor={} target={} org={} attempted=super_admin \
+             reason=super_admin_not_grantable_in_organization",
+            authenticated_user.id, user_id, organization.id
+        );
         return Err(DomainError {
             source: None,
             error_kind: DomainErrorKind::Validation(
@@ -213,6 +230,7 @@ pub(crate) async fn attach_role(
 
     let user = UserRoleApi::attach_to_organization(
         app_state.db_conn_ref(),
+        Actor::new(authenticated_user.id),
         organization.id,
         user_id,
         params.role.clone(),
@@ -220,8 +238,8 @@ pub(crate) async fn attach_role(
     )
     .await?;
     info!(
-        "User {user_id} attached to organization {}",
-        organization.id
+        "role_change actor={} target={} org={} previous=none new={}",
+        authenticated_user.id, user_id, organization.id, params.role
     );
 
     // Must stay after the commit: a failed coach assignment notifies nobody.
@@ -273,11 +291,16 @@ pub(crate) async fn remove_role(
         return Err(Error::Web(WebErrorKind::Forbidden));
     }
 
-    UserRoleApi::remove_from_organization(app_state.db_conn_ref(), organization.id, user_id)
-        .await?;
+    let previous_role = UserRoleApi::remove_from_organization(
+        app_state.db_conn_ref(),
+        Actor::new(authenticated_user.id),
+        organization.id,
+        user_id,
+    )
+    .await?;
     info!(
-        "User {user_id} removed from organization {}",
-        organization.id
+        "role_change actor={} target={} org={} previous={previous_role} new=none",
+        authenticated_user.id, user_id, organization.id
     );
 
     Ok(Json(ApiResponse::<()>::no_content(
@@ -317,7 +340,25 @@ pub async fn delete(
     }
 
     info!("Deleting user: {:?}", user.id);
-    UserApi::delete(app_state.db_conn_ref(), user.id).await?;
+    let destroyed_roles = UserApi::delete(
+        app_state.db_conn_ref(),
+        Actor::new(authenticated_user.id),
+        user.id,
+    )
+    .await?;
+
+    // Account deletion drops every role the user held, a global SuperAdmin grant
+    // included, so each is reported on the same channel as a scoped role change.
+    for destroyed in &destroyed_roles {
+        let scope = destroyed
+            .organization_id
+            .map_or_else(|| "global".to_string(), |id| id.to_string());
+        info!(
+            "role_change actor={} target={} org={scope} previous={} new=none reason=account_deleted",
+            authenticated_user.id, user.id, destroyed.role
+        );
+    }
+
     Ok(Json(ApiResponse::<()>::no_content(
         StatusCode::NO_CONTENT.into(),
     )))

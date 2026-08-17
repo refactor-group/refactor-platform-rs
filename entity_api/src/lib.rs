@@ -7,12 +7,13 @@ pub use entity::{
     coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
     cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens, meeting_provider, notes,
     oauth_connections, organizations, password_reset_attempts, pipeline_provider, status,
-    token_purpose, topic_priority, topic_status, user_invite_status, user_roles, users,
-    users::Role, Id,
+    token_purpose, topic_priority, topic_status, user_invite_status, user_role_changes, user_roles,
+    users, users::Role, Id,
 };
 
 pub mod action;
 pub mod actions_user;
+pub mod actor;
 pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
@@ -39,6 +40,7 @@ pub mod transcript_segment;
 pub mod transcription;
 pub mod user;
 pub mod user_role;
+pub mod user_role_change;
 
 pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
     Id::parse_str(uuid_str).map_err(|_| error::Error {

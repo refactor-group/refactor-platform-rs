@@ -1,5 +1,6 @@
 use super::*;
 use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
+use crate::Actor;
 use crate::{coaching_relationships, organizations, user_roles};
 use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult};
 use std::collections::BTreeMap;
@@ -54,6 +55,25 @@ fn count_row(count: i64) -> BTreeMap<String, sea_orm::Value> {
     BTreeMap::from([("num_items".to_string(), count.into())])
 }
 
+/// The audit row a grant or removal appends.
+fn role_change(
+    actor_user_id: Id,
+    target_user_id: Id,
+    organization_id: Id,
+    previous_role: Option<Role>,
+    new_role: Option<Role>,
+) -> entity::user_role_changes::Model {
+    entity::user_role_changes::Model {
+        id: Id::new_v4(),
+        actor_user_id: Some(actor_user_id),
+        target_user_id,
+        organization_id: Some(organization_id),
+        previous_role,
+        new_role,
+        changed_at: chrono::Utc::now().into(),
+    }
+}
+
 /// A single-column mock row, for the id-only selects.
 fn id_row(column: &str, value: Id) -> BTreeMap<String, sea_orm::Value> {
     BTreeMap::from([(column.to_string(), value.into())])
@@ -87,10 +107,44 @@ fn statements(db: sea_orm::DatabaseConnection) -> Vec<String> {
         .collect()
 }
 
+/// Every statement the mock saw, in order, across transactions.
+fn full_statements(db: sea_orm::DatabaseConnection) -> Vec<sea_orm::Statement> {
+    db.into_transaction_log()
+        .iter()
+        .flat_map(|transaction| transaction.statements().to_vec())
+        .collect()
+}
+
+/// The one audit insert, with its position among all statements.
+fn audit_insert(statements: &[sea_orm::Statement]) -> (usize, Vec<sea_orm::Value>) {
+    let matches: Vec<usize> = statements
+        .iter()
+        .enumerate()
+        .filter(|(_, statement)| {
+            statement.sql.contains("INSERT") && statement.sql.contains("user_role_changes")
+        })
+        .map(|(index, _)| index)
+        .collect();
+
+    assert_eq!(matches.len(), 1, "expected exactly one audit insert");
+    let index = matches[0];
+    let values = statements[index]
+        .values
+        .as_ref()
+        .map(|values| values.0.clone())
+        .unwrap_or_default();
+    (index, values)
+}
+
+fn role_value(role: Role) -> sea_orm::Value {
+    sea_orm::Value::String(Some(Box::new(role.to_string())))
+}
+
 #[tokio::test]
 async fn attach_to_organization_returns_the_user_scoped_to_the_target_org() -> Result<(), Error> {
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
     let target_role = user_role_model(user_id, Some(organization_id), Role::User);
     let other_role = user_role_model(user_id, Some(Id::new_v4()), Role::Admin);
 
@@ -99,13 +153,28 @@ async fn attach_to_organization_returns_the_user_scoped_to_the_target_org() -> R
         .append_query_results([[user(user_id, vec![])]])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([[target_role.clone()]])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            None,
+            Some(Role::User),
+        )]])
         .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![
             (user(user_id, vec![]), Some(target_role.clone())),
             (user(user_id, vec![]), Some(other_role)),
         ]])
         .into_connection();
 
-    let attached = attach_to_organization(&db, organization_id, user_id, Role::User, None).await?;
+    let attached = attach_to_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+        Role::User,
+        None,
+    )
+    .await?;
 
     assert_eq!(attached.id, user_id);
     assert_eq!(attached.roles.len(), 1);
@@ -123,16 +192,83 @@ async fn attach_to_organization_returns_the_user_scoped_to_the_target_org() -> R
     Ok(())
 }
 
+/// The audit row is only trustworthy if it cannot be dropped independently of the
+/// grant, so it has to land before the commit.
+#[tokio::test]
+async fn attach_to_organization_audits_the_grant_inside_the_transaction() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
+    let target_role = user_role_model(user_id, Some(organization_id), Role::Admin);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .append_query_results([[target_role.clone()]])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            None,
+            Some(Role::Admin),
+        )]])
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            user(user_id, vec![]),
+            Some(target_role),
+        )]])
+        .into_connection();
+
+    attach_to_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+        Role::Admin,
+        None,
+    )
+    .await?;
+
+    let statements = full_statements(db);
+    let (index, values) = audit_insert(&statements);
+
+    let commit = statements
+        .iter()
+        .position(|statement| statement.sql == "COMMIT")
+        .expect("the grant must commit");
+    assert!(index < commit, "the audit row must precede the commit");
+
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(user_id)))));
+    // A first grant: no previous role, the granted role as the new one.
+    assert!(values.contains(&sea_orm::Value::String(None)));
+    assert!(values.contains(&role_value(Role::Admin)));
+
+    Ok(())
+}
+
 /// Mocks every query `attach_to_organization` runs up to and including the role
 /// insert, then the lookups `coaching_relationship::create` runs before its own
 /// insert.
-fn mock_attach_with_coach(organization_id: Id, user_id: Id, coach_id: Id) -> MockDatabase {
+fn mock_attach_with_coach(
+    actor_user_id: Id,
+    organization_id: Id,
+    user_id: Id,
+    coach_id: Id,
+) -> MockDatabase {
     let membership = [organization(organization_id, false)];
     MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[organization(organization_id, false)]])
         .append_query_results([[user(user_id, vec![])]])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            None,
+            Some(Role::User),
+        )]])
         .append_query_results([[organization(organization_id, false)]])
         .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([
             vec![(user(coach_id, vec![]), None)],
@@ -150,10 +286,11 @@ async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Res
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
     let coach_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
     let now = chrono::Utc::now();
     let target_role = user_role_model(user_id, Some(organization_id), Role::User);
 
-    let db = mock_attach_with_coach(organization_id, user_id, coach_id)
+    let db = mock_attach_with_coach(actor_user_id, organization_id, user_id, coach_id)
         .append_query_results([[coaching_relationships::Model {
             id: Id::new_v4(),
             organization_id,
@@ -169,12 +306,21 @@ async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Res
         )]])
         .into_connection();
 
-    attach_to_organization(&db, organization_id, user_id, Role::User, Some(coach_id)).await?;
+    attach_to_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+        Role::User,
+        Some(coach_id),
+    )
+    .await?;
 
     let sql = statements(db);
     let inserts: Vec<&String> = sql.iter().filter(|s| s.contains("INSERT")).collect();
-    assert_eq!(inserts.len(), 2, "{sql:?}");
+    assert_eq!(inserts.len(), 3, "{sql:?}");
     assert!(inserts.iter().any(|s| s.contains("user_roles")));
+    assert!(inserts.iter().any(|s| s.contains("user_role_changes")));
     assert!(inserts.iter().any(|s| s.contains("coaching_relationships")));
     assert_eq!(sql.iter().filter(|s| s.as_str() == "COMMIT").count(), 1);
     assert!(!sql.iter().any(|s| s == "ROLLBACK"), "{sql:?}");
@@ -187,14 +333,22 @@ async fn attach_to_organization_rolls_back_the_role_when_the_coach_assignment_fa
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
     let coach_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
 
-    let db = mock_attach_with_coach(organization_id, user_id, coach_id)
+    let db = mock_attach_with_coach(actor_user_id, organization_id, user_id, coach_id)
         .append_query_errors([DbErr::Custom("relationship insert failed".to_owned())])
         .into_connection();
 
-    attach_to_organization(&db, organization_id, user_id, Role::User, Some(coach_id))
-        .await
-        .expect_err("expected the failed coach assignment to fail the whole call");
+    attach_to_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+        Role::User,
+        Some(coach_id),
+    )
+    .await
+    .expect_err("expected the failed coach assignment to fail the whole call");
 
     let sql = statements(db);
     assert!(
@@ -217,9 +371,16 @@ async fn attach_to_organization_rejects_an_archived_organization() {
         .append_query_results([[organization(organization_id, true)]])
         .into_connection();
 
-    let error = attach_to_organization(&db, organization_id, Id::new_v4(), Role::User, None)
-        .await
-        .expect_err("expected archived-org rejection");
+    let error = attach_to_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        Id::new_v4(),
+        Role::User,
+        None,
+    )
+    .await
+    .expect_err("expected archived-org rejection");
 
     assert_eq!(
         entity_error_kind(&error),
@@ -242,9 +403,16 @@ async fn attach_to_organization_rejects_an_existing_membership() {
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .into_connection();
 
-    let error = attach_to_organization(&db, organization_id, user_id, Role::Admin, None)
-        .await
-        .expect_err("expected duplicate-membership rejection");
+    let error = attach_to_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+        Role::Admin,
+        None,
+    )
+    .await
+    .expect_err("expected duplicate-membership rejection");
 
     assert_eq!(
         entity_error_kind(&error),
@@ -262,7 +430,7 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .into_connection();
 
-    let error = remove_from_organization(&db, organization_id, user_id)
+    let error = remove_from_organization(&db, Actor::new(Id::new_v4()), organization_id, user_id)
         .await
         .expect_err("expected last-admin rejection");
 
@@ -289,15 +457,23 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
 async fn remove_from_organization_succeeds_when_the_member_has_sessions() -> Result<(), Error> {
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
 
     // The member's coaching history no longer factors into removal, so the
     // membership lookup and the one delete are all that run.
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_exec_results([exec_result(1)])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            Some(Role::User),
+            None,
+        )]])
         .into_connection();
 
-    remove_from_organization(&db, organization_id, user_id).await?;
+    remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
 
     // The coaching history is the record of work done; removal revokes access to
     // it rather than destroying it.
@@ -315,22 +491,81 @@ async fn remove_from_organization_succeeds_when_the_member_has_sessions() -> Res
 async fn remove_from_organization_deletes_only_the_target_org_membership() -> Result<(), Error> {
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_exec_results([exec_result(1)])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            Some(Role::User),
+            None,
+        )]])
         .into_connection();
 
-    remove_from_organization(&db, organization_id, user_id).await?;
+    remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
 
     let deletes: Vec<String> = statements(db)
         .into_iter()
         .filter(|sql| sql.contains("DELETE"))
         .collect();
 
+    // Scoped by primary key, which pins the removal to the one membership row
+    // more tightly than filtering on organization_id did.
     assert_eq!(deletes.len(), 1, "{deletes:?}");
-    assert!(deletes.iter().all(|sql| sql.contains("organization_id")));
+    assert!(deletes.iter().all(|sql| sql.contains(r#""id" = $1"#)));
     assert!(deletes.iter().any(|sql| sql.contains("user_roles")));
+
+    Ok(())
+}
+
+/// A removal records the role that was lost, which is the whole point: after the
+/// delete the `user_roles` row no longer says the user was ever an admin.
+#[tokio::test]
+async fn remove_from_organization_audits_the_removed_role_inside_the_transaction(
+) -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
+        .append_query_results([vec![
+            user_role_model(user_id, Some(organization_id), Role::Admin),
+            user_role_model(Id::new_v4(), Some(organization_id), Role::Admin),
+        ]])
+        .append_exec_results([exec_result(1)])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            Some(Role::Admin),
+            None,
+        )]])
+        .into_connection();
+
+    let removed =
+        remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
+    assert_eq!(removed, Role::Admin);
+
+    let statements = full_statements(db);
+    let (index, values) = audit_insert(&statements);
+
+    let delete = statements
+        .iter()
+        .position(|statement| statement.sql.contains("DELETE"))
+        .expect("the membership must be deleted");
+    let commit = statements
+        .iter()
+        .position(|statement| statement.sql == "COMMIT")
+        .expect("the removal must commit");
+    assert!(delete < index && index < commit);
+
+    assert!(values.contains(&role_value(Role::Admin)));
+    // A removal leaves no new role.
+    assert!(values.contains(&sea_orm::Value::String(None)));
 
     Ok(())
 }
@@ -485,7 +720,7 @@ async fn delete_refuses_a_user_who_belongs_to_multiple_organizations() {
         .append_query_results([vec![count_row(2)]])
         .into_connection();
 
-    let error = crate::user::delete(&db, Id::new_v4())
+    let error = crate::user::delete(&db, Actor::new(Id::new_v4()), Id::new_v4())
         .await
         .expect_err("expected multi-org rejection");
 
@@ -516,7 +751,7 @@ async fn delete_refuses_when_the_user_is_an_organizations_last_admin() {
         )]])
         .into_connection();
 
-    let error = crate::user::delete(&db, Id::new_v4())
+    let error = crate::user::delete(&db, Actor::new(Id::new_v4()), Id::new_v4())
         .await
         .expect_err("expected last-admin rejection");
 
@@ -534,15 +769,30 @@ async fn delete_refuses_when_the_user_is_an_organizations_last_admin() {
 
 #[tokio::test]
 async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Error> {
+    let actor_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let organization_id = Id::new_v4();
+    let destroyed = user_role_model(target_id, Some(organization_id), Role::User);
+
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([[user(Id::new_v4(), vec![])]])
+        .append_query_results([[user(target_id, vec![])]])
         .append_query_results([vec![count_row(1)]])
         // Administers nothing, so the last-admin guard has nothing to check.
         .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        // The roles the delete is about to destroy, read before they are gone.
+        .append_query_results([[destroyed.clone()]])
+        .append_query_results([[role_change(
+            actor_id,
+            target_id,
+            organization_id,
+            Some(Role::User),
+            None,
+        )]])
         .append_exec_results([exec_result(1), exec_result(1), exec_result(1)])
         .into_connection();
 
-    crate::user::delete(&db, Id::new_v4()).await?;
+    let destroyed_roles = crate::user::delete(&db, Actor::new(actor_id), target_id).await?;
+    assert_eq!(destroyed_roles.len(), 1);
 
     let sql = statements(db);
 
@@ -571,6 +821,65 @@ async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Er
         .any(|sql| sql.contains("coaching_relationships")));
     assert!(deletes.iter().any(|sql| sql.contains("user_roles")));
     assert!(deletes.iter().any(|sql| sql.contains(r#""users""#)));
+
+    Ok(())
+}
+
+/// Account deletion destroys every role the user held, so each one owes an audit
+/// row. Without this the only path that can erase a global SuperAdmin grant leaves
+/// no trace of what was taken away.
+#[tokio::test]
+async fn delete_audits_every_destroyed_role_including_a_global_super_admin() -> Result<(), Error> {
+    let actor_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let organization_id = Id::new_v4();
+    let org_role = user_role_model(target_id, Some(organization_id), Role::User);
+    let global_role = user_role_model(target_id, None, Role::SuperAdmin);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(target_id, vec![])]])
+        .append_query_results([vec![count_row(1)]])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .append_query_results([[org_role.clone(), global_role.clone()]])
+        .append_query_results([[role_change(
+            actor_id,
+            target_id,
+            organization_id,
+            Some(Role::User),
+            None,
+        )]])
+        .append_query_results([[role_change(
+            actor_id,
+            target_id,
+            organization_id,
+            Some(Role::SuperAdmin),
+            None,
+        )]])
+        .append_exec_results([exec_result(1), exec_result(1), exec_result(1)])
+        .into_connection();
+
+    let destroyed_roles = crate::user::delete(&db, Actor::new(actor_id), target_id).await?;
+    assert_eq!(destroyed_roles.len(), 2);
+
+    let sql = statements(db);
+    let audits: Vec<usize> = sql
+        .iter()
+        .enumerate()
+        .filter(|(_, statement)| {
+            statement.contains("INSERT") && statement.contains("user_role_changes")
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let commit = sql
+        .iter()
+        .position(|statement| statement.contains("COMMIT"))
+        .expect("the transaction must commit");
+
+    assert_eq!(audits.len(), 2, "one audit row per destroyed role: {sql:?}");
+    assert!(
+        audits.iter().all(|index| *index < commit),
+        "audit rows must precede the commit: {sql:?}"
+    );
 
     Ok(())
 }
@@ -620,7 +929,7 @@ async fn remove_from_organization_rejects_a_non_member() {
         .append_query_results([Vec::<user_roles::Model>::new()])
         .into_connection();
 
-    let error = remove_from_organization(&db, Id::new_v4(), Id::new_v4())
+    let error = remove_from_organization(&db, Actor::new(Id::new_v4()), Id::new_v4(), Id::new_v4())
         .await
         .expect_err("expected a not-found rejection");
 
@@ -638,9 +947,16 @@ async fn attach_to_organization_rejects_a_missing_organization() {
         .append_query_results([Vec::<organizations::Model>::new()])
         .into_connection();
 
-    let error = attach_to_organization(&db, Id::new_v4(), Id::new_v4(), Role::User, None)
-        .await
-        .expect_err("expected a not-found rejection");
+    let error = attach_to_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        Id::new_v4(),
+        Id::new_v4(),
+        Role::User,
+        None,
+    )
+    .await
+    .expect_err("expected a not-found rejection");
 
     assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
     assert!(

@@ -1,22 +1,66 @@
+//! Role grants and removals.
+//!
+//! Every mutation in this module writes its own `user_role_changes` audit row,
+//! which is why each takes an [`Actor`]. Reads are unaffected. The one
+//! other writer of `user_roles` is `seed_database`, which is dev-only.
+//!
+//! The mutations take `&DatabaseTransaction` rather than the `&impl
+//! ConnectionTrait` the reads use. The audit row is a second statement, so only
+//! a shared transaction keeps it atomic with the change it describes; requiring
+//! the concrete type makes that a compile error instead of a convention.
+
+use super::actor::Actor;
 use super::error::{EntityApiErrorKind, Error};
 use chrono::Utc;
 use entity::roles::Role;
 use entity::user_roles::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait,
-    QueryFilter, QuerySelect, Set, SqlErr,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, DbErr,
+    EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set, SqlErr,
 };
 
 /// Partial unique index holding a user to one role per organization.
 const ONE_ROLE_PER_ORGANIZATION_INDEX: &str = "user_roles_user_org_unique";
 
-pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
+/// Deletes every role a user holds and audits each one.
+///
+/// Returns what was destroyed, so callers can report it without a second read.
+/// This is the only path that can erase a global SuperAdmin grant.
+///
+/// The snapshot is locked because the audit rows come from it rather than from
+/// what the delete matched, so an unlocked read lets a concurrent [`delete`] be
+/// audited twice, once under this actor.
+pub async fn delete_by_user_id(
+    db: &DatabaseTransaction,
+    actor: Actor,
+    user_id: Id,
+) -> Result<Vec<Model>, Error> {
+    // Read first: afterwards there is nothing left to describe.
+    let destroyed = Entity::find()
+        .filter(Column::UserId.eq(user_id))
+        .lock_exclusive()
+        .all(db)
+        .await?;
+
     Entity::delete_many()
         .filter(Condition::all().add(Column::UserId.eq(user_id)))
         .exec(db)
         .await?;
-    Ok(())
+
+    for role in &destroyed {
+        crate::user_role_change::record(
+            db,
+            Some(actor),
+            user_id,
+            role.organization_id,
+            Some(role.role.clone()),
+            None,
+        )
+        .await?;
+    }
+
+    Ok(destroyed)
 }
 
 /// Translates a violation of the one-role-per-organization index into a 409.
@@ -57,7 +101,8 @@ fn is_one_role_per_organization_violation(sql_err: Option<SqlErr>) -> bool {
 /// Returns `UserAlreadyInOrganization` when the user already holds a role there,
 /// including when two concurrent grants race past the application-level check.
 pub async fn create(
-    db: &impl ConnectionTrait,
+    db: &DatabaseTransaction,
+    actor: Actor,
     user_id: Id,
     organization_id: Id,
     role: Role,
@@ -73,17 +118,29 @@ pub async fn create(
     }
 
     let now = Utc::now();
-    ActiveModel {
+    let granted = ActiveModel {
         user_id: Set(user_id),
         organization_id: Set(Some(organization_id)),
-        role: Set(role),
+        role: Set(role.clone()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
     }
     .insert(db)
     .await
-    .map_err(|err| map_duplicate_role(err, organization_id))
+    .map_err(|err| map_duplicate_role(err, organization_id))?;
+
+    crate::user_role_change::record(
+        db,
+        Some(actor),
+        user_id,
+        Some(organization_id),
+        None,
+        Some(role),
+    )
+    .await?;
+
+    Ok(granted)
 }
 
 /// Finds the role a user holds in a specific organization, if any.
@@ -99,18 +156,36 @@ pub async fn find_by_user_and_organization(
         .await?)
 }
 
-/// Removes a user's role in one organization, returning the number of rows deleted.
-pub async fn delete_by_user_and_organization(
-    db: &impl ConnectionTrait,
-    user_id: Id,
-    organization_id: Id,
-) -> Result<u64, Error> {
-    Ok(Entity::delete_many()
-        .filter(Column::UserId.eq(user_id))
-        .filter(Column::OrganizationId.eq(organization_id))
-        .exec(db)
-        .await?
-        .rows_affected)
+/// Removes a membership the caller has already read, and audits it.
+///
+/// Takes the row rather than its keys so the audited role comes from the record
+/// being deleted, and so callers that already fetched it (every caller does, to
+/// guard the removal) need not read it twice.
+///
+/// Deletes by primary key. Filtering on `organization_id` would render
+/// `organization_id = NULL` for a global SuperAdmin grant, which matches nothing
+/// in Postgres, and the audit row would then claim a removal that never happened.
+/// The row is only audited if it was actually deleted.
+pub async fn delete(
+    db: &DatabaseTransaction,
+    actor: Actor,
+    membership: &Model,
+) -> Result<(), Error> {
+    let deleted = Entity::delete_by_id(membership.id).exec(db).await?;
+
+    if deleted.rows_affected == 0 {
+        return Ok(());
+    }
+
+    crate::user_role_change::record(
+        db,
+        Some(actor),
+        membership.user_id,
+        membership.organization_id,
+        Some(membership.role.clone()),
+        None,
+    )
+    .await
 }
 
 /// Counts the distinct organizations a user belongs to, ignoring global roles.
@@ -248,22 +323,37 @@ pub async fn retain_organization_members(
 mod test {
     use super::*;
     use entity::Id;
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase, TransactionTrait};
 
     #[tokio::test]
     async fn test_delete_by_user_id() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        // No roles come back, so the delete runs and there is nothing to audit.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([Vec::<Model>::new()])
+            .into_connection();
 
         let user_id = Id::new_v4();
-        let _ = delete_by_user_id(&db, user_id).await;
+        let txn = db.begin().await.expect("mock transaction");
+        let _ = delete_by_user_id(&txn, Actor::new(Id::new_v4()), user_id).await;
+        txn.commit().await.expect("mock commit");
 
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"DELETE FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = $1"#,
-                [user_id.into()]
-            )]
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| {
+                transaction
+                    .statements()
+                    .iter()
+                    .map(|statement| statement.sql.clone())
+            })
+            .collect();
+
+        assert!(sql.iter().any(|statement| statement
+            == r#"DELETE FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = $1"#));
+        assert!(
+            !sql.iter()
+                .any(|statement| statement.contains("user_role_changes")),
+            "no roles were destroyed, so nothing should be audited: {sql:?}"
         );
 
         Ok(())
