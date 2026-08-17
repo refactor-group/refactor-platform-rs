@@ -1,4 +1,4 @@
-use crate::controller::organization::user_controller::{
+use crate::controller::organization::user::role_controller::{
     attach_role, read_role, remove_role, update_role,
 };
 use crate::middleware::auth::require_auth;

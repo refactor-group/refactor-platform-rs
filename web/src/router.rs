@@ -99,10 +99,10 @@ use utoipa_rapidoc::RapiDoc;
             organization::user_controller::create,
             organization::user_controller::resend_invite,
             organization::user_controller::delete,
-            organization::user_controller::attach_role,
-            organization::user_controller::read_role,
-            organization::user_controller::update_role,
-            organization::user_controller::remove_role,
+            organization::user::role_controller::attach_role,
+            organization::user::role_controller::read_role,
+            organization::user::role_controller::update_role,
+            organization::user::role_controller::remove_role,
             goal_controller::create,
             goal_controller::update,
             goal_controller::index,
@@ -511,10 +511,10 @@ fn organization_user_routes(app_state: AppState) -> Router {
         )
         .route(
             "/organizations/:organization_id/users/:user_id/role",
-            get(organization::user_controller::read_role)
-                .post(organization::user_controller::attach_role)
-                .put(organization::user_controller::update_role)
-                .delete(organization::user_controller::remove_role),
+            get(organization::user::role_controller::read_role)
+                .post(organization::user::role_controller::attach_role)
+                .put(organization::user::role_controller::update_role)
+                .delete(organization::user::role_controller::remove_role),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
