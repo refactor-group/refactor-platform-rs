@@ -27,13 +27,21 @@ const ONE_ROLE_PER_ORGANIZATION_INDEX: &str = "user_roles_user_org_unique";
 ///
 /// Returns what was destroyed, so callers can report it without a second read.
 /// This is the only path that can erase a global SuperAdmin grant.
+///
+/// The snapshot is locked because the audit rows come from it rather than from
+/// what the delete matched, so an unlocked read lets a concurrent [`delete`] be
+/// audited twice, once under this actor.
 pub async fn delete_by_user_id(
     db: &DatabaseTransaction,
     actor: Actor,
     user_id: Id,
 ) -> Result<Vec<Model>, Error> {
     // Read first: afterwards there is nothing left to describe.
-    let destroyed = find_by_user_id(db, user_id).await?;
+    let destroyed = Entity::find()
+        .filter(Column::UserId.eq(user_id))
+        .lock_exclusive()
+        .all(db)
+        .await?;
 
     Entity::delete_many()
         .filter(Condition::all().add(Column::UserId.eq(user_id)))
@@ -133,15 +141,6 @@ pub async fn create(
     .await?;
 
     Ok(granted)
-}
-
-/// Every role a user holds, across all organizations and including a global
-/// SuperAdmin grant.
-pub async fn find_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
-    Ok(Entity::find()
-        .filter(Column::UserId.eq(user_id))
-        .all(db)
-        .await?)
 }
 
 /// Finds the role a user holds in a specific organization, if any.

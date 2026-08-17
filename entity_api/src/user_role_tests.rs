@@ -296,6 +296,36 @@ fn scope_roles_to_organization_keeps_only_the_target_org_and_global_roles() {
     assert_eq!(retained_ids, vec![in_scope.id, global.id]);
 }
 
+/// The audit rows are written from this snapshot rather than from what the bulk
+/// delete matched, so an unlocked read lets a concurrent removal commit in
+/// between and be audited a second time under this actor's name.
+#[tokio::test]
+async fn delete_by_user_id_locks_the_snapshot_it_audits() -> Result<(), Error> {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<Model>::new()])
+        .append_exec_results([sea_orm::MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 0,
+        }])
+        .into_connection();
+
+    let txn = begin(&db).await;
+    delete_by_user_id(&txn, Actor::new(Id::new_v4()), Id::new_v4()).await?;
+    txn.commit().await.expect("mock commit");
+
+    let sql = logged_sql(db);
+    let snapshot = sql
+        .iter()
+        .find(|statement| statement.starts_with("SELECT"))
+        .expect("the snapshot must be read");
+    assert!(
+        snapshot.contains("FOR UPDATE"),
+        "the snapshot must be locked: {snapshot}"
+    );
+
+    Ok(())
+}
+
 /// A global SuperAdmin grant has a null `organization_id`. Filtering on it would
 /// render `organization_id = NULL`, which matches nothing, so the row would
 /// survive while the audit claimed it was removed.
