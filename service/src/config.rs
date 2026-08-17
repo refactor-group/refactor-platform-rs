@@ -100,7 +100,7 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
 #[into_params(parameter_in = Header)]
 pub struct ApiVersion {
     /// The version of the API to use for a request.
-    #[param(rename = "x-version", style = Simple, required, example = "1.0.0-beta1")]
+    #[param(rename = "x-version", style = Simple, required, example = "1.0.0-beta1", value_type = String)]
     pub version: Version,
 }
 

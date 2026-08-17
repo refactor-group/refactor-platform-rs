@@ -17,6 +17,7 @@
 
 use chrono::{Datelike, Duration, Months, NaiveDateTime, Weekday};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::error::{DomainErrorKind, Error};
 
@@ -27,7 +28,7 @@ const MAX_RECURRING_OCCURRENCES: usize = 365;
 const MAX_RECURRING_SPAN_DAYS: i64 = 366;
 
 /// How often the rule repeats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Frequency {
     Daily,
@@ -37,7 +38,7 @@ pub enum Frequency {
 }
 
 /// A recurrence rule. Exactly one of `count` or `until` must be specified.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Recurrence {
     pub frequency: Frequency,
     /// Step multiplier. `weekly` with `interval: 2` is the same as `biweekly`.
@@ -47,6 +48,7 @@ pub struct Recurrence {
     /// Only meaningful for `weekly`/`biweekly`. If present, the rule emits one
     /// event per listed weekday within each active week.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<String>>)]
     pub by_weekdays: Option<Vec<Weekday>>,
     /// Stop after this many occurrences. Mutually exclusive with `until`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

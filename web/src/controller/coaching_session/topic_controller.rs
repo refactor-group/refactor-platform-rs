@@ -53,7 +53,7 @@ pub struct StatusParams {
     path = "/coaching_sessions/{coaching_session_id}/topics",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Topics retrieved", body = [domain::coaching_session_topics::Model]),
@@ -80,7 +80,7 @@ pub async fn index(
     path = "/coaching_sessions/{coaching_session_id}/topics",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     request_body = CreateParams,
     responses(
@@ -118,8 +118,8 @@ pub async fn create(
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("topic_id" = Id, Path, description = "Topic id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("topic_id" = Uuid, Path, description = "Topic id"),
     ),
     request_body = UpdateParams,
     responses(
@@ -154,7 +154,7 @@ pub async fn update(
     path = "/coaching_sessions/{coaching_session_id}/topics/reorder",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     request_body = ReorderParams,
     responses(
@@ -190,8 +190,8 @@ pub async fn reorder(
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("topic_id" = Id, Path, description = "Topic id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("topic_id" = Uuid, Path, description = "Topic id"),
     ),
     responses(
         (status = 200, description = "Topic deleted"),
@@ -226,8 +226,8 @@ pub async fn delete(
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/rating",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("topic_id" = Id, Path, description = "Topic id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("topic_id" = Uuid, Path, description = "Topic id"),
     ),
     request_body = RatingParams,
     responses(
@@ -263,8 +263,8 @@ pub async fn set_rating(
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/status",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("topic_id" = Id, Path, description = "Topic id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("topic_id" = Uuid, Path, description = "Topic id"),
     ),
     request_body = StatusParams,
     responses(
@@ -310,8 +310,8 @@ pub async fn set_status(
     path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/undo",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("topic_id" = Id, Path, description = "Topic id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("topic_id" = Uuid, Path, description = "Topic id"),
     ),
     responses(
         (status = 200, description = "Change undone; the restored topic is returned", body = domain::coaching_session_topics::Model),

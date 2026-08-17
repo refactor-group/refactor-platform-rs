@@ -23,10 +23,10 @@ use log::*;
     path = "/goals/{id}/sessions",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Goal id"),
+        ("id" = Uuid, Path, description = "Goal id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved sessions linked to goal", body = [entity::coaching_sessions_goals::Model]),
+        (status = 200, description = "Successfully retrieved sessions linked to goal", body = [domain::coaching_sessions_goals::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -52,9 +52,9 @@ pub async fn coaching_sessions_by_goal(
     post,
     path = "/goals",
     params(ApiVersion),
-    request_body = entity::goals::Model,
+    request_body = domain::goals::Model,
     responses(
-        (status = 201, description = "Successfully Created a New Goal", body = [entity::goals::Model]),
+        (status = 201, description = "Successfully Created a New Goal", body = domain::goals::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -91,10 +91,10 @@ pub async fn create(
     path = "/goals/{id}",
     params(
         ApiVersion,
-        ("id" = String, Path, description = "Goal id to retrieve")
+        ("id" = inline(String), Path, description = "Goal id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Goal by its id", body = [entity::goals::Model]),
+        (status = 200, description = "Successfully retrieved a specific Goal by its id", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Goal not found"),
         (status = 405, description = "Method not allowed"),
@@ -121,11 +121,11 @@ pub async fn read(
     path = "/goals/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of goal to update"),
+        ("id" = Uuid, Path, description = "Id of goal to update"),
     ),
-    request_body = entity::goals::Model,
+    request_body = domain::goals::Model,
     responses(
-        (status = 200, description = "Successfully Updated Goal", body = [entity::goals::Model]),
+        (status = 200, description = "Successfully Updated Goal", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -161,12 +161,11 @@ pub async fn update(
     path = "/goals/{id}/status",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of goal to update"),
+        ("id" = Uuid, Path, description = "Id of goal to update"),
         ("value" = Option<String>, Query, description = "Status value to update"),
     ),
-    request_body = entity::actions::Model,
     responses(
-        (status = 200, description = "Successfully Updated Goal", body = [entity::goals::Model]),
+        (status = 200, description = "Successfully Updated Goal", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -203,7 +202,7 @@ pub async fn update_status(
     path = "/goals/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of goal to delete"),
+        ("id" = Uuid, Path, description = "Id of goal to delete"),
     ),
     responses(
         (status = 200, description = "Successfully Deleted Goal"),
@@ -239,13 +238,13 @@ pub async fn delete(
     path = "/goals",
     params(
         ApiVersion,
-        ("coaching_relationship_id" = Id, Query, description = "Filter by coaching_relationship_id"),
+        ("coaching_relationship_id" = Uuid, Query, description = "Filter by coaching_relationship_id"),
         ("status" = Option<domain::status::Status>, Query, description = "Filter by status (e.g., 'InProgress', 'Completed')"),
         ("sort_by" = Option<crate::params::goal::SortField>, Query, description = "Sort by field. Valid values: 'title', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "title"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Goals", body = [entity::goals::Model]),
+        (status = 200, description = "Successfully retrieved all Goals", body = [domain::goals::Model]),
         (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
@@ -285,7 +284,7 @@ pub async fn index(
     path = "/goals/{id}/progress",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Goal id"),
+        ("id" = Uuid, Path, description = "Goal id"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved goal progress metrics"),

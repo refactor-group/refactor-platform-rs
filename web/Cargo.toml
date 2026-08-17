@@ -29,8 +29,8 @@ governor = "0.6"
 tower-sessions = { version = "0.13.0" }
 tower-sessions-sqlx-store = { version = "0.14.1", features = ["postgres"] }
 time = "0.3.47"
-utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
-utoipa-rapidoc = { version = "3.0.0", features = ["axum"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
+utoipa-rapidoc = { version = "=5.0.0", features = ["axum"] }
 async-trait = "0.1.88"
 async-stream = "0.3"
 futures = "0.3.31"
@@ -50,9 +50,13 @@ mock = ["sea-orm/mock"]
 
 [dev-dependencies]
 anyhow = "1.0.89"
+regex = "1"
 base64 = "0.22"
 chrono = { version = "0.4.38", features = ["serde"] }
 hmac = "0.12"
 password-auth = "1.0.0"
 reqwest = { version = "0.12.12", features = ["json", "cookies"] }
 sha2 = "0.10"
+
+[build-dependencies]
+utoipa-config = "0.1"

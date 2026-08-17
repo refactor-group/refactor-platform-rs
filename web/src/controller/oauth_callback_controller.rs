@@ -31,7 +31,7 @@ pub struct OAuthCallback {
     get,
     path = "/oauth/{provider}/callback",
     params(
-        ("code" = String, Query, description = "Authorization code from Provider"),
+        ("code" = inline(String), Query, description = "Authorization code from Provider"),
         ("state" = Option<String>, Query, description = "CSRF state token"),
     ),
     responses(

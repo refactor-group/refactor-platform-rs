@@ -65,8 +65,8 @@ fn check_assignee_visibility(
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
     params(
         ApiVersion,
-        ("organization_id" = String, Path, description = "Organization id"),
-        ("relationship_id" = String, Path, description = "Coaching relationship id"),
+        ("organization_id" = inline(String), Path, description = "Organization id"),
+        ("relationship_id" = inline(String), Path, description = "Coaching relationship id"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved actions for the coaching relationship"),
@@ -128,7 +128,7 @@ pub async fn read(
     path = "/organizations/{organization_id}/coaching_relationships/actions",
     params(
         ApiVersion,
-        ("organization_id" = String, Path, description = "Organization id"),
+        ("organization_id" = inline(String), Path, description = "Organization id"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved batch actions"),

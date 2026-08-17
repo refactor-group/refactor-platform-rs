@@ -18,7 +18,7 @@ use log::*;
     path = "/users/{user_id}/organizations",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve organizations for")
+        ("user_id" = Uuid, Path, description = "User ID to retrieve organizations for")
     ),
     responses(
         (status = 200, description = "Successfully retrieved organizations for user", body = [domain::organizations::Model]),
