@@ -582,12 +582,18 @@ async fn update_role_advances_the_membership_timestamp() -> Result<(), Error> {
         .iter()
         .find(|statement| statement.contains("UPDATE") && statement.contains("user_roles"))
         .expect("the membership must be updated");
+    // Only the SET clause: SeaORM's RETURNING list names every column, so matching
+    // the whole statement would pass on a column the update never wrote.
+    let assignments = update
+        .split(" WHERE ")
+        .next()
+        .expect("the update must have a SET clause");
     assert!(
-        update.contains(r#""updated_at""#),
+        assignments.contains(r#""updated_at""#),
         "a role change must advance updated_at: {update}"
     );
     assert!(
-        !update.contains(r#""created_at""#),
+        !assignments.contains(r#""created_at""#),
         "a role change is not a creation: {update}"
     );
 
