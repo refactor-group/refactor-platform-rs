@@ -235,9 +235,18 @@ async fn extractor_does_not_disclose_organization_existence_to_a_foreign_admin()
     let organization_id = Id::new_v4();
     let foreign_admin = || test_role(Id::new_v4(), Some(Id::new_v4()), users::Role::Admin);
 
+    let against_existing = request_status(organization_id, foreign_admin(), true).await;
+    let against_absent = request_status(organization_id, foreign_admin(), false).await;
+
     assert_eq!(
-        request_status(organization_id, foreign_admin(), true).await,
-        request_status(organization_id, foreign_admin(), false).await,
+        against_existing, against_absent,
         "a foreign-org admin must get the same answer whether the organization exists"
+    );
+    // Anchored, or a regression to 404 on both branches would satisfy the equality
+    // above while disclosing exactly what this test exists to hide.
+    assert_eq!(
+        against_existing,
+        StatusCode::FORBIDDEN,
+        "and that answer must be the refusal, not the disclosure"
     );
 }

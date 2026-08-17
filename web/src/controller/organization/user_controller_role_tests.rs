@@ -170,6 +170,21 @@ async fn role_request(
     app.clone().oneshot(request).await.unwrap()
 }
 
+/// The envelope's `status_code` and its `data`, so a test can assert what came back
+/// rather than only that something did. [`api_status_code`] discards the payload,
+/// which makes a status assertion easy to mistake for a content one.
+async fn api_response(response: axum::response::Response) -> (u64, serde_json::Value) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let status = body["status_code"]
+        .as_u64()
+        .expect("envelope must carry a status_code");
+    (status, body["data"].clone())
+}
+
 /// The `status_code` the `ApiResponse` envelope reports. Success responses in this
 /// codebase are HTTP 200 and carry their real code in the body.
 async fn api_status_code(response: axum::response::Response) -> u64 {
@@ -817,7 +832,12 @@ async fn read_returns_the_members_role() {
     )
     .await;
 
-    assert_eq!(api_status_code(response).await, 200);
+    let (status, membership) = api_response(response).await;
+    assert_eq!(status, 200);
+    // The status alone would pass for any membership the handler happened to return.
+    assert_eq!(membership["role"], "Admin");
+    assert_eq!(membership["user_id"], target_id.to_string());
+    assert_eq!(membership["organization_id"], organization_id.to_string());
 }
 
 #[tokio::test]
@@ -852,7 +872,15 @@ async fn update_promotes_a_member_to_admin() {
     )
     .await;
 
-    assert_eq!(api_status_code(response).await, 200);
+    let (status, user) = api_response(response).await;
+    assert_eq!(status, 200);
+    // Emptying the roles array passes a status-only assertion, so the payload has to
+    // be read: the granted role is what the caller renders the row from.
+    assert_eq!(user["roles"][0]["role"], "Admin");
+    assert_eq!(
+        user["roles"][0]["organization_id"],
+        organization_id.to_string()
+    );
 }
 
 /// A super admin holds no membership in the organization, so this path proves the
@@ -890,7 +918,9 @@ async fn update_promotes_a_member_for_a_super_admin() {
     )
     .await;
 
-    assert_eq!(api_status_code(response).await, 200);
+    let (status, user) = api_response(response).await;
+    assert_eq!(status, 200);
+    assert_eq!(user["roles"][0]["role"], "Admin");
 }
 
 /// The 422 must come from the handler, before the domain call. The mock is primed

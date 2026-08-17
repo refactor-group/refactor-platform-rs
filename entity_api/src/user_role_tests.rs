@@ -483,19 +483,41 @@ async fn update_role_audits_the_previous_and_the_new_role() -> Result<(), Error>
         .expect("the change must be audited");
     assert!(update < audit, "the audit describes a change already made");
 
-    let values = statements[audit]
+    let statement = &statements[audit];
+    let values = statement
         .values
         .as_ref()
         .map(|values| values.0.clone())
         .unwrap_or_default();
-    let role_value = |role: Role| sea_orm::Value::String(Some(Box::new(role.to_string())));
-    assert!(
-        values.contains(&role_value(Role::User)),
-        "the previous role must be recorded: {values:?}"
-    );
-    assert!(
-        values.contains(&role_value(Role::Admin)),
-        "the new role must be recorded: {values:?}"
+
+    // Read per column, not as a set. `record` takes previous_role and new_role as
+    // adjacent Option<Role> arguments, so transposing them compiles silently, the
+    // database accepts it, and a set assertion sees the same two roles either way.
+    let columns: Vec<&str> = statement
+        .sql
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(list, _)| {
+            list.split(',')
+                .map(|c| c.trim().trim_matches('"'))
+                .collect()
+        })
+        .expect("an insert names its columns");
+    let bound = |column: &str| {
+        columns
+            .iter()
+            .position(|candidate| *candidate == column)
+            .and_then(|index| values.get(index))
+            .and_then(|value| match value {
+                Value::String(role) => role.as_ref().map(|role| role.to_string()),
+                _ => None,
+            })
+    };
+
+    assert_eq!(
+        (bound("previous_role"), bound("new_role")),
+        (Some("user".to_string()), Some("admin".to_string())),
+        "the audit row must record User becoming Admin, in that direction"
     );
     assert!(values.contains(&Value::Uuid(Some(Box::new(actor.id())))));
 
@@ -536,13 +558,26 @@ async fn update_role_targets_the_membership_by_primary_key() -> Result<(), Error
         .expect("the membership must be updated");
     // Matched on the column rather than the parameter number, which only encodes how
     // many columns the SET clause happens to carry.
+    // Between WHERE and RETURNING: the returning list names every column, including
+    // organization_id, so it would satisfy the negative below on its own.
+    let predicate = update
+        .split_once(" WHERE ")
+        .map(|(_, rest)| {
+            rest.split_once(" RETURNING ")
+                .map_or(rest, |(clause, _)| clause)
+        })
+        .expect("the update must be scoped");
     assert!(
-        update.contains(r#"WHERE "user_roles"."id" ="#),
+        predicate.starts_with(r#""user_roles"."id" ="#),
         "the update must be scoped by primary key: {update}"
     );
+    // Against the whole clause, not the statement: an added filter renders as
+    // `AND "user_roles"."organization_id"`, which a `WHERE`-anchored check misses.
+    // A global role has a null organization_id, so such a filter would match nothing
+    // while the audit row still claimed the change happened.
     assert!(
-        !update.contains(r#"WHERE "user_roles"."organization_id""#),
-        "a global role has a null organization_id and would match nothing: {update}"
+        !predicate.contains("organization_id"),
+        "the update must not filter on organization_id: {update}"
     );
 
     Ok(())

@@ -136,8 +136,43 @@ fn audit_insert(statements: &[sea_orm::Statement]) -> (usize, Vec<sea_orm::Value
     (index, values)
 }
 
-fn role_value(role: Role) -> sea_orm::Value {
-    sea_orm::Value::String(Some(Box::new(role.to_string())))
+/// The transition the audit insert actually bound, read by column position.
+///
+/// `values.contains(...)` cannot tell a transition from its reverse, because both
+/// roles appear either way. `record` takes `previous_role` and `new_role` as
+/// adjacent `Option<Role>` arguments, so transposing them compiles silently and the
+/// database accepts it. Reading each value out of its own column is what pins the
+/// direction, which is the only fact an audit row exists to record.
+fn audited_transition(statement: &sea_orm::Statement) -> (Option<String>, Option<String>) {
+    let columns: Vec<&str> = statement
+        .sql
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(list, _)| {
+            list.split(',')
+                .map(|c| c.trim().trim_matches('"'))
+                .collect()
+        })
+        .expect("an insert names its columns");
+
+    let values = statement
+        .values
+        .as_ref()
+        .map(|values| values.0.clone())
+        .unwrap_or_default();
+
+    let bound = |column: &str| {
+        columns
+            .iter()
+            .position(|candidate| *candidate == column)
+            .and_then(|index| values.get(index))
+            .and_then(|value| match value {
+                sea_orm::Value::String(role) => role.as_ref().map(|role| role.to_string()),
+                _ => None,
+            })
+    };
+
+    (bound("previous_role"), bound("new_role"))
 }
 
 #[tokio::test]
@@ -240,9 +275,13 @@ async fn attach_to_organization_audits_the_grant_inside_the_transaction() -> Res
 
     assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
     assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(user_id)))));
-    // A first grant: no previous role, the granted role as the new one.
-    assert!(values.contains(&sea_orm::Value::String(None)));
-    assert!(values.contains(&role_value(Role::Admin)));
+    // A first grant leaves previous_role null. Asserted per column: as a set, this
+    // is indistinguishable from a removal of Admin.
+    assert_eq!(
+        audited_transition(&statements[index]),
+        (None, Some("admin".to_string())),
+        "a grant must record no previous role and the granted one as new"
+    );
 
     Ok(())
 }
@@ -551,7 +590,7 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
     assert_eq!(removed, Role::Admin);
 
     let statements = full_statements(db);
-    let (index, values) = audit_insert(&statements);
+    let (index, _) = audit_insert(&statements);
 
     let delete = statements
         .iter()
@@ -563,9 +602,13 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
         .expect("the removal must commit");
     assert!(delete < index && index < commit);
 
-    assert!(values.contains(&role_value(Role::Admin)));
-    // A removal leaves no new role.
-    assert!(values.contains(&sea_orm::Value::String(None)));
+    // A removal leaves new_role null. As a set this is identical to a first grant
+    // of Admin, so the direction has to be read per column.
+    assert_eq!(
+        audited_transition(&statements[index]),
+        (Some("admin".to_string()), None),
+        "a removal must record the lost role as previous and no new one"
+    );
 
     Ok(())
 }
@@ -1145,12 +1188,12 @@ async fn update_role_in_organization_audits_the_transition_inside_the_transactio
 
     assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
     assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(user_id)))));
-    // A change records both ends of the transition; neither side is null.
-    assert!(values.contains(&role_value(Role::User)));
-    assert!(values.contains(&role_value(Role::Admin)));
-    assert!(
-        !values.contains(&sea_orm::Value::String(None)),
-        "a change is neither a first grant nor a removal: {values:?}"
+    // Read per column, not as a set: a transposition leaves both roles present and
+    // would record this promotion as a demotion.
+    assert_eq!(
+        audited_transition(&statements[index]),
+        (Some("user".to_string()), Some("admin".to_string())),
+        "the audit row must record User becoming Admin, in that direction"
     );
 
     Ok(())
@@ -1391,4 +1434,48 @@ async fn find_role_in_organization_rejects_a_non_member() {
         .expect_err("expected a not-found rejection");
 
     assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
+}
+
+/// The demote guard matches Admin to User specifically, not "any role but Admin".
+/// Widened, a rejected `SuperAdmin` write against a sole admin answers with a
+/// conflict about admin counts instead of the rejection, and takes a lock on every
+/// admin row on its way to the wrong error. Unreachable over HTTP, where the
+/// controller refuses `SuperAdmin` first, but this function is public.
+#[tokio::test]
+async fn update_role_in_organization_does_not_treat_super_admin_as_a_demotion() {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+
+    // No admin count primed: reaching it would run past the end of the queue, so a
+    // clean rejection here also proves the count never ran.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
+        .into_connection();
+
+    let error = update_role_in_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+        Role::SuperAdmin,
+    )
+    .await
+    .expect_err("SuperAdmin must be refused");
+
+    assert!(
+        !matches!(
+            entity_error_kind(&error),
+            EntityErrorKind::LastOrganizationAdmin { .. }
+        ),
+        "a rejected role must not be reported as an admin-count conflict: {error:?}"
+    );
+
+    let sql = statements(db);
+    assert!(
+        !sql.iter()
+            .any(|sql| sql.contains("user_roles") && sql.contains("FOR UPDATE")),
+        "the admin rows must not be locked on the way to a rejection: {sql:?}"
+    );
 }
