@@ -171,9 +171,13 @@ pub async fn update_role(
         });
     }
 
-    let mut changed = membership.clone().into_active_model();
-    changed.role = Set(role.clone());
-    let updated = changed.update(db).await?;
+    let updated = ActiveModel {
+        role: Set(role.clone()),
+        updated_at: Set(Utc::now().into()),
+        ..membership.clone().into_active_model()
+    }
+    .update(db)
+    .await?;
 
     crate::user_role_change::record(
         db,
