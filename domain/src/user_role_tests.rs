@@ -143,6 +143,9 @@ fn audit_insert(statements: &[sea_orm::Statement]) -> (usize, Vec<sea_orm::Value
 /// adjacent `Option<Role>` arguments, so transposing them compiles silently and the
 /// database accepts it. Reading each value out of its own column is what pins the
 /// direction, which is the only fact an audit row exists to record.
+///
+/// A column omitted from the insert reads the same as one bound to NULL. Both
+/// columns are nullable with no default, so the two are behaviorally identical here.
 fn audited_transition(statement: &sea_orm::Statement) -> (Option<String>, Option<String>) {
     let columns: Vec<&str> = statement
         .sql
@@ -1446,11 +1449,14 @@ async fn update_role_in_organization_does_not_treat_super_admin_as_a_demotion() 
     let organization_id = Id::new_v4();
     let user_id = Id::new_v4();
 
-    // No admin count primed: reaching it would run past the end of the queue, so a
-    // clean rejection here also proves the count never ran.
+    // A sole admin IS primed, so a widened guard reaches a real LastOrganizationAdmin
+    // rather than running off the end of the queue. Without the row the guard errors
+    // on an exhausted mock, the kind assertion below passes for the wrong reason, and
+    // only the lock assertion does any work.
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[organization(organization_id, false)]])
         .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .into_connection();
 
@@ -1464,12 +1470,12 @@ async fn update_role_in_organization_does_not_treat_super_admin_as_a_demotion() 
     .await
     .expect_err("SuperAdmin must be refused");
 
+    // The positive kind, not the absence of the wrong one: `ValidationError` maps to
+    // `Conflict`, and asserting it pins that the rejection is what came back rather
+    // than merely that a conflict about admin counts did not.
     assert!(
-        !matches!(
-            entity_error_kind(&error),
-            EntityErrorKind::LastOrganizationAdmin { .. }
-        ),
-        "a rejected role must not be reported as an admin-count conflict: {error:?}"
+        matches!(entity_error_kind(&error), EntityErrorKind::Conflict { .. }),
+        "SuperAdmin must be refused as invalid, not as an admin-count conflict: {error:?}"
     );
 
     let sql = statements(db);
