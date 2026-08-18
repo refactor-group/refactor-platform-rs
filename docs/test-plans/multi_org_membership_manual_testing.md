@@ -209,7 +209,7 @@ docker compose logs backend | grep -i 'added_to_organization'
 
 Removing a member used to be a one-way door for the admin who did it. This
 scenario is the recovery path, and it must be run **as an org admin, never as a
-SuperAdmin** — a SuperAdmin could always do this, so testing as one proves nothing.
+SuperAdmin**, because a SuperAdmin could always do this and testing as one proves nothing.
 
 Setup: log in as an admin of exactly one organization (Org1). Pick a member of
 Org1 who is **not** a member of any other organization you administer.
