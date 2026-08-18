@@ -160,11 +160,6 @@ jobs:
           RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID=${{ vars.RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID }}
           SESSION_CANCELLED_EMAIL_TEMPLATE_ID=${{ vars.SESSION_CANCELLED_EMAIL_TEMPLATE_ID }}
           RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID=${{ vars.RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID }}
-          # Template ID for the 24-hour upcoming-session reminder. Unset disables the job.
-          SESSION_REMINDER_EMAIL_TEMPLATE_ID=${{ vars.SESSION_REMINDER_EMAIL_TEMPLATE_ID }}
-          # Reminder lead time and sweep cadence; blank falls back to the in-code defaults (24h / 15min)
-          SESSION_REMINDER_LEAD_HOURS=${{ vars.SESSION_REMINDER_LEAD_HOURS }}
-          SESSION_REMINDER_POLL_MINUTES=${{ vars.SESSION_REMINDER_POLL_MINUTES }}
           RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
           # Base URL of the frontend app, used to construct links in emails
           FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL }}
