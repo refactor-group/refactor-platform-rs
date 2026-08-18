@@ -132,8 +132,8 @@ distinct.
 | Action | Target | Expected |
 |---|---|---|
 | **Remove from organization** | a member of two organizations, **with no sessions in this one** | removed from this organization only; account intact; still in the other organization; coaching relationships **in the other organization survive** |
-| **Remove from organization** | a member **with at least one past or future session in this organization** | refused with a **409** `user_has_coaching_history` naming the relationship and session counts |
-| **Remove from organization** | a **coach who has coachees** in this organization | refused with the same 409 once any of those relationships carries a session |
+| **Remove from organization** | a member **with at least one past or future session in this organization** | **succeeds.** Their sessions, notes and actions survive; removal revokes their access to them rather than destroying them |
+| **Remove from organization** | a **coach who has coachees** in this organization | succeeds. Coach and coachee are treated identically; reassigning the coachees afterwards is the intended flow |
 | **Delete** | a member of two organizations | refused with a **409** and a message telling you to remove them from the organization instead |
 | **Remove from organization** | the organization's only remaining Admin | refused with a clear last-admin message |
 | Either action | yourself | not offered / refused |
@@ -143,9 +143,16 @@ its coaching relationships explicitly. "Remove" must not cascade.
 
 **The session cases must be exercised against a real database.** `coaching_sessions`
 references `coaching_relationships` with NO ACTION while goals and session series
-cascade, so a mock-backed test cannot reach either behavior. Before the guard
-existed this path returned a 503. Use an account that has actually had a session
-scheduled, not a freshly created one.
+cascade, so a mock-backed test cannot reach either behavior. Use an account that
+has actually had a session scheduled, not a freshly created one.
+
+> [!NOTE]
+> The two session rows above previously expected a **409 `user_has_coaching_history`**.
+> That error variant was deleted with rs#377 and can no longer be emitted; removal
+> now succeeds for a member with history, and revokes their access instead. Verify
+> revocation with an API client, not the UI: the organization disappearing from the
+> switcher was already true before rs#377, while access remained wide open. See
+> `remove_org_member_revokes_access_manual_testing.md`.
 
 ## 6. Scenario E: regression checks on pre-existing flows
 
