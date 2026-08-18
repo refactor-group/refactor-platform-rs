@@ -12,7 +12,7 @@ use entity_api::user_lookup_attempt;
 use sea_orm::{DatabaseConnection, TransactionTrait};
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
-use crate::{user_lookup_attempts, Id};
+use crate::Id;
 
 /// Lookups one requester may make per window before being refused.
 ///

@@ -1,4 +1,5 @@
 use super::*;
+use crate::user_lookup_attempts;
 use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
 fn attempt(requester_user_id: Id) -> user_lookup_attempts::Model {
