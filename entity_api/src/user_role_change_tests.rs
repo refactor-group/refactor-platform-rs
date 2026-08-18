@@ -153,15 +153,10 @@ fn column_row(column: &str, value: Id) -> std::collections::BTreeMap<String, Val
 }
 
 /// Every statement the mock saw, in order.
-fn logged_sql(db: sea_orm::DatabaseConnection) -> Vec<String> {
+fn logged_statements(db: sea_orm::DatabaseConnection) -> Vec<Statement> {
     db.into_transaction_log()
         .iter()
-        .flat_map(|transaction| {
-            transaction
-                .statements()
-                .iter()
-                .map(|statement| statement.sql.clone())
-        })
+        .flat_map(|transaction| transaction.statements().to_vec())
         .collect()
 }
 
@@ -204,21 +199,29 @@ async fn was_member_is_false_for_a_requester_who_administers_nothing() -> Result
 
     assert!(!was_member_of_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
 
-    let sql = logged_sql(db);
+    let statements = logged_statements(db);
     assert_eq!(
-        sql.len(),
+        statements.len(),
         2,
-        "the probe must run even with no administered organizations: {sql:?}"
+        "the probe must run even with no administered organizations: {statements:?}"
+    );
+    // The role is a bound parameter, not SQL text: an enum filter renders as
+    // `CAST($n AS "role")`, so the column belongs in the SQL check and the value in
+    // the values check.
+    assert!(
+        statements[0].sql.contains(r#""user_roles"."role""#),
+        "the first query must filter on the role column: {}",
+        statements[0].sql
     );
     assert!(
-        sql[0].contains("user_roles") && sql[0].contains("admin"),
-        "the first query must restrict the requester to Admin roles: {}",
-        sql[0]
+        bound_values(&statements[0]).contains(&Value::String(Some(Box::new("admin".to_string())))),
+        "and must restrict the requester to Admin: {:?}",
+        bound_values(&statements[0])
     );
     assert!(
-        sql[1].contains("user_role_changes"),
+        statements[1].sql.contains("user_role_changes"),
         "the second must probe the audit table: {}",
-        sql[1]
+        statements[1].sql
     );
 
     Ok(())
@@ -248,8 +251,8 @@ async fn was_member_always_issues_exactly_two_queries() -> Result<(), Error> {
     // Compared to each other, not to a literal: a future change that alters both
     // uniformly is fine, one that makes the count depend on the answer is not.
     assert_eq!(
-        logged_sql(hit).len(),
-        logged_sql(miss).len(),
+        logged_statements(hit).len(),
+        logged_statements(miss).len(),
         "query count must not depend on whether the target was ever a member"
     );
 
