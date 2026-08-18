@@ -258,6 +258,17 @@ impl Error {
                 });
                 (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
             }
+            EntityErrorKind::UserLookupRateLimited => {
+                warn!(
+                    "EntityErrorKind::UserLookupRateLimited: Responding with 429 Too Many Requests. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 429,
+                    "error": "user_lookup_rate_limited",
+                    "message": "Too many user lookups. Please wait before trying again.",
+                });
+                (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+            }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
                     "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"

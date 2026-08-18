@@ -39,6 +39,7 @@ pub mod tiptap_metrics;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user;
+pub mod user_lookup_attempt;
 pub mod user_role;
 pub mod user_role_change;
 

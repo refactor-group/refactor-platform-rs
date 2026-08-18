@@ -41,6 +41,27 @@ pub(crate) async fn record(
     Ok(())
 }
 
+/// Whether `target_user_id` has any recorded role change in an organization that
+/// `requester_id` administers. A prior grant or removal is proof the caller's
+/// organization already knew this person, so surfacing them discloses nothing new.
+///
+/// Always issues exactly two queries, mirroring
+/// `user_role::shares_administered_organization`, so a caller composing the two
+/// keeps a constant query count. That is an anti-enumeration timing property, not
+/// a performance note.
+///
+/// Only sees changes recorded since `user_role_changes` was created (2026-08-16).
+/// Earlier removals left no row and are invisible here.
+// Names kept for the later implementation; `todo!()` leaves them unread.
+#[allow(unused_variables)]
+pub async fn was_member_of_administered_organization(
+    db: &impl ConnectionTrait,
+    requester_id: Id,
+    target_user_id: Id,
+) -> Result<bool, Error> {
+    todo!()
+}
+
 #[cfg(test)]
 #[cfg(feature = "mock")]
 #[path = "user_role_change_tests.rs"]
