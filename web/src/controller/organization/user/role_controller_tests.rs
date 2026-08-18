@@ -1,8 +1,10 @@
-use crate::controller::organization::user_controller::{attach_role, remove_role};
+use crate::controller::organization::user::role_controller::{
+    attach_role, read_role, remove_role, update_role,
+};
 use crate::middleware::auth::require_auth;
 use crate::AppState;
 use axum::http::StatusCode;
-use axum::{body::Body, extract::Request, middleware::from_fn, routing::post, Router};
+use axum::{body::Body, extract::Request, middleware::from_fn, routing::get, Router};
 use axum_login::{
     tower_sessions::{MemoryStore, SessionManagerLayer},
     AuthManagerLayerBuilder,
@@ -120,7 +122,10 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
             Router::new()
                 .route(
                     "/organizations/:organization_id/users/:user_id/role",
-                    post(attach_role).delete(remove_role),
+                    get(read_role)
+                        .post(attach_role)
+                        .put(update_role)
+                        .delete(remove_role),
                 )
                 .route_layer(from_fn(require_auth)),
         )
@@ -163,6 +168,21 @@ async fn role_request(
         .body(body)
         .unwrap();
     app.clone().oneshot(request).await.unwrap()
+}
+
+/// The envelope's `status_code` and its `data`, so a test can assert what came back
+/// rather than only that something did. [`api_status_code`] discards the payload,
+/// which makes a status assertion easy to mistake for a content one.
+async fn api_response(response: axum::response::Response) -> (u64, serde_json::Value) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let status = body["status_code"]
+        .as_u64()
+        .expect("envelope must carry a status_code");
+    (status, body["data"].clone())
 }
 
 /// The `status_code` the `ApiResponse` envelope reports. Success responses in this
@@ -445,6 +465,7 @@ async fn remove_returns_204_when_the_member_still_has_sessions() {
     // handler runs the membership lookup and the one delete regardless.
     let db = Arc::new(
         mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![requester()]])
             .append_query_results([vec![test_role(
                 target_id,
                 Some(organization_id),
@@ -486,6 +507,7 @@ async fn remove_returns_204_for_another_member() {
 
     let db = Arc::new(
         mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![requester()]])
             .append_query_results([vec![test_role(
                 target_id,
                 Some(organization_id),
@@ -562,4 +584,471 @@ async fn attach_forwards_the_requested_coach_to_the_domain_call() {
         StatusCode::OK,
         "a coach in the body must reach the domain call, not be dropped"
     );
+}
+
+/// The queries the PUT runs after the extractor, for a change allowed to proceed.
+/// The domain layer re-reads the organization; the extractor's own lookup is a
+/// separate statement and does not stand in for it.
+fn mock_update_through_domain(
+    mock: MockDatabase,
+    actor_id: Id,
+    organization_id: Id,
+    target_id: Id,
+    current: users::Role,
+    requested: users::Role,
+) -> MockDatabase {
+    let updated = test_role(target_id, Some(organization_id), requested.clone());
+
+    mock.append_query_results([vec![test_organization(organization_id)]])
+        .append_query_results([vec![requester()]])
+        .append_query_results([vec![test_role(
+            target_id,
+            Some(organization_id),
+            current.clone(),
+        )]])
+        .append_query_results([vec![updated.clone()]])
+        .append_query_results([vec![role_change_row(
+            actor_id,
+            target_id,
+            organization_id,
+            Some(current),
+            Some(requested),
+        )]])
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            requester(),
+            Some(updated),
+        )]])
+}
+
+/// I-1. The refusal must happen in the extractor, before the handler body runs at
+/// all. The mock is primed only for the extractor, so a handler that reached its own
+/// logic would run past the end of the queue and surface as a 500: a 403 here can
+/// only mean the target user was never looked up.
+#[tokio::test]
+async fn update_refuses_a_plain_member_before_reaching_the_handler_body() {
+    let organization_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::User);
+
+    let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "PUT",
+        organization_id,
+        Id::new_v4(),
+        Body::from(r#"{"role":"Admin"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+/// The read is gated the same way as the write. A plain member of the organization
+/// can already see who its admins are through the member list, so this endpoint is
+/// stricter than that one, deliberately.
+#[tokio::test]
+async fn read_refuses_a_plain_member_before_reaching_the_handler_body() {
+    let organization_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::User);
+
+    let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "GET",
+        organization_id,
+        Id::new_v4(),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+/// I-2. An unauthorized caller must learn nothing about the target, so the four
+/// combinations of caller and target are compared against each other rather than
+/// asserted one by one. A future change that makes any single branch answer 404
+/// fails on the comparison, which is the property worth defending: were a real user
+/// id to answer differently from a fabricated one, any org admin could enumerate
+/// platform user ids.
+#[tokio::test]
+async fn unauthorized_callers_cannot_tell_whether_the_target_exists() {
+    let organization_id = Id::new_v4();
+    let real_target = Id::new_v4();
+    let fabricated_target = Id::nil();
+
+    let mut statuses = Vec::new();
+    for caller_role in [
+        users::Role::User,
+        users::Role::Admin, // of a different organization
+    ] {
+        let caller_organization = match caller_role {
+            users::Role::Admin => Id::new_v4(),
+            _ => organization_id,
+        };
+
+        for target in [real_target, fabricated_target] {
+            let user = requester();
+            let role = test_role(user.id, Some(caller_organization), caller_role.clone());
+            let db =
+                Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
+
+            let app = build_app(db);
+            let cookie = login_cookie(&app).await;
+
+            let response = role_request(
+                &app,
+                &cookie,
+                "PUT",
+                organization_id,
+                target,
+                Body::from(r#"{"role":"Admin"}"#),
+            )
+            .await;
+
+            statuses.push(response.status());
+        }
+    }
+
+    assert_eq!(
+        statuses,
+        vec![StatusCode::FORBIDDEN; 4],
+        "every unauthorized caller must get the same refusal regardless of target"
+    );
+}
+
+/// I-4. An authorized admin still must not learn whether a user exists outside their
+/// organization. Both cases resolve to one org-scoped lookup that finds nothing, so
+/// the test's real job is to fail if a second check is ever added that answers them
+/// differently.
+#[tokio::test]
+async fn an_admin_cannot_tell_a_missing_user_from_one_in_another_organization() {
+    let organization_id = Id::new_v4();
+
+    async fn status_and_body(organization_id: Id, target: Id) -> (StatusCode, Vec<u8>) {
+        let user = requester();
+        let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+        let db = Arc::new(
+            mock_through_extractor(&user, &role, organization_id)
+                .append_query_results([Vec::<user_roles::Model>::new()])
+                .into_connection(),
+        );
+
+        let app = build_app(db);
+        let cookie = login_cookie(&app).await;
+
+        let response =
+            role_request(&app, &cookie, "GET", organization_id, target, Body::empty()).await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, body)
+    }
+
+    let missing = status_and_body(organization_id, Id::nil()).await;
+    let elsewhere = status_and_body(organization_id, Id::new_v4()).await;
+
+    assert_eq!(
+        missing, elsewhere,
+        "a missing user and an invisible one must be byte-identical"
+    );
+    assert_eq!(
+        missing.0,
+        StatusCode::NOT_FOUND,
+        "and the shared answer must be the uninformative 404"
+    );
+}
+
+/// I-5. Self-targeting is refused in both directions. Blocking only demotion would
+/// leave an admin able to re-grant themselves a role they had lost, and the
+/// direction of a change is not what makes self-targeting wrong.
+#[tokio::test]
+async fn update_refuses_a_requester_targeting_themselves_in_either_direction() {
+    for requested in ["Admin", "User"] {
+        let organization_id = Id::new_v4();
+        let user = requester();
+        let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+        let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
+
+        let app = build_app(db);
+        let cookie = login_cookie(&app).await;
+
+        let response = role_request(
+            &app,
+            &cookie,
+            "PUT",
+            organization_id,
+            user.id,
+            Body::from(format!(r#"{{"role":"{requested}"}}"#)),
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "self-targeting must be refused when requesting {requested}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn read_returns_the_members_role() {
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(
+        mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![test_role(
+                target_id,
+                Some(organization_id),
+                users::Role::Admin,
+            )]])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "GET",
+        organization_id,
+        target_id,
+        Body::empty(),
+    )
+    .await;
+
+    let (status, membership) = api_response(response).await;
+    assert_eq!(status, 200);
+    // The status alone would pass for any membership the handler happened to return.
+    assert_eq!(membership["role"], "Admin");
+    assert_eq!(membership["user_id"], target_id.to_string());
+    assert_eq!(membership["organization_id"], organization_id.to_string());
+}
+
+#[tokio::test]
+async fn update_promotes_a_member_to_admin() {
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(
+        mock_update_through_domain(
+            mock_through_extractor(&user, &role, organization_id),
+            user.id,
+            organization_id,
+            target_id,
+            users::Role::User,
+            users::Role::Admin,
+        )
+        .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "PUT",
+        organization_id,
+        target_id,
+        Body::from(r#"{"role":"Admin"}"#),
+    )
+    .await;
+
+    let (status, user) = api_response(response).await;
+    assert_eq!(status, 200);
+    // Emptying the roles array passes a status-only assertion, so the payload has to
+    // be read: the granted role is what the caller renders the row from.
+    assert_eq!(user["roles"][0]["role"], "Admin");
+    assert_eq!(
+        user["roles"][0]["organization_id"],
+        organization_id.to_string()
+    );
+}
+
+/// A super admin holds no membership in the organization, so this path proves the
+/// endpoint does not require the caller to be a member of the organization they are
+/// administering.
+#[tokio::test]
+async fn update_promotes_a_member_for_a_super_admin() {
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, None, users::Role::SuperAdmin);
+
+    let db = Arc::new(
+        mock_update_through_domain(
+            mock_through_extractor(&user, &role, organization_id),
+            user.id,
+            organization_id,
+            target_id,
+            users::Role::User,
+            users::Role::Admin,
+        )
+        .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "PUT",
+        organization_id,
+        target_id,
+        Body::from(r#"{"role":"Admin"}"#),
+    )
+    .await;
+
+    let (status, user) = api_response(response).await;
+    assert_eq!(status, 200);
+    assert_eq!(user["roles"][0]["role"], "Admin");
+}
+
+/// The 422 must come from the handler, before the domain call. The mock is primed
+/// only for the extractor, so a request that reached the domain layer would surface
+/// as a 500 instead.
+#[tokio::test]
+async fn update_rejects_a_super_admin_role_in_the_body() {
+    let organization_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "PUT",
+        organization_id,
+        Id::new_v4(),
+        Body::from(r#"{"role":"SuperAdmin"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn update_rejects_an_unknown_field_in_the_body() {
+    let organization_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "PUT",
+        organization_id,
+        Id::new_v4(),
+        Body::from(format!(
+            r#"{{"role":"Admin","coach_id":"{}"}}"#,
+            Id::new_v4()
+        )),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Reaching the last-admin guard proves the whole stack is wired: the 409 is raised
+/// in the domain layer, under the lock, and survives the mapping out to HTTP.
+#[tokio::test]
+async fn update_returns_409_when_demoting_the_only_admin() {
+    let organization_id = Id::new_v4();
+    let target_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(
+        mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![test_organization(organization_id)]])
+            .append_query_results([vec![requester()]])
+            .append_query_results([vec![test_role(
+                target_id,
+                Some(organization_id),
+                users::Role::Admin,
+            )]])
+            .append_query_results([vec![test_role(
+                target_id,
+                Some(organization_id),
+                users::Role::Admin,
+            )]])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "PUT",
+        organization_id,
+        target_id,
+        Body::from(r#"{"role":"User"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+/// A member who holds no role in this organization is a 404, not a silent creation:
+/// `POST` creates memberships, `PUT` changes them.
+#[tokio::test]
+async fn update_returns_404_for_a_user_who_holds_no_role_here() {
+    let organization_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+
+    let db = Arc::new(
+        mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![test_organization(organization_id)]])
+            .append_query_results([vec![requester()]])
+            .append_query_results([Vec::<user_roles::Model>::new()])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = role_request(
+        &app,
+        &cookie,
+        "PUT",
+        organization_id,
+        Id::new_v4(),
+        Body::from(r#"{"role":"Admin"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

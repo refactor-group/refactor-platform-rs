@@ -136,8 +136,46 @@ fn audit_insert(statements: &[sea_orm::Statement]) -> (usize, Vec<sea_orm::Value
     (index, values)
 }
 
-fn role_value(role: Role) -> sea_orm::Value {
-    sea_orm::Value::String(Some(Box::new(role.to_string())))
+/// The transition the audit insert actually bound, read by column position.
+///
+/// `values.contains(...)` cannot tell a transition from its reverse, because both
+/// roles appear either way. `record` takes `previous_role` and `new_role` as
+/// adjacent `Option<Role>` arguments, so transposing them compiles silently and the
+/// database accepts it. Reading each value out of its own column is what pins the
+/// direction, which is the only fact an audit row exists to record.
+///
+/// A column omitted from the insert reads the same as one bound to NULL. Both
+/// columns are nullable with no default, so the two are behaviorally identical here.
+fn audited_transition(statement: &sea_orm::Statement) -> (Option<String>, Option<String>) {
+    let columns: Vec<&str> = statement
+        .sql
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(list, _)| {
+            list.split(',')
+                .map(|c| c.trim().trim_matches('"'))
+                .collect()
+        })
+        .expect("an insert names its columns");
+
+    let values = statement
+        .values
+        .as_ref()
+        .map(|values| values.0.clone())
+        .unwrap_or_default();
+
+    let bound = |column: &str| {
+        columns
+            .iter()
+            .position(|candidate| *candidate == column)
+            .and_then(|index| values.get(index))
+            .and_then(|value| match value {
+                sea_orm::Value::String(role) => role.as_ref().map(|role| role.to_string()),
+                _ => None,
+            })
+    };
+
+    (bound("previous_role"), bound("new_role"))
 }
 
 #[tokio::test]
@@ -240,9 +278,13 @@ async fn attach_to_organization_audits_the_grant_inside_the_transaction() -> Res
 
     assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
     assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(user_id)))));
-    // A first grant: no previous role, the granted role as the new one.
-    assert!(values.contains(&sea_orm::Value::String(None)));
-    assert!(values.contains(&role_value(Role::Admin)));
+    // A first grant leaves previous_role null. Asserted per column: as a set, this
+    // is indistinguishable from a removal of Admin.
+    assert_eq!(
+        audited_transition(&statements[index]),
+        (None, Some("admin".to_string())),
+        "a grant must record no previous role and the granted one as new"
+    );
 
     Ok(())
 }
@@ -426,6 +468,7 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
     let user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .into_connection();
@@ -462,6 +505,7 @@ async fn remove_from_organization_succeeds_when_the_member_has_sessions() -> Res
     // The member's coaching history no longer factors into removal, so the
     // membership lookup and the one delete are all that run.
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_exec_results([exec_result(1)])
         .append_query_results([[role_change(
@@ -494,6 +538,7 @@ async fn remove_from_organization_deletes_only_the_target_org_membership() -> Re
     let actor_user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
         .append_exec_results([exec_result(1)])
         .append_query_results([[role_change(
@@ -531,6 +576,7 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
     let actor_user_id = Id::new_v4();
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .append_query_results([vec![
             user_role_model(user_id, Some(organization_id), Role::Admin),
@@ -551,7 +597,7 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
     assert_eq!(removed, Role::Admin);
 
     let statements = full_statements(db);
-    let (index, values) = audit_insert(&statements);
+    let (index, _) = audit_insert(&statements);
 
     let delete = statements
         .iter()
@@ -563,9 +609,13 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
         .expect("the removal must commit");
     assert!(delete < index && index < commit);
 
-    assert!(values.contains(&role_value(Role::Admin)));
-    // A removal leaves no new role.
-    assert!(values.contains(&sea_orm::Value::String(None)));
+    // A removal leaves new_role null. As a set this is identical to a first grant
+    // of Admin, so the direction has to be read per column.
+    assert_eq!(
+        audited_transition(&statements[index]),
+        (Some("admin".to_string()), None),
+        "a removal must record the lost role as previous and no new one"
+    );
 
     Ok(())
 }
@@ -963,4 +1013,526 @@ async fn attach_to_organization_rejects_a_missing_organization() {
         !statements(db).iter().any(|sql| sql.contains("INSERT")),
         "a missing organization must not insert a role"
     );
+}
+
+/// Every query `update_role_in_organization` runs, in order, for a change that is
+/// allowed to proceed. `admins` is the locked admin count the demote guard reads,
+/// and is left empty on the promote and no-op paths where the guard never runs.
+fn mock_update_role(
+    actor_user_id: Id,
+    organization_id: Id,
+    user_id: Id,
+    current: Role,
+    requested: Role,
+    admins: Vec<user_roles::Model>,
+    returned_roles: Vec<user_roles::Model>,
+) -> MockDatabase {
+    let mut updated = user_role_model(user_id, Some(organization_id), current.clone());
+    updated.role = requested.clone();
+
+    let mut mock = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(
+            user_id,
+            Some(organization_id),
+            current.clone(),
+        )]]);
+
+    if !admins.is_empty() {
+        mock = mock.append_query_results([admins]);
+    }
+
+    if current != requested {
+        mock = mock
+            .append_query_results([[updated]])
+            .append_query_results([[role_change(
+                actor_user_id,
+                user_id,
+                organization_id,
+                Some(current),
+                Some(requested),
+            )]]);
+    }
+
+    mock.append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([returned_roles
+        .into_iter()
+        .map(|role| (user(user_id, vec![]), Some(role)))
+        .collect::<Vec<_>>()])
+}
+
+/// I-6. Read committed lets two concurrent demotions both observe two admins and
+/// both commit, leaving the organization with none. The guard is only sound if the
+/// rows it counts are locked, so the mechanism is asserted rather than the outcome:
+/// swapping the locking count for a plain `COUNT(*)` still looks correct
+/// single-threaded, and a `MockDatabase` cannot interleave transactions to catch it.
+#[tokio::test]
+async fn update_role_in_organization_refuses_to_demote_the_last_admin() {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
+        .into_connection();
+
+    let error = update_role_in_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+        Role::User,
+    )
+    .await
+    .expect_err("expected last-admin rejection");
+
+    assert_eq!(
+        entity_error_kind(&error),
+        &EntityErrorKind::LastOrganizationAdmin { organization_id }
+    );
+
+    let sql = statements(db);
+    assert!(
+        !sql.iter().any(|sql| sql.starts_with("UPDATE")),
+        "the last admin must not be demoted: {sql:?}"
+    );
+    assert!(
+        sql.iter()
+            .any(|sql| sql.contains("user_roles") && sql.contains("FOR UPDATE")),
+        "the admin count must lock the rows it counts: {sql:?}"
+    );
+}
+
+/// The same call that is refused above succeeds once a second admin exists, so the
+/// guard is reading live state rather than refusing every demotion.
+#[tokio::test]
+async fn update_role_in_organization_demotes_an_admin_when_another_remains() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
+    let demoted = user_role_model(user_id, Some(organization_id), Role::User);
+
+    let db = mock_update_role(
+        actor_user_id,
+        organization_id,
+        user_id,
+        Role::Admin,
+        Role::User,
+        vec![
+            user_role_model(user_id, Some(organization_id), Role::Admin),
+            user_role_model(Id::new_v4(), Some(organization_id), Role::Admin),
+        ],
+        vec![demoted],
+    )
+    .into_connection();
+
+    let (previous_role, updated) = update_role_in_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+        Role::User,
+    )
+    .await?;
+
+    assert_eq!(updated.roles.len(), 1);
+    assert_eq!(updated.roles[0].role, Role::User);
+    // The role held beforehand, not the one just written. Returning the new role
+    // would make the caller's log line claim a transition that never happened.
+    assert_eq!(previous_role, Role::Admin);
+
+    Ok(())
+}
+
+/// I-8. A role change that is not recorded is indistinguishable from one that never
+/// happened, and `user_roles` keeps no history of its own. The audit row has to land
+/// inside the transaction, or a partial failure leaves the grant without its trail.
+#[tokio::test]
+async fn update_role_in_organization_audits_the_transition_inside_the_transaction(
+) -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
+    let promoted = user_role_model(user_id, Some(organization_id), Role::Admin);
+
+    let db = mock_update_role(
+        actor_user_id,
+        organization_id,
+        user_id,
+        Role::User,
+        Role::Admin,
+        vec![],
+        vec![promoted],
+    )
+    .into_connection();
+
+    update_role_in_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+        Role::Admin,
+    )
+    .await?;
+
+    let statements = full_statements(db);
+    let (index, values) = audit_insert(&statements);
+
+    let update = statements
+        .iter()
+        .position(|statement| statement.sql.starts_with("UPDATE"))
+        .expect("the membership must be updated");
+    let commit = statements
+        .iter()
+        .position(|statement| statement.sql == "COMMIT")
+        .expect("the change must commit");
+    assert!(
+        update < index && index < commit,
+        "the audit row must follow the update and precede the commit"
+    );
+
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(user_id)))));
+    // Read per column, not as a set: a transposition leaves both roles present and
+    // would record this promotion as a demotion.
+    assert_eq!(
+        audited_transition(&statements[index]),
+        (Some("user".to_string()), Some("admin".to_string())),
+        "the audit row must record User becoming Admin, in that direction"
+    );
+
+    Ok(())
+}
+
+/// I-7. The response must not disclose which other organizations the target belongs
+/// to. That is the same fact the `UserBelongsToMultipleOrganizations` handler
+/// deliberately withholds, so dropping the scoping call would leak it here instead.
+#[tokio::test]
+async fn update_role_in_organization_scopes_the_returned_roles_to_the_target_org(
+) -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
+    let in_scope = user_role_model(user_id, Some(organization_id), Role::Admin);
+    let elsewhere = user_role_model(user_id, Some(Id::new_v4()), Role::Admin);
+
+    let db = mock_update_role(
+        actor_user_id,
+        organization_id,
+        user_id,
+        Role::User,
+        Role::Admin,
+        vec![],
+        vec![in_scope.clone(), elsewhere],
+    )
+    .into_connection();
+
+    let (_previous_role, updated) = update_role_in_organization(
+        &db,
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+        Role::Admin,
+    )
+    .await?;
+
+    let organizations: Vec<Option<Id>> = updated
+        .roles
+        .iter()
+        .map(|role| role.organization_id)
+        .collect();
+    assert_eq!(
+        organizations,
+        vec![Some(organization_id)],
+        "only the path organization may appear in the response"
+    );
+
+    Ok(())
+}
+
+/// Setting the role a member already holds is a no-op, not an error, so the endpoint
+/// is idempotent. It must also be free: an UPDATE would move `updated_at` and write
+/// an audit row for a change that did not happen, and the admin lock would be taken
+/// for nothing.
+#[tokio::test]
+async fn update_role_in_organization_writes_nothing_when_the_role_is_unchanged() -> Result<(), Error>
+{
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let unchanged = user_role_model(user_id, Some(organization_id), Role::Admin);
+
+    let db = mock_update_role(
+        Id::new_v4(),
+        organization_id,
+        user_id,
+        Role::Admin,
+        Role::Admin,
+        vec![],
+        vec![unchanged],
+    )
+    .into_connection();
+
+    let (previous_role, _) = update_role_in_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+        Role::Admin,
+    )
+    .await?;
+
+    // Equal to the requested role, which is how a caller tells a no-op from a real
+    // change without a second read, and therefore whether to log one.
+    assert_eq!(previous_role, Role::Admin);
+
+    let sql = statements(db);
+    assert!(
+        !sql.iter().any(|sql| sql.starts_with("UPDATE")),
+        "an unchanged role must not be rewritten: {sql:?}"
+    );
+    assert!(
+        !sql.iter().any(|sql| sql.contains("user_role_changes")),
+        "an unchanged role is not a change to audit: {sql:?}"
+    );
+    assert!(
+        !sql.iter()
+            .any(|sql| sql.contains("user_roles") && sql.contains("FOR UPDATE")),
+        "a no-op must not lock the organization's admin rows: {sql:?}"
+    );
+
+    Ok(())
+}
+
+/// A member the caller may not see and a member who does not exist are the same
+/// empty lookup, so both answer `NotFound` and the endpoint cannot be used to probe
+/// which one it was.
+#[tokio::test]
+async fn update_role_in_organization_rejects_a_non_member() {
+    let organization_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results([[user(Id::new_v4(), vec![])]])
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .into_connection();
+
+    let error = update_role_in_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        Id::new_v4(),
+        Role::Admin,
+    )
+    .await
+    .expect_err("expected a not-found rejection");
+
+    assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
+    assert!(
+        !statements(db).iter().any(|sql| sql.starts_with("UPDATE")),
+        "a non-member must not be written"
+    );
+}
+
+/// Archiving is a write freeze. The refusal has to come before the membership is
+/// read, or an archived organization still discloses who belongs to it.
+#[tokio::test]
+async fn update_role_in_organization_rejects_an_archived_organization() {
+    let organization_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, true)]])
+        .into_connection();
+
+    let error = update_role_in_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        Id::new_v4(),
+        Role::Admin,
+    )
+    .await
+    .expect_err("expected an archived-organization rejection");
+
+    assert_eq!(
+        entity_error_kind(&error),
+        &EntityErrorKind::OrganizationArchived
+    );
+    assert!(
+        !statements(db).iter().any(|sql| sql.contains("user_roles")),
+        "the freeze must be checked before the membership is read"
+    );
+}
+
+/// C-3. A concurrent account deletion locks the users row and then removes every
+/// membership. Without taking the same lock this path can read a membership that is
+/// gone by the time it writes, and a zero-row update surfaces as a 500 rather than
+/// the 404 the caller should get.
+#[tokio::test]
+async fn update_role_in_organization_locks_the_user_row() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let promoted = user_role_model(user_id, Some(organization_id), Role::Admin);
+
+    let db = mock_update_role(
+        Id::new_v4(),
+        organization_id,
+        user_id,
+        Role::User,
+        Role::Admin,
+        vec![],
+        vec![promoted],
+    )
+    .into_connection();
+
+    update_role_in_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+        Role::Admin,
+    )
+    .await?;
+
+    let sql = statements(db);
+    let lock = sql
+        .iter()
+        .position(|sql| sql.contains(r#""users""#) && sql.contains("FOR UPDATE"))
+        .expect("the user row must be locked");
+    let membership = sql
+        .iter()
+        .position(|sql| sql.starts_with("SELECT") && sql.contains("user_roles"))
+        .expect("the membership must be read");
+    // Taken before the membership is read, and before the admin count, so the lock
+    // order matches account deletion's users-then-user_roles and cannot deadlock.
+    assert!(lock < membership, "the lock must precede the read: {sql:?}");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn find_role_in_organization_returns_the_membership() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
+        .into_connection();
+
+    let membership = find_role_in_organization(&db, organization_id, user_id).await?;
+
+    assert_eq!(membership.role, Role::Admin);
+    assert_eq!(membership.organization_id, Some(organization_id));
+
+    Ok(())
+}
+
+/// The read is scoped to one organization, so a user with roles elsewhere is
+/// reported as absent here rather than having those roles disclosed.
+#[tokio::test]
+async fn find_role_in_organization_rejects_a_non_member() {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .into_connection();
+
+    let error = find_role_in_organization(&db, Id::new_v4(), Id::new_v4())
+        .await
+        .expect_err("expected a not-found rejection");
+
+    assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
+}
+
+/// The demote guard matches Admin to User specifically, not "any role but Admin".
+/// Widened, a rejected `SuperAdmin` write against a sole admin answers with a
+/// conflict about admin counts instead of the rejection, and takes a lock on every
+/// admin row on its way to the wrong error. Unreachable over HTTP, where the
+/// controller refuses `SuperAdmin` first, but this function is public.
+#[tokio::test]
+async fn update_role_in_organization_does_not_treat_super_admin_as_a_demotion() {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+
+    // A sole admin IS primed, so a widened guard reaches a real LastOrganizationAdmin
+    // rather than running off the end of the queue. Without the row the guard errors
+    // on an exhausted mock, the kind assertion below passes for the wrong reason, and
+    // only the lock assertion does any work.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
+        .into_connection();
+
+    let error = update_role_in_organization(
+        &db,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+        Role::SuperAdmin,
+    )
+    .await
+    .expect_err("SuperAdmin must be refused");
+
+    // The positive kind, not the absence of the wrong one: `ValidationError` maps to
+    // `Conflict`, and asserting it pins that the rejection is what came back rather
+    // than merely that a conflict about admin counts did not.
+    assert!(
+        matches!(entity_error_kind(&error), EntityErrorKind::Conflict { .. }),
+        "SuperAdmin must be refused as invalid, not as an admin-count conflict: {error:?}"
+    );
+
+    let sql = statements(db);
+    assert!(
+        !sql.iter()
+            .any(|sql| sql.contains("user_roles") && sql.contains("FOR UPDATE")),
+        "the admin rows must not be locked on the way to a rejection: {sql:?}"
+    );
+}
+
+/// Removal is the path that had no lock of its own: a member holding `User` skips
+/// the admin count, so nothing serialized it against a concurrent role change. The
+/// change would then be deleted out from under its own audit row, and the removal
+/// would record the role it happened to read rather than the one destroyed.
+///
+/// Every writer of `user_roles` now takes the users row first, so the order is
+/// uniform (users, then the membership, then the admin rows) and no two of them can
+/// acquire the same rows in opposite orders.
+#[tokio::test]
+async fn remove_from_organization_locks_the_user_row_before_reading_the_membership(
+) -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let actor_user_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_exec_results([exec_result(1)])
+        .append_query_results([[role_change(
+            actor_user_id,
+            user_id,
+            organization_id,
+            Some(Role::User),
+            None,
+        )]])
+        .into_connection();
+
+    remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
+
+    let sql = statements(db);
+    let lock = sql
+        .iter()
+        .position(|sql| sql.contains(r#""users""#) && sql.contains("FOR UPDATE"))
+        .expect("the user row must be locked");
+    let membership = sql
+        .iter()
+        .position(|sql| sql.starts_with("SELECT") && sql.contains("user_roles"))
+        .expect("the membership must be read");
+    assert!(
+        lock < membership,
+        "the lock must precede the read it protects: {sql:?}"
+    );
+
+    Ok(())
 }

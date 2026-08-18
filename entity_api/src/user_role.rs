@@ -17,7 +17,7 @@ use entity::user_roles::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, DbErr,
-    EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set, SqlErr,
+    EntityTrait, IntoActiveModel, PaginatorTrait, QueryFilter, QuerySelect, Set, SqlErr,
 };
 
 /// Partial unique index holding a user to one role per organization.
@@ -77,6 +77,21 @@ fn map_duplicate_role(err: DbErr, organization_id: Id) -> Error {
     Error::from(err)
 }
 
+/// Reports a membership that vanished mid-update as missing rather than as a fault.
+///
+/// A zero-row update means a concurrent removal deleted the row between the caller's
+/// read and this write. `RecordNotUpdated` has no domain mapping and would surface as
+/// a 500, but the row is genuinely gone, so not-found is the truthful answer.
+fn map_vanished_membership(err: DbErr) -> Error {
+    match err {
+        DbErr::RecordNotUpdated => Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        },
+        other => Error::from(other),
+    }
+}
+
 /// Whether a database error is a violation of the one-role-per-organization index.
 ///
 /// Split out from [`map_duplicate_role`] so the constraint-name policy is
@@ -95,8 +110,9 @@ fn is_one_role_per_organization_violation(sql_err: Option<SqlErr>) -> bool {
 ///
 /// Returns `ValidationError` for `Role::SuperAdmin`, which is a global role and
 /// cannot be scoped to an organization. Rejected before any query runs so the
-/// caller gets a 422 rather than the 500 the entity-level `before_save` guard
-/// would produce.
+/// entity-level `before_save` guard cannot turn it into a 500. `ValidationError`
+/// renders as 409; the 422 a client sees comes from the controller's own check,
+/// which runs first.
 ///
 /// Returns `UserAlreadyInOrganization` when the user already holds a role there,
 /// including when two concurrent grants race past the application-level check.
@@ -141,6 +157,60 @@ pub async fn create(
     .await?;
 
     Ok(granted)
+}
+
+/// Changes the role on a membership the caller has already read, and audits it.
+///
+/// Flips the role via `ActiveModel` + `Set(...)`, so the write binds as the
+/// Postgres enum. Takes the row rather than its keys so the audited
+/// `previous_role` comes from the record being changed.
+///
+/// # Errors
+///
+/// Returns `ValidationError` for `Role::SuperAdmin`, which is a global role and
+/// cannot be scoped to an organization. Rejected before any query runs, mirroring
+/// [`create`], so the entity-level `before_save` guard cannot turn it into a 500.
+/// `ValidationError` renders as 409; the 422 a client sees comes from the
+/// controller's own check, which runs first.
+///
+/// Returns `RecordNotFound` when the membership was removed between the caller's
+/// read and this write.
+pub async fn update_role(
+    db: &DatabaseTransaction,
+    actor: Actor,
+    membership: &Model,
+    role: Role,
+) -> Result<Model, Error> {
+    if role == Role::SuperAdmin {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "SuperAdmin cannot be granted within an organization.".into(),
+                details: None,
+            },
+        });
+    }
+
+    let updated = ActiveModel {
+        role: Set(role.clone()),
+        updated_at: Set(Utc::now().into()),
+        ..membership.clone().into_active_model()
+    }
+    .update(db)
+    .await
+    .map_err(map_vanished_membership)?;
+
+    crate::user_role_change::record(
+        db,
+        Some(actor),
+        membership.user_id,
+        membership.organization_id,
+        Some(membership.role.clone()),
+        Some(role),
+    )
+    .await?;
+
+    Ok(updated)
 }
 
 /// Finds the role a user holds in a specific organization, if any.

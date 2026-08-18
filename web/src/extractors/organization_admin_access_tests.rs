@@ -200,3 +200,53 @@ async fn extractor_returns_404_when_the_organization_does_not_exist() {
         StatusCode::NOT_FOUND
     );
 }
+
+/// I-3. A caller who does not administer the organization must not learn whether it
+/// exists. The two statuses are compared rather than asserted separately, because
+/// the property is that they are indistinguishable, not that either has a
+/// particular value.
+///
+/// Before the existence lookup was moved after the admin check, an absent
+/// organization answered 404 and an existing one 403, so any authenticated user
+/// could enumerate organization ids.
+#[tokio::test]
+async fn extractor_does_not_disclose_organization_existence_to_a_non_admin() {
+    let organization_id = Id::new_v4();
+    let member = || test_role(Id::new_v4(), Some(organization_id), users::Role::User);
+
+    let against_existing = request_status(organization_id, member(), true).await;
+    let against_absent = request_status(organization_id, member(), false).await;
+
+    assert_eq!(
+        against_existing, against_absent,
+        "a non-admin must get the same answer whether the organization exists"
+    );
+    assert_eq!(
+        against_existing,
+        StatusCode::FORBIDDEN,
+        "and that answer must be the refusal, not the disclosure"
+    );
+}
+
+/// The companion to the case above: a foreign-org admin is equally a non-admin
+/// here, and is the likelier attacker since they hold real admin rights somewhere.
+#[tokio::test]
+async fn extractor_does_not_disclose_organization_existence_to_a_foreign_admin() {
+    let organization_id = Id::new_v4();
+    let foreign_admin = || test_role(Id::new_v4(), Some(Id::new_v4()), users::Role::Admin);
+
+    let against_existing = request_status(organization_id, foreign_admin(), true).await;
+    let against_absent = request_status(organization_id, foreign_admin(), false).await;
+
+    assert_eq!(
+        against_existing, against_absent,
+        "a foreign-org admin must get the same answer whether the organization exists"
+    );
+    // Anchored, or a regression to 404 on both branches would satisfy the equality
+    // above while disclosing exactly what this test exists to hide.
+    assert_eq!(
+        against_existing,
+        StatusCode::FORBIDDEN,
+        "and that answer must be the refusal, not the disclosure"
+    );
+}

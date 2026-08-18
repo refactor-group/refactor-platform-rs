@@ -99,8 +99,10 @@ use utoipa_rapidoc::RapiDoc;
             organization::user_controller::create,
             organization::user_controller::resend_invite,
             organization::user_controller::delete,
-            organization::user_controller::attach_role,
-            organization::user_controller::remove_role,
+            organization::user::role_controller::attach_role,
+            organization::user::role_controller::read_role,
+            organization::user::role_controller::update_role,
+            organization::user::role_controller::remove_role,
             goal_controller::create,
             goal_controller::update,
             goal_controller::index,
@@ -157,6 +159,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::goal::SortField,
                 crate::params::sort::SortOrder,
                 crate::params::user::AttachRoleParams,
+                crate::params::user::UpdateRoleParams,
                 crate::params::user::CompleteSetupParams,
                 crate::params::user::CreateMemberParams,
                 crate::params::user::LookupParams,
@@ -183,6 +186,8 @@ use utoipa_rapidoc::RapiDoc;
                 domain::status::Status,
                 domain::user::Credentials,
                 domain::user_role::UserLookupResult,
+                domain::user_roles::Model,
+                domain::users::Role,
                 domain::users::Model,
                 params::coaching_session::UpdateParams,
                 params::user::UpdateParams,
@@ -194,9 +199,13 @@ use utoipa_rapidoc::RapiDoc;
             (name = "refactor_platform", description = "Refactor Coaching & Mentorship API")
         )
     )]
-struct ApiDoc;
+pub(crate) struct ApiDoc;
 
 struct SecurityAddon;
+
+#[cfg(test)]
+#[path = "router_tests.rs"]
+mod tests;
 
 // Defines our cookie session based authentication requirement for gaining access to our
 // API endpoints for OpenAPI.
@@ -502,8 +511,10 @@ fn organization_user_routes(app_state: AppState) -> Router {
         )
         .route(
             "/organizations/:organization_id/users/:user_id/role",
-            post(organization::user_controller::attach_role)
-                .delete(organization::user_controller::remove_role),
+            get(organization::user::role_controller::read_role)
+                .post(organization::user::role_controller::attach_role)
+                .put(organization::user::role_controller::update_role)
+                .delete(organization::user::role_controller::remove_role),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

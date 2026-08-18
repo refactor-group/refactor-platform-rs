@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 
 use crate::error::Error;
 use crate::user::{new_coaching_relationship, Role};
-use crate::{users, Actor, Id};
+use crate::{user_roles, users, Actor, Id};
 
 /// Minimal projection of a user returned by an email lookup.
 ///
@@ -112,6 +112,13 @@ pub async fn remove_from_organization(
 ) -> Result<Role, Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
+    // Every writer of `user_roles` takes this first, so they serialize here rather
+    // than racing. Removing a member the caller read as `User` otherwise takes no
+    // lock at all, and a concurrent role change would then be deleted out from under
+    // its own audit row, which would record the role this transaction happened to
+    // read instead of the one destroyed.
+    user::find_by_id_for_update(&txn, user_id).await?;
+
     let Some(membership) =
         user_role::find_by_user_and_organization(&txn, user_id, organization_id).await?
     else {
@@ -137,6 +144,106 @@ pub async fn remove_from_organization(
     txn.commit().await.map_err(EntityApiError::from)?;
 
     Ok(membership.role)
+}
+
+/// Reads the role a user holds in one organization.
+///
+/// A single read, so it takes any connection rather than opening a transaction.
+///
+/// # Errors
+///
+/// `NotFound` when the user holds no role in the organization.
+pub async fn find_role_in_organization(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    user_id: Id,
+) -> Result<user_roles::Model, Error> {
+    let Some(membership) =
+        user_role::find_by_user_and_organization(db, user_id, organization_id).await?
+    else {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        }
+        .into());
+    };
+
+    Ok(membership)
+}
+
+/// Changes the role a user holds in one organization, in place.
+///
+/// Atomic where a remove-then-add pair is not, and it leaves the user's coaching
+/// relationships and sessions untouched.
+///
+/// Returns the role held beforehand alongside the updated user, so callers can log
+/// the transition and can tell a real change from a no-op without a second read.
+///
+/// # Errors
+///
+/// `NotFound` when the organization or the user does not exist, or the user holds
+/// no role in the organization; `OrganizationArchived` when the organization is
+/// archived; `LastOrganizationAdmin` when demoting the organization's only admin;
+/// `ValidationError` for `Role::SuperAdmin`.
+pub async fn update_role_in_organization(
+    db: &DatabaseConnection,
+    actor: Actor,
+    organization_id: Id,
+    user_id: Id,
+    role: Role,
+) -> Result<(Role, users::Model), Error> {
+    let txn = db.begin().await.map_err(EntityApiError::from)?;
+
+    let organization = organization::find_by_id(&txn, organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::OrganizationArchived,
+        }
+        .into());
+    }
+
+    // Taken before the membership read and before the admin count, so this path
+    // locks users then user_roles like account deletion does and cannot deadlock.
+    user::find_by_id_for_update(&txn, user_id).await?;
+
+    let Some(membership) =
+        user_role::find_by_user_and_organization(&txn, user_id, organization_id).await?
+    else {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        }
+        .into());
+    };
+
+    // Only Admin to User can leave the organization unadministrable, and the count
+    // locks every admin row, so nothing else may pay for it. Matching SuperAdmin here
+    // too would answer a rejected role with a conflict about admin counts.
+    if membership.role == Role::Admin
+        && role == Role::User
+        && user_role::count_admins_in_organization(&txn, organization_id).await? <= 1
+    {
+        return Err(EntityApiError {
+            source: None,
+            error_kind: EntityApiErrorKind::LastOrganizationAdmin { organization_id },
+        }
+        .into());
+    }
+
+    // Setting the role a member already holds is an idempotent no-op: no update,
+    // no audit row, and the same response as a real change.
+    let previous_role = membership.role.clone();
+    if previous_role != role {
+        user_role::update_role(&txn, actor, &membership, role).await?;
+    }
+
+    let mut updated_user = user::find_by_id(&txn, user_id).await?;
+    user::scope_roles_to_organization(&mut updated_user, organization_id);
+
+    txn.commit().await.map_err(EntityApiError::from)?;
+
+    Ok((previous_role, updated_user))
 }
 
 /// Looks up a user by email, limited to what the requester is allowed to see.

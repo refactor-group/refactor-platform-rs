@@ -27,6 +27,16 @@ pub struct AttachRoleParams {
     pub coach_id: Option<Id>,
 }
 
+/// Body for changing the role a user holds within an organization.
+///
+/// Unknown fields are rejected so a client sending `coach_id` is refused rather
+/// than led to believe a coach was assigned; this endpoint changes a role only.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRoleParams {
+    pub role: Role,
+}
+
 /// Body for creating a new member of an organization.
 ///
 /// The user fields are flattened so a client that sends only them still

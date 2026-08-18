@@ -211,7 +211,7 @@ impl Error {
                 let body = serde_json::json!({
                     "status_code": 409,
                     "error": "last_organization_admin",
-                    "message": "This user is the only admin of this organization. Assign another admin before removing them.",
+                    "message": "This user is the only admin of this organization. Grant another member the Admin role first.",
                     "details": { "organization_id": organization_id },
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()

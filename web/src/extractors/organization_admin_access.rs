@@ -37,6 +37,22 @@ where
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, &state).await?;
 
+        // Evaluated in memory against the roles `AuthenticatedUser` already hydrated,
+        // so this extractor costs no extra connection.
+        let is_organization_admin = authenticated_user.roles.iter().any(|role| {
+            (role.role == users::Role::SuperAdmin && role.organization_id.is_none())
+                || (role.role == users::Role::Admin
+                    && role.organization_id == Some(organization_id))
+        });
+
+        // Precedes the lookup so a non-admin cannot probe which organizations exist.
+        if !is_organization_admin {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "You are not an administrator of the organization".to_string(),
+            ));
+        }
+
         let organization = OrganizationApi::find_by_id(state.db_conn_ref(), organization_id)
             .await
             .map_err(|err| {
@@ -60,24 +76,9 @@ where
                 }
             })?;
 
-        // Evaluated in memory against the roles `AuthenticatedUser` already hydrated,
-        // so this extractor costs no extra connection.
-        let is_organization_admin = authenticated_user.roles.iter().any(|role| {
-            (role.role == users::Role::SuperAdmin && role.organization_id.is_none())
-                || (role.role == users::Role::Admin
-                    && role.organization_id == Some(organization_id))
-        });
-
-        is_organization_admin
-            .then_some(OrganizationAdminAccess {
-                organization,
-                authenticated_user,
-            })
-            .ok_or_else(|| {
-                (
-                    StatusCode::FORBIDDEN,
-                    "You are not an administrator of the organization".to_string(),
-                )
-            })
+        Ok(OrganizationAdminAccess {
+            organization,
+            authenticated_user,
+        })
     }
 }
