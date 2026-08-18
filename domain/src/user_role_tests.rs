@@ -770,10 +770,14 @@ async fn can_administer_user_is_false_for_a_plain_member() -> Result<(), Error> 
     );
 
     // The requester holds no Admin role, so the admin-scoped query finds nothing.
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .into_connection();
+    // Four results, not two: on the false path the membership probe is followed by
+    // the audit probe, since neither a current membership nor a prior one exists.
+    let db = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()]),
+    )
+    .into_connection();
 
     assert!(!can_administer_user(&db, &requester, Id::new_v4()).await?);
 
