@@ -6,9 +6,11 @@
 //! endpoint that answers questions about people, and it is the prerequisite if the
 //! reach is ever widened.
 
+use chrono::{Duration, Utc};
+use entity_api::user_lookup_attempt;
 use sea_orm::DatabaseConnection;
 
-use crate::error::Error;
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::Id;
 
 /// Lookups one requester may make per window before being refused.
@@ -30,11 +32,26 @@ pub const WINDOW_HOURS: i64 = 1;
 ///
 /// `UserLookupRateLimited` when the requester has already made
 /// `MAX_ATTEMPTS_PER_WINDOW` lookups within `WINDOW_HOURS`.
-// Names kept for the later implementation; todo!() leaves them unread.
-#[allow(unused_variables)]
 pub async fn record_attempt_or_reject(
     db: &DatabaseConnection,
     requester_id: Id,
 ) -> Result<(), Error> {
-    todo!()
+    let attempts = user_lookup_attempt::count_since(
+        db,
+        requester_id,
+        (Utc::now() - Duration::hours(WINDOW_HOURS)).into(),
+    )
+    .await?;
+
+    if attempts >= MAX_ATTEMPTS_PER_WINDOW {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::UserLookupRateLimited,
+            )),
+        });
+    }
+
+    user_lookup_attempt::record(db, requester_id).await?;
+    Ok(())
 }
