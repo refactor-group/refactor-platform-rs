@@ -39,3 +39,8 @@ pub async fn delete_older_than(
 ) -> Result<u64, Error> {
     todo!()
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "user_lookup_attempt_tests.rs"]
+mod tests;

@@ -5,6 +5,17 @@ use crate::{coaching_relationships, organizations, user_roles};
 use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult};
 use std::collections::BTreeMap;
 
+/// The two empty rows `was_member_of_administered_organization` reads when the target
+/// has no history in an organization the requester administers.
+///
+/// Appended even on paths where the answer is already known, because the predicate is
+/// unconditional: the constant query count is what keeps response timing from
+/// separating "no such email" from "not yours to see".
+fn no_membership_history(mock: MockDatabase) -> MockDatabase {
+    mock.append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+}
+
 fn organization(id: Id, archived: bool) -> organizations::Model {
     let now = chrono::Utc::now();
     organizations::Model {
@@ -624,16 +635,18 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
 async fn lookup_by_email_scoped_returns_empty_for_an_unknown_email() -> Result<(), Error> {
     let requester = user(Id::new_v4(), vec![]);
 
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .into_connection();
+    let db = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()]),
+    )
+    .into_connection();
 
     let results = lookup_by_email_scoped(&db, &requester, " nobody@test.com ").await?;
 
     assert!(results.is_empty());
-    assert_eq!(statements(db).len(), 3);
+    assert_eq!(statements(db).len(), 5);
 
     Ok(())
 }
@@ -643,21 +656,23 @@ async fn lookup_by_email_scoped_hides_a_user_outside_the_requesters_scope() -> R
     let requester = user(Id::new_v4(), vec![]);
     let target_id = Id::new_v4();
 
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            user(target_id, vec![]),
-            None,
-        )]])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .into_connection();
+    let db = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                user(target_id, vec![]),
+                None,
+            )]])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()]),
+    )
+    .into_connection();
 
     let results = lookup_by_email_scoped(&db, &requester, "member@test.com").await?;
 
     assert!(results.is_empty());
     // Same query count as the unknown-email path: the scope check runs either way,
     // so response timing cannot separate "no such email" from "not yours to see".
-    assert_eq!(statements(db).len(), 3);
+    assert_eq!(statements(db).len(), 5);
 
     Ok(())
 }
@@ -671,14 +686,16 @@ async fn lookup_by_email_scoped_returns_the_user_for_a_super_admin() -> Result<(
     );
     let target_id = Id::new_v4();
 
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            user(target_id, vec![]),
-            None,
-        )]])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
-        .into_connection();
+    let db = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                user(target_id, vec![]),
+                None,
+            )]])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()]),
+    )
+    .into_connection();
 
     let results = lookup_by_email_scoped(&db, &requester, "member@test.com").await?;
 
@@ -692,7 +709,7 @@ async fn lookup_by_email_scoped_returns_the_user_for_a_super_admin() -> Result<(
         }]
     );
     // The scope check still ran, even though the super-admin answer was already known.
-    assert_eq!(statements(db).len(), 3);
+    assert_eq!(statements(db).len(), 5);
 
     Ok(())
 }
@@ -951,14 +968,16 @@ async fn lookup_by_email_scoped_returns_the_user_for_an_admin_of_a_shared_organi
     );
     let target_id = Id::new_v4();
 
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            user(target_id, vec![]),
-            None,
-        )]])
-        .append_query_results([vec![id_row("organization_id", organization_id)]])
-        .append_query_results([vec![id_row("id", Id::new_v4())]])
-        .into_connection();
+    let db = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                user(target_id, vec![]),
+                None,
+            )]])
+            .append_query_results([vec![id_row("organization_id", organization_id)]])
+            .append_query_results([vec![id_row("id", Id::new_v4())]]),
+    )
+    .into_connection();
 
     let results = lookup_by_email_scoped(&db, &requester, "member@test.com").await?;
 
@@ -1532,6 +1551,198 @@ async fn remove_from_organization_locks_the_user_row_before_reading_the_membersh
     assert!(
         lock < membership,
         "the lock must precede the read it protects: {sql:?}"
+    );
+
+    Ok(())
+}
+
+/// The driving case: an admin removed this member, so they share no organization
+/// now, but the audit table remembers that they did. Without this the admin sees
+/// "no user found" and the obvious next move is to create the account fresh, which
+/// collides on the email.
+#[tokio::test]
+async fn lookup_by_email_scoped_finds_a_former_member_of_an_administered_organization(
+) -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(
+            requester_id,
+            Some(organization_id),
+            Role::Admin,
+        )],
+    );
+    let target_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            user(target_id, vec![]),
+            None,
+        )]])
+        // Shares nothing today: the membership was removed.
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        // But the audit table has a change for them in that organization.
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([vec![id_row("id", Id::new_v4())]])
+        .into_connection();
+
+    let results = lookup_by_email_scoped(&db, &requester, "member@test.com").await?;
+
+    assert_eq!(results.len(), 1, "a former member must be findable again");
+    assert_eq!(results[0].id, target_id);
+
+    Ok(())
+}
+
+/// I-C2. The security argument for this reach is that the caller learns only about
+/// their own organization's history. A target with history somewhere the caller does
+/// not administer must stay invisible, or the change silently becomes the general
+/// exact-email match that was rejected for conceding an existence oracle.
+#[tokio::test]
+async fn lookup_by_email_scoped_ignores_history_in_an_unadministered_organization(
+) -> Result<(), Error> {
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(
+            requester_id,
+            Some(Id::new_v4()),
+            Role::Admin,
+        )],
+    );
+
+    let db = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                user(Id::new_v4(), vec![]),
+                None,
+            )]])
+            .append_query_results([vec![id_row("organization_id", Id::new_v4())]])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()]),
+    )
+    .into_connection();
+
+    let results = lookup_by_email_scoped(&db, &requester, "member@test.com").await?;
+
+    assert!(
+        results.is_empty(),
+        "history outside the caller's organizations must not surface the user"
+    );
+
+    Ok(())
+}
+
+/// I-C3. Response timing must not separate "no such email" from "not yours to see"
+/// from "yours to see". The individual tests each pin a literal count, which catches
+/// one path drifting; this compares the paths to each other, which catches the case
+/// where someone updates all the literals together to make a short-circuit pass.
+#[tokio::test]
+async fn lookup_by_email_scoped_issues_the_same_query_count_on_every_path() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(
+            requester_id,
+            Some(organization_id),
+            Role::Admin,
+        )],
+    );
+
+    // Unknown email: no user row at all.
+    let unknown = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()]),
+    )
+    .into_connection();
+    lookup_by_email_scoped(&unknown, &requester, "nobody@test.com").await?;
+
+    // Found but invisible: exists, no shared organization, no history here.
+    let invisible = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                user(Id::new_v4(), vec![]),
+                None,
+            )]])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()]),
+    )
+    .into_connection();
+    lookup_by_email_scoped(&invisible, &requester, "hidden@test.com").await?;
+
+    // Found and visible, via a current shared organization.
+    let visible = no_membership_history(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+                user(Id::new_v4(), vec![]),
+                None,
+            )]])
+            .append_query_results([vec![id_row("organization_id", organization_id)]])
+            .append_query_results([vec![id_row("id", Id::new_v4())]]),
+    )
+    .into_connection();
+    lookup_by_email_scoped(&visible, &requester, "member@test.com").await?;
+
+    let counts = [
+        statements(unknown).len(),
+        statements(invisible).len(),
+        statements(visible).len(),
+    ];
+    assert!(
+        counts.iter().all(|count| *count == counts[0]),
+        "query count must not depend on the answer: {counts:?}"
+    );
+
+    Ok(())
+}
+
+/// I-C1. The lookup and the attach gate must widen together. Widening only the
+/// lookup is worse than the status quo: the admin finds the user in the picker and
+/// then gets a 404 attaching them, which reads as a broken feature rather than a
+/// refusal. This pins the pair so a future change cannot move one without the other.
+#[tokio::test]
+async fn a_former_member_found_by_lookup_can_also_be_administered() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let requester_id = Id::new_v4();
+    let requester = user(
+        requester_id,
+        vec![user_role_model(
+            requester_id,
+            Some(organization_id),
+            Role::Admin,
+        )],
+    );
+    let target_id = Id::new_v4();
+
+    let found = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            user(target_id, vec![]),
+            None,
+        )]])
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([vec![id_row("id", Id::new_v4())]])
+        .into_connection();
+
+    let results = lookup_by_email_scoped(&found, &requester, "member@test.com").await?;
+    assert_eq!(results.len(), 1, "precondition: the lookup finds them");
+
+    // Same target, same requester, same history. The attach gate must agree.
+    let administerable = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .append_query_results([vec![id_row("organization_id", organization_id)]])
+        .append_query_results([vec![id_row("id", Id::new_v4())]])
+        .into_connection();
+
+    assert!(
+        can_administer_user(&administerable, &requester, target_id).await?,
+        "a user the lookup surfaces must also be one the caller may attach"
     );
 
     Ok(())

@@ -146,3 +146,112 @@ async fn record_accepts_a_null_actor() {
 
     assert!(bound_values(&only_statement(db)).contains(&Value::Uuid(None)));
 }
+
+/// A single-column mock row, for the id-only administered-organization select.
+fn column_row(column: &str, value: Id) -> std::collections::BTreeMap<String, Value> {
+    std::collections::BTreeMap::from([(column.to_string(), value.into())])
+}
+
+/// Every statement the mock saw, in order.
+fn logged_sql(db: sea_orm::DatabaseConnection) -> Vec<String> {
+    db.into_transaction_log()
+        .iter()
+        .flat_map(|transaction| {
+            transaction
+                .statements()
+                .iter()
+                .map(|statement| statement.sql.clone())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn was_member_reports_a_prior_change_in_an_administered_organization() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![column_row("organization_id", organization_id)]])
+        .append_query_results([vec![column_row("id", Id::new_v4())]])
+        .into_connection();
+
+    assert!(was_member_of_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
+
+    Ok(())
+}
+
+/// I-C2. The whole security argument for this reach is that the caller learns only
+/// about their own organization's history. History elsewhere must stay invisible, or
+/// the predicate quietly becomes the general exact-email match that was rejected.
+#[tokio::test]
+async fn was_member_ignores_history_outside_the_administered_organizations() -> Result<(), Error> {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![column_row("organization_id", Id::new_v4())]])
+        .append_query_results([Vec::<std::collections::BTreeMap<String, Value>>::new()])
+        .into_connection();
+
+    assert!(!was_member_of_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
+
+    Ok(())
+}
+
+/// A requester who administers nothing can match nothing, and the probe still runs.
+#[tokio::test]
+async fn was_member_is_false_for_a_requester_who_administers_nothing() -> Result<(), Error> {
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<std::collections::BTreeMap<String, Value>>::new()])
+        .append_query_results([Vec::<std::collections::BTreeMap<String, Value>>::new()])
+        .into_connection();
+
+    assert!(!was_member_of_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
+
+    let sql = logged_sql(db);
+    assert_eq!(
+        sql.len(),
+        2,
+        "the probe must run even with no administered organizations: {sql:?}"
+    );
+    assert!(
+        sql[0].contains("user_roles") && sql[0].contains("admin"),
+        "the first query must restrict the requester to Admin roles: {}",
+        sql[0]
+    );
+    assert!(
+        sql[1].contains("user_role_changes"),
+        "the second must probe the audit table: {}",
+        sql[1]
+    );
+
+    Ok(())
+}
+
+/// I-C3, this half. The caller composes this with
+/// `user_role::shares_administered_organization` and promises a constant query count
+/// so response timing cannot be used to enumerate accounts. That only holds if this
+/// predicate is unconditional: an early return on an empty organization set would
+/// make the count depend on the answer.
+#[tokio::test]
+async fn was_member_always_issues_exactly_two_queries() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+
+    let hit = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![column_row("organization_id", organization_id)]])
+        .append_query_results([vec![column_row("id", Id::new_v4())]])
+        .into_connection();
+    was_member_of_administered_organization(&hit, Id::new_v4(), Id::new_v4()).await?;
+
+    let miss = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<std::collections::BTreeMap<String, Value>>::new()])
+        .append_query_results([Vec::<std::collections::BTreeMap<String, Value>>::new()])
+        .into_connection();
+    was_member_of_administered_organization(&miss, Id::new_v4(), Id::new_v4()).await?;
+
+    // Compared to each other, not to a literal: a future change that alters both
+    // uniformly is fine, one that makes the count depend on the answer is not.
+    assert_eq!(
+        logged_sql(hit).len(),
+        logged_sql(miss).len(),
+        "query count must not depend on whether the target was ever a member"
+    );
+
+    Ok(())
+}
