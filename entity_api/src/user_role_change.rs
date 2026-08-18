@@ -2,9 +2,12 @@ use super::error::Error;
 
 use super::actor::Actor;
 use entity::roles::Role;
-use entity::user_role_changes::ActiveModel;
+use entity::user_role_changes::{ActiveModel, Column, Entity};
+use entity::user_roles;
 use entity::Id;
-use sea_orm::{ActiveModelTrait, ConnectionTrait, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QuerySelect, Set,
+};
 
 /// Appends one audit row describing a role change.
 ///
@@ -52,14 +55,35 @@ pub(crate) async fn record(
 ///
 /// Only sees changes recorded since `user_role_changes` was created (2026-08-16).
 /// Earlier removals left no row and are invisible here.
-// Names kept for the later implementation; `todo!()` leaves them unread.
-#[allow(unused_variables)]
 pub async fn was_member_of_administered_organization(
     db: &impl ConnectionTrait,
     requester_id: Id,
     target_user_id: Id,
 ) -> Result<bool, Error> {
-    todo!()
+    let administered_organization_ids = user_roles::Entity::find()
+        .select_only()
+        .column(user_roles::Column::OrganizationId)
+        .filter(user_roles::Column::UserId.eq(requester_id))
+        .filter(user_roles::Column::Role.eq(Role::Admin))
+        .filter(user_roles::Column::OrganizationId.is_not_null())
+        .into_tuple::<Option<Id>>()
+        .all(db)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<Id>>();
+
+    // Runs even when the set is empty: an empty `is_in` matches nothing, and skipping
+    // the probe would make the query count reveal the answer.
+    Ok(Entity::find()
+        .select_only()
+        .column(Column::Id)
+        .filter(Column::TargetUserId.eq(target_user_id))
+        .filter(Column::OrganizationId.is_in(administered_organization_ids))
+        .into_tuple::<Id>()
+        .one(db)
+        .await?
+        .is_some())
 }
 
 #[cfg(test)]
