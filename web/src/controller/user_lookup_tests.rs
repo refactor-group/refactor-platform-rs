@@ -174,13 +174,15 @@ async fn lookup_returns_200_with_one_element_for_a_super_admin() {
     let role = test_role(user.id, None, users::Role::SuperAdmin);
     let target_id = Id::new_v4();
 
-    let mock = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            target(target_id),
-            None,
-        )]]);
+    let mock = under_the_rate_limit(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]]),
+    )
+    .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+        target(target_id),
+        None,
+    )]]);
 
     let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
@@ -195,10 +197,12 @@ async fn lookup_returns_200_and_an_empty_array_when_nothing_matches() {
     let user = requester();
     let role = test_role(user.id, None, users::Role::SuperAdmin);
 
-    let mock = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]]);
+    let mock = under_the_rate_limit(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]]),
+    )
+    .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]]);
 
     let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
@@ -216,13 +220,15 @@ async fn lookup_result_carries_only_the_narrow_dto_fields() {
     let role = test_role(user.id, None, users::Role::SuperAdmin);
     let target_id = Id::new_v4();
 
-    let mock = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            target(target_id),
-            None,
-        )]]);
+    let mock = under_the_rate_limit(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]]),
+    )
+    .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+        target(target_id),
+        None,
+    )]]);
 
     let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
