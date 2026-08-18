@@ -11,7 +11,7 @@ use chrono::Utc;
 use domain::user::Backend;
 use domain::{user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, MockDatabase, Value};
+use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Value};
 use service::config::Config;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -139,14 +139,20 @@ fn empty_scope_probe(mock: MockDatabase) -> MockDatabase {
     })
 }
 
-/// The rate-limit gate ahead of the lookup: a count, then the recorded attempt.
+/// The rate-limit gate ahead of the lookup: an advisory lock, a count, then the
+/// recorded attempt. The lock is an exec, which `MockDatabase` queues separately
+/// from query results.
 fn under_the_rate_limit(mock: MockDatabase) -> MockDatabase {
-    mock.append_query_results([Vec::<domain::user_lookup_attempts::Model>::new()])
-        .append_query_results([[domain::user_lookup_attempts::Model {
-            id: Id::new_v4(),
-            requester_user_id: Id::new_v4(),
-            attempted_at: chrono::Utc::now().into(),
-        }]])
+    mock.append_exec_results([MockExecResult {
+        last_insert_id: 0,
+        rows_affected: 0,
+    }])
+    .append_query_results([Vec::<domain::user_lookup_attempts::Model>::new()])
+    .append_query_results([[domain::user_lookup_attempts::Model {
+        id: Id::new_v4(),
+        requester_user_id: Id::new_v4(),
+        attempted_at: chrono::Utc::now().into(),
+    }]])
 }
 
 #[tokio::test]
@@ -272,6 +278,10 @@ async fn lookup_returns_429_over_the_rate_limit_without_looking_anything_up() {
         MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results([vec![(user.clone(), role.clone())]])
             .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
             .append_query_results([over_the_limit])
             .into_connection(),
     );
