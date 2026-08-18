@@ -233,11 +233,38 @@ Run these as the same org admin. Each proves the reach did not widen too far.
 | G5 | Search the email of a user who has never been in any organization you administer | **"No user found with that email."** |
 | G6 | Search a completely nonexistent email | the identical message |
 | G7 | Search a user who was removed from an organization you do **not** administer | **"No user found with that email."** |
+| G7b | Immediately repeat G7 **as a SuperAdmin** | **found.** The control. |
 
 G7 is the security case. Being a former member *somewhere* must not surface
 someone; only former membership in **your** organization does. If G7 finds them,
 the reach has become a platform-wide email oracle and that is a defect worth
 stopping the release for.
+
+> [!NOTE]
+> **G7 needs setup, and a seeded database will not have it.** The audit table
+> only carries history for organizations that have actually seen a removal. If no
+> removal has ever happened outside the organizations you administer, G7 passes
+> vacuously and proves nothing. Create the history first, as a SuperAdmin:
+>
+> ```sh
+> # as root, remove a member from an organization the G-actor does NOT administer
+> curl -s -X DELETE -b /tmp/root.jar -H "$VER" \
+>   "$BASE/organizations/$OTHER_ORG/users/$SOMEONE/role"
+> ```
+>
+> Then confirm the row landed before running G7:
+>
+> ```sql
+> SELECT o.name, previous_role, new_role
+> FROM refactor_platform.user_role_changes urc
+> JOIN refactor_platform.organizations o ON o.id = urc.organization_id
+> WHERE urc.target_user_id = '<someone>';
+> ```
+>
+> **G7b is not optional.** A zero result is equally consistent with correct
+> scoping, a typo'd email, a missing fixture, or a lookup broken for everyone.
+> Only a SuperAdmin finding the same email in the same breath makes the zero mean
+> what G7 claims it means. Restore the membership afterwards.
 
 ### Known limitation, not a defect
 

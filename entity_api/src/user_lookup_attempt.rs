@@ -4,11 +4,6 @@ use entity::user_lookup_attempts::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{entity::prelude::*, ConnectionTrait, DbBackend, Set, Statement};
 
-/// Append one attempt row for `requester_user_id`.
-///
-/// Keyed by the requester rather than by the search term, so the limit caps how
-/// fast one account can probe, whatever it probes for. `attempted_at` is left to
-/// the column default so the database clock stamps it.
 /// Serializes rate-limit checks for one requester within the caller's transaction.
 ///
 /// Counting and then inserting is two statements, so without this two concurrent
@@ -30,6 +25,19 @@ pub async fn lock_requester(
     Ok(())
 }
 
+/// Append one attempt row for `requester_user_id`.
+///
+/// Keyed by the requester rather than by the search term, so the limit caps how
+/// fast one account can probe, whatever it probes for. `attempted_at` is left to
+/// the column default so the database clock stamps it: application clocks skew
+/// across instances, and the window would then disagree between them.
+///
+/// Callers counting against the cap must hold [`lock_requester`] first, or a burst
+/// of concurrent lookups all read a count below the cap before any row lands.
+///
+/// # Errors
+///
+/// Propagates any database error from the insert.
 pub async fn record(db: &impl ConnectionTrait, requester_user_id: Id) -> Result<Model, Error> {
     Ok(ActiveModel {
         requester_user_id: Set(requester_user_id),
