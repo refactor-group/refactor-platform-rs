@@ -37,9 +37,16 @@ async fn record_inserts_an_attempt_for_the_requester() -> Result<(), Error> {
 
     // `attempted_at` is left to the column default so the database clock stamps it.
     // Binding an application clock would let instances disagree about the window.
+    //
+    // Checked against the column list alone: SeaORM appends a RETURNING clause naming
+    // every column so it can read the Model back, so matching the whole statement
+    // would be unsatisfiable no matter what the insert wrote.
     let sql = logged_sql(db);
+    let columns = sql[0]
+        .split_once(" RETURNING ")
+        .map_or(sql[0].as_str(), |(inserted, _)| inserted);
     assert!(
-        !sql[0].contains("attempted_at"),
+        !columns.contains("attempted_at"),
         "attempted_at must be left to the column default: {}",
         sql[0]
     );
