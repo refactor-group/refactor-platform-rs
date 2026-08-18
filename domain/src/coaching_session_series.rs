@@ -418,6 +418,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            reminder_sent_for_start: None,
         };
 
         let expected_sessions = vec![
@@ -545,6 +546,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            reminder_sent_for_start: None,
         };
 
         // Two future sessions, neither hydrated, neither carrying a Tiptap doc.
@@ -668,6 +670,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            reminder_sent_for_start: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -750,6 +753,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            reminder_sent_for_start: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -833,6 +837,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            reminder_sent_for_start: None,
         };
 
         let future_sessions = vec![
@@ -900,6 +905,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            reminder_sent_for_start: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)

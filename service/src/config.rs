@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 use utoipa::IntoParams;
 
 type APiVersionList = [&'static str; 1];
@@ -38,6 +39,13 @@ const DEFAULT_PASSWORD_RESET_EMAIL_URL_PATH: &str = "/reset-password/{token}";
 
 /// Default URL path for added-to-organization email links.
 const DEFAULT_ADDED_TO_ORGANIZATION_EMAIL_URL_PATH: &str = "/dashboard";
+
+/// Default lead time, in hours, between a reminder email and the session it announces.
+const DEFAULT_SESSION_REMINDER_LEAD_HOURS: u64 = 24;
+
+/// Default interval, in minutes, between reminder-sweep ticks. Divides the lead time
+/// finely enough that a reminder lands well inside its hour, without polling hot.
+const DEFAULT_SESSION_REMINDER_POLL_MINUTES: u64 = 15;
 
 /// Default expiry duration for password reset tokens (30 minutes in seconds).
 /// Shorter than the setup-token default because the user is actively at their
@@ -80,6 +88,9 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "password_reset_token_expiry_seconds",
     "added_to_organization_email_template_id",
     "added_to_organization_email_url_path",
+    "session_reminder_email_template_id",
+    "session_reminder_lead_hours",
+    "session_reminder_poll_minutes",
     "interface",
     "port",
     "log_level_filter",
@@ -336,6 +347,16 @@ pub struct Config {
     /// Use `{organization_id}` as a placeholder for the organization ID.
     #[arg(long, env, default_value = DEFAULT_ADDED_TO_ORGANIZATION_EMAIL_URL_PATH)]
     added_to_organization_email_url_path: String,
+    /// The Resend template ID for upcoming-session reminder emails.
+    /// Leaving this unset disables the reminder job entirely.
+    #[arg(long, env)]
+    session_reminder_email_template_id: Option<String>,
+    /// How far ahead of a session its reminder email goes out, in hours.
+    #[arg(long, env, default_value_t = DEFAULT_SESSION_REMINDER_LEAD_HOURS)]
+    session_reminder_lead_hours: u64,
+    /// How often the reminder sweep looks for sessions that have come due, in minutes.
+    #[arg(long, env, default_value_t = DEFAULT_SESSION_REMINDER_POLL_MINUTES)]
+    session_reminder_poll_minutes: u64,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -674,6 +695,18 @@ impl Config {
             "added_to_organization_email_url_path",
             &self.added_to_organization_email_url_path,
         );
+        self.debug_field(
+            "session_reminder_email_template_id",
+            &self.session_reminder_email_template_id,
+        );
+        self.debug_field(
+            "session_reminder_lead_hours",
+            &self.session_reminder_lead_hours,
+        );
+        self.debug_field(
+            "session_reminder_poll_minutes",
+            &self.session_reminder_poll_minutes,
+        );
     }
 
     pub fn api_version(&self) -> &str {
@@ -838,6 +871,30 @@ impl Config {
         } else {
             &self.added_to_organization_email_url_path
         }
+    }
+
+    /// Returns the Resend template ID for upcoming-session reminder emails, if configured.
+    ///
+    /// `None` disables the reminder sweep: with no template there is nothing to send,
+    /// and a job that wakes only to log a config error every few minutes is noise.
+    pub fn session_reminder_email_template_id(&self) -> Option<String> {
+        self.session_reminder_email_template_id.clone()
+    }
+
+    /// Returns how far ahead of a session its reminder is sent.
+    ///
+    /// Clamped to at least one hour: a lead shorter than the poll interval would let
+    /// sessions slip past the window between two ticks and never be reminded.
+    pub fn session_reminder_lead(&self) -> Duration {
+        Duration::from_secs(self.session_reminder_lead_hours.max(1) * 60 * 60)
+    }
+
+    /// Returns how often the reminder sweep runs.
+    ///
+    /// Clamped to at least one minute so a misconfigured `0` cannot spin the job into
+    /// a tight loop against the database.
+    pub fn session_reminder_poll_interval(&self) -> Duration {
+        Duration::from_secs(self.session_reminder_poll_minutes.max(1) * 60)
     }
 
     pub fn runtime_env(&self) -> RustEnv {

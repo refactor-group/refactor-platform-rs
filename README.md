@@ -99,6 +99,9 @@ The platform uses Resend for transactional emails. To configure email functional
    - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
    - `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID`: The template ID for added-to-organization notification emails
    - `ADDED_TO_ORGANIZATION_EMAIL_URL_PATH`: URL path for the link in added-to-organization emails (default: `/dashboard`)
+   - `SESSION_REMINDER_EMAIL_TEMPLATE_ID`: The template ID for the reminder sent to a coachee ahead of an upcoming session. Leaving it unset disables the reminder job entirely.
+   - `SESSION_REMINDER_LEAD_HOURS`: How far ahead of a session its reminder goes out (default: `24`)
+   - `SESSION_REMINDER_POLL_MINUTES`: How often the reminder sweep looks for sessions that have come due (default: `15`)
    - `FRONTEND_BASE_URL`: Base URL used to construct links in email notifications (e.g. `https://myrefactor.com`)
 
 2. **Command Line Arguments** (for direct execution):

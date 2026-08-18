@@ -33,6 +33,7 @@ pub mod emails;
 pub mod error;
 pub mod goal;
 pub mod goal_progress;
+pub mod jobs;
 pub mod jwt;
 pub mod magic_link_token;
 pub mod meeting_recording;

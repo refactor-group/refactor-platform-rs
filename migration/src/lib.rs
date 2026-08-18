@@ -48,6 +48,7 @@ mod m20260807_000000_users_lower_email_index;
 mod m20260812_000000_add_ical_sequence;
 mod m20260815_000000_drop_users_role_column;
 mod m20260816_000000_add_user_role_changes;
+mod m20260818_000000_add_reminder_sent_for_start_to_coaching_sessions;
 
 pub struct Migrator;
 
@@ -105,6 +106,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260812_000000_add_ical_sequence::Migration),
             Box::new(m20260815_000000_drop_users_role_column::Migration),
             Box::new(m20260816_000000_add_user_role_changes::Migration),
+            Box::new(m20260818_000000_add_reminder_sent_for_start_to_coaching_sessions::Migration),
         ]
     }
 }

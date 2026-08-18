@@ -148,6 +148,20 @@ impl EmailNotification for RecurringSessionsCancelled {
     }
 }
 
+/// Reuses the scheduled email's URL path: the reminder links to the same session page.
+struct SessionReminder;
+impl EmailNotification for SessionReminder {
+    fn template_id(config: &Config) -> Option<String> {
+        config.session_reminder_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "session reminder"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
+    }
+}
+
 struct ActionAssigned;
 impl EmailNotification for ActionAssigned {
     fn template_id(config: &Config) -> Option<String> {
@@ -1122,6 +1136,86 @@ pub async fn notify_session_rescheduled(
             session.id
         );
     }
+}
+
+/// Send the upcoming-session reminder to the coachee.
+///
+/// Unlike the other `notify_*` entry points this returns `Result` rather than swallowing
+/// failures. Its caller is the reminder sweep, not a controller: the sweep has already
+/// claimed the session row and needs the outcome to decide whether to hand that claim
+/// back for a later retry. Logging and discarding the error here would silently drop the
+/// reminder instead.
+///
+/// The coach is not a recipient — they already hold the invite from the scheduled send,
+/// and the copy is written from the coachee's side ("your coach, ...").
+///
+/// No `.ics` rides along: the calendar event was delivered when the session was
+/// scheduled, and re-sending the same `UID`/`SEQUENCE` pair is a no-op for a calendar
+/// client at best and a duplicate event at worst.
+pub async fn send_session_reminder(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) -> Result<(), Error> {
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let coach = user::find_by_id(db, relationship.coach_id).await?;
+    let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+    let organization = organization::find_by_id(db, relationship.organization_id).await?;
+
+    info!(
+        "Initiating session reminder email for session {} (coachee: {})",
+        session.id, coachee.id
+    );
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(config).await?;
+
+    send_session_reminder_email(&email_config, &coachee, &coach, session, &organization).await
+}
+
+/// Build and send the reminder to one coachee.
+async fn send_session_reminder_email(
+    email_config: &ResolvedEmailConfig,
+    coachee: &users::Model,
+    coach: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    let (session_date, session_time) = format_session_date_time(session.date, &coachee.timezone);
+    let session_duration =
+        crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
+    let coach_full_name = format!("{} {}", coach.first_name, coach.last_name);
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from(FROM_ADDRESS)
+        .to_with_name(
+            &coachee.email,
+            format!("{} {}", coachee.first_name, coachee.last_name),
+        )
+        .template_id(&email_config.template_id)
+        .add_variable("first_name", coachee.first_name.as_str())
+        .add_variable("coach_first_name", coach.first_name.as_str())
+        .add_variable("coach_full_name", coach_full_name.as_str())
+        .add_variable("organization_name", organization.name.as_str())
+        .add_variable("session_date", session_date.as_str())
+        .add_variable("session_time", session_time.as_str())
+        .add_variable(
+            "session_when",
+            format_session_when(session.date, &coachee.timezone),
+        )
+        .add_variable("session_duration", session_duration.as_str())
+        .add_variable(
+            "session_url",
+            email_config.build_session_url(&session.id)?.as_str(),
+        )
+        // Both omitted rather than blanked when unset, so the template's
+        // `fallback_value` fires instead of rendering an empty line.
+        .add_optional_variable("session_title", session.title.as_deref())
+        .add_optional_variable("meeting_url", session.meeting_url.as_deref())
+        .build()
+        .await?;
+
+    email_config.client.send_email(email_request).await
 }
 
 /// Build the single-session cancellation `.ics` body. Pure: `dtstamp` is injected so the

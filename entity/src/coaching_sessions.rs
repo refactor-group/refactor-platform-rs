@@ -40,6 +40,13 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub hydrated_at: Option<DateTimeWithTimeZone>,
+    /// The `date` value the 24-hour reminder was last sent for, naive UTC like `date`.
+    /// `None` means no reminder has gone out. Holding the start rather than a "sent at"
+    /// timestamp is what makes a reschedule re-arm the reminder: the sweep claims rows
+    /// where this `IS DISTINCT FROM date`, so moving a session automatically makes it
+    /// due again with no other code path having to clear the flag.
+    #[serde(skip_deserializing)]
+    pub reminder_sent_for_start: Option<DateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

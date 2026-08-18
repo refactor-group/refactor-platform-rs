@@ -309,6 +309,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            reminder_sent_for_start: None,
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -371,6 +372,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            reminder_sent_for_start: None,
             created_at: now.into(),
             updated_at: now.into(),
         };

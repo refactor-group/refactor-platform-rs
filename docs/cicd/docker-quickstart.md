@@ -66,6 +66,9 @@ RESEND_API_KEY=""                            # Resend API key for sending emails
 WELCOME_EMAIL_TEMPLATE_ID=""                 # Template ID for welcome emails
 ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID=""   # Template ID for added-to-organization emails
 ADDED_TO_ORGANIZATION_EMAIL_URL_PATH=""      # Link path in those emails (default: /dashboard)
+SESSION_REMINDER_EMAIL_TEMPLATE_ID=""        # Template ID for the 24h upcoming-session reminder; unset disables it
+SESSION_REMINDER_LEAD_HOURS=""               # Reminder lead time in hours (default: 24)
+SESSION_REMINDER_POLL_MINUTES=""             # Reminder sweep cadence in minutes (default: 15)
 
 # ==============================
 #   TipTap Service Configuration
