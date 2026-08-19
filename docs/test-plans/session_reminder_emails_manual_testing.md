@@ -239,3 +239,9 @@ H1 through H5 and S2 through S5 are all reachable from SQL seeding plus log and 
 assertions, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
 process restart with different env, so they suit a shell-driven matrix rather than an
 in-process test. S8 and S9 need a database that has not had the migration applied.
+
+## Last run
+
+2026-08-19, local backend against a local Postgres with a mock Resend, 1 hour lead and
+1 minute cadence. All cases passed. H7, S8, and S9 were exercised at the SQL and
+migration level rather than through the running job.
