@@ -3,7 +3,8 @@ use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
 use entity::{
-    agreements, coaching_relationships, coaching_session_topics, coaching_session_views,
+    agreements, coaching_relationships, coaching_session_reminders, coaching_session_topics,
+    coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
@@ -141,7 +142,6 @@ pub async fn create(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(coaching_session_model.hydrated_at),
-        reminder_sent_for_start: Set(None),
         ..Default::default()
     };
 
@@ -195,7 +195,6 @@ pub async fn bulk_create_recurring(
             meeting_url: Set(None),
             provider: Set(None),
             hydrated_at: Set(None),
-            reminder_sent_for_start: Set(None),
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
             ..Default::default()
@@ -256,68 +255,121 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
     Ok(result.rows_affected)
 }
 
-/// Atomically claims the sessions whose reminder is now due and returns them.
+/// One claimed reminder: the session to send about, and who it goes to.
+#[derive(Debug, Clone)]
+pub struct DueReminder {
+    pub session: Model,
+    pub recipient_id: Id,
+}
+
+/// The `(session, recipient)` pairs an upsert actually claimed.
+#[derive(Debug, FromQueryResult)]
+struct ClaimedPair {
+    coaching_session_id: Id,
+    user_id: Id,
+}
+
+/// Atomically claims the reminders that are now due and returns them.
 ///
-/// A session is due when its start falls in `(now, now + lead]` and its
-/// `reminder_sent_for_start` is not already equal to its `date`. Claiming stamps
-/// `reminder_sent_for_start = date` in the same statement that selects the rows, so a
-/// row can only ever be handed to one caller: `FOR UPDATE SKIP LOCKED` lets a second
-/// backend replica step over rows a first one is already claiming instead of blocking
-/// on them or duplicating the send.
+/// A reminder is due when its session starts in `(now, now + lead]` and the recipient
+/// has no claim row whose `sent_for_start` equals the session's current `date`. The
+/// claim is the upsert itself: the unique index on `(coaching_session_id, user_id)`
+/// arbitrates between concurrent backend replicas, and `RETURNING` yields only the
+/// pairs this caller actually won, so a row can never be handed to two senders.
+///
+/// The `WHERE` on the `DO UPDATE` is load-bearing rather than an optimization. Without
+/// it an already-current row would be rewritten and returned as freshly claimed, and
+/// the same reminder would go out every tick.
 ///
 /// Comparing against `date` rather than storing a bare "sent at" timestamp is what makes
-/// a reschedule re-arm the reminder — the moved row's stamp no longer matches its start,
-/// so it becomes due again with no reschedule-path code involved.
+/// a reschedule re-arm the reminder: the moved session no longer matches the stored
+/// start, so it becomes due again with no reschedule-path code involved.
 ///
-/// `limit` bounds one tick's batch. Rows beyond it stay due and are picked up on the
+/// `limit` bounds one tick's batch. Pairs beyond it stay due and are picked up on the
 /// next tick, so a backlog drains across ticks rather than in one burst of API calls.
 ///
-/// Callers that fail to deliver should hand the row back via
-/// [`release_reminder_claim`], otherwise the claim stands and no retry happens.
+/// Callers that fail to deliver should hand the claim back via
+/// [`release_reminder_claim`], otherwise it stands and no retry happens.
 pub async fn claim_due_reminders(
     db: &impl ConnectionTrait,
     now: NaiveDateTime,
     lead: chrono::Duration,
     limit: u64,
-) -> Result<Vec<Model>, Error> {
+) -> Result<Vec<DueReminder>, Error> {
     let cutoff = now + lead;
 
-    Ok(Entity::find()
-        .from_raw_sql(Statement::from_sql_and_values(
-            DatabaseBackend::Postgres,
-            r#"UPDATE refactor_platform.coaching_sessions AS cs
-               SET reminder_sent_for_start = cs.date
-               FROM (
-                   SELECT id
-                   FROM refactor_platform.coaching_sessions
-                   WHERE date > $1
-                     AND date <= $2
-                     AND reminder_sent_for_start IS DISTINCT FROM date
-                   ORDER BY date
-                   LIMIT $3
-                   FOR UPDATE SKIP LOCKED
-               ) AS due
-               WHERE cs.id = due.id
-               RETURNING cs.*"#,
-            [now.into(), cutoff.into(), (limit as i64).into()],
-        ))
+    let claimed = ClaimedPair::find_by_statement(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        r#"WITH due AS (
+               SELECT cs.id AS coaching_session_id, cr.coachee_id AS user_id, cs.date
+               FROM refactor_platform.coaching_sessions cs
+               JOIN refactor_platform.coaching_relationships cr
+                 ON cr.id = cs.coaching_relationship_id
+               LEFT JOIN refactor_platform.coaching_session_reminders csr
+                 ON csr.coaching_session_id = cs.id
+                AND csr.user_id = cr.coachee_id
+               WHERE cs.date > $1
+                 AND cs.date <= $2
+                 AND csr.sent_for_start IS DISTINCT FROM cs.date
+               ORDER BY cs.date
+               LIMIT $3
+           )
+           INSERT INTO refactor_platform.coaching_session_reminders
+               (coaching_session_id, user_id, sent_for_start)
+           SELECT coaching_session_id, user_id, date FROM due
+           ON CONFLICT (coaching_session_id, user_id) DO UPDATE
+               SET sent_for_start = EXCLUDED.sent_for_start,
+                   updated_at = NOW()
+               WHERE coaching_session_reminders.sent_for_start
+                     IS DISTINCT FROM EXCLUDED.sent_for_start
+           RETURNING coaching_session_id, user_id"#,
+        [now.into(), cutoff.into(), (limit as i64).into()],
+    ))
+    .all(db)
+    .await?;
+
+    if claimed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Load the sessions in one query rather than per claim: the same session can be
+    // claimed once per recipient, and the sweep needs the full model to build an email.
+    let sessions: HashMap<Id, Model> = Entity::find()
+        .filter(Column::Id.is_in(claimed.iter().map(|c| c.coaching_session_id)))
         .all(db)
-        .await?)
+        .await?
+        .into_iter()
+        .map(|session| (session.id, session))
+        .collect();
+
+    Ok(claimed
+        .into_iter()
+        .filter_map(|claim| {
+            sessions
+                .get(&claim.coaching_session_id)
+                .map(|session| DueReminder {
+                    session: session.clone(),
+                    recipient_id: claim.user_id,
+                })
+        })
+        .collect())
 }
 
 /// Hands a claimed reminder back so a later tick retries it.
 ///
-/// Called when delivery fails after [`claim_due_reminders`] already stamped the row.
-/// Clearing the stamp rather than leaving it set is deliberate: a transient Resend
+/// Called when delivery fails after [`claim_due_reminders`] already claimed the pair.
+/// Deleting the row rather than leaving it stamped is deliberate: a transient Resend
 /// failure should cost a tick, not the whole reminder.
-pub async fn release_reminder_claim(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
-    ActiveModel {
-        id: Unchanged(id),
-        reminder_sent_for_start: Set(None),
-        ..Default::default()
-    }
-    .update(db)
-    .await?;
+pub async fn release_reminder_claim(
+    db: &impl ConnectionTrait,
+    coaching_session_id: Id,
+    recipient_id: Id,
+) -> Result<(), Error> {
+    coaching_session_reminders::Entity::delete_many()
+        .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
+        .exec(db)
+        .await?;
 
     Ok(())
 }
@@ -436,9 +488,6 @@ pub async fn mark_hydrated(txn: &impl ConnectionTrait, target: &Model) -> Result
         created_at: Unchanged(target.created_at),
         updated_at: Set(now.into()),
         hydrated_at: Set(Some(now.into())),
-        // Hydration must not clobber a reminder claim: a session can be hydrated on
-        // first read long after its reminder went out.
-        reminder_sent_for_start: Unchanged(target.reminder_sent_for_start),
     };
     Ok(active_model.update(txn).await?.try_into_model()?)
 }
@@ -1169,13 +1218,13 @@ mod tests {
     use entity::Id;
     use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
-    /// The claim has to select and stamp in one statement. If a refactor split it into a
-    /// SELECT followed by an UPDATE, or dropped `SKIP LOCKED`, two backend replicas would
-    /// either both claim the same session and double-send, or block on each other. None
-    /// of that is visible in the returned rows, so assert on the SQL itself.
+    /// The claim has to select and write in one statement, and the conflict clause has
+    /// to skip rows already current. If a refactor split it into a SELECT followed by an
+    /// INSERT, or dropped the `WHERE` on the `DO UPDATE`, two replicas would double-send
+    /// or every tick would resend an already-sent reminder. None of that is visible in
+    /// the returned rows, so assert on the SQL itself.
     #[tokio::test]
-    async fn claim_due_reminders_selects_and_stamps_in_one_skip_locked_statement(
-    ) -> Result<(), Error> {
+    async fn claim_due_reminders_upserts_and_skips_already_current_pairs() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![Vec::<Model>::new()])
             .into_connection();
@@ -1190,20 +1239,54 @@ mod tests {
         let sql = format!("{:?}", db.into_transaction_log()[0]);
 
         assert!(
-            sql.contains("FOR UPDATE SKIP LOCKED"),
-            "claim must skip rows another replica is already claiming, got: {sql}"
+            sql.contains("INSERT INTO refactor_platform.coaching_session_reminders"),
+            "the claim must be the write itself, got: {sql}"
         );
         assert!(
-            sql.contains("SET reminder_sent_for_start = cs.date"),
-            "claim must stamp the start it is sending for, got: {sql}"
+            sql.contains("ON CONFLICT (coaching_session_id, user_id) DO UPDATE"),
+            "the unique index must arbitrate between replicas, got: {sql}"
         );
         assert!(
-            sql.contains("reminder_sent_for_start IS DISTINCT FROM date"),
+            sql.contains("WHERE coaching_session_reminders.sent_for_start")
+                && sql.contains("IS DISTINCT FROM EXCLUDED.sent_for_start"),
+            "an already-current pair must not be reclaimed and resent, got: {sql}"
+        );
+        assert!(
+            sql.contains("csr.sent_for_start IS DISTINCT FROM cs.date"),
             "a rescheduled session must fall back in scope, got: {sql}"
         );
         assert!(
-            sql.contains("RETURNING"),
-            "the claimed rows are the work list, got: {sql}"
+            sql.contains("RETURNING coaching_session_id, user_id"),
+            "the claimed pairs are the work list, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// The claim is per recipient, not per session, so the pair a later phase adds
+    /// cannot be starved by a session-level lock or dropped by a session-level key.
+    #[tokio::test]
+    async fn claim_due_reminders_keys_the_claim_by_recipient() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+
+        assert!(
+            sql.contains("csr.user_id = cr.coachee_id"),
+            "due-ness must be evaluated per recipient, got: {sql}"
+        );
+        assert!(
+            !sql.contains("FOR UPDATE"),
+            "locking the session row would make two recipients contend, got: {sql}"
         );
 
         Ok(())
@@ -1273,7 +1356,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            reminder_sent_for_start: None,
         };
         let session2 = Model {
             id: Id::new_v4(),
@@ -1340,7 +1422,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            reminder_sent_for_start: None,
         };
         let session2 = Model {
             id: Id::new_v4(),
@@ -1436,12 +1517,10 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            reminder_sent_for_start: None,
         };
         // Whatever the DB returns from UPDATE ... RETURNING.
         let after = Model {
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
             ..target.clone()
         };
 
@@ -1479,7 +1558,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            reminder_sent_for_start: None,
         };
         // The DB returns the post-update row with SEQUENCE bumped 4 -> 5.
         let bumped = Model {
@@ -1527,7 +1605,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -1558,7 +1636,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC LIMIT $3"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC LIMIT $3"#,
                 [
                     relationship_id.into(),
                     before.into(),
@@ -1590,7 +1668,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC LIMIT $3"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC LIMIT $3"#,
                 [
                     relationship_id.into(),
                     after.into(),
@@ -1613,7 +1691,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."coaching_session_series_id" AS "A_coaching_session_series_id", "coaching_sessions"."ical_sequence" AS "A_ical_sequence", "coaching_sessions"."ical_recurrence_id" AS "A_ical_recurrence_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."duration_minutes" AS "A_duration_minutes", "coaching_sessions"."title" AS "A_title", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_sessions"."hydrated_at" AS "A_hydrated_at", "coaching_sessions"."reminder_sent_for_start" AS "A_reminder_sent_for_start", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_sessions"."id" AS "A_id", "coaching_sessions"."coaching_relationship_id" AS "A_coaching_relationship_id", "coaching_sessions"."coaching_session_series_id" AS "A_coaching_session_series_id", "coaching_sessions"."ical_sequence" AS "A_ical_sequence", "coaching_sessions"."ical_recurrence_id" AS "A_ical_recurrence_id", "coaching_sessions"."collab_document_name" AS "A_collab_document_name", "coaching_sessions"."date" AS "A_date", "coaching_sessions"."duration_minutes" AS "A_duration_minutes", "coaching_sessions"."title" AS "A_title", "coaching_sessions"."meeting_url" AS "A_meeting_url", CAST("coaching_sessions"."provider" AS "text") AS "A_provider", "coaching_sessions"."created_at" AS "A_created_at", "coaching_sessions"."updated_at" AS "A_updated_at", "coaching_sessions"."hydrated_at" AS "A_hydrated_at", "coaching_relationships"."id" AS "B_id", "coaching_relationships"."organization_id" AS "B_organization_id", "coaching_relationships"."coach_id" AS "B_coach_id", "coaching_relationships"."coachee_id" AS "B_coachee_id", "coaching_relationships"."slug" AS "B_slug", "coaching_relationships"."created_at" AS "B_created_at", "coaching_relationships"."updated_at" AS "B_updated_at" FROM "refactor_platform"."coaching_sessions" LEFT JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_sessions"."id" = $1 LIMIT $2"#,
                 [
                     coaching_session_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -1654,7 +1732,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -1780,7 +1858,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -1834,7 +1911,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
         };
 
         let view = coaching_session_views::Model {
@@ -1910,7 +1986,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -1960,7 +2035,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -2022,7 +2096,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC') AND ("coaching_sessions"."date" < ($5::timestamp AT TIME ZONE $6::text) AT TIME ZONE 'UTC')"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC') AND ("coaching_sessions"."date" < ($5::timestamp AT TIME ZONE $6::text) AT TIME ZONE 'UTC')"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -2071,7 +2145,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND "coaching_sessions"."date" >= $3 AND "coaching_sessions"."date" < $4"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND "coaching_sessions"."date" >= $3 AND "coaching_sessions"."date" < $4"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -2113,7 +2187,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" >= ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -2159,7 +2233,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" < ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND ("coaching_sessions"."date" < ($3::timestamp AT TIME ZONE $4::text) AT TIME ZONE 'UTC')"#,
                 [
                     user_id.into(),
                     user_id.into(),
@@ -2221,7 +2295,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
         };
 
         let related = RelatedData::default();
@@ -2258,7 +2331,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
         };
 
         let related = RelatedData::default();
@@ -2349,7 +2421,6 @@ mod tests {
             hydrated_at: Some(
                 chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ),
-            reminder_sent_for_start: None,
         };
 
         // Session 2 (middle): also has a Google Meet URL — this is the one we want
@@ -2370,7 +2441,6 @@ mod tests {
             hydrated_at: Some(
                 chrono::DateTime::parse_from_rfc3339("2025-02-01T00:00:00Z").unwrap(),
             ),
-            reminder_sent_for_start: None,
         };
 
         // Session 3 (newest): no meeting URL — coach didn't request one this time
@@ -2391,7 +2461,6 @@ mod tests {
             hydrated_at: Some(
                 chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z").unwrap(),
             ),
-            reminder_sent_for_start: None,
         };
 
         // The MockDatabase returns session_2 because our query filters for
@@ -2417,7 +2486,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."reminder_sent_for_start" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "meeting_provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."provider" = (CAST($2 AS "meeting_provider")) AND "coaching_sessions"."meeting_url" IS NOT NULL ORDER BY "coaching_sessions"."created_at" DESC LIMIT $3"#,
                 [
                     relationship_id.into(),
                     "google".into(),

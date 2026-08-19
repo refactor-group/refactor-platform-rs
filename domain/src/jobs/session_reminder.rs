@@ -5,8 +5,8 @@
 //! cancellation, or a session booked five minutes ago all take effect on the next tick
 //! with no work from the code paths that made the change:
 //!
-//! - **Rescheduled.** The claim stamp holds the start it was sent for, so a moved session
-//!   no longer matches its own stamp and becomes due again — the coachee gets a fresh
+//! - **Rescheduled.** The claim holds the start it was sent for, so a moved session no
+//!   longer matches its own claim and becomes due again. The coachee gets a fresh
 //!   reminder for the new time.
 //! - **Cancelled.** The row is gone, so nothing is due. No queued job survives to fire
 //!   against a session that no longer exists.
@@ -90,24 +90,30 @@ impl Job for Sweep {
         }
 
         let mut sent = 0;
-        for session in &due {
+        for reminder in &due {
+            let session = &reminder.session;
             match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
                 Ok(()) => sent += 1,
                 Err(e) => {
                     warn!(
-                        "[session-reminder] delivery failed for session {}: {e:?}",
-                        session.id
+                        "[session-reminder] delivery failed for session {} to user {}: {e:?}",
+                        session.id, reminder.recipient_id
                     );
-                    // Hand the claim back so a later tick retries. Leaving it stamped
+                    // Hand the claim back so a later tick retries. Leaving it in place
                     // would turn one transient Resend failure into a silently dropped
                     // reminder.
-                    if let Err(release_error) =
-                        coaching_session::release_reminder_claim(&*ctx.db, session.id).await
+                    if let Err(release_error) = coaching_session::release_reminder_claim(
+                        &*ctx.db,
+                        session.id,
+                        reminder.recipient_id,
+                    )
+                    .await
                     {
                         warn!(
                             "[session-reminder] could not release the claim on session {} \
-                             after a failed send; it will not be retried: {release_error:?}",
-                            session.id
+                             for user {} after a failed send; it will not be retried: \
+                             {release_error:?}",
+                            session.id, reminder.recipient_id
                         );
                     }
                 }

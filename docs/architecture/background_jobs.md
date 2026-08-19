@@ -60,7 +60,7 @@ flowchart LR
     S -->|spawn| PR
     S -->|spawn| SR
     PR -->|"DELETE older than 30d"| DB
-    SR -->|"claim due rows\n(FOR UPDATE SKIP LOCKED)"| DB
+    SR -->|"claim due pairs\n(upsert ON CONFLICT)"| DB
     SR -->|"send via Resend"| R["Resend"]
 ```
 
@@ -73,29 +73,42 @@ running the same sweep divide the work instead of duplicating it.
 `entity_api::coaching_session::claim_due_reminders` is the canonical example:
 
 ```sql
-UPDATE refactor_platform.coaching_sessions AS cs
-SET reminder_sent_for_start = cs.date
-FROM (
-    SELECT id FROM refactor_platform.coaching_sessions
-    WHERE date > $1 AND date <= $2
-      AND reminder_sent_for_start IS DISTINCT FROM date
-    ORDER BY date LIMIT $3
-    FOR UPDATE SKIP LOCKED
-) AS due
-WHERE cs.id = due.id
-RETURNING cs.*
+WITH due AS (
+    SELECT cs.id AS coaching_session_id, cr.coachee_id AS user_id, cs.date
+    FROM refactor_platform.coaching_sessions cs
+    JOIN refactor_platform.coaching_relationships cr ON cr.id = cs.coaching_relationship_id
+    LEFT JOIN refactor_platform.coaching_session_reminders csr
+      ON csr.coaching_session_id = cs.id AND csr.user_id = cr.coachee_id
+    WHERE cs.date > $1 AND cs.date <= $2
+      AND csr.sent_for_start IS DISTINCT FROM cs.date
+    ORDER BY cs.date LIMIT $3
+)
+INSERT INTO refactor_platform.coaching_session_reminders
+    (coaching_session_id, user_id, sent_for_start)
+SELECT coaching_session_id, user_id, date FROM due
+ON CONFLICT (coaching_session_id, user_id) DO UPDATE
+    SET sent_for_start = EXCLUDED.sent_for_start, updated_at = NOW()
+    WHERE coaching_session_reminders.sent_for_start IS DISTINCT FROM EXCLUDED.sent_for_start
+RETURNING coaching_session_id, user_id
 ```
 
-Two details carry most of the weight:
+Three details carry most of the weight:
 
-- **`SKIP LOCKED`** — a second replica steps over rows the first is claiming rather than
-  blocking on them or double-sending.
-- **The stamp is the session's start, not a "sent at" timestamp.** `IS DISTINCT FROM date`
-  means a rescheduled session stops matching its own stamp and falls back into scope
-  automatically. No reschedule-path code has to remember to clear a flag.
+- **The unique index arbitrates, not a row lock.** Concurrent replicas race on
+  `ON CONFLICT`; exactly one wins, and `RETURNING` yields only the pairs that caller
+  actually claimed. Locking the *session* row instead would make two recipients of the
+  same session contend, and `SKIP LOCKED` would silently drop one of them.
+- **The `WHERE` on the `DO UPDATE` is load-bearing.** Without it an already-current row
+  is rewritten and returned as freshly claimed, and the reminder goes out every tick.
+- **The stored value is the session's start, not a "sent at" timestamp.**
+  `IS DISTINCT FROM cs.date` means a rescheduled session stops matching its own claim and
+  falls back into scope automatically. No reschedule-path code has to clear a flag.
+
+The claim is keyed by `(session, recipient)` rather than by session alone, so a second
+recipient can be added later without migrating rows that are already claimed.
 
 Delivery happens *after* the claim commits, so a failed send would otherwise be lost. The
-reminder sweep therefore releases the claim (`release_reminder_claim`) on failure, costing
+reminder sweep therefore deletes the claim (`release_reminder_claim`) on failure, costing
 one tick instead of the whole reminder.
 
 `LIMIT` bounds one tick's batch, so a backlog — the first run after an outage, say —

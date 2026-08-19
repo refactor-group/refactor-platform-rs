@@ -167,7 +167,6 @@ fn create_test_session() -> coaching_sessions::Model {
         created_at: chrono::Utc::now().fixed_offset(),
         updated_at: chrono::Utc::now().fixed_offset(),
         hydrated_at: Some(chrono::Utc::now().fixed_offset()),
-        reminder_sent_for_start: None,
     }
 }
 
@@ -2185,7 +2184,6 @@ fn create_test_session_on(date: NaiveDate) -> coaching_sessions::Model {
         created_at: chrono::Utc::now().fixed_offset(),
         updated_at: chrono::Utc::now().fixed_offset(),
         hydrated_at: None,
-        reminder_sent_for_start: None,
     }
 }
 

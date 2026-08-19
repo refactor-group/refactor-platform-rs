@@ -23,7 +23,7 @@ use service::config::Config;
 pub use entity_api::coaching_session::{
     claim_due_reminders, find_by_id, find_by_series_id, find_by_user_with_includes,
     find_counts_by_month_for_user, find_next_session, find_participant_ids, release_reminder_claim,
-    CountByMonth, EnrichedSession, IncludeOptions, SessionQueryOptions,
+    CountByMonth, DueReminder, EnrichedSession, IncludeOptions, SessionQueryOptions,
 };
 pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
@@ -613,7 +613,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            reminder_sent_for_start: None,
         }
     }
 
@@ -991,7 +990,6 @@ mod tests {
             hydrated_at: Some(
                 chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ),
-            reminder_sent_for_start: None,
         };
 
         // The session as the DB would return it after INSERT (with the reused meeting URL)
@@ -1106,12 +1104,10 @@ mod tests {
 
         let input = coaching_sessions::Model {
             hydrated_at: None,
-            reminder_sent_for_start: None,
             ..test_session(Id::new_v4(), None)
         };
         let hydrated_row = coaching_sessions::Model {
             hydrated_at: Some(chrono::Utc::now().into()),
-            reminder_sent_for_start: None,
             ..input.clone()
         };
 
@@ -1159,7 +1155,6 @@ mod tests {
         let relationship = test_coaching_relationship(Id::new_v4(), org.id);
         let input = coaching_sessions::Model {
             hydrated_at: None,
-            reminder_sent_for_start: None,
             ..test_session(relationship.id, None)
         };
         let refetched = input.clone();
@@ -1229,7 +1224,6 @@ mod tests {
 
         let row_template = coaching_sessions::Model {
             hydrated_at: None,
-            reminder_sent_for_start: None,
             ..test_session(relationship_id, None)
         };
         let row1 = coaching_sessions::Model {
@@ -1281,7 +1275,6 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
-            reminder_sent_for_start: None,
             ..test_session(Id::new_v4(), None)
         };
 
@@ -1334,7 +1327,6 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
-            reminder_sent_for_start: None,
             ..test_session(Id::new_v4(), None)
         };
         let bumped = coaching_sessions::Model {
@@ -1415,7 +1407,6 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
-            reminder_sent_for_start: None,
             ..test_session(relationship.id, None)
         };
 

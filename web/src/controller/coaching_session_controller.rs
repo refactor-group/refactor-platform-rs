@@ -323,7 +323,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            reminder_sent_for_start: None,
         }
     }
 

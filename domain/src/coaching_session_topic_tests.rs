@@ -45,7 +45,6 @@ fn session_with_relationship(
         created_at: now,
         updated_at: now,
         hydrated_at: None,
-        reminder_sent_for_start: None,
     };
     let relationship = coaching_relationships::Model {
         id: relationship_id,
@@ -81,7 +80,6 @@ fn coaching_session(
         created_at: now,
         updated_at: now,
         hydrated_at: None,
-        reminder_sent_for_start: None,
     }
 }
 

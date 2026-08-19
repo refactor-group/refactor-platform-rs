@@ -1,0 +1,78 @@
+use sea_orm_migration::prelude::*;
+
+/// Default reminder lead time, mirrored from `SESSION_REMINDER_LEAD_HOURS`. Used only
+/// by the backfill below; the running job reads the configured value.
+const DEFAULT_LEAD_HOURS: i64 = 24;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // The reminder sweep's idempotency key, one row per (session, recipient).
+        // `sent_for_start` holds the `date` the reminder was sent for rather than a
+        // plain "sent at" timestamp, so a reschedule re-arms the reminder without any
+        // other code path having to clear it: the sweep claims pairs whose stored
+        // value `IS DISTINCT FROM` the session's current start.
+        //
+        // Keyed by recipient rather than by session alone so a second recipient can be
+        // added later without migrating stamped rows. UNIQUE serves both the upsert's
+        // conflict target and the per-pair lookup, so no extra index is needed.
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE TABLE IF NOT EXISTS refactor_platform.coaching_session_reminders (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    coaching_session_id UUID NOT NULL REFERENCES refactor_platform.coaching_sessions(id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL REFERENCES refactor_platform.users(id) ON DELETE CASCADE,
+                    sent_for_start TIMESTAMP NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_coaching_session_reminders_session_user UNIQUE (coaching_session_id, user_id)
+                )",
+            )
+            .await?;
+
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "ALTER TABLE refactor_platform.coaching_session_reminders OWNER TO refactor",
+            )
+            .await?;
+
+        // Suppress a deploy-time blast. Every session already inside the reminder
+        // window (and every past one) is marked as though its reminder had gone out,
+        // so enabling the job does not email every coachee with a session in the next
+        // 24 hours the moment the container starts. Sessions further out are left
+        // unstamped and get a reminder on schedule.
+        //
+        // Coachees only: they are the sole recipient today. A recipient added later
+        // needs its own suppression pass at that time, since a row written here would
+        // claim a reminder was sent for a window that closed long before.
+        manager
+            .get_connection()
+            .execute_unprepared(&format!(
+                "INSERT INTO refactor_platform.coaching_session_reminders
+                     (coaching_session_id, user_id, sent_for_start)
+                 SELECT cs.id, cr.coachee_id, cs.date
+                 FROM refactor_platform.coaching_sessions cs
+                 JOIN refactor_platform.coaching_relationships cr
+                   ON cr.id = cs.coaching_relationship_id
+                 WHERE cs.date <= NOW() AT TIME ZONE 'UTC' + INTERVAL '{DEFAULT_LEAD_HOURS} hours'
+                 ON CONFLICT (coaching_session_id, user_id) DO NOTHING"
+            ))
+            .await?;
+
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared("DROP TABLE IF EXISTS refactor_platform.coaching_session_reminders")
+            .await?;
+
+        Ok(())
+    }
+}
