@@ -349,7 +349,10 @@ pub async fn update(
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     // Best-effort re-send of an updated `.ics` so calendar clients move the event in place.
-    if calendar_relevant {
+    // Gated on the schedule, not on invite relevance: a title or meeting-URL edit supersedes
+    // the invite without moving the session, and the reschedule copy would announce a start
+    // that did not change.
+    if emails::affects_schedule(&old, &updated) {
         emails::notify_session_rescheduled(db, config, &updated, old_date).await;
     }
     Ok(updated)
@@ -653,18 +656,14 @@ mod tests {
         let (publisher, events) = recording_publisher();
         let config = Config::default();
 
-        // A title edit is calendar-relevant, so update runs the reschedule path:
-        // find_by_id → UPDATE ... RETURNING → increment_ical_sequence (a single
-        // self-referential UPDATE ... RETURNING) → best-effort notify whose
-        // relationship lookup returns empty (send skipped). Then the participant lookup
+        // A title edit is invite-relevant but not a reschedule, so update bumps SEQUENCE
+        // and sends nothing: find_by_id → UPDATE ... RETURNING → increment_ical_sequence
+        // (a single self-referential UPDATE ... RETURNING). Then the participant lookup
         // (find_also_related) and the membership filter for the title-updated event.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
             .append_query_results(vec![vec![bumped.clone()]])
-            .append_query_results::<coaching_relationships::Model, Vec<coaching_relationships::Model>, _>(
-                vec![vec![]],
-            )
             .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
             .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();

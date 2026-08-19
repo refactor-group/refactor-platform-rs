@@ -342,17 +342,16 @@ mod tests {
             ..updated.clone()
         };
 
-        // Setting the title is calendar-relevant, so update runs the reschedule
-        // path: find_by_id → UPDATE ... RETURNING → increment_ical_sequence
-        // (find_by_id → UPDATE ... RETURNING) → best-effort notify + title event,
-        // both of which short-circuit on the empty lookups below.
+        // Setting the title is invite-relevant but not a reschedule, so update bumps
+        // SEQUENCE and sends nothing: find_by_id → UPDATE ... RETURNING →
+        // increment_ical_sequence (find_by_id → UPDATE ... RETURNING) → the title
+        // event, whose participant lookup short-circuits on the empty result below.
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results(vec![vec![session.clone()]]) // domain update: find_by_id
                 .append_query_results(vec![vec![updated.clone()]]) // UPDATE ... RETURNING
                 .append_query_results(vec![vec![session.clone()]]) // increment: find_by_id
                 .append_query_results(vec![vec![bumped.clone()]]) // increment: UPDATE ... RETURNING
-                .append_query_results::<domain::coaching_sessions::Model, Vec<domain::coaching_sessions::Model>, _>(vec![vec![]]) // notify relationship lookup: empty
                 .append_query_results::<domain::coaching_sessions::Model, Vec<domain::coaching_sessions::Model>, _>(vec![vec![]]) // participant lookup: empty
                 .into_connection(),
         );

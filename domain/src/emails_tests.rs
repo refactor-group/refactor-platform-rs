@@ -1245,6 +1245,53 @@ fn affects_invite_tracks_only_fields_the_invite_carries() {
     );
 }
 
+/// The narrower predicate that decides whether an edit earns a "has been rescheduled"
+/// email. Only a moved start or a changed length is a reschedule; the other invite fields
+/// supersede the `.ics` without announcing one.
+#[test]
+fn affects_schedule_covers_only_the_start_and_the_length() {
+    let base = create_test_session();
+    assert!(!affects_schedule(&base, &base.clone()));
+
+    let date_changed = coaching_sessions::Model {
+        date: base.date + chrono::Duration::hours(1),
+        ..base.clone()
+    };
+    assert!(affects_schedule(&base, &date_changed), "start moved");
+
+    let duration_changed = coaching_sessions::Model {
+        duration_minutes: base.duration_minutes + 15,
+        ..base.clone()
+    };
+    assert!(affects_schedule(&base, &duration_changed), "length moved");
+
+    let title_changed = coaching_sessions::Model {
+        title: Some("A title".to_string()),
+        ..base.clone()
+    };
+    assert!(
+        !affects_schedule(&base, &title_changed),
+        "a title edit is not a reschedule"
+    );
+    assert!(
+        affects_invite(&base, &title_changed),
+        "but it still supersedes the invite"
+    );
+
+    let url_changed = coaching_sessions::Model {
+        meeting_url: Some("https://meet.example/new".to_string()),
+        ..base.clone()
+    };
+    assert!(
+        !affects_schedule(&base, &url_changed),
+        "a meeting URL edit is not a reschedule"
+    );
+    assert!(
+        affects_invite(&base, &url_changed),
+        "but it still supersedes the invite"
+    );
+}
+
 // ── Session Cancelled Email Tests ──────────────────────────────────
 
 /// A cancellation must supersede the invite it replaces: same `UID`, next `SEQUENCE`.
