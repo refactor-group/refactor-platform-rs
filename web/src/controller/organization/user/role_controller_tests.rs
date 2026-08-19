@@ -216,12 +216,14 @@ async fn attach_returns_404_for_a_user_the_admin_cannot_see() {
     let user = requester();
     let role = test_role(user.id, Some(organization_id), users::Role::Admin);
 
-    // The visibility probe finds an administered org but no overlap, so it answers
-    // false. Its rows are id-only, unreadable as an organization: skipping the probe
-    // feeds them to attach_to_organization's first query and surfaces as a 500, so a
-    // 404 here can only have come from the visibility check.
+    // Both visibility probes find an administered org but no overlap, so the answer
+    // is false. Their rows are id-only, unreadable as an organization: skipping the
+    // probes feeds them to attach_to_organization's first query and surfaces as a
+    // 500, so a 404 here can only have come from the visibility check.
     let db = Arc::new(
         mock_through_extractor(&user, &role, organization_id)
+            .append_query_results([vec![id_row("organization_id", organization_id)]])
+            .append_query_results([Vec::<BTreeMap<String, Value>>::new()])
             .append_query_results([vec![id_row("organization_id", organization_id)]])
             .append_query_results([Vec::<BTreeMap<String, Value>>::new()])
             .into_connection(),

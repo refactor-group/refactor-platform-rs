@@ -11,7 +11,7 @@ use chrono::Utc;
 use domain::user::Backend;
 use domain::{user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, MockDatabase, Value};
+use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Value};
 use service::config::Config;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -128,10 +128,31 @@ async fn data_array(response: axum::response::Response) -> Vec<serde_json::Value
         .clone()
 }
 
-/// Two empty rows for the `shares_administered_organization` probe.
+/// Empty rows for both visibility probes: `shares_administered_organization` and
+/// `was_member_of_administered_organization`, two queries each.
+///
+/// Both run on every path, including unknown emails, so response timing cannot
+/// separate "no such email" from "not yours to see".
 fn empty_scope_probe(mock: MockDatabase) -> MockDatabase {
-    mock.append_query_results([Vec::<BTreeMap<String, Value>>::new()])
-        .append_query_results([Vec::<BTreeMap<String, Value>>::new()])
+    (0..4).fold(mock, |mock, _| {
+        mock.append_query_results([Vec::<BTreeMap<String, Value>>::new()])
+    })
+}
+
+/// The rate-limit gate ahead of the lookup: an advisory lock, a count, then the
+/// recorded attempt. The lock is an exec, which `MockDatabase` queues separately
+/// from query results.
+fn under_the_rate_limit(mock: MockDatabase) -> MockDatabase {
+    mock.append_exec_results([MockExecResult {
+        last_insert_id: 0,
+        rows_affected: 0,
+    }])
+    .append_query_results([Vec::<domain::user_lookup_attempts::Model>::new()])
+    .append_query_results([[domain::user_lookup_attempts::Model {
+        id: Id::new_v4(),
+        requester_user_id: Id::new_v4(),
+        attempted_at: chrono::Utc::now().into(),
+    }]])
 }
 
 #[tokio::test]
@@ -159,13 +180,15 @@ async fn lookup_returns_200_with_one_element_for_a_super_admin() {
     let role = test_role(user.id, None, users::Role::SuperAdmin);
     let target_id = Id::new_v4();
 
-    let mock = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            target(target_id),
-            None,
-        )]]);
+    let mock = under_the_rate_limit(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]]),
+    )
+    .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+        target(target_id),
+        None,
+    )]]);
 
     let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
@@ -180,10 +203,12 @@ async fn lookup_returns_200_and_an_empty_array_when_nothing_matches() {
     let user = requester();
     let role = test_role(user.id, None, users::Role::SuperAdmin);
 
-    let mock = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]]);
+    let mock = under_the_rate_limit(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]]),
+    )
+    .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]]);
 
     let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
@@ -201,13 +226,15 @@ async fn lookup_result_carries_only_the_narrow_dto_fields() {
     let role = test_role(user.id, None, users::Role::SuperAdmin);
     let target_id = Id::new_v4();
 
-    let mock = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results([vec![(user.clone(), role.clone())]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            target(target_id),
-            None,
-        )]]);
+    let mock = under_the_rate_limit(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]]),
+    )
+    .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+        target(target_id),
+        None,
+    )]]);
 
     let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
@@ -225,4 +252,71 @@ async fn lookup_result_carries_only_the_narrow_dto_fields() {
         !found.contains_key("roles"),
         "the lookup DTO must never leak the target's roles"
     );
+}
+
+/// I-C4. Over the allowance the endpoint must refuse before it looks anything up,
+/// or the throttle is decorative: the work it exists to prevent has already happened
+/// by the time the 429 is written.
+///
+/// The mock is primed with the count and nothing else, so a handler that proceeded
+/// would run past the end of the queue and surface as a 500. A 429 here can only
+/// mean the lookup never ran.
+#[tokio::test]
+async fn lookup_returns_429_over_the_rate_limit_without_looking_anything_up() {
+    let user = requester();
+    let role = test_role(user.id, Some(Id::new_v4()), users::Role::Admin);
+
+    let over_the_limit = (0..domain::user_lookup::MAX_ATTEMPTS_PER_WINDOW)
+        .map(|_| domain::user_lookup_attempts::Model {
+            id: Id::new_v4(),
+            requester_user_id: user.id,
+            attempted_at: chrono::Utc::now().into(),
+        })
+        .collect::<Vec<_>>();
+
+    let db = Arc::new(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 0,
+            }])
+            .append_query_results([over_the_limit])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = lookup(&app, &cookie, "found@example.com").await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// The complement: at one below the allowance the lookup proceeds normally. Without
+/// this, a gate that refused everyone would satisfy the test above.
+#[tokio::test]
+async fn lookup_proceeds_under_the_rate_limit() {
+    let user = requester();
+    let role = test_role(user.id, None, users::Role::SuperAdmin);
+    let target_id = Id::new_v4();
+
+    let mock = under_the_rate_limit(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user.clone(), role.clone())]]),
+    )
+    .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+        target(target_id),
+        None,
+    )]]);
+
+    let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
+    let cookie = login_cookie(&app).await;
+
+    let response = lookup(&app, &cookie, "found@example.com").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(data_array(response).await.len(), 1);
 }

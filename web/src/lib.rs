@@ -109,6 +109,35 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     }
     let job_handles = scheduler.into_handles();
 
+    // Background sweep of the user_lookup_attempts throttle table. Unlike the audit
+    // tables it is written on every email lookup and read only within a one-hour
+    // window, so without this it grows for the life of the deployment.
+    //
+    // Retention exceeds the rate-limit window on purpose: a sweep landing mid-window
+    // must not delete rows the next check still needs to count.
+    let user_lookup_sweep_task = tokio::task::spawn({
+        let db = Arc::clone(&app_state.database_connection);
+        async move {
+            const SWEEP_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(60 * 60);
+            const RETENTION_HOURS: i64 = 24;
+            loop {
+                tokio::time::sleep(SWEEP_INTERVAL).await;
+                match domain::user_lookup::sweep_old_attempts(&db, RETENTION_HOURS).await {
+                    Ok(deleted) if deleted > 0 => {
+                        log::info!(
+                            "[user-lookup-sweep] removed {deleted} attempt record(s) \
+                             older than {RETENTION_HOURS}h"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::warn!("[user-lookup-sweep] sweep iteration failed: {e:?}");
+                    }
+                }
+            }
+        }
+    });
+
     let session_layer = SessionManagerLayer::new(session_store)
         // Get non-secure cookies for local testing, while production automatically gets secure cookies
         .with_secure(app_state.config.is_production())
@@ -221,6 +250,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     for handle in job_handles {
         handle.await.unwrap();
     }
+    user_lookup_sweep_task.await.unwrap();
 
     Ok(())
 }
