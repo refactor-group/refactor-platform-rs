@@ -284,7 +284,13 @@ struct ClaimedPair {
 /// holds a role in the session's organization, and they have no claim row whose
 /// `sent_for_start` equals the session's current `date`. Removing someone from an
 /// organization leaves their relationships and sessions in place, so without the
-/// membership test a former member would keep being mailed session details forever. The
+/// membership test a former member would keep being mailed session details forever. A
+/// global SuperAdmin holds no per-organization row and counts as a member everywhere,
+/// matching `user_role::retain_organization_members`. The recipient is the session's own
+/// coachee either way, so this test only removes people from the sweep and cannot widen
+/// it to sessions someone is not already a participant in. It is a semi-join for the same
+/// reason a join would be wrong: several roles would duplicate the row and the upsert
+/// cannot touch one twice. The
 /// claim is the upsert itself: the unique index on `(coaching_session_id, user_id)`
 /// arbitrates between concurrent backend replicas, and `RETURNING` yields only the
 /// pairs this caller actually won, so a row can never be handed to two senders.
@@ -1360,6 +1366,11 @@ mod tests {
             sql.contains("ur.user_id = cr.coachee_id")
                 && sql.contains("ur.organization_id = cr.organization_id"),
             "membership must be scoped to this session's organization, got: {sql}"
+        );
+        assert!(
+            sql.contains("AND EXISTS ("),
+            "membership must be a semi-join: joining user_roles would duplicate a row per \
+             role and the upsert cannot touch one twice, got: {sql}"
         );
         assert!(
             sql.contains("ur.organization_id IS NULL AND ur.role = 'super_admin'"),
