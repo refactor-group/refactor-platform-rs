@@ -1216,7 +1216,7 @@ mod tests {
     use super::*;
     use entity::meeting_provider::Provider;
     use entity::Id;
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Transaction};
 
     /// The claim has to select and write in one statement, and the conflict clause has
     /// to skip rows already current. If a refactor split it into a SELECT followed by an
@@ -1287,6 +1287,34 @@ mod tests {
         assert!(
             !sql.contains("FOR UPDATE"),
             "locking the session row would make two recipients contend, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// A failed send must hand back only that recipient's claim. Scoping the delete to
+    /// the session alone would release a second recipient's claim too, resending theirs.
+    #[tokio::test]
+    async fn release_reminder_claim_deletes_only_that_recipients_row() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        release_reminder_claim(&db, Id::new_v4(), Id::new_v4()).await?;
+
+        // Debug-escapes the quotes; drop them so the assertions read like the SQL.
+        let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
+
+        assert!(
+            sql.contains("DELETE FROM \"refactor_platform\".\"coaching_session_reminders\""),
+            "the claim is released by deleting its row, got: {sql}"
+        );
+        assert!(
+            sql.contains("\"coaching_session_id\" = $1") && sql.contains("\"user_id\" = $2"),
+            "the delete must be scoped to the pair, not the whole session, got: {sql}"
         );
 
         Ok(())

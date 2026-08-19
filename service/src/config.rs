@@ -886,7 +886,11 @@ impl Config {
     /// Clamped to at least one hour: a lead shorter than the poll interval would let
     /// sessions slip past the window between two ticks and never be reminded.
     pub fn session_reminder_lead(&self) -> Duration {
-        Duration::from_secs(self.session_reminder_lead_hours.max(1) * 60 * 60)
+        Duration::from_secs(
+            self.session_reminder_lead_hours
+                .max(1)
+                .saturating_mul(60 * 60),
+        )
     }
 
     /// Returns how often the reminder sweep runs.
@@ -894,7 +898,7 @@ impl Config {
     /// Clamped to at least one minute so a misconfigured `0` cannot spin the job into
     /// a tight loop against the database.
     pub fn session_reminder_poll_interval(&self) -> Duration {
-        Duration::from_secs(self.session_reminder_poll_minutes.max(1) * 60)
+        Duration::from_secs(self.session_reminder_poll_minutes.max(1).saturating_mul(60))
     }
 
     pub fn runtime_env(&self) -> RustEnv {

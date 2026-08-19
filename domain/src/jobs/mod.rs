@@ -14,10 +14,12 @@
 //! for work measured in hours is free.
 //!
 //! Durability and multi-replica safety come from the queries, not from a broker: a job
-//! that must not double-act claims its rows in the same statement that selects them
-//! (`FOR UPDATE SKIP LOCKED` + a stamped column), so two backend replicas running the
-//! same sweep divide the work instead of duplicating it. See
-//! `entity_api::coaching_session::claim_due_reminders` for the canonical example.
+//! that must not double-act claims its rows in the same statement that selects them, so
+//! two backend replicas running the same sweep divide the work instead of duplicating
+//! it. `entity_api::coaching_session::claim_due_reminders` is the canonical example: it
+//! upserts into a claim table and lets the unique index arbitrate, returning only the
+//! rows that caller won. See `docs/architecture/background_jobs.md` for why that beats
+//! locking the source row.
 //!
 //! # Adding a job
 //!

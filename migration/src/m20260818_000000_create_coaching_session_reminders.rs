@@ -1,8 +1,20 @@
 use sea_orm_migration::prelude::*;
 
-/// Default reminder lead time, mirrored from `SESSION_REMINDER_LEAD_HOURS`. Used only
-/// by the backfill below; the running job reads the configured value.
+/// Fallback reminder lead time when `SESSION_REMINDER_LEAD_HOURS` is unset, mirroring
+/// the running job's own default.
 const DEFAULT_LEAD_HOURS: i64 = 24;
+
+/// The lead time the backfill should suppress, read from the same variable the job uses.
+///
+/// A deploy configured for a longer lead would otherwise leave sessions between 24 hours
+/// and that lead unstamped, and the first sweep would mail all of them at once.
+fn suppression_lead_hours() -> i64 {
+    std::env::var("SESSION_REMINDER_LEAD_HOURS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|hours| *hours > 0)
+        .unwrap_or(DEFAULT_LEAD_HOURS)
+}
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -43,13 +55,14 @@ impl MigrationTrait for Migration {
 
         // Suppress a deploy-time blast. Every session already inside the reminder
         // window (and every past one) is marked as though its reminder had gone out,
-        // so enabling the job does not email every coachee with a session in the next
-        // 24 hours the moment the container starts. Sessions further out are left
-        // unstamped and get a reminder on schedule.
+        // so enabling the job does not email every coachee with an imminent session
+        // the moment the container starts. Sessions further out are left unstamped
+        // and get a reminder on schedule.
         //
         // Coachees only: they are the sole recipient today. A recipient added later
         // needs its own suppression pass at that time, since a row written here would
         // claim a reminder was sent for a window that closed long before.
+        let lead_hours = suppression_lead_hours();
         manager
             .get_connection()
             .execute_unprepared(&format!(
@@ -59,7 +72,7 @@ impl MigrationTrait for Migration {
                  FROM refactor_platform.coaching_sessions cs
                  JOIN refactor_platform.coaching_relationships cr
                    ON cr.id = cs.coaching_relationship_id
-                 WHERE cs.date <= NOW() AT TIME ZONE 'UTC' + INTERVAL '{DEFAULT_LEAD_HOURS} hours'
+                 WHERE cs.date <= NOW() AT TIME ZONE 'UTC' + INTERVAL '{lead_hours} hours'
                  ON CONFLICT (coaching_session_id, user_id) DO NOTHING"
             ))
             .await?;

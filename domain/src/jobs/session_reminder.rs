@@ -51,7 +51,13 @@ impl Sweep {
     pub fn from_config(config: &Config) -> Option<Self> {
         config.session_reminder_email_template_id()?;
 
-        let lead = chrono::Duration::from_std(config.session_reminder_lead()).ok()?;
+        let lead = match chrono::Duration::from_std(config.session_reminder_lead()) {
+            Ok(lead) => lead,
+            Err(e) => {
+                warn!("[session-reminder] SESSION_REMINDER_LEAD_HOURS is out of range, reminders disabled: {e:?}");
+                return None;
+            }
+        };
 
         Some(Self {
             lead,

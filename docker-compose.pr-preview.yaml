@@ -41,6 +41,8 @@ services:
       # Database connection string for migrations
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DATABASE_SCHEMA: ${POSTGRES_SCHEMA} # Database schema name
+      # Sizes the reminder backfill's suppression window to match the running job
+      SESSION_REMINDER_LEAD_HOURS: ${SESSION_REMINDER_LEAD_HOURS}
     depends_on:
       postgres:
         condition: service_healthy        # Wait for postgres to be healthy
