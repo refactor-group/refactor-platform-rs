@@ -342,10 +342,9 @@ mod tests {
             ..updated.clone()
         };
 
-        // Setting the title is invite-relevant but not a reschedule, so update bumps
-        // SEQUENCE and sends nothing: find_by_id → UPDATE ... RETURNING →
-        // increment_ical_sequence (find_by_id → UPDATE ... RETURNING) → the title
-        // event, whose participant lookup short-circuits on the empty result below.
+        // Setting the title bumps SEQUENCE: find_by_id → UPDATE ... RETURNING →
+        // increment_ical_sequence (find_by_id → UPDATE ... RETURNING) → the title event,
+        // whose participant lookup short-circuits on the empty result below.
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results(vec![vec![session.clone()]]) // domain update: find_by_id

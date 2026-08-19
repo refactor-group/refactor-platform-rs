@@ -1245,9 +1245,9 @@ fn affects_invite_tracks_only_fields_the_invite_carries() {
     );
 }
 
-/// The narrower predicate that decides whether an edit earns a "has been rescheduled"
-/// email. Only a moved start or a changed length is a reschedule; the other invite fields
-/// supersede the `.ics` without announcing one.
+/// The predicate that decides whether an edit earns a "has been rescheduled" email. The
+/// title and meeting-URL cases pin the split from [`affects_invite`], which still carries
+/// them.
 #[test]
 fn affects_schedule_covers_only_the_start_and_the_length() {
     let base = create_test_session();

@@ -496,14 +496,9 @@ pub fn affects_invite(old: &coaching_sessions::Model, new: &coaching_sessions::M
         || old.title != new.title
 }
 
-/// Whether an edit moved the session in time, and so earns a "has been rescheduled"
-/// notification. Deliberately narrower than [`affects_invite`]: an edit can need a fresh
-/// invite without any human needing to be told their session moved, and the reschedule
-/// copy announces a start and a duration it would otherwise have to describe as
-/// unchanged.
-///
-/// Every field here is also in [`affects_invite`], so a send always rides on an edit that
-/// already bumped `SEQUENCE`.
+/// True when an edit moved the session in time, so the participants earn a "has been
+/// rescheduled" notification. Every field here is also in [`affects_invite`], so a send
+/// always rides on an edit that already bumped `SEQUENCE`.
 pub fn affects_schedule(old: &coaching_sessions::Model, new: &coaching_sessions::Model) -> bool {
     old.date != new.date || old.duration_minutes != new.duration_minutes
 }
