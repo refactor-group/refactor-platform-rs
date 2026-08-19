@@ -257,10 +257,27 @@ two replicas and a reschedule landing inside one delivery:
   start back over B's claim, which would leave the pair due and resend what B already
   delivered.
 
+Repeat the whole sequence rescheduling **back to the original start** in step 3, so B's
+claim holds the same start A is carrying. The outcome must be identical: ownership is a
+per-claim token, not the start, so a repeated start does not let A match B's claim.
+
 The same applies when A's send *fails*: A must not delete a claim B has since made.
 Repeat with `/tmp/resend_fail` in place for A only, and expect B's claim row to survive.
 
-### S12. A zero lead time suppresses only what the job will sweep
+### S12. A coachee who is only a global SuperAdmin is still reminded
+
+A global SuperAdmin holds a `user_roles` row with a NULL `organization_id` and no
+per-organization row, so an exact organization match would exclude them.
+
+Seed a session inside the window whose coachee holds only the global SuperAdmin role.
+
+- **Expect** they are claimed and emailed like any other coachee, matching how
+  `user_role::retain_organization_members` treats them.
+
+In practice a coachee also holds a role in that organization, so this is guarding the
+predicate's agreement with the canonical one rather than a reachable state today.
+
+### S13. A zero lead time suppresses only what the job will sweep
 
 Set `SESSION_REMINDER_LEAD_HOURS=0` before applying the migration to a database with
 sessions spread across the next day.
@@ -306,6 +323,6 @@ in-process test. S8 and S9 need a database that has not had the migration applie
 1 minute cadence. H1 through H6, S1 through S7, and S9 passed against a running backend;
 H7 and S8 were exercised at the SQL and migration level.
 
-S10, S11, and S12 were added after that run, from a review pass, and have **not** been
+S10 through S13 were added after that run, from review passes, and have **not** been
 executed yet. S11 in particular cannot be driven from outside the process without the
 mock-side delay it describes.

@@ -260,10 +260,13 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
 pub struct DueReminder {
     pub session: Model,
     pub recipient_id: Id,
-    /// The start this caller stamped. Proves ownership of the claim to
-    /// [`confirm_reminder_claim`] and [`release_reminder_claim`], so a replica that has
-    /// since reclaimed the pair at a newer start is not overwritten.
+    /// The start this caller stamped, used to tell whether the session moved between the
+    /// claim and the send.
     pub claimed_for_start: NaiveDateTime,
+    /// Proves ownership of the claim to [`confirm_reminder_claim`] and
+    /// [`release_reminder_claim`], so a replica that has since reclaimed the pair is not
+    /// overwritten. Regenerated per claim, so unlike the start it never repeats.
+    pub claim_id: Id,
 }
 
 /// The `(session, recipient)` pairs an upsert actually claimed.
@@ -272,6 +275,7 @@ struct ClaimedPair {
     coaching_session_id: Id,
     user_id: Id,
     sent_for_start: NaiveDateTime,
+    claim_id: Id,
 }
 
 /// Atomically claims the reminders that are now due and returns them.
@@ -323,7 +327,10 @@ pub async fn claim_due_reminders(
                      SELECT 1
                      FROM refactor_platform.user_roles ur
                      WHERE ur.user_id = cr.coachee_id
-                       AND ur.organization_id = cr.organization_id
+                       AND (
+                           ur.organization_id = cr.organization_id
+                           OR (ur.organization_id IS NULL AND ur.role = 'super_admin')
+                       )
                  )
                ORDER BY cs.date
                LIMIT $3
@@ -333,10 +340,11 @@ pub async fn claim_due_reminders(
            SELECT coaching_session_id, user_id, date FROM due
            ON CONFLICT (coaching_session_id, user_id) DO UPDATE
                SET sent_for_start = EXCLUDED.sent_for_start,
+                   claim_id = gen_random_uuid(),
                    updated_at = NOW()
                WHERE coaching_session_reminders.sent_for_start
                      IS DISTINCT FROM EXCLUDED.sent_for_start
-           RETURNING coaching_session_id, user_id, sent_for_start"#,
+           RETURNING coaching_session_id, user_id, sent_for_start, claim_id"#,
         [now.into(), cutoff.into(), (limit as i64).into()],
     ))
     .all(db)
@@ -365,6 +373,7 @@ pub async fn claim_due_reminders(
                     session: session.clone(),
                     recipient_id: claim.user_id,
                     claimed_for_start: claim.sent_for_start,
+                    claim_id: claim.claim_id,
                 })
         })
         .collect())
@@ -377,15 +386,16 @@ pub async fn claim_due_reminders(
 /// announced the new one. Left alone the pair stays due, and the next tick resends a
 /// start the recipient was already told. Writing back what was sent closes that window.
 ///
-/// Matching on `claimed_for_start` is what keeps this safe across replicas: delivery can
-/// outlast a reschedule, and another replica may have reclaimed the pair at a newer start
-/// in the meantime. Without the guard this write would clobber that newer claim and the
-/// reminder it already delivered would go out again.
+/// Matching on `claim_id` is what keeps this safe across replicas: delivery can outlast
+/// a reschedule, and another replica may have reclaimed the pair in the meantime. Without
+/// the guard this write would clobber that newer claim and the reminder it already
+/// delivered would go out again. The token rather than the start, because a session moved
+/// away and back repeats a start and would let a stale caller match again.
 pub async fn confirm_reminder_claim(
     db: &impl ConnectionTrait,
     coaching_session_id: Id,
     recipient_id: Id,
-    claimed_for_start: NaiveDateTime,
+    claim_id: Id,
     sent_for_start: NaiveDateTime,
 ) -> Result<(), Error> {
     coaching_session_reminders::Entity::update_many()
@@ -399,7 +409,7 @@ pub async fn confirm_reminder_claim(
         )
         .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
         .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
-        .filter(coaching_session_reminders::Column::SentForStart.eq(claimed_for_start))
+        .filter(coaching_session_reminders::Column::ClaimId.eq(claim_id))
         .exec(db)
         .await?;
 
@@ -412,18 +422,18 @@ pub async fn confirm_reminder_claim(
 /// Deleting the row rather than leaving it stamped is deliberate: a transient Resend
 /// failure should cost a tick, not the whole reminder.
 ///
-/// Scoped to `claimed_for_start` so a slow failing send cannot delete a claim another
-/// replica has since made at a newer start and already delivered.
+/// Scoped to `claim_id` so a slow failing send cannot delete a claim another replica has
+/// since made and already delivered.
 pub async fn release_reminder_claim(
     db: &impl ConnectionTrait,
     coaching_session_id: Id,
     recipient_id: Id,
-    claimed_for_start: NaiveDateTime,
+    claim_id: Id,
 ) -> Result<(), Error> {
     coaching_session_reminders::Entity::delete_many()
         .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
         .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
-        .filter(coaching_session_reminders::Column::SentForStart.eq(claimed_for_start))
+        .filter(coaching_session_reminders::Column::ClaimId.eq(claim_id))
         .exec(db)
         .await?;
 
@@ -1315,6 +1325,11 @@ mod tests {
             sql.contains("RETURNING coaching_session_id, user_id"),
             "the claimed pairs are the work list, got: {sql}"
         );
+        assert!(
+            sql.contains("claim_id = gen_random_uuid()"),
+            "each claim needs a fresh token, or a session moved away and back lets a \
+             stale caller confirm or release someone else's claim, got: {sql}"
+        );
 
         Ok(())
     }
@@ -1345,6 +1360,11 @@ mod tests {
             sql.contains("ur.user_id = cr.coachee_id")
                 && sql.contains("ur.organization_id = cr.organization_id"),
             "membership must be scoped to this session's organization, got: {sql}"
+        );
+        assert!(
+            sql.contains("ur.organization_id IS NULL AND ur.role = 'super_admin'"),
+            "a global SuperAdmin holds no organization row and must still count, \
+             matching user_role::retain_organization_members, got: {sql}"
         );
 
         Ok(())
@@ -1396,9 +1416,7 @@ mod tests {
             .and_hms_opt(9, 0, 0)
             .unwrap();
 
-        let claimed_for = sent_for - chrono::Duration::hours(1);
-
-        confirm_reminder_claim(&db, Id::new_v4(), Id::new_v4(), claimed_for, sent_for).await?;
+        confirm_reminder_claim(&db, Id::new_v4(), Id::new_v4(), Id::new_v4(), sent_for).await?;
 
         let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
         let (set_clause, where_clause) = sql.split_once("WHERE").expect("update needs a WHERE");
@@ -1414,7 +1432,7 @@ mod tests {
             "the write must be scoped to the pair, got: {sql}"
         );
         assert!(
-            where_clause.contains("\"sent_for_start\" ="),
+            where_clause.contains("\"claim_id\" ="),
             "the write must only land on the claim this caller still owns, got: {sql}"
         );
         assert!(
@@ -1436,12 +1454,7 @@ mod tests {
             }])
             .into_connection();
 
-        let claimed_for = chrono::NaiveDate::from_ymd_opt(2026, 6, 2)
-            .unwrap()
-            .and_hms_opt(9, 0, 0)
-            .unwrap();
-
-        release_reminder_claim(&db, Id::new_v4(), Id::new_v4(), claimed_for).await?;
+        release_reminder_claim(&db, Id::new_v4(), Id::new_v4(), Id::new_v4()).await?;
 
         // Debug-escapes the quotes; drop them so the assertions read like the SQL.
         let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
@@ -1455,7 +1468,7 @@ mod tests {
             "the delete must be scoped to the pair, not the whole session, got: {sql}"
         );
         assert!(
-            sql.contains("\"sent_for_start\" = $3"),
+            sql.contains("\"claim_id\" = $3"),
             "a failing send must not delete a claim another replica has since made, \
              got: {sql}"
         );

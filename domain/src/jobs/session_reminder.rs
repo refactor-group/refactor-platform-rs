@@ -110,7 +110,7 @@ impl Job for Sweep {
                             &*ctx.db,
                             session.id,
                             reminder.recipient_id,
-                            reminder.claimed_for_start,
+                            reminder.claim_id,
                             session.date,
                         )
                         .await
@@ -135,7 +135,7 @@ impl Job for Sweep {
                         &*ctx.db,
                         session.id,
                         reminder.recipient_id,
-                        reminder.claimed_for_start,
+                        reminder.claim_id,
                     )
                     .await
                     {

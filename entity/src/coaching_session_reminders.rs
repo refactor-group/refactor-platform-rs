@@ -24,6 +24,9 @@ pub struct Model {
     /// FROM` the session's current start, so moving a session makes it due again with
     /// no other code path having to clear the claim.
     pub sent_for_start: DateTime,
+    /// Regenerated on every claim. Identifies which claim a caller holds, so a delivery
+    /// that outlasts a reclaim cannot confirm or release the newer one.
+    pub claim_id: Id,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]

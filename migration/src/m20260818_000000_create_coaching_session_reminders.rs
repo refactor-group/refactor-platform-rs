@@ -46,6 +46,10 @@ impl MigrationTrait for Migration {
                     coaching_session_id UUID NOT NULL REFERENCES refactor_platform.coaching_sessions(id) ON DELETE CASCADE,
                     user_id UUID NOT NULL REFERENCES refactor_platform.users(id) ON DELETE CASCADE,
                     sent_for_start TIMESTAMP NOT NULL,
+                    -- Regenerated on every claim so a caller can prove the claim it is
+                    -- confirming or releasing is still its own. `sent_for_start` cannot
+                    -- serve that purpose: a session moved away and back repeats a value.
+                    claim_id UUID NOT NULL DEFAULT gen_random_uuid(),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     CONSTRAINT uq_coaching_session_reminders_session_user UNIQUE (coaching_session_id, user_id)
