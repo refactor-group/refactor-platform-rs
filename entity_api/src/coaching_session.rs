@@ -260,6 +260,10 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
 pub struct DueReminder {
     pub session: Model,
     pub recipient_id: Id,
+    /// The start this caller stamped. Proves ownership of the claim to
+    /// [`confirm_reminder_claim`] and [`release_reminder_claim`], so a replica that has
+    /// since reclaimed the pair at a newer start is not overwritten.
+    pub claimed_for_start: NaiveDateTime,
 }
 
 /// The `(session, recipient)` pairs an upsert actually claimed.
@@ -267,12 +271,16 @@ pub struct DueReminder {
 struct ClaimedPair {
     coaching_session_id: Id,
     user_id: Id,
+    sent_for_start: NaiveDateTime,
 }
 
 /// Atomically claims the reminders that are now due and returns them.
 ///
-/// A reminder is due when its session starts in `(now, now + lead]` and the recipient
-/// has no claim row whose `sent_for_start` equals the session's current `date`. The
+/// A reminder is due when its session starts in `(now, now + lead]`, the recipient still
+/// holds a role in the session's organization, and they have no claim row whose
+/// `sent_for_start` equals the session's current `date`. Removing someone from an
+/// organization leaves their relationships and sessions in place, so without the
+/// membership test a former member would keep being mailed session details forever. The
 /// claim is the upsert itself: the unique index on `(coaching_session_id, user_id)`
 /// arbitrates between concurrent backend replicas, and `RETURNING` yields only the
 /// pairs this caller actually won, so a row can never be handed to two senders.
@@ -311,6 +319,12 @@ pub async fn claim_due_reminders(
                WHERE cs.date > $1
                  AND cs.date <= $2
                  AND csr.sent_for_start IS DISTINCT FROM cs.date
+                 AND EXISTS (
+                     SELECT 1
+                     FROM refactor_platform.user_roles ur
+                     WHERE ur.user_id = cr.coachee_id
+                       AND ur.organization_id = cr.organization_id
+                 )
                ORDER BY cs.date
                LIMIT $3
            )
@@ -322,7 +336,7 @@ pub async fn claim_due_reminders(
                    updated_at = NOW()
                WHERE coaching_session_reminders.sent_for_start
                      IS DISTINCT FROM EXCLUDED.sent_for_start
-           RETURNING coaching_session_id, user_id"#,
+           RETURNING coaching_session_id, user_id, sent_for_start"#,
         [now.into(), cutoff.into(), (limit as i64).into()],
     ))
     .all(db)
@@ -350,6 +364,7 @@ pub async fn claim_due_reminders(
                 .map(|session| DueReminder {
                     session: session.clone(),
                     recipient_id: claim.user_id,
+                    claimed_for_start: claim.sent_for_start,
                 })
         })
         .collect())
@@ -362,12 +377,15 @@ pub async fn claim_due_reminders(
 /// announced the new one. Left alone the pair stays due, and the next tick resends a
 /// start the recipient was already told. Writing back what was sent closes that window.
 ///
-/// The `ne` filter makes the common case a no-op at the row level: nothing moved, so
-/// there is nothing to realign.
+/// Matching on `claimed_for_start` is what keeps this safe across replicas: delivery can
+/// outlast a reschedule, and another replica may have reclaimed the pair at a newer start
+/// in the meantime. Without the guard this write would clobber that newer claim and the
+/// reminder it already delivered would go out again.
 pub async fn confirm_reminder_claim(
     db: &impl ConnectionTrait,
     coaching_session_id: Id,
     recipient_id: Id,
+    claimed_for_start: NaiveDateTime,
     sent_for_start: NaiveDateTime,
 ) -> Result<(), Error> {
     coaching_session_reminders::Entity::update_many()
@@ -381,7 +399,7 @@ pub async fn confirm_reminder_claim(
         )
         .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
         .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
-        .filter(coaching_session_reminders::Column::SentForStart.ne(sent_for_start))
+        .filter(coaching_session_reminders::Column::SentForStart.eq(claimed_for_start))
         .exec(db)
         .await?;
 
@@ -393,14 +411,19 @@ pub async fn confirm_reminder_claim(
 /// Called when delivery fails after [`claim_due_reminders`] already claimed the pair.
 /// Deleting the row rather than leaving it stamped is deliberate: a transient Resend
 /// failure should cost a tick, not the whole reminder.
+///
+/// Scoped to `claimed_for_start` so a slow failing send cannot delete a claim another
+/// replica has since made at a newer start and already delivered.
 pub async fn release_reminder_claim(
     db: &impl ConnectionTrait,
     coaching_session_id: Id,
     recipient_id: Id,
+    claimed_for_start: NaiveDateTime,
 ) -> Result<(), Error> {
     coaching_session_reminders::Entity::delete_many()
         .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
         .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
+        .filter(coaching_session_reminders::Column::SentForStart.eq(claimed_for_start))
         .exec(db)
         .await?;
 
@@ -1296,6 +1319,37 @@ mod tests {
         Ok(())
     }
 
+    /// Removing someone from an organization leaves their relationships and sessions in
+    /// place, so without a membership test the sweep would keep mailing a former member
+    /// session, coach, and meeting details indefinitely.
+    #[tokio::test]
+    async fn claim_due_reminders_skips_former_organization_members() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+
+        assert!(
+            sql.contains("FROM refactor_platform.user_roles ur"),
+            "eligibility must be checked against current membership, got: {sql}"
+        );
+        assert!(
+            sql.contains("ur.user_id = cr.coachee_id")
+                && sql.contains("ur.organization_id = cr.organization_id"),
+            "membership must be scoped to this session's organization, got: {sql}"
+        );
+
+        Ok(())
+    }
+
     /// The claim is per recipient, not per session, so the pair a later phase adds
     /// cannot be starved by a session-level lock or dropped by a session-level key.
     #[tokio::test]
@@ -1342,7 +1396,9 @@ mod tests {
             .and_hms_opt(9, 0, 0)
             .unwrap();
 
-        confirm_reminder_claim(&db, Id::new_v4(), Id::new_v4(), sent_for).await?;
+        let claimed_for = sent_for - chrono::Duration::hours(1);
+
+        confirm_reminder_claim(&db, Id::new_v4(), Id::new_v4(), claimed_for, sent_for).await?;
 
         let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
         let (set_clause, where_clause) = sql.split_once("WHERE").expect("update needs a WHERE");
@@ -1358,8 +1414,8 @@ mod tests {
             "the write must be scoped to the pair, got: {sql}"
         );
         assert!(
-            where_clause.contains("\"sent_for_start\" <>"),
-            "an unmoved start must not be rewritten, got: {sql}"
+            where_clause.contains("\"sent_for_start\" ="),
+            "the write must only land on the claim this caller still owns, got: {sql}"
         );
         assert!(
             sql.contains("2026-06-02T09:00:00"),
@@ -1380,7 +1436,12 @@ mod tests {
             }])
             .into_connection();
 
-        release_reminder_claim(&db, Id::new_v4(), Id::new_v4()).await?;
+        let claimed_for = chrono::NaiveDate::from_ymd_opt(2026, 6, 2)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        release_reminder_claim(&db, Id::new_v4(), Id::new_v4(), claimed_for).await?;
 
         // Debug-escapes the quotes; drop them so the assertions read like the SQL.
         let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
@@ -1392,6 +1453,11 @@ mod tests {
         assert!(
             sql.contains("\"coaching_session_id\" = $1") && sql.contains("\"user_id\" = $2"),
             "the delete must be scoped to the pair, not the whole session, got: {sql}"
+        );
+        assert!(
+            sql.contains("\"sent_for_start\" = $3"),
+            "a failing send must not delete a claim another replica has since made, \
+             got: {sql}"
         );
 
         Ok(())

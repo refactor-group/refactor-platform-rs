@@ -197,6 +197,9 @@ cadence, then seed a session inside the window.
 - **Expect** one claim row. Whichever replica loses the `ON CONFLICT` race gets no row
   back from `RETURNING` and sends nothing.
 
+S11 covers the harder half of this: two replicas that both legitimately claim the same
+pair at different starts, where the loser must not undo the winner's work.
+
 ### S6. Blank tuning values fall back instead of crashing
 
 Restart with `SESSION_REMINDER_LEAD_HOURS=` and `SESSION_REMINDER_POLL_MINUTES=` set to
@@ -214,6 +217,63 @@ Restart with `SESSION_REMINDER_LEAD_HOURS=0` and `SESSION_REMINDER_POLL_MINUTES=
   database.
 - **Expect** the lead is 1 hour, not 0, so sessions cannot slip between two ticks
   unreminded.
+
+### S10. A former organization member is not reminded
+
+Removing someone from an organization deletes their `user_roles` row but deliberately
+leaves their coaching relationships and sessions in place, so nothing else stops the
+sweep from mailing them.
+
+Seed a session inside the window for a coachee, then remove that coachee from the
+session's organization before the next tick.
+
+- **Expect** no email and no claim row for them, on that tick and every tick after.
+- **Expect** a session for a coachee who is still a member, in the same organization, is
+  still claimed and emailed on that same tick.
+- Re-add the coachee to the organization.
+- **Expect** they become eligible again and are reminded on the next tick, since
+  eligibility is re-derived per tick rather than recorded at claim time.
+
+This is the case with the longest exposure if it regresses. Unlike the scheduled or
+cancelled emails, which fire once on a user action, the sweep would keep mailing a removed
+member session, coach, and meeting details for every future session indefinitely.
+
+### S11. A slow send cannot clobber a newer claim
+
+The claim is written before delivery, so a send can still be in flight when the session
+moves and another replica reclaims the pair. Reproducing the interleaving by hand needs
+two replicas and a reschedule landing inside one delivery:
+
+1. Point replica A at the mock Resend and make it hang (add a `time.sleep(20)` to the
+   mock's `do_POST`), so its send stays in flight.
+2. Seed a session inside the window and let replica A claim it.
+3. While A is still sending, reschedule that session.
+4. Start replica B, whose startup sweep claims the pair at the new start and sends.
+5. Let A finish.
+
+- **Expect** exactly two emails total: A's for the old start, B's for the new one.
+- **Expect** the surviving claim row holds the **new** start, the one B sent.
+- **Expect** no third email on any later tick. A finishing last must not write its older
+  start back over B's claim, which would leave the pair due and resend what B already
+  delivered.
+
+The same applies when A's send *fails*: A must not delete a claim B has since made.
+Repeat with `/tmp/resend_fail` in place for A only, and expect B's claim row to survive.
+
+### S12. A zero lead time suppresses only what the job will sweep
+
+Set `SESSION_REMINDER_LEAD_HOURS=0` before applying the migration to a database with
+sessions spread across the next day.
+
+- **Expect** the backfill stamps only sessions within **one** hour, matching the runtime's
+  own clamp, not a full day.
+- **Expect** a session three hours out is left unstamped and is reminded when it enters
+  the one-hour window.
+
+Suppressing a wider window than the job sweeps marks sessions as reminded that no email
+was ever sent for, and the sweep then skips them permanently. There is no unit test for
+this: the lead resolution lives in the migration crate, where this repo does not keep
+tests.
 
 ### S8. The migration suppresses a deploy-time blast
 
@@ -243,5 +303,9 @@ in-process test. S8 and S9 need a database that has not had the migration applie
 ## Last run
 
 2026-08-19, local backend against a local Postgres with a mock Resend, 1 hour lead and
-1 minute cadence. All cases passed. H7, S8, and S9 were exercised at the SQL and
-migration level rather than through the running job.
+1 minute cadence. H1 through H6, S1 through S7, and S9 passed against a running backend;
+H7 and S8 were exercised at the SQL and migration level.
+
+S10, S11, and S12 were added after that run, from a review pass, and have **not** been
+executed yet. S11 in particular cannot be driven from outside the process without the
+mock-side delay it describes.

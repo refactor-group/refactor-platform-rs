@@ -4,15 +4,22 @@ use sea_orm_migration::prelude::*;
 /// the running job's own default.
 const DEFAULT_LEAD_HOURS: i64 = 24;
 
+/// Upper bound on the suppression window, well past any real lead time.
+const MAX_SUPPRESSION_HOURS: u64 = 1_000_000;
+
 /// The lead time the backfill should suppress, read from the same variable the job uses.
 ///
-/// A deploy configured for a longer lead would otherwise leave sessions between 24 hours
-/// and that lead unstamped, and the first sweep would mail all of them at once.
+/// Suppressing a different window than the job sweeps is wrong in both directions: too
+/// narrow and the first sweep mails everyone in the gap at once, too wide and sessions in
+/// the gap are marked as reminded without an email ever being sent.
 fn suppression_lead_hours() -> i64 {
     std::env::var("SESSION_REMINDER_LEAD_HOURS")
         .ok()
-        .and_then(|v| v.trim().parse::<i64>().ok())
-        .filter(|hours| *hours > 0)
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        // `.max(1)` mirrors the runtime's own clamp, so a configured `0` suppresses the
+        // hour the job will actually sweep rather than a whole day it never will. The
+        // upper bound only keeps the interval literal inside what Postgres accepts.
+        .map(|hours| hours.clamp(1, MAX_SUPPRESSION_HOURS) as i64)
         .unwrap_or(DEFAULT_LEAD_HOURS)
 }
 

@@ -101,22 +101,26 @@ impl Job for Sweep {
             match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
                 Ok(()) => {
                     sent += 1;
-                    // The claim was stamped before this session was reloaded. Record the
-                    // start the email actually announced, or a reschedule landing in that
-                    // window leaves the pair due and resends the same time next tick.
-                    if let Err(e) = coaching_session::confirm_reminder_claim(
-                        &*ctx.db,
-                        session.id,
-                        reminder.recipient_id,
-                        session.date,
-                    )
-                    .await
-                    {
-                        warn!(
-                            "[session-reminder] could not realign the claim on session {} \
-                             for user {}; it may be reminded again next tick: {e:?}",
-                            session.id, reminder.recipient_id
-                        );
+                    // The claim was stamped before this session was reloaded. When those
+                    // disagree a reschedule landed in between, so record the start the
+                    // email actually announced or the pair stays due and the same time
+                    // goes out again next tick.
+                    if session.date != reminder.claimed_for_start {
+                        if let Err(e) = coaching_session::confirm_reminder_claim(
+                            &*ctx.db,
+                            session.id,
+                            reminder.recipient_id,
+                            reminder.claimed_for_start,
+                            session.date,
+                        )
+                        .await
+                        {
+                            warn!(
+                                "[session-reminder] could not realign the claim on session \
+                                 {} for user {}; it may be reminded again next tick: {e:?}",
+                                session.id, reminder.recipient_id
+                            );
+                        }
                     }
                 }
                 Err(e) => {
@@ -131,6 +135,7 @@ impl Job for Sweep {
                         &*ctx.db,
                         session.id,
                         reminder.recipient_id,
+                        reminder.claimed_for_start,
                     )
                     .await
                     {
