@@ -11,7 +11,7 @@ use axum::{
     Json,
 };
 use domain::users::Role;
-use domain::{user as UserApi, user_role as UserRoleApi, Id};
+use domain::{user as UserApi, user_lookup, user_role as UserRoleApi, Id};
 use service::config::ApiVersion;
 
 /// INDEX the Users matching an exact email address.
@@ -31,6 +31,7 @@ use service::config::ApiVersion;
         (status = 400, description = "Missing or blank email"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Requester administers no organization"),
+        (status = 429, description = "Too many lookups from this requester"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -55,6 +56,10 @@ pub async fn index(
     if !administers_any_organization {
         return Err(Error::Web(WebErrorKind::Forbidden));
     }
+
+    // After authorization so nobody can fill another requester's allowance, and
+    // before the lookup so a refusal does no work.
+    user_lookup::record_attempt_or_reject(app_state.db_conn_ref(), authenticated_user.id).await?;
 
     let users = UserRoleApi::lookup_by_email_scoped(
         app_state.db_conn_ref(),

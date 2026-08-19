@@ -80,6 +80,8 @@ pub enum EntityErrorKind {
     InvalidOrExpiredToken,
     /// User has exceeded the per-email password-reset request rate limit.
     PasswordResetRateLimited,
+    /// Requester has exceeded the per-user cap on user-lookup requests.
+    UserLookupRateLimited,
     DbTransaction,
     ServiceUnavailable,
     Other(String),

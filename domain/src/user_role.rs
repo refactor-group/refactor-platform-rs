@@ -5,7 +5,7 @@
 //! never touch the `users` row itself.
 
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
-use entity_api::{coaching_relationship, organization, user, user_role};
+use entity_api::{coaching_relationship, organization, user, user_role, user_role_change};
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -262,9 +262,16 @@ pub async fn lookup_by_email_scoped(
         .iter()
         .any(|role| role.role == Role::SuperAdmin && role.organization_id.is_none());
 
-    // Run the scope check on every path, including unknown emails and super admin
-    // requesters, so response timing cannot be used to enumerate accounts.
+    // Both scope checks run on every path, including unknown emails and super admin
+    // requesters, so response timing cannot be used to enumerate accounts. Combining
+    // them with `||` before this point would short-circuit and leak the answer.
     let shares_organization = user_role::shares_administered_organization(
+        db,
+        requester.id,
+        found.as_ref().map_or_else(Id::nil, |user| user.id),
+    )
+    .await?;
+    let was_member = user_role_change::was_member_of_administered_organization(
         db,
         requester.id,
         found.as_ref().map_or_else(Id::nil, |user| user.id),
@@ -272,7 +279,7 @@ pub async fn lookup_by_email_scoped(
     .await?;
 
     Ok(found
-        .filter(|_| requester_is_super_admin || shares_organization)
+        .filter(|_| requester_is_super_admin || shares_organization || was_member)
         .map(|user| UserLookupResult {
             id: user.id,
             first_name: user.first_name,
@@ -285,10 +292,11 @@ pub async fn lookup_by_email_scoped(
 
 /// Whether `requester` may act on `target_user_id`.
 ///
-/// True for a global SuperAdmin, or when the requester administers an
-/// organization the target belongs to. Unlike `lookup_by_email_scoped` this may
-/// short-circuit: the target id is already known to the caller, so query count
-/// reveals nothing.
+/// True for a global SuperAdmin, when the requester administers an organization
+/// the target belongs to, or when the target has a recorded role change in one,
+/// which keeps a removed member re-attachable. Unlike `lookup_by_email_scoped`
+/// this may short-circuit: the target id is already known to the caller, so query
+/// count reveals nothing.
 pub async fn can_administer_user(
     db: &impl ConnectionTrait,
     requester: &users::Model,
@@ -300,7 +308,13 @@ pub async fn can_administer_user(
         .any(|role| role.role == Role::SuperAdmin && role.organization_id.is_none());
 
     Ok(requester_is_super_admin
-        || user_role::shares_administered_organization(db, requester.id, target_user_id).await?)
+        || user_role::shares_administered_organization(db, requester.id, target_user_id).await?
+        || user_role_change::was_member_of_administered_organization(
+            db,
+            requester.id,
+            target_user_id,
+        )
+        .await?)
 }
 
 /// Counts the distinct organizations a user belongs to.

@@ -38,6 +38,7 @@ pub mod topic_status;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user_invite_status;
+pub mod user_lookup_attempts;
 pub mod user_role_changes;
 pub mod user_roles;
 pub mod users;
