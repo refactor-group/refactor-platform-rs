@@ -355,6 +355,39 @@ pub async fn claim_due_reminders(
         .collect())
 }
 
+/// Realigns a claim with the start the delivered email actually announced.
+///
+/// The claim is stamped from a snapshot taken before the session is reloaded, so a
+/// reschedule landing in between leaves the claim holding the old start while the email
+/// announced the new one. Left alone the pair stays due, and the next tick resends a
+/// start the recipient was already told. Writing back what was sent closes that window.
+///
+/// The `ne` filter makes the common case a no-op at the row level: nothing moved, so
+/// there is nothing to realign.
+pub async fn confirm_reminder_claim(
+    db: &impl ConnectionTrait,
+    coaching_session_id: Id,
+    recipient_id: Id,
+    sent_for_start: NaiveDateTime,
+) -> Result<(), Error> {
+    coaching_session_reminders::Entity::update_many()
+        .col_expr(
+            coaching_session_reminders::Column::SentForStart,
+            Expr::value(sent_for_start),
+        )
+        .col_expr(
+            coaching_session_reminders::Column::UpdatedAt,
+            Expr::current_timestamp().into(),
+        )
+        .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
+        .filter(coaching_session_reminders::Column::SentForStart.ne(sent_for_start))
+        .exec(db)
+        .await?;
+
+    Ok(())
+}
+
 /// Hands a claimed reminder back so a later tick retries it.
 ///
 /// Called when delivery fails after [`claim_due_reminders`] already claimed the pair.
@@ -1287,6 +1320,50 @@ mod tests {
         assert!(
             !sql.contains("FOR UPDATE"),
             "locking the session row would make two recipients contend, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// The claim records what was claimed, not what was sent, and those differ when a
+    /// reschedule lands between the two. Realigning it is what stops the next tick from
+    /// resending a start the recipient was already told about.
+    #[tokio::test]
+    async fn confirm_reminder_claim_writes_back_the_start_that_was_sent() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let sent_for = chrono::NaiveDate::from_ymd_opt(2026, 6, 2)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        confirm_reminder_claim(&db, Id::new_v4(), Id::new_v4(), sent_for).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
+        let (set_clause, where_clause) = sql.split_once("WHERE").expect("update needs a WHERE");
+
+        assert!(
+            set_clause.contains("UPDATE \"refactor_platform\".\"coaching_session_reminders\"")
+                && set_clause.contains("\"sent_for_start\" ="),
+            "the sent start must be written back, got: {sql}"
+        );
+        assert!(
+            where_clause.contains("\"coaching_session_id\" =")
+                && where_clause.contains("\"user_id\" ="),
+            "the write must be scoped to the pair, got: {sql}"
+        );
+        assert!(
+            where_clause.contains("\"sent_for_start\" <>"),
+            "an unmoved start must not be rewritten, got: {sql}"
+        );
+        assert!(
+            sql.contains("2026-06-02T09:00:00"),
+            "the value written must be the start the email announced, got: {sql}"
         );
 
         Ok(())

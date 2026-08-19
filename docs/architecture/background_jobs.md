@@ -111,6 +111,13 @@ Delivery happens *after* the claim commits, so a failed send would otherwise be 
 reminder sweep therefore deletes the claim (`release_reminder_claim`) on failure, costing
 one tick instead of the whole reminder.
 
+The claim stores what was *claimed*, taken from the CTE snapshot, while the email is built
+from the session as reloaded a moment later. A reschedule landing between the two makes
+them disagree: the email announces the new start, the claim still holds the old one, and
+the pair stays due. A successful send therefore writes the announced start back
+(`confirm_reminder_claim`), so the next tick does not resend a time the recipient was
+already given.
+
 `LIMIT` bounds one tick's batch, so a backlog — the first run after an outage, say —
 drains over several ticks instead of bursting against the Resend API.
 

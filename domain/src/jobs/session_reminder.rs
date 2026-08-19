@@ -99,7 +99,26 @@ impl Job for Sweep {
         for reminder in &due {
             let session = &reminder.session;
             match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
-                Ok(()) => sent += 1,
+                Ok(()) => {
+                    sent += 1;
+                    // The claim was stamped before this session was reloaded. Record the
+                    // start the email actually announced, or a reschedule landing in that
+                    // window leaves the pair due and resends the same time next tick.
+                    if let Err(e) = coaching_session::confirm_reminder_claim(
+                        &*ctx.db,
+                        session.id,
+                        reminder.recipient_id,
+                        session.date,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "[session-reminder] could not realign the claim on session {} \
+                             for user {}; it may be reminded again next tick: {e:?}",
+                            session.id, reminder.recipient_id
+                        );
+                    }
+                }
                 Err(e) => {
                     warn!(
                         "[session-reminder] delivery failed for session {} to user {}: {e:?}",
