@@ -1744,7 +1744,7 @@ async fn test_send_session_reminder_skips_a_recipient_removed_after_the_claim() 
     );
     assert!(
         format!("{:?}", log[1]).contains("user_roles"),
-        "the second statement must be the membership re-check, got: {:?}",
+        "the second statement must be the notify-set membership check, got: {:?}",
         log[1]
     );
 }

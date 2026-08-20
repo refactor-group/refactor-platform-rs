@@ -1,6 +1,5 @@
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
-use entity_api::user_role;
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
@@ -1181,14 +1180,11 @@ pub async fn send_session_reminder(
     // Re-checked here and not only when the reminder was claimed. A tick claims a whole
     // batch up front and then delivers one at a time, so by the time a recipient's turn
     // arrives their claim can be minutes old and their membership can have been revoked
-    // in between. Uses the canonical membership rule rather than a second copy of it.
-    if user_role::retain_organization_members(
-        db,
-        &[relationship.coachee_id],
-        relationship.organization_id,
-    )
-    .await?
-    .is_empty()
+    // in between. The notify set is the same rule the rest of the relationship's
+    // notifications use, so a reminder cannot outlive someone's access to the others.
+    if !entity_api::coaching_relationship::notify_member_ids(db, &relationship)
+        .await?
+        .contains(&relationship.coachee_id)
     {
         return Ok(ReminderOutcome::RecipientNoLongerAMember);
     }
