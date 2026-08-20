@@ -383,7 +383,17 @@ impl Client {
             Ok(())
         } else {
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
+            // Name the template: a rejection usually means the payload and the template
+            // disagree, and the template is the half not visible in this log otherwise.
+            let template_id = request
+                .template
+                .as_ref()
+                .map(|t| t.id.as_str())
+                .unwrap_or("none");
+            warn!(
+                "Failed to send email to {to_emails:?} using template {template_id}: \
+                 {status} - {error_text}"
+            );
             Err(Error {
                 source: None,
                 error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text)),
