@@ -510,6 +510,13 @@ pub fn affects_invite(old: &coaching_sessions::Model, new: &coaching_sessions::M
         || old.title != new.title
 }
 
+/// True when an edit moved the session in time, so the participants earn a "has been
+/// rescheduled" notification. Every field here is also in [`affects_invite`], so a send
+/// always rides on an edit that already bumped `SEQUENCE`.
+pub fn affects_schedule(old: &coaching_sessions::Model, new: &coaching_sessions::Model) -> bool {
+    old.date != new.date || old.duration_minutes != new.duration_minutes
+}
+
 /// The two people on a coaching session, carried as one named value rather than as an
 /// adjacent pair of `&users::Model`. A transposed pair still type-checks and would swap
 /// every "your coach" / "your coachee" phrase in the copy without failing a build.

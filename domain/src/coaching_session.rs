@@ -350,7 +350,8 @@ pub async fn update(
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     // Best-effort re-send of an updated `.ics` so calendar clients move the event in place.
-    if calendar_relevant {
+    // Gated on the schedule: the copy announces a start and a duration.
+    if emails::affects_schedule(&old, &updated) {
         emails::notify_session_rescheduled(db, config, &updated, old_date).await;
     }
     Ok(updated)
@@ -625,19 +626,107 @@ mod tests {
         ])
     }
 
+    fn date_update(date: chrono::NaiveDateTime) -> mutate::UpdateMap {
+        let mut map = mutate::UpdateMap::new();
+        map.insert(
+            "date".into(),
+            Some(sea_orm::Value::ChronoDateTime(Some(Box::new(date)))),
+        );
+        map
+    }
+
+    /// Runs [`update`] against a mock stocked only through the SEQUENCE bump (find_by_id →
+    /// UPDATE ... RETURNING → increment_ical_sequence) and returns the SQL it issued. A
+    /// notify that runs shows up as its relationship lookup and then gives up on the
+    /// exhausted mock, which is enough to tell the two paths apart.
+    async fn statements_for_update(
+        session: &coaching_sessions::Model,
+        updated: &coaching_sessions::Model,
+        params: mutate::UpdateMap,
+    ) -> Vec<String> {
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..updated.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![bumped]])
+            .into_connection();
+
+        let result = update(&db, &Config::default(), session.id, TestParams(params)).await;
+        assert!(result.is_ok(), "the edit itself must succeed: {result:?}");
+
+        // Statements are only reachable through Debug, and its output escapes the quotes
+        // (the house pattern in entity_api).
+        db.into_transaction_log()
+            .iter()
+            .map(|txn| format!("{txn:?}"))
+            .collect()
+    }
+
+    /// The notify path opens by resolving the session's relationship, so this identifies it.
+    /// `coaching_relationship_id` on the session UPDATE does not match: it is singular.
+    const RELATIONSHIP_LOOKUP: &str = r#"\"coaching_relationships\""#;
+
+    /// The reschedule email is gated on the schedule, so a moved start must reach the notify
+    /// path and a title edit must not. Both cases drive [`update`] rather than the predicate:
+    /// the predicate is covered next to the invite, and what needs pinning here is which of
+    /// the two the send is wired to.
+    #[tokio::test]
+    async fn update_notifies_only_when_the_schedule_moved() {
+        let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
+        let mut session = test_session(relationship.id, None);
+        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+        let renamed = coaching_sessions::Model {
+            title: Some("Renamed".to_string()),
+            ..session.clone()
+        };
+        let title_sql =
+            statements_for_update(&session, &renamed, string_update("title", "Renamed")).await;
+        assert!(
+            !title_sql
+                .iter()
+                .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
+            "a title edit must not reach the notify path: {title_sql:?}"
+        );
+
+        let moved = coaching_sessions::Model {
+            date: session.date + chrono::Duration::hours(1),
+            ..session.clone()
+        };
+        let moved_sql = statements_for_update(&session, &moved, date_update(moved.date)).await;
+        assert!(
+            moved_sql
+                .iter()
+                .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
+            "a moved start must reach the notify path: {moved_sql:?}"
+        );
+    }
+
+    /// Test-only IntoUpdateMap wrapper (the web layer's TitleUpdateParams implements this).
+    #[derive(Debug)]
+    struct TestParams(mutate::UpdateMap);
+    impl mutate::IntoUpdateMap for TestParams {
+        fn into_update_map(self) -> mutate::UpdateMap {
+            self.0
+        }
+    }
+
+    fn string_update(column: &str, value: &str) -> mutate::UpdateMap {
+        let mut map = mutate::UpdateMap::new();
+        map.insert(
+            column.into(),
+            Some(sea_orm::Value::String(Some(Box::new(value.into())))),
+        );
+        map
+    }
+
     /// Editing a title via [`update_title`] publishes exactly one coarse
     /// `CoachingSessionTitleUpdated`, scoped to the relationship's coach + coachee.
     #[tokio::test]
     async fn update_title_publishes_title_updated_event() -> Result<(), Error> {
-        // Test-only IntoUpdateMap wrapper (the web layer's TitleUpdateParams implements this).
-        #[derive(Debug)]
-        struct TestParams(mutate::UpdateMap);
-        impl mutate::IntoUpdateMap for TestParams {
-            fn into_update_map(self) -> mutate::UpdateMap {
-                self.0
-            }
-        }
-
         let org = test_organization();
         let coach_id = Id::new_v4();
         let relationship = test_coaching_relationship(coach_id, org.id);
@@ -654,29 +743,26 @@ mod tests {
         let (publisher, events) = recording_publisher();
         let config = Config::default();
 
-        // A title edit is calendar-relevant, so update runs the reschedule path:
-        // find_by_id → UPDATE ... RETURNING → increment_ical_sequence (a single
-        // self-referential UPDATE ... RETURNING) → best-effort notify whose
-        // relationship lookup returns empty (send skipped). Then the participant lookup
-        // (find_also_related) and the membership filter for the title-updated event.
+        // A title edit bumps SEQUENCE: find_by_id → UPDATE ... RETURNING →
+        // increment_ical_sequence (a single self-referential UPDATE ... RETURNING). Then
+        // the participant lookup (find_also_related) and the membership filter for the
+        // title-updated event.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
             .append_query_results(vec![vec![bumped.clone()]])
-            .append_query_results::<coaching_relationships::Model, Vec<coaching_relationships::Model>, _>(
-                vec![vec![]],
-            )
             .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
             .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
-        let mut map = mutate::UpdateMap::new();
-        map.insert(
-            "title".into(),
-            Some(sea_orm::Value::String(Some(Box::new("Renamed".into())))),
-        );
-
-        let result = update_title(&db, &config, &publisher, session.id, TestParams(map)).await;
+        let result = update_title(
+            &db,
+            &config,
+            &publisher,
+            session.id,
+            TestParams(string_update("title", "Renamed")),
+        )
+        .await;
         assert!(result.is_ok());
 
         let recorded = events.lock().unwrap();
