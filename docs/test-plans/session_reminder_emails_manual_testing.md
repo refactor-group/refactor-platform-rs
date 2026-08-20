@@ -249,8 +249,10 @@ organization while the first send is still in flight.
 - **Expect** the second session's claim row is gone, so re-adding them before the session
   restores their reminder rather than leaving it marked as already sent.
 
-The window cannot be closed completely: any check precedes its send. Re-checking bounds the
-exposure to one send instead of one batch.
+The window cannot be closed completely: any check precedes its send, and no transaction
+spans an outbound HTTP request. The check is the last statement before the request, so the
+exposure is one request rather than one batch. Anything awaited between that check and the
+send widens it again, which is worth watching for in review since no test can catch it.
 
 ### S11. A slow send cannot clobber a newer claim
 

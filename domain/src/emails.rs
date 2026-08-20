@@ -5,7 +5,8 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_session, coaching_session_series,
+    actions, coaching_relationship, coaching_relationships, coaching_session,
+    coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
     error::Error,
@@ -1177,18 +1178,6 @@ pub async fn send_session_reminder(
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
 
-    // Re-checked here and not only when the reminder was claimed. A tick claims a whole
-    // batch up front and then delivers one at a time, so by the time a recipient's turn
-    // arrives their claim can be minutes old and their membership can have been revoked
-    // in between. The notify set is the same rule the rest of the relationship's
-    // notifications use, so a reminder cannot outlive someone's access to the others.
-    if !entity_api::coaching_relationship::notify_member_ids(db, &relationship)
-        .await?
-        .contains(&relationship.coachee_id)
-    {
-        return Ok(ReminderOutcome::RecipientNoLongerAMember);
-    }
-
     let coach = user::find_by_id(db, relationship.coach_id).await?;
     let coachee = user::find_by_id(db, relationship.coachee_id).await?;
     let organization = organization::find_by_id(db, relationship.organization_id).await?;
@@ -1200,9 +1189,35 @@ pub async fn send_session_reminder(
 
     let email_config = ResolvedEmailConfig::new::<SessionReminder>(config).await?;
 
+    // Deliberately the last statement before the send, and re-checked rather than trusted
+    // from the claim: a tick claims a whole batch up front and delivers one at a time, so
+    // a claim can be minutes old by the time its turn arrives. Anything awaited between
+    // this answer and the request widens the window a revocation can slip through, so
+    // keep the loads above it.
+    if !recipient_still_notified(db, &relationship, coachee.id).await? {
+        return Ok(ReminderOutcome::RecipientNoLongerAMember);
+    }
+
     send_session_reminder_email(&email_config, &coachee, &coach, session, &organization).await?;
 
     Ok(ReminderOutcome::Sent)
+}
+
+/// Whether this recipient is still in the relationship's notify set.
+///
+/// The notify set is the same rule the relationship's other notifications use, so a
+/// reminder cannot outlive someone's access to the notes and actions they would otherwise
+/// hear about.
+async fn recipient_still_notified(
+    db: &DatabaseConnection,
+    relationship: &coaching_relationships::Model,
+    recipient_id: Id,
+) -> Result<bool, Error> {
+    Ok(
+        entity_api::coaching_relationship::notify_member_ids(db, relationship)
+            .await?
+            .contains(&recipient_id),
+    )
 }
 
 /// Build and send the reminder to one coachee.
