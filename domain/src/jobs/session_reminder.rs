@@ -99,7 +99,30 @@ impl Job for Sweep {
         for reminder in &due {
             let session = &reminder.session;
             match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
-                Ok(()) => {
+                Ok(emails::ReminderOutcome::RecipientNoLongerAMember) => {
+                    info!(
+                        "[session-reminder] session {} not sent: user {} is no longer a \
+                         member of that organization",
+                        session.id, reminder.recipient_id
+                    );
+                    // Release rather than keep the claim, so re-adding them before the
+                    // session restores the reminder instead of leaving it marked sent.
+                    if let Err(e) = coaching_session::release_reminder_claim(
+                        &*ctx.db,
+                        session.id,
+                        reminder.recipient_id,
+                        reminder.claim_id,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "[session-reminder] could not release the claim on session {} \
+                             for user {} after skipping them: {e:?}",
+                            session.id, reminder.recipient_id
+                        );
+                    }
+                }
+                Ok(emails::ReminderOutcome::Sent) => {
                     sent += 1;
                     // The claim was stamped before this session was reloaded. When those
                     // disagree a reschedule landed in between, so record the start the

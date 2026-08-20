@@ -1,5 +1,6 @@
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
+use entity_api::user_role;
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
@@ -1159,13 +1160,39 @@ pub async fn notify_session_rescheduled(
 /// No `.ics` rides along: the calendar event was delivered when the session was
 /// scheduled, and re-sending the same `UID`/`SEQUENCE` pair is a no-op for a calendar
 /// client at best and a duplicate event at worst.
+/// Whether a reminder attempt actually mailed anyone.
+///
+/// A skip is not a failure: the recipient is no longer entitled to the session's details,
+/// so there is nothing to retry and nothing to report as broken.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReminderOutcome {
+    Sent,
+    RecipientNoLongerAMember,
+}
+
 pub async fn send_session_reminder(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
-) -> Result<(), Error> {
+) -> Result<ReminderOutcome, Error> {
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+
+    // Re-checked here and not only when the reminder was claimed. A tick claims a whole
+    // batch up front and then delivers one at a time, so by the time a recipient's turn
+    // arrives their claim can be minutes old and their membership can have been revoked
+    // in between. Uses the canonical membership rule rather than a second copy of it.
+    if user_role::retain_organization_members(
+        db,
+        &[relationship.coachee_id],
+        relationship.organization_id,
+    )
+    .await?
+    .is_empty()
+    {
+        return Ok(ReminderOutcome::RecipientNoLongerAMember);
+    }
+
     let coach = user::find_by_id(db, relationship.coach_id).await?;
     let coachee = user::find_by_id(db, relationship.coachee_id).await?;
     let organization = organization::find_by_id(db, relationship.organization_id).await?;
@@ -1177,7 +1204,9 @@ pub async fn send_session_reminder(
 
     let email_config = ResolvedEmailConfig::new::<SessionReminder>(config).await?;
 
-    send_session_reminder_email(&email_config, &coachee, &coach, session, &organization).await
+    send_session_reminder_email(&email_config, &coachee, &coach, session, &organization).await?;
+
+    Ok(ReminderOutcome::Sent)
 }
 
 /// Build and send the reminder to one coachee.

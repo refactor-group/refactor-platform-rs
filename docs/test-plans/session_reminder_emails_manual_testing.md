@@ -238,6 +238,20 @@ This is the case with the longest exposure if it regresses. Unlike the scheduled
 cancelled emails, which fire once on a user action, the sweep would keep mailing a removed
 member session, coach, and meeting details for every future session indefinitely.
 
+Then the harder half, a removal that lands **after** the claim. A tick claims its whole
+batch up front and then delivers one recipient at a time, so a claim can be minutes old by
+the time its send runs. Make the mock hang (`time.sleep(20)` in `do_POST`), seed two
+sessions inside the window for different coachees, and remove the second coachee from the
+organization while the first send is still in flight.
+
+- **Expect** the first coachee is mailed and the second is not.
+- **Expect** the log records the second as skipped, not as a delivery failure.
+- **Expect** the second session's claim row is gone, so re-adding them before the session
+  restores their reminder rather than leaving it marked as already sent.
+
+The window cannot be closed completely: any check precedes its send. Re-checking bounds the
+exposure to one send instead of one batch.
+
 ### S11. A slow send cannot clobber a newer claim
 
 The claim is written before delivery, so a send can still be in flight when the session

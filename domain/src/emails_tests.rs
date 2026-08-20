@@ -1696,6 +1696,59 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_omit_the_invite
 /// back. The full path cannot be mocked end to end because `user::find_by_id` uses
 /// `find_with_related`, which MockDatabase cannot express, so the send itself is covered
 /// separately by `test_cancelling_a_legacy_series_member_emails_without_an_invite`.
+/// The claim's membership test runs once per tick, for the whole batch, but delivery is
+/// one recipient at a time. A removal landing in that gap would otherwise mail a former
+/// member the session time, coach, organization, and link. The recipient is re-checked
+/// immediately before the send, so the exposure is one send rather than one batch.
+///
+/// Stops at the membership query on purpose: `user::find_by_id` uses `find_with_related`,
+/// which MockDatabase cannot express, so a mocked run cannot proceed past it anyway. That
+/// is also the proof, since reaching the send would require those later loads.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_reminder_skips_a_recipient_removed_after_the_claim() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let session = create_test_session();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![entity::coaching_relationships::Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            slug: "test".to_string(),
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+        }]])
+        // No membership row: the coachee was removed after the claim was taken.
+        .append_query_results([Vec::<entity::user_roles::Model>::new()])
+        .into_connection();
+
+    let outcome = send_session_reminder(&db, &config, &session)
+        .await
+        .expect("a removed recipient is a skip, not an error");
+
+    assert_eq!(
+        outcome,
+        ReminderOutcome::RecipientNoLongerAMember,
+        "a recipient without a current role must not be mailed"
+    );
+
+    let log = db.into_transaction_log();
+    assert_eq!(
+        log.len(),
+        2,
+        "the relationship then the membership check, and nothing further: continuing to \
+         load the coach, coachee, and organization means the send was still attempted"
+    );
+    assert!(
+        format!("{:?}", log[1]).contains("user_roles"),
+        "the second statement must be the membership re-check, got: {:?}",
+        log[1]
+    );
+}
+
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_notify_session_cancelled_no_longer_short_circuits_a_legacy_series_member() {
