@@ -97,10 +97,14 @@ impl Job for Sweep {
         }
 
         let mut sent = 0;
+        // Skipping a recipient who lost access is a completed decision, not a failure, so
+        // it counts as handled. Only a delivery that failed leaves the tick short.
+        let mut skipped = 0;
         for reminder in &due {
             let session = &reminder.session;
             match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
                 Ok(emails::ReminderOutcome::RecipientNoLongerAMember) => {
+                    skipped += 1;
                     info!(
                         "[session-reminder] session {} not sent: user {} is no longer a \
                          member of that organization",
@@ -174,7 +178,9 @@ impl Job for Sweep {
             }
         }
 
-        Ok(Outcome::processed(sent))
+        // `due.len()`, not the handled count: a tick that claimed reminders and failed to
+        // deliver them has still found work, and reporting only successes reads as idle.
+        Ok(Outcome::partial(sent + skipped, due.len() as u64))
     }
 }
 
