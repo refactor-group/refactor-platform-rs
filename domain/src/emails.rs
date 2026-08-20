@@ -1193,7 +1193,10 @@ pub async fn send_session_reminder(
     // from the claim: a tick claims a whole batch up front and delivers one at a time, so
     // a claim can be minutes old by the time its turn arrives. Anything awaited between
     // this answer and the request widens the window a revocation can slip through, so
-    // keep the loads above it.
+    // keep the loads above it. The gap that remains, between this answer and Resend
+    // accepting the request, is inherent rather than unfinished: no transaction spans an
+    // outbound call, and holding a lock across one would trade a rare stale email for
+    // pool exhaustion.
     if !recipient_still_notified(db, &relationship, coachee.id).await? {
         return Ok(ReminderOutcome::RecipientNoLongerAMember);
     }
