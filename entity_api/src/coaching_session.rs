@@ -280,37 +280,29 @@ struct ClaimedPair {
 
 /// Atomically claims the reminders that are now due and returns them.
 ///
-/// A reminder is due when its session starts in `(now, now + lead]`, it was booked more
-/// than `lead` before it starts, the recipient still holds a role in the session's
-/// organization, and they have no claim row whose `sent_for_start` equals the session's
-/// current `date`. A session booked on shorter notice than the lead is deliberately never
-/// reminded: the scheduled-session email already gave the same heads-up, and a reminder
-/// arriving minutes later repeats it. Removing someone from an
-/// organization leaves their relationships and sessions in place, so without the
-/// membership test a former member would keep being mailed session details forever. A
+/// Due means: the session starts in `(now, now + lead]`, it gave more than `lead` notice,
+/// the recipient still holds a role in its organization, and no claim row already holds
+/// the session's current `date`.
+///
+/// Notice is `date - created_at`, measured against the current start. A session booked
+/// inside the lead is excluded because the scheduled-session email just said the same
+/// thing; moving it far enough out makes it eligible again, by which time that email is
+/// stale and names the wrong time.
+///
+/// The membership test only ever removes people. Removal leaves relationships and
+/// sessions in place, so without it a former member is mailed session details forever. A
 /// global SuperAdmin holds no per-organization row and counts as a member everywhere,
-/// matching `user_role::retain_organization_members`. The recipient is the session's own
-/// coachee either way, so this test only removes people from the sweep and cannot widen
-/// it to sessions someone is not already a participant in. It is a semi-join for the same
-/// reason a join would be wrong: several roles would duplicate the row and the upsert
-/// cannot touch one twice. The
-/// claim is the upsert itself: the unique index on `(coaching_session_id, user_id)`
-/// arbitrates between concurrent backend replicas, and `RETURNING` yields only the
-/// pairs this caller actually won, so a row can never be handed to two senders.
+/// matching `user_role::retain_organization_members`. It is a semi-join because a join
+/// would yield a row per role, and the upsert cannot touch one row twice.
 ///
-/// The `WHERE` on the `DO UPDATE` is load-bearing rather than an optimization. Without
-/// it an already-current row would be rewritten and returned as freshly claimed, and
-/// the same reminder would go out every tick.
+/// The upsert is the claim: the unique index arbitrates between replicas, and `RETURNING`
+/// yields only the pairs this caller won. The `WHERE` on the `DO UPDATE` is what keeps it
+/// idempotent, since rewriting an already-current row would return it as freshly claimed
+/// and resend every tick. Storing the start rather than a "sent at" timestamp is what
+/// re-arms a reschedule, with no reschedule-path code involved.
 ///
-/// Comparing against `date` rather than storing a bare "sent at" timestamp is what makes
-/// a reschedule re-arm the reminder: the moved session no longer matches the stored
-/// start, so it becomes due again with no reschedule-path code involved.
-///
-/// `limit` bounds one tick's batch. Pairs beyond it stay due and are picked up on the
-/// next tick, so a backlog drains across ticks rather than in one burst of API calls.
-///
-/// Callers that fail to deliver should hand the claim back via
-/// [`release_reminder_claim`], otherwise it stands and no retry happens.
+/// `limit` bounds one tick's batch; the rest stay due for the next one. Callers that fail
+/// to deliver should hand the claim back via [`release_reminder_claim`].
 pub async fn claim_due_reminders(
     db: &impl ConnectionTrait,
     now: NaiveDateTime,

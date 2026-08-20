@@ -10,11 +10,12 @@
 //!   reminder for the new time.
 //! - **Cancelled.** The row is gone, so nothing is due. No queued job survives to fire
 //!   against a session that no longer exists.
-//! - **Booked on short notice.** A session created less than the lead time before it
-//!   starts is never reminded. The scheduled-session email already gave that heads-up,
-//!   and a reminder minutes later would only repeat it. Rescheduling such a session into
-//!   the future does not resurrect the reminder either, since the test is against when it
-//!   was booked, not when it was last moved.
+//! - **Booked on short notice.** A session starting less than the lead time after it was
+//!   booked is not reminded: the scheduled-session email already gave that heads-up, and
+//!   a reminder minutes later would repeat it. The test is against the notice the
+//!   recipient currently has, `date - created_at`, so moving such a session far enough
+//!   out restores it. That is the point rather than a leak: by the time it comes round
+//!   again the original email is days old and says the wrong time.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 

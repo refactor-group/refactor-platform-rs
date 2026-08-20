@@ -127,23 +127,35 @@ After H1, move the session's `date` forward by 15 minutes (keeping it inside the
 - **Expect** a second email for the same session on the next tick.
 - **Expect** the existing row's `sent_for_start` updated to the new `date`, still one row.
 
-### H5. A session booked on short notice is never reminded
+### H5. Short notice suppresses the reminder, and more notice restores it
 
 Create a session starting 20 minutes from now, with a 1 hour lead.
 
 - **Expect** no reminder, on that tick or any later one. Booking it already sent the
   scheduled-session email, which gave the same heads-up a reminder would.
-- Now reschedule it to three days out and restart with a 4 hour lead.
-- **Expect** still no reminder. The test is against how much notice the *booking* gave,
-  not when the session was last moved, so a short-notice session stays out permanently.
-- Create a second session three days out.
-- **Expect** it is reminded normally once it enters the window, proving the exclusion is
-  about notice given rather than about recently created rows.
+- Now move it to 45 minutes out, still inside the 1 hour lead of when it was booked.
+- **Expect** still no reminder. Notice is measured from the booking, so shuffling within
+  the lead does not earn one.
+- Now move it to three days out, and once it enters the window on a 4 hour lead:
+- **Expect** it **is** reminded. Notice is `date - created_at` against the session's
+  *current* start, so moving it far enough out restores eligibility. That is intended: by
+  the time it comes round again the scheduled-session email is days old and names a time
+  the session no longer has.
 
-Watch the boundary: a session booked exactly `lead` ahead is excluded, since the test is
-strictly greater than. Watch the backfill too, on a database migrated before this rule
-existed: sessions booked on short notice back then were claimed under the old behavior and
-keep those rows, so the change applies going forward rather than retroactively.
+The exclusion is about the notice the coachee currently has, not a permanent mark on the
+row. Check the boundary too: booked exactly `lead` ahead is excluded, since the test is
+strictly greater than.
+
+The predicate can be checked without waiting on the job:
+
+```sql
+SELECT date > created_at + INTERVAL '24 hours' AS passes_notice_test
+FROM refactor_platform.coaching_sessions WHERE id = '<session id>';
+```
+
+On a database migrated before this rule existed, sessions booked on short notice back then
+were claimed under the old behavior and keep those rows, so the change applies going
+forward rather than retroactively.
 
 ### H6. The first sweep runs at startup, not one interval later
 
