@@ -501,6 +501,7 @@ impl Config {
 
         config.capture_value_sources(&matches);
         Self::warn_untracked_fields(&matches);
+        Self::warn_on_shared_template_ids(&matches);
 
         config
     }
@@ -580,6 +581,48 @@ impl Config {
                 }
             })
             .collect()
+    }
+
+    /// Email template ids configured for more than one notification.
+    ///
+    /// Nearly always a slug pasted into the wrong variable, which surfaces otherwise as a
+    /// delivery failure hours later. Derived from `CONFIG_FIELD_KEYS`, so a new template
+    /// needs no change here.
+    fn shared_template_ids(matches: &clap::ArgMatches) -> Vec<(String, Vec<String>)> {
+        CONFIG_FIELD_KEYS
+            .iter()
+            .filter(|field| field.ends_with("_email_template_id"))
+            .filter_map(|field| {
+                matches
+                    .try_get_one::<String>(field)
+                    .ok()
+                    .flatten()
+                    .map(|id| (id.clone(), field.to_uppercase()))
+            })
+            .fold(
+                std::collections::BTreeMap::<String, Vec<String>>::new(),
+                |mut by_id, (id, name)| {
+                    by_id.entry(id).or_default().push(name);
+                    by_id
+                },
+            )
+            .into_iter()
+            .filter(|(_, names)| names.len() > 1)
+            .collect()
+    }
+
+    /// Reports shared template ids without gating on them: reusing one is legal.
+    fn warn_on_shared_template_ids(matches: &clap::ArgMatches) {
+        Self::shared_template_ids(matches)
+            .into_iter()
+            .for_each(|(id, names)| {
+                warn!(
+                    "Email template id \"{id}\" is configured for {}. Each notification \
+                     sends its own variables, so a template will reject any payload built \
+                     for a different one.",
+                    names.join(" and ")
+                )
+            });
     }
 
     /// Warns about any Clap args not listed in CONFIG_FIELD_KEYS so developers
@@ -1027,6 +1070,58 @@ impl fmt::Display for ApiVersion {
 
 #[cfg(test)]
 mod tests {
+    /// The failure this catches: a reminder configured with the scheduled template's id
+    /// still sends, and Resend rejects it for a variable only the scheduled template
+    /// declares. Nothing before the send can tell the two slugs apart.
+    #[test]
+    fn shared_template_ids_reports_a_slug_pasted_into_the_wrong_variable() {
+        let matches = Config::command()
+            .try_get_matches_from([
+                "refactor-platform-rs",
+                "--session-scheduled-email-template-id=new-coaching-session-scheduled",
+                "--session-reminder-email-template-id=new-coaching-session-scheduled",
+            ])
+            .expect("args parse");
+
+        let shared = Config::shared_template_ids(&matches);
+
+        assert_eq!(
+            shared.len(),
+            1,
+            "one collision, reported once, got: {shared:?}"
+        );
+        assert_eq!(shared[0].0, "new-coaching-session-scheduled");
+        // Uppercased back to the environment variables an operator edits.
+        assert_eq!(
+            shared[0].1,
+            vec![
+                "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
+                "SESSION_REMINDER_EMAIL_TEMPLATE_ID"
+            ],
+            "both variables must be named, since either could be the wrong one"
+        );
+    }
+
+    /// Distinct ids must stay quiet, and unset ones must not collide with each other.
+    /// Treating `None` as a value would report every unconfigured template on a stack
+    /// that only uses a few.
+    #[test]
+    fn shared_template_ids_is_empty_when_ids_differ_or_are_unset() {
+        let matches = Config::command()
+            .try_get_matches_from([
+                "refactor-platform-rs",
+                "--session-scheduled-email-template-id=new-coaching-session-scheduled",
+                "--session-reminder-email-template-id=upcoming-coaching-session-reminder",
+            ])
+            .expect("args parse");
+
+        assert!(
+            Config::shared_template_ids(&matches).is_empty(),
+            "distinct ids are not a collision, and the unset ones must be ignored: {:?}",
+            Config::shared_template_ids(&matches)
+        );
+    }
+
     use super::*;
     use serial_test::serial;
     use std::fs;
