@@ -320,16 +320,16 @@ async fn test_send_welcome_email_http_error() {
         .create_async()
         .await;
 
-    // HTTP 400 from Resend should propagate as an error that carries the
-    // response body — that body is the caller's only diagnostic.
+    // A 400 carries the response body, the caller's only diagnostic, and classifies as
+    // Rejected: retrying sends the same request and gets the same answer.
     let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
     let err = result.unwrap_err();
     match err.error_kind {
-        DomainErrorKind::Internal(InternalErrorKind::Other(text)) => assert!(
+        DomainErrorKind::Internal(InternalErrorKind::Rejected(text)) => assert!(
             text.contains("Invalid request"),
             "response body not propagated into error, got: {text}"
         ),
-        other => panic!("expected Internal(Other), got: {other:?}"),
+        other => panic!("expected Internal(Rejected), got: {other:?}"),
     }
 }
 

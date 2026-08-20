@@ -6,6 +6,7 @@ use meeting_auth::error::{
 };
 use std::error::Error as StdError;
 use std::fmt;
+use std::time::Duration;
 
 /// Top-level domain error type.
 /// Errors in the Domain layer are modeled as a tree structure
@@ -35,6 +36,16 @@ pub enum DomainErrorKind {
 pub enum InternalErrorKind {
     Entity(EntityErrorKind),
     Config,
+    /// Refused for now. Retrying is expected.
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
+    /// Upstream failed. Retrying may resolve it.
+    Unavailable(String),
+    /// The request itself was refused, so retrying it unchanged gets the same answer.
+    /// Also covers a payload rejected before it was sent, which is refused just as surely.
+    Rejected(String),
+    /// The request could not be made at all, which says nothing about the request.
     Other(String),
 }
 

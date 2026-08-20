@@ -1058,8 +1058,8 @@ pub async fn notify_session_scheduled(
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_scheduled_email(db, config, &coach, &coachee, session, &org).await
@@ -1129,8 +1129,8 @@ pub async fn notify_session_rescheduled(
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
@@ -1178,8 +1178,8 @@ pub async fn send_session_reminder(
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
 
-    let coach = user::find_by_id(db, relationship.coach_id).await?;
-    let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+    let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+    let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
     let organization = organization::find_by_id(db, relationship.organization_id).await?;
 
     info!(
@@ -1464,8 +1464,8 @@ pub async fn notify_session_cancelled(
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_cancelled_email(config, &coach, &coachee, session, &org).await
@@ -1770,8 +1770,8 @@ pub async fn notify_recurring_sessions_scheduled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_scheduled_email(
@@ -1812,8 +1812,8 @@ pub async fn notify_recurring_sessions_rescheduled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_rescheduled_email(
@@ -2001,8 +2001,8 @@ pub async fn notify_recurring_sessions_cancelled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_cancelled_email(config, series, &coach, &coachee, sessions, &org)

@@ -160,6 +160,18 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     }
 }
 
+/// `find_by_id` without hydrating roles.
+///
+/// The join costs a row per role and is wasted on callers that only need the person:
+/// their name, email, and timezone. Returning an empty `roles` is safe for those and
+/// wrong for anyone making an authorization decision, so reach for `find_by_id` there.
+pub async fn find_by_id_without_roles(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
+}
+
 /// `find_by_id` holding an exclusive lock on the row until the transaction ends.
 ///
 /// Membership changes and account deletion both read a user's set of roles and
