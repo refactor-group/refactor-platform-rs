@@ -10,10 +10,11 @@
 //!   reminder for the new time.
 //! - **Cancelled.** The row is gone, so nothing is due. No queued job survives to fire
 //!   against a session that no longer exists.
-//! - **Booked inside the window.** A session created less than the lead time before it
-//!   starts is immediately due and is reminded on the next tick. That is intended: one
-//!   heads-up is better than none, even if it arrives soon after the scheduled-session
-//!   email.
+//! - **Booked on short notice.** A session created less than the lead time before it
+//!   starts is never reminded. The scheduled-session email already gave that heads-up,
+//!   and a reminder minutes later would only repeat it. Rescheduling such a session into
+//!   the future does not resurrect the reminder either, since the test is against when it
+//!   was booked, not when it was last moved.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 

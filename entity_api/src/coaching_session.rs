@@ -280,9 +280,12 @@ struct ClaimedPair {
 
 /// Atomically claims the reminders that are now due and returns them.
 ///
-/// A reminder is due when its session starts in `(now, now + lead]`, the recipient still
-/// holds a role in the session's organization, and they have no claim row whose
-/// `sent_for_start` equals the session's current `date`. Removing someone from an
+/// A reminder is due when its session starts in `(now, now + lead]`, it was booked more
+/// than `lead` before it starts, the recipient still holds a role in the session's
+/// organization, and they have no claim row whose `sent_for_start` equals the session's
+/// current `date`. A session booked on shorter notice than the lead is deliberately never
+/// reminded: the scheduled-session email already gave the same heads-up, and a reminder
+/// arriving minutes later repeats it. Removing someone from an
 /// organization leaves their relationships and sessions in place, so without the
 /// membership test a former member would keep being mailed session details forever. A
 /// global SuperAdmin holds no per-organization row and counts as a member everywhere,
@@ -328,6 +331,10 @@ pub async fn claim_due_reminders(
                 AND csr.user_id = cr.coachee_id
                WHERE cs.date > $1
                  AND cs.date <= $2
+                 -- Booked on shorter notice than the lead time: the scheduled-session
+                 -- email already told them, so a reminder would repeat it. `$2 - $1` is
+                 -- the lead, so this cannot drift from the window above.
+                 AND cs.date > (cs.created_at AT TIME ZONE 'UTC') + ($2::timestamp - $1::timestamp)
                  AND csr.sent_for_start IS DISTINCT FROM cs.date
                  AND EXISTS (
                      SELECT 1
@@ -1335,6 +1342,37 @@ mod tests {
             sql.contains("claim_id = gen_random_uuid()"),
             "each claim needs a fresh token, or a session moved away and back lets a \
              stale caller confirm or release someone else's claim, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// A session booked on shorter notice than the lead already had its scheduled-session
+    /// email, which said the same thing a reminder would. Without this the coachee gets
+    /// two near-identical emails minutes apart.
+    #[tokio::test]
+    async fn claim_due_reminders_skips_sessions_booked_on_short_notice() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+
+        assert!(
+            sql.contains("cs.date > (cs.created_at AT TIME ZONE 'UTC')"),
+            "due-ness must account for how much notice the booking gave, got: {sql}"
+        );
+        assert!(
+            sql.contains("($2::timestamp - $1::timestamp)"),
+            "the notice test must reuse the window's own bounds, or a lead change moves \
+             one and not the other, got: {sql}"
         );
 
         Ok(())

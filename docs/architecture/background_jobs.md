@@ -80,6 +80,7 @@ WITH due AS (
     LEFT JOIN refactor_platform.coaching_session_reminders csr
       ON csr.coaching_session_id = cs.id AND csr.user_id = cr.coachee_id
     WHERE cs.date > $1 AND cs.date <= $2
+      AND cs.date > (cs.created_at AT TIME ZONE 'UTC') + ($2::timestamp - $1::timestamp)
       AND csr.sent_for_start IS DISTINCT FROM cs.date
     ORDER BY cs.date LIMIT $3
 )
@@ -92,7 +93,13 @@ ON CONFLICT (coaching_session_id, user_id) DO UPDATE
 RETURNING coaching_session_id, user_id
 ```
 
-Three details carry most of the weight:
+Four details carry most of the weight:
+
+- **A session booked on shorter notice than the lead is never reminded.** The
+  scheduled-session email already gave that heads-up. Writing the test as
+  `$2 - $1` rather than a separate parameter keeps it from drifting out of step with the
+  window it mirrors.
+
 
 - **The unique index arbitrates, not a row lock.** Concurrent replicas race on
   `ON CONFLICT`; exactly one wins, and `RETURNING` yields only the pairs that caller

@@ -11,7 +11,8 @@ Related: PR #395.
 A sweep runs every `SESSION_REMINDER_POLL_MINUTES` (default 15), starting immediately at
 process start rather than one interval later. Each tick:
 
-1. Selects sessions starting in `(now, now + lead]` whose coachee has no current claim.
+1. Selects sessions starting in `(now, now + lead]`, booked more than `lead` before they
+   start, whose coachee has no current claim.
 2. Claims them by upserting into `coaching_session_reminders`, keyed
    `(coaching_session_id, user_id)`, storing the session's `date` in `sent_for_start`.
 3. Emails the coachee for each claimed pair, then reports `processed N item(s)`.
@@ -126,12 +127,23 @@ After H1, move the session's `date` forward by 15 minutes (keeping it inside the
 - **Expect** a second email for the same session on the next tick.
 - **Expect** the existing row's `sent_for_start` updated to the new `date`, still one row.
 
-### H5. A session booked inside the window is reminded on the next tick
+### H5. A session booked on short notice is never reminded
 
-Create a session starting 20 minutes from now.
+Create a session starting 20 minutes from now, with a 1 hour lead.
 
-- **Expect** it is emailed on the next tick. This is intended: one late heads-up beats
-  none, even though it lands shortly after the scheduled-session email.
+- **Expect** no reminder, on that tick or any later one. Booking it already sent the
+  scheduled-session email, which gave the same heads-up a reminder would.
+- Now reschedule it to three days out and restart with a 4 hour lead.
+- **Expect** still no reminder. The test is against how much notice the *booking* gave,
+  not when the session was last moved, so a short-notice session stays out permanently.
+- Create a second session three days out.
+- **Expect** it is reminded normally once it enters the window, proving the exclusion is
+  about notice given rather than about recently created rows.
+
+Watch the boundary: a session booked exactly `lead` ahead is excluded, since the test is
+strictly greater than. Watch the backfill too, on a database migrated before this rule
+existed: sessions booked on short notice back then were claimed under the old behavior and
+keep those rows, so the change applies going forward rather than retroactively.
 
 ### H6. The first sweep runs at startup, not one interval later
 
@@ -329,7 +341,8 @@ Run the migration's `down`.
 ## Automating this
 
 H1 through H5 and S2 through S5 are all reachable from SQL seeding plus log and capture
-assertions, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
+assertions. H5 needs `created_at` controlled rather than defaulted, so seed it explicitly
+instead of relying on insertion time, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
 process restart with different env, so they suit a shell-driven matrix rather than an
 in-process test. S8 and S9 need a database that has not had the migration applied.
 
