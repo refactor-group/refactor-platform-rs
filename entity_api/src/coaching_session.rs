@@ -323,9 +323,10 @@ pub async fn claim_due_reminders(
                 AND csr.user_id = cr.coachee_id
                WHERE cs.date > $1
                  AND cs.date <= $2
-                 -- Booked on shorter notice than the lead time: the scheduled-session
-                 -- email already told them, so a reminder would repeat it. `$2 - $1` is
-                 -- the lead, so this cannot drift from the window above.
+                 -- Notice given, against the current start: a session booked inside the
+                 -- lead is skipped because the scheduled-session email just said the same
+                 -- thing, and moving it far enough out earns the reminder back. `$2 - $1`
+                 -- is the lead, so this cannot drift from the window above.
                  AND cs.date > (cs.created_at AT TIME ZONE 'UTC') + ($2::timestamp - $1::timestamp)
                  AND csr.sent_for_start IS DISTINCT FROM cs.date
                  AND EXISTS (
