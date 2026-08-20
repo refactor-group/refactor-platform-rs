@@ -3,7 +3,8 @@ use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
 use entity::{
-    agreements, coaching_relationships, coaching_session_topics, coaching_session_views,
+    agreements, coaching_relationships, coaching_session_reminders, coaching_session_topics,
+    coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
@@ -252,6 +253,197 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
         .exec(db)
         .await?;
     Ok(result.rows_affected)
+}
+
+/// One claimed reminder: the session to send about, and who it goes to.
+#[derive(Debug, Clone)]
+pub struct DueReminder {
+    pub session: Model,
+    pub recipient_id: Id,
+    /// The start this caller stamped, used to tell whether the session moved between the
+    /// claim and the send.
+    pub claimed_for_start: NaiveDateTime,
+    /// Proves ownership of the claim to [`confirm_reminder_claim`] and
+    /// [`release_reminder_claim`], so a replica that has since reclaimed the pair is not
+    /// overwritten. Regenerated per claim, so unlike the start it never repeats.
+    pub claim_id: Id,
+}
+
+/// The `(session, recipient)` pairs an upsert actually claimed.
+#[derive(Debug, FromQueryResult)]
+struct ClaimedPair {
+    coaching_session_id: Id,
+    user_id: Id,
+    sent_for_start: NaiveDateTime,
+    claim_id: Id,
+}
+
+/// Atomically claims the reminders that are now due and returns them.
+///
+/// A reminder is due when its session starts in `(now, now + lead]`, the recipient still
+/// holds a role in the session's organization, and they have no claim row whose
+/// `sent_for_start` equals the session's current `date`. Removing someone from an
+/// organization leaves their relationships and sessions in place, so without the
+/// membership test a former member would keep being mailed session details forever. A
+/// global SuperAdmin holds no per-organization row and counts as a member everywhere,
+/// matching `user_role::retain_organization_members`. The recipient is the session's own
+/// coachee either way, so this test only removes people from the sweep and cannot widen
+/// it to sessions someone is not already a participant in. It is a semi-join for the same
+/// reason a join would be wrong: several roles would duplicate the row and the upsert
+/// cannot touch one twice. The
+/// claim is the upsert itself: the unique index on `(coaching_session_id, user_id)`
+/// arbitrates between concurrent backend replicas, and `RETURNING` yields only the
+/// pairs this caller actually won, so a row can never be handed to two senders.
+///
+/// The `WHERE` on the `DO UPDATE` is load-bearing rather than an optimization. Without
+/// it an already-current row would be rewritten and returned as freshly claimed, and
+/// the same reminder would go out every tick.
+///
+/// Comparing against `date` rather than storing a bare "sent at" timestamp is what makes
+/// a reschedule re-arm the reminder: the moved session no longer matches the stored
+/// start, so it becomes due again with no reschedule-path code involved.
+///
+/// `limit` bounds one tick's batch. Pairs beyond it stay due and are picked up on the
+/// next tick, so a backlog drains across ticks rather than in one burst of API calls.
+///
+/// Callers that fail to deliver should hand the claim back via
+/// [`release_reminder_claim`], otherwise it stands and no retry happens.
+pub async fn claim_due_reminders(
+    db: &impl ConnectionTrait,
+    now: NaiveDateTime,
+    lead: chrono::Duration,
+    limit: u64,
+) -> Result<Vec<DueReminder>, Error> {
+    let cutoff = now + lead;
+
+    let claimed = ClaimedPair::find_by_statement(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        r#"WITH due AS (
+               SELECT cs.id AS coaching_session_id, cr.coachee_id AS user_id, cs.date
+               FROM refactor_platform.coaching_sessions cs
+               JOIN refactor_platform.coaching_relationships cr
+                 ON cr.id = cs.coaching_relationship_id
+               LEFT JOIN refactor_platform.coaching_session_reminders csr
+                 ON csr.coaching_session_id = cs.id
+                AND csr.user_id = cr.coachee_id
+               WHERE cs.date > $1
+                 AND cs.date <= $2
+                 AND csr.sent_for_start IS DISTINCT FROM cs.date
+                 AND EXISTS (
+                     SELECT 1
+                     FROM refactor_platform.user_roles ur
+                     WHERE ur.user_id = cr.coachee_id
+                       AND (
+                           ur.organization_id = cr.organization_id
+                           OR (ur.organization_id IS NULL AND ur.role = 'super_admin')
+                       )
+                 )
+               ORDER BY cs.date
+               LIMIT $3
+           )
+           INSERT INTO refactor_platform.coaching_session_reminders
+               (coaching_session_id, user_id, sent_for_start)
+           SELECT coaching_session_id, user_id, date FROM due
+           ON CONFLICT (coaching_session_id, user_id) DO UPDATE
+               SET sent_for_start = EXCLUDED.sent_for_start,
+                   claim_id = gen_random_uuid(),
+                   updated_at = NOW()
+               WHERE coaching_session_reminders.sent_for_start
+                     IS DISTINCT FROM EXCLUDED.sent_for_start
+           RETURNING coaching_session_id, user_id, sent_for_start, claim_id"#,
+        [now.into(), cutoff.into(), (limit as i64).into()],
+    ))
+    .all(db)
+    .await?;
+
+    if claimed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Load the sessions in one query rather than per claim: the same session can be
+    // claimed once per recipient, and the sweep needs the full model to build an email.
+    let sessions: HashMap<Id, Model> = Entity::find()
+        .filter(Column::Id.is_in(claimed.iter().map(|c| c.coaching_session_id)))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|session| (session.id, session))
+        .collect();
+
+    Ok(claimed
+        .into_iter()
+        .filter_map(|claim| {
+            sessions
+                .get(&claim.coaching_session_id)
+                .map(|session| DueReminder {
+                    session: session.clone(),
+                    recipient_id: claim.user_id,
+                    claimed_for_start: claim.sent_for_start,
+                    claim_id: claim.claim_id,
+                })
+        })
+        .collect())
+}
+
+/// Realigns a claim with the start the delivered email actually announced.
+///
+/// The claim is stamped from a snapshot taken before the session is reloaded, so a
+/// reschedule landing in between leaves the claim holding the old start while the email
+/// announced the new one. Left alone the pair stays due, and the next tick resends a
+/// start the recipient was already told. Writing back what was sent closes that window.
+///
+/// Matching on `claim_id` is what keeps this safe across replicas: delivery can outlast
+/// a reschedule, and another replica may have reclaimed the pair in the meantime. Without
+/// the guard this write would clobber that newer claim and the reminder it already
+/// delivered would go out again. The token rather than the start, because a session moved
+/// away and back repeats a start and would let a stale caller match again.
+pub async fn confirm_reminder_claim(
+    db: &impl ConnectionTrait,
+    coaching_session_id: Id,
+    recipient_id: Id,
+    claim_id: Id,
+    sent_for_start: NaiveDateTime,
+) -> Result<(), Error> {
+    coaching_session_reminders::Entity::update_many()
+        .col_expr(
+            coaching_session_reminders::Column::SentForStart,
+            Expr::value(sent_for_start),
+        )
+        .col_expr(
+            coaching_session_reminders::Column::UpdatedAt,
+            Expr::current_timestamp().into(),
+        )
+        .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
+        .filter(coaching_session_reminders::Column::ClaimId.eq(claim_id))
+        .exec(db)
+        .await?;
+
+    Ok(())
+}
+
+/// Hands a claimed reminder back so a later tick retries it.
+///
+/// Called when delivery fails after [`claim_due_reminders`] already claimed the pair.
+/// Deleting the row rather than leaving it stamped is deliberate: a transient Resend
+/// failure should cost a tick, not the whole reminder.
+///
+/// Scoped to `claim_id` so a slow failing send cannot delete a claim another replica has
+/// since made and already delivered.
+pub async fn release_reminder_claim(
+    db: &impl ConnectionTrait,
+    coaching_session_id: Id,
+    recipient_id: Id,
+    claim_id: Id,
+) -> Result<(), Error> {
+    coaching_session_reminders::Entity::delete_many()
+        .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
+        .filter(coaching_session_reminders::Column::ClaimId.eq(claim_id))
+        .exec(db)
+        .await?;
+
+    Ok(())
 }
 
 /// Most recent session in the relationship strictly before `before`. Sources
@@ -1096,7 +1288,238 @@ mod tests {
     use super::*;
     use entity::meeting_provider::Provider;
     use entity::Id;
-    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Transaction};
+
+    /// The claim has to select and write in one statement, and the conflict clause has
+    /// to skip rows already current. If a refactor split it into a SELECT followed by an
+    /// INSERT, or dropped the `WHERE` on the `DO UPDATE`, two replicas would double-send
+    /// or every tick would resend an already-sent reminder. None of that is visible in
+    /// the returned rows, so assert on the SQL itself.
+    #[tokio::test]
+    async fn claim_due_reminders_upserts_and_skips_already_current_pairs() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+
+        assert!(
+            sql.contains("INSERT INTO refactor_platform.coaching_session_reminders"),
+            "the claim must be the write itself, got: {sql}"
+        );
+        assert!(
+            sql.contains("ON CONFLICT (coaching_session_id, user_id) DO UPDATE"),
+            "the unique index must arbitrate between replicas, got: {sql}"
+        );
+        assert!(
+            sql.contains("WHERE coaching_session_reminders.sent_for_start")
+                && sql.contains("IS DISTINCT FROM EXCLUDED.sent_for_start"),
+            "an already-current pair must not be reclaimed and resent, got: {sql}"
+        );
+        assert!(
+            sql.contains("csr.sent_for_start IS DISTINCT FROM cs.date"),
+            "a rescheduled session must fall back in scope, got: {sql}"
+        );
+        assert!(
+            sql.contains("RETURNING coaching_session_id, user_id"),
+            "the claimed pairs are the work list, got: {sql}"
+        );
+        assert!(
+            sql.contains("claim_id = gen_random_uuid()"),
+            "each claim needs a fresh token, or a session moved away and back lets a \
+             stale caller confirm or release someone else's claim, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// Removing someone from an organization leaves their relationships and sessions in
+    /// place, so without a membership test the sweep would keep mailing a former member
+    /// session, coach, and meeting details indefinitely.
+    #[tokio::test]
+    async fn claim_due_reminders_skips_former_organization_members() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+
+        assert!(
+            sql.contains("FROM refactor_platform.user_roles ur"),
+            "eligibility must be checked against current membership, got: {sql}"
+        );
+        assert!(
+            sql.contains("ur.user_id = cr.coachee_id")
+                && sql.contains("ur.organization_id = cr.organization_id"),
+            "membership must be scoped to this session's organization, got: {sql}"
+        );
+        assert!(
+            sql.contains("AND EXISTS ("),
+            "membership must be a semi-join: joining user_roles would duplicate a row per \
+             role and the upsert cannot touch one twice, got: {sql}"
+        );
+        assert!(
+            sql.contains("ur.organization_id IS NULL AND ur.role = 'super_admin'"),
+            "a global SuperAdmin holds no organization row and must still count, \
+             matching user_role::retain_organization_members, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// The claim is per recipient, not per session, so the pair a later phase adds
+    /// cannot be starved by a session-level lock or dropped by a session-level key.
+    #[tokio::test]
+    async fn claim_due_reminders_keys_the_claim_by_recipient() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+
+        assert!(
+            sql.contains("csr.user_id = cr.coachee_id"),
+            "due-ness must be evaluated per recipient, got: {sql}"
+        );
+        assert!(
+            !sql.contains("FOR UPDATE"),
+            "locking the session row would make two recipients contend, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// The claim records what was claimed, not what was sent, and those differ when a
+    /// reschedule lands between the two. Realigning it is what stops the next tick from
+    /// resending a start the recipient was already told about.
+    #[tokio::test]
+    async fn confirm_reminder_claim_writes_back_the_start_that_was_sent() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let sent_for = chrono::NaiveDate::from_ymd_opt(2026, 6, 2)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        confirm_reminder_claim(&db, Id::new_v4(), Id::new_v4(), Id::new_v4(), sent_for).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
+        let (set_clause, where_clause) = sql.split_once("WHERE").expect("update needs a WHERE");
+
+        assert!(
+            set_clause.contains("UPDATE \"refactor_platform\".\"coaching_session_reminders\"")
+                && set_clause.contains("\"sent_for_start\" ="),
+            "the sent start must be written back, got: {sql}"
+        );
+        assert!(
+            where_clause.contains("\"coaching_session_id\" =")
+                && where_clause.contains("\"user_id\" ="),
+            "the write must be scoped to the pair, got: {sql}"
+        );
+        assert!(
+            where_clause.contains("\"claim_id\" ="),
+            "the write must only land on the claim this caller still owns, got: {sql}"
+        );
+        assert!(
+            sql.contains("2026-06-02T09:00:00"),
+            "the value written must be the start the email announced, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// A failed send must hand back only that recipient's claim. Scoping the delete to
+    /// the session alone would release a second recipient's claim too, resending theirs.
+    #[tokio::test]
+    async fn release_reminder_claim_deletes_only_that_recipients_row() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        release_reminder_claim(&db, Id::new_v4(), Id::new_v4(), Id::new_v4()).await?;
+
+        // Debug-escapes the quotes; drop them so the assertions read like the SQL.
+        let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
+
+        assert!(
+            sql.contains("DELETE FROM \"refactor_platform\".\"coaching_session_reminders\""),
+            "the claim is released by deleting its row, got: {sql}"
+        );
+        assert!(
+            sql.contains("\"coaching_session_id\" = $1") && sql.contains("\"user_id\" = $2"),
+            "the delete must be scoped to the pair, not the whole session, got: {sql}"
+        );
+        assert!(
+            sql.contains("\"claim_id\" = $3"),
+            "a failing send must not delete a claim another replica has since made, \
+             got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// The window is half-open on the near side: a session that has already started is
+    /// past reminding, and the far edge is exactly `now + lead`.
+    #[tokio::test]
+    async fn claim_due_reminders_bounds_the_window_by_now_and_lead() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 50).await?;
+
+        // The bound values are only visible through the statement's Debug output.
+        let logged = format!("{:?}", db.into_transaction_log()[0]);
+
+        assert!(
+            logged.contains("2026-06-01T09:00:00"),
+            "lower bound must be `now`, got: {logged}"
+        );
+        assert!(
+            logged.contains("2026-06-02T09:00:00"),
+            "upper bound must be `now + lead`, got: {logged}"
+        );
+        assert!(
+            logged.contains("BigInt(Some(50))"),
+            "batch size must reach the LIMIT, got: {logged}"
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn bulk_create_recurring_inserts_all_rows_with_lazy_fields_null() -> Result<(), Error> {

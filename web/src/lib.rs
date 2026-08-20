@@ -6,6 +6,7 @@ use axum_login::{
     tower_sessions::{Expiry, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
+use domain::jobs::{password_reset, session_reminder, Scheduler};
 use domain::user::Backend;
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
@@ -89,40 +90,24 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
             .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
     );
 
-    // Background sweep of the password_reset_attempts audit table.
-    // Mirrors the session-deletion task above: one tokio task spawned at
-    // server start that loops forever, calling `sweep_old_attempts` daily.
-    // Retention is 30 days — the 24-hour daily-cap rate-limit window needs
-    // recent data, the rest is kept for security forensics.
-    //
-    // See `docs/architecture/password_reset.md` and
-    // `domain::password_reset::sweep_old_attempts` for the policy and
-    // why the sweep is in-process rather than an external cron.
-    let password_reset_sweep_task = tokio::task::spawn({
-        let db = Arc::clone(&app_state.database_connection);
-        async move {
-            const SWEEP_INTERVAL: tokio::time::Duration =
-                tokio::time::Duration::from_secs(24 * 60 * 60);
-            const RETENTION_DAYS: i64 = 30;
-            loop {
-                tokio::time::sleep(SWEEP_INTERVAL).await;
-                match domain::password_reset::sweep_old_attempts(&db, RETENTION_DAYS).await {
-                    Ok(deleted) if deleted > 0 => {
-                        log::info!(
-                            "[password-reset-sweep] removed {deleted} attempt record(s) \
-                             older than {RETENTION_DAYS}d"
-                        );
-                    }
-                    Ok(_) => {
-                        // Zero rows — `sweep_old_attempts` already debug-logs.
-                    }
-                    Err(e) => {
-                        log::warn!("[password-reset-sweep] sweep iteration failed: {e:?}");
-                    }
-                }
-            }
+    // Recurring background work. Each job is a periodic sweep that re-derives what is
+    // due from current rows; see `domain::jobs` for why that shape rather than a durable
+    // queue. The session-deletion task above stays hand-rolled because it is
+    // `tower_sessions`' own helper, not one of our jobs.
+    let mut scheduler = Scheduler::new(
+        Arc::clone(&app_state.database_connection),
+        app_state.config.clone(),
+    );
+    scheduler.spawn(password_reset::Sweep::new());
+    match session_reminder::Sweep::from_config(&app_state.config) {
+        Some(sweep) => {
+            scheduler.spawn(sweep);
         }
-    });
+        None => info!(
+            "SESSION_REMINDER_EMAIL_TEMPLATE_ID not set — upcoming-session reminders disabled"
+        ),
+    }
+    let job_handles = scheduler.into_handles();
 
     // Background sweep of the user_lookup_attempts throttle table. Unlike the audit
     // tables it is written on every email lookup and read only within a one-hour
@@ -260,9 +245,11 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     .unwrap();
 
     let _res = deletion_task.await.unwrap();
-    // No `let _res = …` here: the sweep task's future returns `()`,
-    // so binding it would trigger clippy's `let_unit_value` lint.
-    password_reset_sweep_task.await.unwrap();
+    // No `let _res = …` on the job handles: each task's future returns `()`, so binding
+    // it would trigger clippy's `let_unit_value` lint.
+    for handle in job_handles {
+        handle.await.unwrap();
+    }
     user_lookup_sweep_task.await.unwrap();
 
     Ok(())

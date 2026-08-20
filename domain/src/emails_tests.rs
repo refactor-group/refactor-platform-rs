@@ -218,6 +218,7 @@ fn create_full_config_with_mock(server_url: &str) -> Config {
         "--session-cancelled-email-template-id=session_cancel_template_abc",
         "--recurring-sessions-cancelled-email-template-id=series_cancel_template_abc",
         "--action-assigned-email-template-id=action_template_789",
+        "--session-reminder-email-template-id=session_reminder_template_001",
         "--frontend-base-url=https://app.example.com",
         &format!("--resend-base-url={server_url}"),
     ])
@@ -1695,6 +1696,76 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_omit_the_invite
 /// back. The full path cannot be mocked end to end because `user::find_by_id` uses
 /// `find_with_related`, which MockDatabase cannot express, so the send itself is covered
 /// separately by `test_cancelling_a_legacy_series_member_emails_without_an_invite`.
+/// The claim's membership test runs once per tick, for the whole batch, but delivery is
+/// one recipient at a time. A removal landing in that gap would otherwise mail a former
+/// member the session time, coach, organization, and link.
+///
+/// Covers the rule rather than its placement. The full path cannot be driven under a mock
+/// because `user::find_by_id` uses `find_with_related`, which MockDatabase cannot express,
+/// so that the check is the last statement before the send is enforced by review.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_recipient_still_notified_is_false_for_a_removed_member() {
+    let relationship = test_relationship();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // No membership row: the coachee was removed after the claim was taken.
+        .append_query_results([Vec::<entity::user_roles::Model>::new()])
+        .into_connection();
+
+    let notified = recipient_still_notified(&db, &relationship, relationship.coachee_id)
+        .await
+        .expect("a removed recipient is an answer, not an error");
+
+    assert!(
+        !notified,
+        "a recipient holding no role in the organization must not be mailed"
+    );
+
+    let log = db.into_transaction_log();
+    assert!(
+        format!("{:?}", log[0]).contains("user_roles"),
+        "eligibility must be re-read from user_roles, not inferred from the claim, \
+         got: {:?}",
+        log[0]
+    );
+}
+
+/// The other half: someone who still holds a role is still mailed. Without this, a check
+/// that always returned false would pass the test above and silently stop all reminders.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_recipient_still_notified_is_true_for_a_current_member() {
+    let relationship = test_relationship();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        // The query selects only user_id, so the mock row is that column alone.
+        .append_query_results([vec![std::collections::BTreeMap::from([(
+            "user_id".to_string(),
+            sea_orm::Value::from(relationship.coachee_id),
+        )])]])
+        .into_connection();
+
+    let notified = recipient_still_notified(&db, &relationship, relationship.coachee_id)
+        .await
+        .expect("a current member is an answer, not an error");
+
+    assert!(notified, "a current member must still be reminded");
+}
+
+#[cfg(feature = "mock")]
+fn test_relationship() -> entity::coaching_relationships::Model {
+    entity::coaching_relationships::Model {
+        id: Id::new_v4(),
+        organization_id: Id::new_v4(),
+        coach_id: Id::new_v4(),
+        coachee_id: Id::new_v4(),
+        slug: "test".to_string(),
+        created_at: chrono::Utc::now().into(),
+        updated_at: chrono::Utc::now().into(),
+    }
+}
+
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_notify_session_cancelled_no_longer_short_circuits_a_legacy_series_member() {
@@ -3182,4 +3253,162 @@ fn test_format_session_date_time_date_rolls_over_with_timezone() {
     let (date_str, time_str) = format_session_date_time(date, "Asia/Tokyo");
     assert_eq!(date_str, "Sunday, March 8, 2026");
     assert_eq!(time_str, "8:00 AM");
+}
+
+/// Full-payload match on the reminder: exact JSON, so it also proves the reminder
+/// carries no `.ics` (the invite already went out with the scheduled email) and that
+/// `session_title` / `meeting_url` are omitted — not blanked — when the session has
+/// neither. Times render in the coachee's zone: 2026-03-04 15:00 UTC is 10:00 AM EST.
+#[tokio::test]
+async fn test_send_session_reminder_email_variables() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+    let session = create_test_session();
+    let org = create_test_organization();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+            "template": {
+                "id": "session_reminder_template_001",
+                "variables": {
+                    "first_name": "Jane",
+                    "coach_first_name": "Alex",
+                    "coach_full_name": "Alex Smith",
+                    "organization_name": "Acme Corp",
+                    "session_date": "Wednesday, March 4, 2026",
+                    "session_time": "10:00 AM",
+                    "session_when": "Wednesday, March 4, 2026 at 10:00 AM",
+                    "session_duration": "1 hour",
+                    "session_url": format!("https://app.example.com/coaching-sessions/{}", session.id),
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_msg_reminder"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(&config)
+        .await
+        .unwrap();
+
+    send_session_reminder_email(&email_config, &coachee, &coach, &session, &org)
+        .await
+        .unwrap();
+
+    mock.assert_async().await;
+}
+
+/// The coach is not a recipient. Only one request reaches Resend, and it is addressed
+/// to the coachee — a second send would trip `expect(1)`.
+#[tokio::test]
+async fn test_send_session_reminder_email_goes_only_to_the_coachee() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_msg_reminder"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(&config)
+        .await
+        .unwrap();
+
+    send_session_reminder_email(
+        &email_config,
+        &coachee,
+        &coach,
+        &create_test_session(),
+        &create_test_organization(),
+    )
+    .await
+    .unwrap();
+
+    mock.assert_async().await;
+}
+
+/// A session that has a title and a meeting link carries both, so the template can
+/// render a join button and name the session.
+#[tokio::test]
+async fn test_send_session_reminder_email_carries_title_and_meeting_url() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = coaching_sessions::Model {
+        title: Some("Quarterly check-in".to_string()),
+        meeting_url: Some("https://meet.google.com/abc-defg-hij".to_string()),
+        ..create_test_session()
+    };
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "template": {
+                "variables": {
+                    "session_title": "Quarterly check-in",
+                    "meeting_url": "https://meet.google.com/abc-defg-hij",
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_msg_reminder"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(&config)
+        .await
+        .unwrap();
+
+    send_session_reminder_email(
+        &email_config,
+        &coachee,
+        &coach,
+        &session,
+        &create_test_organization(),
+    )
+    .await
+    .unwrap();
+
+    mock.assert_async().await;
+}
+
+/// Config resolution fails before any recipient is contacted when the template is unset,
+/// which is what keeps a misconfigured deploy from sending template-less mail.
+#[tokio::test]
+async fn test_session_reminder_missing_template_id() {
+    let config = Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        "--frontend-base-url=https://app.example.com",
+    ]);
+    assert!(config.session_reminder_email_template_id().is_none());
+
+    let Err(err) = ResolvedEmailConfig::new::<SessionReminder>(&config).await else {
+        panic!("expected a Config error when the reminder template is unset");
+    };
+
+    match err.error_kind {
+        DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+        other => panic!("Expected Config error, got: {other:?}"),
+    }
 }
