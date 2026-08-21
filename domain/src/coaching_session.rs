@@ -581,9 +581,13 @@ mod tests {
     use service::config::Config;
 
     fn test_user() -> entity_api::users::Model {
+        test_user_with_email("person@example.com")
+    }
+
+    fn test_user_with_email(email: &str) -> entity_api::users::Model {
         entity_api::users::Model {
             id: Id::new_v4(),
-            email: "person@example.com".to_string(),
+            email: email.to_string(),
             first_name: "Test".to_string(),
             last_name: "Person".to_string(),
             display_name: None,
@@ -780,6 +784,84 @@ mod tests {
         assert!(
             statements.iter().any(|sql| restamps_the_notice(sql)),
             "a delivered reschedule must record the notice it gave: {statements:?}"
+        );
+    }
+
+    /// The two recipients fail independently, and only the coachee's delivery bears on
+    /// the reminder. Resend rejects the coachee's address and accepts the coach's: the
+    /// send as a whole reports success, and recording notice off that would leave the
+    /// coachee with neither the reschedule email nor the reminder.
+    #[tokio::test]
+    async fn update_records_no_notice_when_only_the_coach_was_reached() {
+        let mut server = mockito::Server::new_async().await;
+        // Matched on the address, so the order of the two sends cannot decide the result.
+        let _coachee = server
+            .mock("POST", "/emails")
+            .match_body(mockito::Matcher::Regex("coachee@example.com".to_string()))
+            .with_status(422)
+            .with_body(r#"{"message":"invalid recipient"}"#)
+            .create_async()
+            .await;
+        let _coach = server
+            .mock("POST", "/emails")
+            .match_body(mockito::Matcher::Regex("coach@example.com".to_string()))
+            .with_status(200)
+            .with_body(r#"{"id":"sent"}"#)
+            .create_async()
+            .await;
+
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_key",
+            "--session-rescheduled-email-template-id=reschedule_template",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", server.url()),
+        ]);
+
+        let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
+        let mut session = test_session(relationship.id, None);
+        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+        let moved = coaching_sessions::Model {
+            date: session.date + chrono::Duration::hours(1),
+            ..session.clone()
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..moved.clone()
+        };
+
+        let mut db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![moved.clone()]])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
+            .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
+            .append_query_results(vec![vec![test_organization()]]);
+        for _ in 0..6 {
+            db = db.append_query_results(vec![Vec::<coaching_sessions::Model>::new()]);
+        }
+        let db = db
+            .append_query_results(vec![vec![bumped]])
+            .into_connection();
+
+        let result = update(
+            &db,
+            &config,
+            session.id,
+            TestParams(date_update(moved.date)),
+        )
+        .await;
+        assert!(result.is_ok(), "the edit itself must succeed: {result:?}");
+
+        let statements: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .map(|txn| format!("{txn:?}"))
+            .collect();
+        assert!(
+            !statements.iter().any(|sql| restamps_the_notice(sql)),
+            "the coachee was never told, so nothing may be recorded: {statements:?}"
         );
     }
 

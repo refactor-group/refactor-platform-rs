@@ -798,6 +798,16 @@ fn build_occurrence_reschedule_ics(
 /// differ only by template (via `N`) and the `session_or_series` template variable.
 /// A reschedule passes an already-bumped `session`, so the `.ics` carries the next
 /// `SEQUENCE` under a stable `UID`.
+/// Which participants a session email actually reached.
+///
+/// The two sends fail independently, and only the coachee's bears on the reminder, so a
+/// single "it worked" would record notice for someone who was never told.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Delivered {
+    pub coachee: bool,
+    pub coach: bool,
+}
+
 async fn send_single_session_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
@@ -806,7 +816,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     reschedule: Option<&RescheduleVars>,
-) -> Result<(), Error> {
+) -> Result<Delivered, Error> {
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
         N::notification_name(),
@@ -876,6 +886,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     )?;
 
     // Email to coachee: "Your coach, ... has a session with you"
+    let mut delivered = Delivered::default();
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
         &Recipient {
@@ -895,6 +906,8 @@ async fn send_single_session_invite_email<N: EmailNotification>(
             N::notification_name(),
             coachee.email
         );
+    } else {
+        delivered.coachee = true;
     }
 
     // Email to coach: "Your coachee, ... has a session with you"
@@ -917,9 +930,11 @@ async fn send_single_session_invite_email<N: EmailNotification>(
             N::notification_name(),
             coach.email
         );
+    } else {
+        delivered.coach = true;
     }
 
-    Ok(())
+    Ok(delivered)
 }
 
 /// Send session-scheduled notification emails to both coach and coachee.
@@ -941,6 +956,7 @@ async fn send_session_scheduled_email(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 /// Send session-rescheduled notification emails to both coach and coachee. `session`
@@ -955,7 +971,7 @@ async fn send_session_rescheduled_email(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     previous_start: NaiveDateTime,
-) -> Result<(), Error> {
+) -> Result<Delivered, Error> {
     send_single_session_invite_email::<SessionRescheduled>(
         db,
         config,
@@ -1120,7 +1136,7 @@ fn warn_unaddressable(session: &coaching_sessions::Model) {
 /// coach and coachee so their calendar event updates in place. `previous_start` is the
 /// pre-update start, shown alongside the new one. Errors are logged internally and never
 /// block or fail the calling operation.
-/// Returns whether the participants were actually told.
+/// Returns whether the coachee was actually told.
 ///
 /// Best-effort in that a failure does not fail the edit, but the caller needs the answer:
 /// the reminder rule treats an announced time as notice given, and recording notice for
@@ -1131,7 +1147,7 @@ pub async fn notify_session_rescheduled(
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
 ) -> bool {
-    let result: Result<(), Error> = async {
+    let result: Result<Delivered, Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
@@ -1144,7 +1160,9 @@ pub async fn notify_session_rescheduled(
     .await;
 
     match result {
-        Ok(()) => true,
+        // The coachee's, not the coach's: they are who the reminder would go to, and the
+        // two sends fail independently.
+        Ok(delivered) => delivered.coachee,
         Err(e) => {
             warn!(
                 "Failed to send session rescheduled emails for session {}: {e:?}",
