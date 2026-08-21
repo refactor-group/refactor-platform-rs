@@ -347,11 +347,19 @@ pub async fn update(
         true => coaching_session::increment_ical_sequence(&txn, updated.id).await?,
         false => updated,
     };
+    // Stamped in the same transaction as the edit, on the same predicate that decides
+    // whether anyone is told: a moved session whose notice was not restamped would be
+    // reminded about as though the coachee had known all along.
+    let schedule_moved = emails::affects_schedule(&old, &updated);
+    let updated = match schedule_moved {
+        true => coaching_session::mark_notice_given(&txn, updated.id).await?,
+        false => updated,
+    };
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     // Best-effort re-send of an updated `.ics` so calendar clients move the event in place.
     // Gated on the schedule: the copy announces a start and a duration.
-    if emails::affects_schedule(&old, &updated) {
+    if schedule_moved {
         emails::notify_session_rescheduled(db, config, &updated, old_date).await;
     }
     Ok(updated)
@@ -615,6 +623,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         }
     }
 
@@ -651,6 +660,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![bumped.clone()]])
+            // A moved schedule also restamps the notice; unused by a title edit.
             .append_query_results(vec![vec![bumped]])
             .into_connection();
 
@@ -673,6 +684,45 @@ mod tests {
     /// path and a title edit must not. Both cases drive [`update`] rather than the predicate:
     /// the predicate is covered next to the invite, and what needs pinning here is which of
     /// the two the send is wired to.
+    /// Whether a logged statement writes the notice, rather than merely naming the column.
+    /// Every `RETURNING` lists it, so a bare substring match is vacuous.
+    fn restamps_the_notice(sql: &str) -> bool {
+        sql.replace('\\', "").contains(r#"SET "notice_given_at""#)
+    }
+
+    /// The restamp has to fire on exactly the edits that tell someone the new time.
+    /// Restamping a title edit would eat the notice the coachee already had and silence a
+    /// reminder they are owed; not restamping a move would remind them about a time they
+    /// were just told. Asserted against the statement itself, since a mock running out of
+    /// rows is a coincidence, not a guard.
+    #[tokio::test]
+    async fn update_restamps_the_notice_only_when_the_schedule_moved() {
+        let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
+        let mut session = test_session(relationship.id, None);
+        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+        let renamed = coaching_sessions::Model {
+            title: Some("Renamed".to_string()),
+            ..session.clone()
+        };
+        let title_sql =
+            statements_for_update(&session, &renamed, string_update("title", "Renamed")).await;
+        assert!(
+            !title_sql.iter().any(|sql| restamps_the_notice(sql)),
+            "a title edit tells nobody a new time, so it must not restamp: {title_sql:?}"
+        );
+
+        let moved = coaching_sessions::Model {
+            date: session.date + chrono::Duration::hours(1),
+            ..session.clone()
+        };
+        let moved_sql = statements_for_update(&session, &moved, date_update(moved.date)).await;
+        assert!(
+            moved_sql.iter().any(|sql| restamps_the_notice(sql)),
+            "a moved start is announced, so the notice must restart from now: {moved_sql:?}"
+        );
+    }
+
     #[tokio::test]
     async fn update_notifies_only_when_the_schedule_moved() {
         let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
@@ -1077,6 +1127,7 @@ mod tests {
             hydrated_at: Some(
                 chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         // The session as the DB would return it after INSERT (with the reused meeting URL)
@@ -1191,10 +1242,12 @@ mod tests {
 
         let input = coaching_sessions::Model {
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
         let hydrated_row = coaching_sessions::Model {
             hydrated_at: Some(chrono::Utc::now().into()),
+            notice_given_at: chrono::Utc::now().into(),
             ..input.clone()
         };
 
@@ -1242,6 +1295,7 @@ mod tests {
         let relationship = test_coaching_relationship(Id::new_v4(), org.id);
         let input = coaching_sessions::Model {
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship.id, None)
         };
         let refetched = input.clone();
@@ -1311,6 +1365,7 @@ mod tests {
 
         let row_template = coaching_sessions::Model {
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship_id, None)
         };
         let row1 = coaching_sessions::Model {
@@ -1362,6 +1417,7 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
 
@@ -1414,6 +1470,7 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
         let bumped = coaching_sessions::Model {
@@ -1494,6 +1551,7 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship.id, None)
         };
 

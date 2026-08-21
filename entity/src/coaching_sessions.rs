@@ -40,6 +40,11 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub hydrated_at: Option<DateTimeWithTimeZone>,
+    /// When the participants were last told this start: at booking, then on every
+    /// reschedule. The reminder sweep measures notice from here, so a session moved to
+    /// less than the lead away is not reminded about.
+    #[serde(skip_deserializing)]
+    pub notice_given_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
