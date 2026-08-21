@@ -798,6 +798,16 @@ fn build_occurrence_reschedule_ics(
 /// differ only by template (via `N`) and the `session_or_series` template variable.
 /// A reschedule passes an already-bumped `session`, so the `.ics` carries the next
 /// `SEQUENCE` under a stable `UID`.
+/// Which participants a session email actually reached.
+///
+/// The two sends fail independently, and only the coachee's bears on the reminder, so a
+/// single "it worked" would record notice for someone who was never told.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Delivered {
+    pub coachee: bool,
+    pub coach: bool,
+}
+
 async fn send_single_session_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
@@ -806,7 +816,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     reschedule: Option<&RescheduleVars>,
-) -> Result<(), Error> {
+) -> Result<Delivered, Error> {
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
         N::notification_name(),
@@ -876,6 +886,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     )?;
 
     // Email to coachee: "Your coach, ... has a session with you"
+    let mut delivered = Delivered::default();
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
         &Recipient {
@@ -895,6 +906,8 @@ async fn send_single_session_invite_email<N: EmailNotification>(
             N::notification_name(),
             coachee.email
         );
+    } else {
+        delivered.coachee = true;
     }
 
     // Email to coach: "Your coachee, ... has a session with you"
@@ -917,9 +930,11 @@ async fn send_single_session_invite_email<N: EmailNotification>(
             N::notification_name(),
             coach.email
         );
+    } else {
+        delivered.coach = true;
     }
 
-    Ok(())
+    Ok(delivered)
 }
 
 /// Send session-scheduled notification emails to both coach and coachee.
@@ -941,6 +956,7 @@ async fn send_session_scheduled_email(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 /// Send session-rescheduled notification emails to both coach and coachee. `session`
@@ -955,7 +971,7 @@ async fn send_session_rescheduled_email(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     previous_start: NaiveDateTime,
-) -> Result<(), Error> {
+) -> Result<Delivered, Error> {
     send_single_session_invite_email::<SessionRescheduled>(
         db,
         config,
@@ -1058,8 +1074,8 @@ pub async fn notify_session_scheduled(
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_scheduled_email(db, config, &coach, &coachee, session, &org).await
@@ -1120,17 +1136,22 @@ fn warn_unaddressable(session: &coaching_sessions::Model) {
 /// coach and coachee so their calendar event updates in place. `previous_start` is the
 /// pre-update start, shown alongside the new one. Errors are logged internally and never
 /// block or fail the calling operation.
+/// Returns whether the coachee was actually told.
+///
+/// Best-effort in that a failure does not fail the edit, but the caller needs the answer:
+/// the reminder rule treats an announced time as notice given, and recording notice for
+/// an email that never arrived would leave the coachee with neither.
 pub async fn notify_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
-) {
-    let result: Result<(), Error> = async {
+) -> bool {
+    let result: Result<Delivered, Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
@@ -1138,11 +1159,17 @@ pub async fn notify_session_rescheduled(
     }
     .await;
 
-    if let Err(e) = result {
-        warn!(
-            "Failed to send session rescheduled emails for session {}: {e:?}",
-            session.id
-        );
+    match result {
+        // The coachee's, not the coach's: they are who the reminder would go to, and the
+        // two sends fail independently.
+        Ok(delivered) => delivered.coachee,
+        Err(e) => {
+            warn!(
+                "Failed to send session rescheduled emails for session {}: {e:?}",
+                session.id
+            );
+            false
+        }
     }
 }
 
@@ -1178,8 +1205,8 @@ pub async fn send_session_reminder(
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
 
-    let coach = user::find_by_id(db, relationship.coach_id).await?;
-    let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+    let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+    let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
     let organization = organization::find_by_id(db, relationship.organization_id).await?;
 
     info!(
@@ -1464,8 +1491,8 @@ pub async fn notify_session_cancelled(
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_cancelled_email(config, &coach, &coachee, session, &org).await
@@ -1770,8 +1797,8 @@ pub async fn notify_recurring_sessions_scheduled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_scheduled_email(
@@ -1812,8 +1839,8 @@ pub async fn notify_recurring_sessions_rescheduled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_rescheduled_email(
@@ -2001,8 +2028,8 @@ pub async fn notify_recurring_sessions_cancelled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_cancelled_email(config, series, &coach, &coachee, sessions, &org)

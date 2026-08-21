@@ -11,7 +11,8 @@ Related: PR #395.
 A sweep runs every `SESSION_REMINDER_POLL_MINUTES` (default 15), starting immediately at
 process start rather than one interval later. Each tick:
 
-1. Selects sessions starting in `(now, now + lead]` whose coachee has no current claim.
+1. Selects sessions starting in `(now, now + lead]`, more than `lead` after the
+   participants were last told the time, whose coachee has no current claim.
 2. Claims them by upserting into `coaching_session_reminders`, keyed
    `(coaching_session_id, user_id)`, storing the session's `date` in `sent_for_start`.
 3. Emails the coachee for each claimed pair, then reports `processed N item(s)`.
@@ -126,12 +127,68 @@ After H1, move the session's `date` forward by 15 minutes (keeping it inside the
 - **Expect** a second email for the same session on the next tick.
 - **Expect** the existing row's `sent_for_start` updated to the new `date`, still one row.
 
-### H5. A session booked inside the window is reminded on the next tick
+### H5. Notice already given suppresses the reminder
 
-Create a session starting 20 minutes from now.
+Notice is `date - notice_given_at`: how long before the session the participants were last
+told its time. Set at booking, restamped on every reschedule, and on nothing else.
 
-- **Expect** it is emailed on the next tick. This is intended: one late heads-up beats
-  none, even though it lands shortly after the scheduled-session email.
+Create a session starting 20 minutes from now, with a 1 hour lead.
+
+- **Expect** no reminder, ever. Booking it sent the scheduled-session email 20 minutes
+  ahead, which is less than the lead, so a reminder would repeat what they were just told.
+
+Now reschedule it, twice, and watch the boundary. With a 24 hour lead, a session moved to:
+
+- **22 hours after the reschedule** -> **no reminder**. The reschedule email gave less than
+  a day's notice, so it already served the purpose.
+- **26 hours after the reschedule** -> **reminded**, once it enters the window. They will
+  have known for more than a day by then.
+
+The anchor is the reschedule, not the old start. The same move made a month early **is**
+reminded about, because that email is a month stale by the time the session comes round.
+
+Check the predicate without waiting on a tick:
+
+```sql
+SELECT date > (notice_given_at AT TIME ZONE 'UTC') + INTERVAL '24 hours' AS would_remind
+FROM refactor_platform.coaching_sessions WHERE id = '<session id>';
+```
+
+### H5a. Only a schedule change restamps the notice
+
+The one guarantee with no automated coverage at the database level, so worth doing by hand.
+
+Take a session booked well in advance and note its `notice_given_at`. Then, checking the
+column after each:
+
+- **Edit the title** -> unchanged.
+- **Change the meeting URL** -> unchanged.
+- **Open the session** so it hydrates -> unchanged. This is why `updated_at` cannot serve
+  as the anchor: hydration moves it without telling anyone anything.
+- **Move the start, or change the duration** -> restamped to now, but only once the
+  reschedule email has actually gone out. Point the backend at the failing mock
+  (`touch /tmp/resend_fail`) and move a session: the start changes, no email is sent, and
+  `notice_given_at` must be **unchanged**. Otherwise the coachee gets neither that email
+  nor the reminder it would have suppressed.
+
+A restamp on any of the first three would silently eat the notice the coachee already had
+and suppress a reminder they are owed.
+
+### H5b. The migration backfills existing sessions
+
+On a database that predates `notice_given_at`, apply the migration.
+
+- **Expect** every row has `notice_given_at = created_at` and none are null:
+
+```sql
+SELECT count(*) FILTER (WHERE notice_given_at = created_at) AS backfilled,
+       count(*) FILTER (WHERE notice_given_at IS NULL) AS nulls
+FROM refactor_platform.coaching_sessions;
+```
+
+Reschedules that happened before the migration are not recorded, so those sessions are
+treated as though their booking was the last word. That errs toward reminding rather than
+toward silence, which is the right direction to be wrong in.
 
 ### H6. The first sweep runs at startup, not one interval later
 
@@ -329,7 +386,8 @@ Run the migration's `down`.
 ## Automating this
 
 H1 through H5 and S2 through S5 are all reachable from SQL seeding plus log and capture
-assertions, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
+assertions. H5 needs `notice_given_at` controlled rather than defaulted, so seed it
+explicitly instead of relying on insertion time, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
 process restart with different env, so they suit a shell-driven matrix rather than an
 in-process test. S8 and S9 need a database that has not had the migration applied.
 
@@ -340,5 +398,7 @@ in-process test. S8 and S9 need a database that has not had the migration applie
 H7 and S8 were exercised at the SQL and migration level.
 
 S10 through S13 were added after that run, from review passes, and have **not** been
-executed yet. S11 in particular cannot be driven from outside the process without the
+executed yet. H5, H5a and H5b postdate the `notice_given_at` change and are also unrun,
+though the H5 boundary was checked directly against the predicate in Postgres (22h
+suppressed, 26h reminded, a month-early move reminded). S11 in particular cannot be driven from outside the process without the
 mock-side delay it describes.

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use email_address::EmailAddress;
 use log::*;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 
@@ -275,7 +277,7 @@ impl SendEmailRequestBuilder {
     pub async fn build(self) -> Result<SendEmailRequest, Error> {
         let from = self.from.ok_or_else(|| Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(
                 "Sender email is required".to_string(),
             )),
         })?;
@@ -284,7 +286,7 @@ impl SendEmailRequestBuilder {
         if self.to.is_empty() {
             return Err(Error {
                 source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(
                     "At least one recipient is required".to_string(),
                 )),
             });
@@ -327,7 +329,7 @@ impl SendEmailRequest {
             warn!("Invalid email: {email}");
             return Err(Error {
                 source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(format!(
                     "Invalid email address: {email}"
                 ))),
             });
@@ -382,11 +384,26 @@ impl Client {
             );
             Ok(())
         } else {
+            let retry_after = retry_after_from(response.headers());
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
+            // A rejection is usually payload versus template, and the template is the
+            // half not otherwise visible here.
+            let template_id = request
+                .template
+                .as_ref()
+                .map(|t| t.id.as_str())
+                .unwrap_or("none");
+            warn!(
+                "Failed to send email to {to_emails:?} using template {template_id}: \
+                 {status} - {error_text}"
+            );
             Err(Error {
                 source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text)),
+                error_kind: DomainErrorKind::Internal(classify_failure(
+                    status,
+                    retry_after,
+                    error_text,
+                )),
             })
         }
     }
@@ -400,6 +417,35 @@ async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
         .use_rustls_tls()
         .default_headers(headers)
         .build()?)
+}
+
+/// Sorts a failed response by what the caller should do. Resend asks that 429 and 5xx be
+/// retried and the rest not, since the request itself is what they refused.
+fn classify_failure(
+    status: StatusCode,
+    retry_after: Option<Duration>,
+    body: String,
+) -> InternalErrorKind {
+    match status {
+        StatusCode::TOO_MANY_REQUESTS => InternalErrorKind::RateLimited { retry_after },
+        // Not from Resend itself, but an intermediary can emit either, and both mean
+        // "came at a bad time" rather than "this request is wrong".
+        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_EARLY => InternalErrorKind::Unavailable(body),
+        s if s.is_server_error() => InternalErrorKind::Unavailable(body),
+        _ => InternalErrorKind::Rejected(body),
+    }
+}
+
+/// Reads `retry-after` seconds. The HTTP-date form is ignored rather than guessed at.
+fn retry_after_from(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 
 /// Build authentication headers for the Resend API.
@@ -782,12 +828,107 @@ mod tests {
         // it's the only diagnostic the caller gets for a rejected send.
         let err = result.unwrap_err();
         match err.error_kind {
-            DomainErrorKind::Internal(InternalErrorKind::Other(text)) => assert!(
+            DomainErrorKind::Internal(InternalErrorKind::Rejected(text)) => assert!(
                 text.contains("validation failed"),
                 "response body not propagated into error, got: {text}"
             ),
-            other => panic!("expected Internal(Other), got: {other:?}"),
+            other => panic!("expected Internal(Rejected), got: {other:?}"),
         }
+    }
+
+    /// End to end through a real response, which the unit tests skip: the status and the
+    /// `retry-after` header have to survive the trip out of reqwest, not just the match.
+    #[tokio::test]
+    async fn test_client_send_email_429_is_rate_limited_with_the_wait_resend_sent() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/emails")
+            .with_status(429)
+            .with_header("retry-after", "3")
+            .with_body(r#"{"message":"Too many requests"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        let err = client.send_email(request).await.unwrap_err();
+
+        match err.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::RateLimited { retry_after }) => {
+                assert_eq!(
+                    retry_after,
+                    Some(Duration::from_secs(3)),
+                    "the wait Resend named must reach the caller, not be reinvented"
+                );
+            }
+            other => panic!("expected Internal(RateLimited), got: {other:?}"),
+        }
+    }
+
+    /// A 5xx is retryable where a 4xx is not, so the two must not collapse to one kind.
+    #[tokio::test]
+    async fn test_client_send_email_5xx_is_unavailable_not_rejected() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/emails")
+            .with_status(503)
+            .with_body(r#"{"message":"upstream down"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        let err = client.send_email(request).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Unavailable(_))
+            ),
+            "a 503 must stay retryable, got: {:?}",
+            err.error_kind
+        );
+    }
+
+    /// Resend asks that 429 and 5xx be retried and 4xx not. Every email in the app goes
+    /// through one send path, so this is the only place that decision is made.
+    #[test]
+    fn classify_failure_separates_retryable_from_refused() {
+        assert!(matches!(
+            classify_failure(StatusCode::TOO_MANY_REQUESTS, None, String::new()),
+            InternalErrorKind::RateLimited { .. }
+        ));
+        assert!(matches!(
+            classify_failure(StatusCode::INTERNAL_SERVER_ERROR, None, String::new()),
+            InternalErrorKind::Unavailable(_)
+        ));
+        // The 422 that a wrong template id produces: retrying sends the same payload to
+        // the same template, so it must not read as transient.
+        assert!(matches!(
+            classify_failure(StatusCode::UNPROCESSABLE_ENTITY, None, String::new()),
+            InternalErrorKind::Rejected(_)
+        ));
+        assert!(matches!(
+            classify_failure(StatusCode::UNAUTHORIZED, None, String::new()),
+            InternalErrorKind::Rejected(_)
+        ));
+    }
+
+    /// The wait Resend names is carried through, so a caller can honour it instead of
+    /// inventing a delay.
+    #[test]
+    fn classify_failure_carries_the_retry_after_resend_sent() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "7".parse().unwrap());
+        assert_eq!(retry_after_from(&headers), Some(Duration::from_secs(7)));
+
+        // An HTTP-date is ignored rather than guessed at.
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(retry_after_from(&headers), None);
+        assert_eq!(retry_after_from(&reqwest::header::HeaderMap::new()), None);
     }
 
     #[tokio::test]

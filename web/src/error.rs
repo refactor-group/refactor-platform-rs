@@ -88,16 +88,11 @@ impl Error {
             InternalErrorKind::Entity(ref entity_error_kind) => {
                 self.handle_entity_error(entity_error_kind)
             }
-            InternalErrorKind::Config => {
-                warn!(
-                    "InternalErrorKind::Config: Responding with 500 Internal Server Error. Error: {self:?}"
-                );
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
-            }
-            InternalErrorKind::Other(_description) => {
-                warn!(
-                    "InternalErrorKind::Other: Responding with 500 Internal Server Error. Error:: {self:?}"
-                );
+            // Everything else is the platform's problem, not the caller's. The kinds are
+            // distinct so the domain can decide whether to retry, which says nothing
+            // about what to return here.
+            kind => {
+                warn!("{kind:?}: Responding with 500 Internal Server Error. Error: {self:?}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
             }
         }

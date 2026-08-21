@@ -226,6 +226,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
         };
         let relationship = coaching_relationships::Model {
             id: relationship_id,

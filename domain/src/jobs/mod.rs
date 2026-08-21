@@ -25,7 +25,9 @@
 //!
 //! Implement [`Job`] on a unit-ish struct in its own submodule, then register it in
 //! `web::init_server` via [`Scheduler::spawn`]. A job that has nothing to do should
-//! return [`Outcome::IDLE`] rather than logging, so quiet ticks stay quiet.
+//! return [`Outcome::IDLE`] rather than logging, so quiet ticks stay quiet. A job that
+//! could not finish what it found returns [`Outcome::partial`], which the scheduler
+//! reports at WARN so a failing tick is never mistaken for an idle one.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,19 +56,35 @@ pub struct Context {
 
 /// What one tick accomplished, for logging.
 ///
-/// `processed` is a job-defined unit — reminders sent, rows deleted. Its only contract
-/// is that `0` means "found nothing to do", which the scheduler logs at DEBUG so an
-/// idle job does not fill the log.
+/// `processed` and `attempted` are job-defined units: reminders sent, rows deleted. They
+/// are separate because a tick where everything failed still found work, and reporting it
+/// as idle hides the job from anyone reading the log at INFO.
 pub struct Outcome {
     pub processed: u64,
+    pub attempted: u64,
 }
 
 impl Outcome {
     /// Nothing was due this tick.
-    pub const IDLE: Self = Self { processed: 0 };
+    pub const IDLE: Self = Self {
+        processed: 0,
+        attempted: 0,
+    };
 
+    /// Every item found was handled.
     pub fn processed(count: u64) -> Self {
-        Self { processed: count }
+        Self {
+            processed: count,
+            attempted: count,
+        }
+    }
+
+    /// Some of what was found could not be handled. The job has already logged why.
+    pub fn partial(processed: u64, attempted: u64) -> Self {
+        Self {
+            processed,
+            attempted,
+        }
     }
 }
 
@@ -146,10 +164,19 @@ impl Scheduler {
             loop {
                 ticker.tick().await;
                 match job.run(&context).await {
-                    Ok(outcome) if outcome.processed > 0 => {
-                        info!("[{name}] processed {} item(s)", outcome.processed);
+                    Ok(outcome) if outcome.processed == outcome.attempted => {
+                        if outcome.processed > 0 {
+                            info!("[{name}] processed {} item(s)", outcome.processed);
+                        } else {
+                            debug!("[{name}] nothing due");
+                        }
                     }
-                    Ok(_) => debug!("[{name}] nothing due"),
+                    // Reported at WARN even when some succeeded: a tick that found work
+                    // and could not finish it must not read as an idle one.
+                    Ok(outcome) => warn!(
+                        "[{name}] processed {} of {} item(s)",
+                        outcome.processed, outcome.attempted
+                    ),
                     Err(e) => warn!("[{name}] tick failed: {e:?}"),
                 }
             }
@@ -180,6 +207,33 @@ mod tests {
     /// runtime goes idle, and tokio jumps the clock to the job's next tick. Every tick
     /// therefore lands at an exact instant, and nothing waits in real time.
     const TICK: Duration = Duration::from_secs(600);
+
+    /// A tick that found work and failed all of it reported the same count as one that
+    /// found nothing, so the scheduler logged "nothing due" while warning about every
+    /// failure. `attempted` is what separates them.
+    #[test]
+    fn a_wholly_failed_tick_is_not_idle() {
+        let failed = Outcome::partial(0, 3);
+
+        assert_ne!(
+            failed.attempted, failed.processed,
+            "a tick that handled none of what it found must be distinguishable from idle"
+        );
+        assert_eq!(Outcome::IDLE.attempted, 0, "idle found nothing to attempt");
+    }
+
+    /// A job that handled everything it found must not warn. `processed` alone cannot say
+    /// so: 0 of 0 and 0 of 3 both have `processed == 0`.
+    #[test]
+    fn a_fully_handled_tick_matches_what_it_attempted() {
+        assert_eq!(
+            Outcome::processed(5).attempted,
+            5,
+            "handling everything found means attempted equals processed, which is what \
+             keeps a healthy tick out of the warning path"
+        );
+        assert_eq!(Outcome::IDLE.processed, Outcome::IDLE.attempted);
+    }
 
     /// Reports the instant of every tick, so a test can assert *when* it ran rather than
     /// only that it ran.

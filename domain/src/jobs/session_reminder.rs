@@ -10,10 +10,12 @@
 //!   reminder for the new time.
 //! - **Cancelled.** The row is gone, so nothing is due. No queued job survives to fire
 //!   against a session that no longer exists.
-//! - **Booked inside the window.** A session created less than the lead time before it
-//!   starts is immediately due and is reminded on the next tick. That is intended: one
-//!   heads-up is better than none, even if it arrives soon after the scheduled-session
-//!   email.
+//! - **Booked on short notice.** A session starting less than the lead time after it was
+//!   booked is not reminded: the scheduled-session email already gave that heads-up, and
+//!   a reminder minutes later would repeat it. The test is against the notice the
+//!   recipient currently has, `date - created_at`, so moving such a session far enough
+//!   out restores it. That is the point rather than a leak: by the time it comes round
+//!   again the original email is days old and says the wrong time.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -26,7 +28,7 @@ use service::config::Config;
 
 use crate::coaching_session;
 use crate::emails;
-use crate::error::Error;
+use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 
 /// Most sessions one tick will claim.
@@ -35,6 +37,10 @@ use crate::jobs::{Context, FirstRun, Job, Outcome};
 /// a long outage, say) drains over several ticks instead of hammering the API in one go.
 /// Rows past the cap stay due and are picked up next tick.
 const MAX_PER_TICK: u64 = 200;
+
+#[cfg(all(test, feature = "mock"))]
+#[path = "session_reminder_tests.rs"]
+mod rate_limit_tests;
 
 pub struct Sweep {
     /// How far ahead of a session its reminder goes out.
@@ -63,6 +69,27 @@ impl Sweep {
             lead,
             interval: config.session_reminder_poll_interval(),
         })
+    }
+}
+
+/// Hands a claim back so a later tick can pick it up again.
+///
+/// `why` names what the release is for, since a claim left in place after any of them
+/// means the reminder is never sent and nothing says so.
+async fn release(ctx: &Context, reminder: &coaching_session::DueReminder, why: &str) {
+    if let Err(e) = coaching_session::release_reminder_claim(
+        &*ctx.db,
+        reminder.session.id,
+        reminder.recipient_id,
+        reminder.claim_id,
+    )
+    .await
+    {
+        warn!(
+            "[session-reminder] could not release the claim on session {} for user {} \
+             after {why}; it will not be retried: {e:?}",
+            reminder.session.id, reminder.recipient_id
+        );
     }
 }
 
@@ -96,10 +123,14 @@ impl Job for Sweep {
         }
 
         let mut sent = 0;
-        for reminder in &due {
+        // Skipping a recipient who lost access is a completed decision, not a failure, so
+        // it counts as handled. Only a delivery that failed leaves the tick short.
+        let mut skipped = 0;
+        for (index, reminder) in due.iter().enumerate() {
             let session = &reminder.session;
             match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
                 Ok(emails::ReminderOutcome::RecipientNoLongerAMember) => {
+                    skipped += 1;
                     info!(
                         "[session-reminder] session {} not sent: user {} is no longer a \
                          member of that organization",
@@ -107,20 +138,7 @@ impl Job for Sweep {
                     );
                     // Release rather than keep the claim, so re-adding them before the
                     // session restores the reminder instead of leaving it marked sent.
-                    if let Err(e) = coaching_session::release_reminder_claim(
-                        &*ctx.db,
-                        session.id,
-                        reminder.recipient_id,
-                        reminder.claim_id,
-                    )
-                    .await
-                    {
-                        warn!(
-                            "[session-reminder] could not release the claim on session {} \
-                             for user {} after skipping them: {e:?}",
-                            session.id, reminder.recipient_id
-                        );
-                    }
+                    release(ctx, reminder, "skipping them").await;
                 }
                 Ok(emails::ReminderOutcome::Sent) => {
                     sent += 1;
@@ -147,33 +165,74 @@ impl Job for Sweep {
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        "[session-reminder] delivery failed for session {} to user {}: {e:?}",
-                        session.id, reminder.recipient_id
+                    // Whether the upstream itself is the problem. A limiter, an outage,
+                    // or a transport failure meets every remaining send in this batch,
+                    // so there is nothing to gain by working through them one timeout at
+                    // a time. A rejected request is about that request alone.
+                    let upstream_is_down = matches!(
+                        e.error_kind,
+                        DomainErrorKind::Internal(
+                            InternalErrorKind::RateLimited { .. }
+                                | InternalErrorKind::Unavailable(_)
+                                | InternalErrorKind::Other(_)
+                        )
                     );
+                    let retry_after = match &e.error_kind {
+                        DomainErrorKind::Internal(InternalErrorKind::RateLimited {
+                            retry_after,
+                        }) => *retry_after,
+                        _ => None,
+                    };
+                    if matches!(
+                        e.error_kind,
+                        DomainErrorKind::Internal(InternalErrorKind::Rejected(_))
+                    ) {
+                        // Nothing here will change before the next tick, so the retry
+                        // this release earns is a formality until someone acts.
+                        error!(
+                            "[session-reminder] session {} to user {} was rejected and \
+                             will keep failing until it is fixed: {e:?}",
+                            session.id, reminder.recipient_id
+                        );
+                    } else {
+                        warn!(
+                            "[session-reminder] delivery failed for session {} to user {}: {e:?}",
+                            session.id, reminder.recipient_id
+                        );
+                    }
                     // Hand the claim back so a later tick retries. Leaving it in place
                     // would turn one transient Resend failure into a silently dropped
                     // reminder.
-                    if let Err(release_error) = coaching_session::release_reminder_claim(
-                        &*ctx.db,
-                        session.id,
-                        reminder.recipient_id,
-                        reminder.claim_id,
-                    )
-                    .await
-                    {
+                    release(ctx, reminder, "a failed send").await;
+
+                    if upstream_is_down {
+                        // The current claim is released above, so hand back only the ones
+                        // after it. Waiting out the interval is the backoff; the tick
+                        // never sleeps.
+                        let unattempted = &due[index + 1..];
                         warn!(
-                            "[session-reminder] could not release the claim on session {} \
-                             for user {} after a failed send; it will not be retried: \
-                             {release_error:?}",
-                            session.id, reminder.recipient_id
+                            "[session-reminder] upstream unusable, abandoning {} remaining \
+                             this tick{}",
+                            unattempted.len(),
+                            // Resend's own wait, when it named one. Only matters if it
+                            // exceeds the poll interval, which is the real backoff.
+                            retry_after.map_or(String::new(), |d| format!(
+                                " (retry-after {}s)",
+                                d.as_secs()
+                            ))
                         );
+                        for skipped_reminder in unattempted {
+                            release(ctx, skipped_reminder, "abandoning the tick").await;
+                        }
+                        break;
                     }
                 }
             }
         }
 
-        Ok(Outcome::processed(sent))
+        // `due.len()`, not the handled count: a tick that claimed reminders and failed to
+        // deliver them has still found work, and reporting only successes reads as idle.
+        Ok(Outcome::partial(sent + skipped, due.len() as u64))
     }
 }
 

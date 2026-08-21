@@ -76,6 +76,7 @@ fn test_session(session_id: Id, relationship_id: Id) -> coaching_sessions::Model
         meeting_url: None,
         provider: None,
         hydrated_at: None,
+        notice_given_at: chrono::Utc::now().into(),
         created_at: now.into(),
         updated_at: now.into(),
     }

@@ -60,6 +60,7 @@ fn create_test_session(session_id: Id, relationship_id: Id) -> coaching_sessions
         created_at: now.into(),
         updated_at: now.into(),
         hydrated_at: Some(now.into()),
+        notice_given_at: chrono::Utc::now().into(),
     }
 }
 
