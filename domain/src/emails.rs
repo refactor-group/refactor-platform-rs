@@ -1120,12 +1120,17 @@ fn warn_unaddressable(session: &coaching_sessions::Model) {
 /// coach and coachee so their calendar event updates in place. `previous_start` is the
 /// pre-update start, shown alongside the new one. Errors are logged internally and never
 /// block or fail the calling operation.
+/// Returns whether the participants were actually told.
+///
+/// Best-effort in that a failure does not fail the edit, but the caller needs the answer:
+/// the reminder rule treats an announced time as notice given, and recording notice for
+/// an email that never arrived would leave the coachee with neither.
 pub async fn notify_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
-) {
+) -> bool {
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
@@ -1138,11 +1143,15 @@ pub async fn notify_session_rescheduled(
     }
     .await;
 
-    if let Err(e) = result {
-        warn!(
-            "Failed to send session rescheduled emails for session {}: {e:?}",
-            session.id
-        );
+    match result {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(
+                "Failed to send session rescheduled emails for session {}: {e:?}",
+                session.id
+            );
+            false
+        }
     }
 }
 

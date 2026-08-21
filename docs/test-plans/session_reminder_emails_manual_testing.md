@@ -165,8 +165,11 @@ column after each:
 - **Change the meeting URL** -> unchanged.
 - **Open the session** so it hydrates -> unchanged. This is why `updated_at` cannot serve
   as the anchor: hydration moves it without telling anyone anything.
-- **Move the start, or change the duration** -> restamped to now, alongside the reschedule
-  email that does the telling.
+- **Move the start, or change the duration** -> restamped to now, but only once the
+  reschedule email has actually gone out. Point the backend at the failing mock
+  (`touch /tmp/resend_fail`) and move a session: the start changes, no email is sent, and
+  `notice_given_at` must be **unchanged**. Otherwise the coachee gets neither that email
+  nor the reminder it would have suppressed.
 
 A restamp on any of the first three would silently eat the notice the coachee already had
 and suppress a reminder they are owed.

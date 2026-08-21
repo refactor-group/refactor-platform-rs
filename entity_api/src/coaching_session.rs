@@ -586,9 +586,12 @@ pub async fn update_meeting(
 
 /// Restamps the moment the participants were last told this session's start.
 ///
-/// Called when an edit moves the schedule, alongside the reschedule email that does the
-/// telling. The reminder sweep measures notice from here, so a session moved to less than
-/// the lead away stops being due: that email just said the same thing a reminder would.
+/// Called after a reschedule email has gone out, not alongside the edit: notice recorded
+/// for a send that failed would suppress the reminder too, leaving the coachee with
+/// neither. Deliberately outside the edit's transaction for that reason.
+///
+/// The sweep measures notice from here, so a session moved to less than the lead away
+/// stops being due: that email just said the same thing a reminder would.
 pub async fn mark_notice_given(txn: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     ActiveModel {
         id: Unchanged(id),

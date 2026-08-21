@@ -41,8 +41,10 @@ pub struct Model {
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub hydrated_at: Option<DateTimeWithTimeZone>,
     /// When the participants were last told this start: at booking, then on every
-    /// reschedule. The reminder sweep measures notice from here, so a session moved to
-    /// less than the lead away is not reminded about.
+    /// reschedule whose email actually went out. The reminder sweep measures notice from
+    /// here, so a session moved to less than the lead away is not reminded about. An
+    /// undelivered reschedule leaves it alone, since the alternative is a coachee who
+    /// gets neither the email nor the reminder.
     #[serde(skip_deserializing)]
     pub notice_given_at: DateTimeWithTimeZone,
 }
