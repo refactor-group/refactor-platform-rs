@@ -95,6 +95,7 @@ Still Casey. All against R1 content.
 | `limit=3` | ≤3 hits, `next_cursor` non-null if more exist |
 | `limit=5000` | clamped: `data.limit` is 100 |
 | follow `next_cursor` until null | no duplicate `(type,id)` pairs across pages, no gaps |
+| cap-vs-cursor regression: seed **one type with more matches than `limit`** (e.g. 30+ `kumquat` actions) alongside a handful of higher-scoring hits of other types, then walk all pages with a small `limit` | every seeded row eventually appears exactly once — the dominated type's overflow must not vanish after page 1, and `next_cursor` must not go null while matches remain |
 | tampered/garbage `cursor` | 400 |
 | `mode=keyword` | same as omitted |
 | `mode=semantic` (before PR 6) | 400 |
