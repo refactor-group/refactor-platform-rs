@@ -126,8 +126,9 @@ pub struct Core {
     pub id: Id,
     /// ts_rank; higher is better; comparable only within one response.
     pub score: f32,
-    /// One-line label for the result row. Never empty (sessions use the
-    /// composed display_title when title is NULL).
+    /// One-line label for the result row. Never empty: sessions use the
+    /// composed display_title, with a deterministic final fallback of
+    /// "Coaching session — YYYY-MM-DD" (defined below the variant table).
     pub title: String,
     /// Plain-text excerpt via ts_headline; matched terms wrapped in
     /// <mark>…</mark> markers. Not HTML — the FE splits on the markers and
@@ -151,7 +152,7 @@ pub struct Core {
 | `UserHit` | `email`, `first_name`, `last_name`, `display_name`, `organization_ids` — restricted to the intersection of the user's orgs and the requester's admin scope (no membership leakage) |
 | `OrganizationHit` | `name`, `slug` |
 
-`session_display_title` is hydrated post-query via the existing `entity_api::coaching_session_display_title::batch_load_display_titles` (it is computed, not a DB column).
+`session_display_title` is hydrated post-query via the existing `entity_api::coaching_session_display_title::batch_load_display_titles` (it is computed, not a DB column). That composition — session title → first live topic body → first goal title — returns `None` when every tier is absent or blank, so search defines a deterministic final fallback: **`Coaching session — YYYY-MM-DD`**, formatted from the session's stored `date` (naive, no timezone conversion, so the label is identical for every caller). The fallback applies wherever the composed title surfaces: a `SessionHit`'s `title`/`display_title`, the `session_display_title` context field on note/action/agreement hits, and transcript hit titles that embed it. `title` is therefore never empty by construction, and implementations must not invent their own placeholder.
 
 ### Example
 
@@ -332,7 +333,7 @@ Both are committed phases, not options.
 ## Testing strategy
 
 - **entity_api (per searcher)**: DB-backed integration tests — FTS semantics (stemming, quoted phrases, negation), scope isolation (participant cannot see other relationships; removed-from-org user sees nothing; org admin sees the whole org and nothing outside it; super admin sees all), soft-delete/archive exclusion, timezone edge cases (reuse the `SessionQueryOptions` test style).
-- **domain**: unit tests for `Scope` derivation from role fixtures and merge/rank/clamp/cursor determinism with fixed rank inputs.
+- **domain**: unit tests for `Scope` derivation from role fixtures, merge/rank/clamp/cursor determinism with fixed rank inputs, and the title fallback chain — including a session with no title, no topics, and no goals yielding exactly `Coaching session — YYYY-MM-DD`.
 - **web**: controller tests pinning the `ApiResponse` envelope, the structured error shapes (`invalid_timezone`, 400s), the silent type-drop behavior (regular user requesting `types=users,organizations` gets 200 with those types absent), and clamping.
 - **testing-tools**: a "searchable corpus" scenario builder in `scenarios.rs` (org + relationship + session + goal/action/agreement/topic/note/transcript segments seeded with known phrases), reused across PRs 1–5.
 - **Semantic phase**: mock `EmbeddingProvider` with deterministic vectors; golden-set relevance fixtures for RRF ordering.

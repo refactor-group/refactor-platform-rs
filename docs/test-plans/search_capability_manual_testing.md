@@ -52,6 +52,10 @@ even if the full record is never returned.
 
 - Additionally: one **archived** organization (*Initech*, `archived_at` set)
   and one Acme member with no relationship at all (for J).
+- One **bare session** in R1: no title, no topics, no goals — containing only
+  an action whose body includes `kumquat`. This is the only way to observe the
+  display-title fallback, since a titleless session has no text of its own to
+  match.
 
 Record before starting:
 
@@ -77,6 +81,7 @@ Logged in as Casey. `GET /search?q=kumquat`.
 | Hit ordering | non-increasing `score` |
 | Snippets | plain text with literal `<mark>…</mark>` markers around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
 | Session-anchored hits | carry `coaching_session_id`, `coaching_relationship_id`, `session_display_title` (non-empty even where the session's `title` column is NULL) |
+| The bare session's action hit | `session_display_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
 
 ## 3. Scenario B: keyword semantics (feature requirements)
 
