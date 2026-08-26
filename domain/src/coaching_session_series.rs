@@ -240,6 +240,7 @@ pub async fn reschedule(
         &updated_series,
         emails::PreviousSeries(&existing),
         &new_sessions,
+        emails::ReplacedSessions(&future_sessions),
     )
     .await;
 

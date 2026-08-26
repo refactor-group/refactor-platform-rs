@@ -540,6 +540,75 @@ no calendar diverges from the app; it is the row itself that picks a winner non-
 Still not covered anywhere: HE1 to HE5 and SE1 (email body copy), and every series case, blocked
 by `refactor-platform-fe#446` above.
 
+## Legacy series members (issue #402)
+
+A series created before `.ics` support shipped has no `ical_recurrence_id` on any of its
+sessions, so none of them can be addressed as an occurrence of a recurring event. Its
+series was never published to a calendar, so there is nothing to override. These sessions
+now go out **self-contained under their own `UID`** (`<session_id>@myrefactor.com`, no
+`RECURRENCE-ID`), on the same path a standalone session takes.
+
+Confirmed in production as the cause of #402: Mark -> Joseph, session `dfcc6277`,
+`ical_recurrence_id NULL`, `ical_sequence 1`, `created_at 2026-07-02`.
+
+**Setting one up locally.** No API creates this state, so make it by hand against a series
+you already created:
+
+```sql
+UPDATE refactor_platform.coaching_sessions
+   SET ical_recurrence_id = NULL, ical_sequence = 0
+ WHERE coaching_session_series_id = '<series_id>';
+```
+
+### HL1: Reschedule one occurrence of a legacy series (happy path)
+1. Set up a legacy series as above, then move a single future occurrence.
+2. **Expect:** both participants get a reschedule email carrying `invite.ics` with
+   `UID:<session_id>@myrefactor.com`, `SEQUENCE:1`, and **no** `RECURRENCE-ID`.
+3. Import it: a **new standalone event** appears at the new time. It is not part of any
+   recurring event, which is correct, because no recurring event was ever delivered for this series.
+4. Move the same occurrence again. **Expect:** same `UID`, `SEQUENCE:2`, and the event
+   updates **in place** rather than duplicating.
+
+### HL2: Cancel one occurrence of a legacy series
+1. Delete a future occurrence of a legacy series that has already been through HL1.
+2. **Expect:** a cancellation email whose `invite.ics` carries `METHOD:CANCEL` and the same
+   `UID:<session_id>@myrefactor.com`. The standalone event disappears from the calendar.
+
+### HL3: Series reschedule clears the standalone events it replaces
+1. Run HL1 so at least one occurrence has a standalone event on the calendar and
+   `ical_sequence > 0`.
+2. Reschedule the **whole series**.
+3. **Expect two attachments** on the reschedule email: `invite.ics` (the series `REQUEST`)
+   and `invite-2.ics` (a `CANCEL` naming the replaced session's own `UID`, at
+   `SEQUENCE` one higher than that session carried).
+4. Import both: the stray standalone event is removed rather than lingering at a time the
+   meeting is no longer at. This is the case worth checking most carefully. Without it,
+   the calendar keeps an event nothing will ever clean up.
+5. The re-materialized sessions now carry `ical_recurrence_id`, so **the series has healed**:
+   from here on it behaves exactly like one created today.
+
+### HL4: Series cancel clears them too
+1. As HL3, but delete the series instead of rescheduling it.
+2. **Expect:** the series `CANCEL` (inert, since no calendar holds the series `UID`) plus one
+   `CANCEL` per stray standalone event, which do take effect.
+
+### SL1: A native series carries only one attachment (sad path)
+1. Reschedule or cancel a series created **after** `.ics` support shipped.
+2. **Expect:** exactly one attachment, `invite.ics`. No orphan cancellations ride along,
+   because every member is addressed through the series.
+
+### SL2: A legacy member nobody has been invited to yet (sad path)
+1. Set up a legacy series and, **without** rescheduling any occurrence
+   (so every `ical_sequence` is still `0`), reschedule the whole series.
+2. **Expect:** one attachment only. No invite ever went out for those rows, so there is no
+   calendar event to cancel and nothing extra should be sent.
+
+> **What this does not fix.** Coaches on these series generally keep their own hand-made
+> recurring calendar entry, because the platform never sent them one. Nothing here can move
+> or remove that entry, because there is no `UID` we control. The platform's event lands *alongside*
+> it and the coach reconciles by hand, once per rescheduled occurrence, until the series
+> drains.
+
 ## Automating this with Playwright
 
 The app-side half of every case automates cleanly; the calendar-side half does not. Split them.
