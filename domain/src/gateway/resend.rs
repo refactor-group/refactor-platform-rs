@@ -257,7 +257,14 @@ impl SendEmailRequestBuilder {
             Method::Request => "REQUEST",
             Method::Cancel => "CANCEL",
         };
-        let filename = match self.attachments.len() {
+        // Counts the calendar parts specifically, not every attachment, so the numbering
+        // stays correct if a send ever carries an attachment of another kind.
+        let calendar_parts = self
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.filename.ends_with(".ics"))
+            .count();
+        let filename = match calendar_parts {
             0 => "invite.ics".to_string(),
             n => format!("invite-{}.ics", n + 1),
         };

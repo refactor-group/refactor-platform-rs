@@ -1345,6 +1345,7 @@ fn test_build_session_cancel_ics_structure() {
         &org,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
+        session.ical_sequence,
     )
     .unwrap();
 
@@ -1608,8 +1609,16 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
     assert!(invite.contains(&format!("UID:{}@myrefactor.com", session.id)));
     assert!(!invite.contains("RECURRENCE-ID"));
 
-    let cancel =
-        build_session_cancel_ics(&coach, &coachee, &session, &org, "desc".into(), dtstamp).unwrap();
+    let cancel = build_session_cancel_ics(
+        &coach,
+        &coachee,
+        &session,
+        &org,
+        "desc".into(),
+        dtstamp,
+        session.ical_sequence,
+    )
+    .unwrap();
     assert!(cancel.contains(&format!("UID:{}@myrefactor.com", session.id)));
     assert!(!cancel.contains("RECURRENCE-ID"));
 }
@@ -3151,6 +3160,83 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
             .contains(&format!("UID:{}@myrefactor.com", replaced.id)),
         "the replaced row's own event is cleared: {}",
         attachments[1].1
+    );
+}
+
+/// A reschedule can legitimately leave no future occurrences. There is then no series
+/// invite to attach anything to, but the rows it replaced are still deleted, and any
+/// standalone event they left is addressed by nothing else. Returning early here strands
+/// exactly the events this cleanup exists to clear, so each is cancelled on its own.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_events() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let series = create_test_series();
+    let mut orphan = create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap());
+    orphan.coaching_session_series_id = Some(series.id);
+    orphan.ical_recurrence_id = None;
+    orphan.ical_sequence = 3;
+    orphan.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .create_async()
+        .await;
+
+    // MockDatabase cannot express `user::find_by_id`'s find_with_related, so the send
+    // itself cannot be reached here. What this pins is that the empty-sessions path does
+    // not return before trying: an early return leaves the log empty.
+    let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection();
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &series,
+        PreviousSeries(&series),
+        &[],
+        ReplacedSessions(std::slice::from_ref(&orphan)),
+    )
+    .await;
+    drop(mock);
+
+    assert!(
+        !db.into_transaction_log().is_empty(),
+        "an empty reschedule must still try to cancel the standalone events it replaced"
+    );
+}
+
+/// The mirror of the case above: with nothing left on a calendar, an empty reschedule has
+/// no reason to touch the database at all.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_reschedule_to_no_future_sessions_stays_quiet_when_nothing_was_invited() {
+    let config = create_full_config_with_mock("http://localhost:1");
+    let series = create_test_series();
+    let mut never_invited = create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap());
+    never_invited.coaching_session_series_id = Some(series.id);
+    never_invited.ical_recurrence_id = None;
+    never_invited.ical_sequence = 0;
+    never_invited.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection();
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &series,
+        PreviousSeries(&series),
+        &[],
+        ReplacedSessions(std::slice::from_ref(&never_invited)),
+    )
+    .await;
+
+    assert!(
+        db.into_transaction_log().is_empty(),
+        "no invite ever went out for these rows, so there is nothing to cancel"
     );
 }
 

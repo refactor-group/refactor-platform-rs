@@ -1309,13 +1309,16 @@ fn build_session_cancel_ics(
     organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
+    sequence: i32,
 ) -> Result<String, Error> {
     let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(session.id),
-        // Already bumped by the caller inside the delete transaction, so the cancellation
-        // outranks any edit that committed alongside it.
-        sequence: session.ical_sequence,
+        // Passed in rather than read off the row. The usual delete bumps it inside the
+        // transaction, but a series-level delete removes the row without one and bumps in
+        // memory instead. Either way the cancellation has to outrank the invite it
+        // supersedes, or a client drops it as a duplicate.
+        sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
         summary: session_summary(organization),
@@ -1434,7 +1437,15 @@ async fn send_session_cancelled_email(
             )
         },
         |description| {
-            build_session_cancel_ics(coach, coachee, session, organization, description, dtstamp)
+            build_session_cancel_ics(
+                coach,
+                coachee,
+                session,
+                organization,
+                description,
+                dtstamp,
+                session.ical_sequence,
+            )
         },
     )?;
 
@@ -1558,9 +1569,7 @@ async fn send_recurring_series_email_to_recipient(
         .add_ics_attachment(&ics.body, &ical::Method::Request);
 
     // Clears whatever a legacy member left on calendars, alongside the new series event.
-    let builder = ics.orphan_cancels.iter().fold(builder, |builder, cancel| {
-        builder.add_ics_attachment(cancel, &ical::Method::Cancel)
-    });
+    let builder = attach_orphan_cancels(builder, &ics.orphan_cancels);
 
     // The reschedule template declares these keys, so they ship together or not at all.
     let email_request = match reschedule {
@@ -1857,12 +1866,17 @@ pub async fn notify_recurring_sessions_rescheduled(
     sessions: &[coaching_sessions::Model],
     replaced: ReplacedSessions<'_>,
 ) {
-    if sessions.is_empty() {
+    // No future sessions means no series invite to send, but the replaced rows are gone
+    // either way and any standalone event they left is addressed by nothing else. Cancel
+    // those on their own rather than returning and stranding them, which is the exact
+    // failure this cleanup exists to prevent.
+    let Some(first) = sessions.first() else {
+        cancel_orphaned_standalones(db, config, replaced.0).await;
         return;
-    }
+    };
 
     let result: Result<(), Error> = async {
-        let relationship_id = sessions[0].coaching_relationship_id;
+        let relationship_id = first.coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
@@ -1934,24 +1948,35 @@ fn build_series_cancel_ics(
 /// True when a series member was last invited under its own `UID` rather than as an
 /// occurrence of its series.
 ///
-/// `ical_sequence > 0` with no `ical_recurrence_id` is exactly that history: the row
-/// predates `ical_recurrence_id`, so every invite for it went out self-contained, and the
-/// bump proves at least one did. Nothing else addresses the event that invite created, so
-/// a series-level operation that deletes the row has to cancel it by name or it strands on
-/// calendars at a time the meeting is no longer at.
+/// `ical_sequence > 0` with no `ical_recurrence_id` is that history: the row predates
+/// `ical_recurrence_id`, so every invite for it went out self-contained, and the bump says
+/// at least one was built and sent. Nothing else addresses the event such an invite
+/// creates, so a series-level operation that deletes the row has to cancel it by name or
+/// it strands on calendars at a time the meeting is no longer at.
+///
+/// The counter is a proxy, not proof: it advances when the edit commits, while the send
+/// that follows is best-effort. A failed send therefore leaves a row that looks invited
+/// and no event anywhere. Erring that way is deliberate, because a `CANCEL` for a `UID`
+/// no calendar holds is a silent no-op, whereas the opposite mistake strands a real event
+/// permanently.
 fn is_orphaned_standalone(session: &coaching_sessions::Model) -> bool {
     session.coaching_session_series_id.is_some()
         && session.ical_recurrence_id.is_none()
         && session.ical_sequence > 0
 }
 
+/// The `SEQUENCE` a cancellation for `session` must carry to outrank the invite that
+/// placed its event.
+///
+/// Bumped in memory rather than in the database because the row is being deleted by the
+/// same operation, so nothing will ever read it back.
+fn orphan_cancel_sequence(session: &coaching_sessions::Model) -> i32 {
+    session.ical_sequence.saturating_add(1)
+}
+
 /// Build the `CANCEL` that clears the standalone event a legacy member left behind, for
 /// every session in `sessions` that has one. Sessions with nothing on a calendar are
 /// skipped, so the usual series carries no extra attachments at all.
-///
-/// The `SEQUENCE` is bumped in memory rather than in the database. The row is being
-/// deleted by the same operation, so nothing will read it back, and the cancellation still
-/// has to outrank the invite that placed the event.
 fn build_orphan_cancels(
     participants: &Participants<'_>,
     sessions: &[coaching_sessions::Model],
@@ -1962,35 +1987,58 @@ fn build_orphan_cancels(
         .iter()
         .filter(|session| is_orphaned_standalone(session))
         .filter_map(|session| {
-            let invite = ical::IcsInvite {
-                uid: ics_uid(session.id),
-                sequence: session.ical_sequence.saturating_add(1),
-                method: ical::Method::Cancel,
-                status: ical::EventStatus::Cancelled,
-                summary: session_summary(organization),
-                description: SESSION_CANCELLED_DESCRIPTION.to_string(),
-                anchor_tz: anchor_tz(participants.coach),
-                dtstamp,
-                start: session.date,
-                duration_minutes: session.duration_minutes,
-                organizer: platform_organizer(),
-                attendees: session_attendees(participants.coach, participants.coachee),
-                location_url: session.meeting_url.clone(),
-                recurrence: None,
-                recurrence_id: None,
-            };
             // One unbuildable cancellation must not cost the series email it rides on.
-            ical::build(&invite)
-                .inspect_err(|e| {
-                    warn!(
-                        "Could not build the standalone cancellation for session {}, so its \
-                         calendar event will linger: {e:?}",
-                        session.id
-                    )
-                })
-                .ok()
+            build_session_cancel_ics(
+                participants.coach,
+                participants.coachee,
+                session,
+                organization,
+                SESSION_CANCELLED_DESCRIPTION.to_string(),
+                dtstamp,
+                orphan_cancel_sequence(session),
+            )
+            .inspect_err(|e| {
+                warn!(
+                    "Could not build the standalone cancellation for session {}, so its \
+                     calendar event will linger: {e:?}",
+                    session.id
+                )
+            })
+            .ok()
         })
         .collect()
+}
+
+/// Cancel the standalone events left by legacy members of `sessions`, each on its own
+/// session-cancelled email.
+///
+/// The fallback for when a series-level operation has no series email to attach them to.
+/// A reschedule that leaves no future occurrences still deletes the rows it replaced, and
+/// "your session was cancelled" is what actually happened to each of them. Best-effort per
+/// session, so one failure does not cost the rest.
+async fn cancel_orphaned_standalones(
+    db: &DatabaseConnection,
+    config: &Config,
+    sessions: &[coaching_sessions::Model],
+) {
+    for session in sessions.iter().filter(|s| is_orphaned_standalone(s)) {
+        let cancelled = coaching_sessions::Model {
+            ical_sequence: orphan_cancel_sequence(session),
+            ..session.clone()
+        };
+        notify_session_cancelled(db, config, &cancelled).await;
+    }
+}
+
+/// Attach a cancellation for every standalone event a legacy member left behind, to a
+/// builder that already carries the series' own `.ics`.
+fn attach_orphan_cancels(
+    builder: SendEmailRequestBuilder,
+    orphan_cancels: &[String],
+) -> SendEmailRequestBuilder {
+    orphan_cancels.iter().fold(builder, |builder, cancel| {
+        builder.add_ics_attachment(cancel, &ical::Method::Cancel)
+    })
 }
 
 /// Send a series cancellation notification email to a single recipient. Carries fewer
@@ -2028,12 +2076,7 @@ async fn send_recurring_sessions_cancelled_email_to_recipient(
 
     // Clears whatever a legacy member left on calendars, which the series `CANCEL` cannot
     // reach: it names the series `UID`, and these events were never filed under it.
-    let email_request = ics
-        .orphan_cancels
-        .iter()
-        .fold(builder, |builder, cancel| {
-            builder.add_ics_attachment(cancel, &ical::Method::Cancel)
-        })
+    let email_request = attach_orphan_cancels(builder, &ics.orphan_cancels)
         .build()
         .await?;
 
