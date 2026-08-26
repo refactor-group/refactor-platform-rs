@@ -3186,13 +3186,28 @@ async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_ev
         .match_request(capture.recorder())
         .with_status(200)
         .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
         .create_async()
         .await;
 
-    // MockDatabase cannot express `user::find_by_id`'s find_with_related, so the send
-    // itself cannot be reached here. What this pins is that the empty-sessions path does
-    // not return before trying: an early return leaves the log empty.
-    let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection();
+    // The whole lookup chain is mockable here: `notify_session_cancelled` reads the
+    // relationship, both users, and the organization by id, so unlike the sends that go
+    // through `user::find_by_id` this one reaches the email.
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let mut relationship = test_relationship();
+    relationship.coach_id = coach.id;
+    relationship.coachee_id = coachee.id;
+    relationship.organization_id = org.id;
+
+    let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![relationship]])
+        .append_query_results(vec![vec![coach]])
+        .append_query_results(vec![vec![coachee]])
+        .append_query_results(vec![vec![org]])
+        .into_connection();
+
     notify_recurring_sessions_rescheduled(
         &db,
         &config,
@@ -3202,11 +3217,20 @@ async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_ev
         ReplacedSessions(std::slice::from_ref(&orphan)),
     )
     .await;
-    drop(mock);
 
+    mock.assert_async().await;
+
+    let attachments = capture.captured();
+    assert_eq!(attachments.len(), 1, "one cancellation, for the one orphan");
+    let cancel = &attachments[0].1;
+    assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
     assert!(
-        !db.into_transaction_log().is_empty(),
-        "an empty reschedule must still try to cancel the standalone events it replaced"
+        cancel.contains(&format!("UID:{}@myrefactor.com", orphan.id)),
+        "the orphan is named directly: {cancel}"
+    );
+    assert!(
+        cancel.contains("SEQUENCE:4"),
+        "must outrank the invite that placed the event, which used 3: {cancel}"
     );
 }
 
