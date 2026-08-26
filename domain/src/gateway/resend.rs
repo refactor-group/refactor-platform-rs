@@ -245,28 +245,31 @@ impl SendEmailRequestBuilder {
         self
     }
 
-    /// Attach an `.ics` only when one could be built.
+    /// Attach an .ics calendar invite (base64-inline). The content_type carries the iCal
+    /// METHOD so clients treat it as an invite/cancellation.
     ///
-    /// `None` sends the email with no attachment. That is the right shape for a session
-    /// whose calendar event we cannot address: the recipient still needs to be told what
-    /// happened, even though no calendar client can act on it.
-    pub fn add_optional_ics_attachment(self, ics_body: Option<&str>, method: &Method) -> Self {
-        match ics_body {
-            Some(body) => self.add_ics_attachment(body, method),
-            None => self,
-        }
-    }
-
-    /// Attach an .ics calendar invite (base64-inline). filename is always
-    /// invite.ics; the content_type carries the iCal METHOD so clients treat
-    /// it as an invite/cancellation.
+    /// Filenames are numbered from the second attachment on. An email may carry more than
+    /// one `.ics` (a series reschedule also cancels any standalone event a legacy member
+    /// left behind), and clients key attachments by name, so identically-named parts risk
+    /// being collapsed into one.
     pub fn add_ics_attachment(mut self, ics_body: &str, method: &Method) -> Self {
         let m = match method {
             Method::Request => "REQUEST",
             Method::Cancel => "CANCEL",
         };
+        // Counts the calendar parts specifically, not every attachment, so the numbering
+        // stays correct if a send ever carries an attachment of another kind.
+        let calendar_parts = self
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.filename.ends_with(".ics"))
+            .count();
+        let filename = match calendar_parts {
+            0 => "invite.ics".to_string(),
+            n => format!("invite-{}.ics", n + 1),
+        };
         self.attachments.push(Attachment {
-            filename: "invite.ics".to_string(),
+            filename,
             content_type: format!("text/calendar; method={m}; charset=UTF-8"),
             content: STANDARD.encode(ics_body.as_bytes()),
         });
