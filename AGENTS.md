@@ -1,8 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents working with code in this repository.
 
-Also read `.claude/CLAUDE.md` first — it defines mandatory file consultations (coding standards, PR instructions, migration rules) and repo-wide rules that apply before any edit.
+Claude Code additionally reads `.claude/CLAUDE.md`, which layers on Claude-Code-specific rules (mandatory file consultations, commit/PR conventions) before any edit.
 
 ## Commands
 
