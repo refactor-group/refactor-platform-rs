@@ -22,7 +22,7 @@ This plan defines the search API contract, the authorization model, and a phased
 | Type | Text searched | Who can search it |
 |---|---|---|
 | Coaching sessions | `title` | Participants; org admins (their orgs); super admins |
-| Notes | `body` (see [Notes](#notes-tiptap-content)) | Same |
+| Notes | projected plain text, from PR 5 (see [Notes](#notes-tiptap-content)) | Same |
 | Transcripts | `transcript_segments.text` | Same |
 | Goals | `title`, `body` | Same |
 | Actions | `body` | Same |
@@ -47,7 +47,7 @@ The product question "can we copy or emulate Tiptap's search API?" resolves to: 
 - Its documentation page has been removed (404), and its request body is documented inconsistently across sources — it is not a stable dependency.
 - Its *spirit* is right and we keep it: a single search call, `{query, limit}` in, a flat scored result array out. We extend that with the type discriminator, authorization scoping, and navigation context our consumers need.
 
-This also stays correct as the platform moves from Tiptap Cloud to the planned self-hosted `docs-collab-server` workspace member (see [PR 5](#pr-5--notes-projection-via-docs-collab-server)).
+This also stays correct as the platform moves from Tiptap Cloud to the planned self-hosted `docs-collab-server` workspace member (see [Notes](#notes-tiptap-content)).
 
 ## Decisions
 
@@ -287,8 +287,6 @@ CREATE INDEX idx_actions_body_fts ON refactor_platform.actions
   USING GIN (to_tsvector('english', coalesce(body, '')));
 CREATE INDEX idx_agreements_body_fts ON refactor_platform.agreements
   USING GIN (to_tsvector('english', coalesce(body, '')));
-CREATE INDEX idx_notes_body_fts ON refactor_platform.notes
-  USING GIN (to_tsvector('english', coalesce(body, '')));
 CREATE INDEX idx_coaching_session_topics_body_fts ON refactor_platform.coaching_session_topics
   USING GIN (to_tsvector('english', coalesce(body, '')));
 ```
@@ -306,10 +304,12 @@ No new Postgres types in phase 1. The semantic phase adds `CREATE EXTENSION vect
 
 ## Notes (TipTap content)
 
-The live collaborative note document is **not in Postgres** — it lives in Tiptap Cloud, keyed by `coaching_sessions.collab_document_name`. Postgres holds a secondary `notes.body` mirror.
+The live collaborative note document is **not in Postgres** — it lives in Tiptap Cloud, keyed by `coaching_sessions.collab_document_name`, and nothing in the backend ever reads it back: the Tiptap gateway (`domain/src/gateway/tiptap.rs`) only creates and deletes documents, and note editing goes through the collab token flow, never through the `/notes` CRUD endpoints. The `notes` table and its `body` column are a pre-Tiptap artifact — empty or stale for anything authored in the Tiptap era. There is no mirror to search.
 
-- **Phase 1**: search `notes.body` as best-effort. Results may lag the live doc; acceptable and honest for v1. Do not fetch from Tiptap during search (latency, rate limits, unindexable).
-- **PR 5**: a proper projection, designed against the planned **self-hosted `docs-collab-server`** (an in-repo replacement for Tiptap Cloud deployed alongside the stack). Its persistence hook flattens the ProseMirror JSON node tree to plain text on document store and upserts into `note_documents(coaching_session_id, collab_document_name, plain_text, synced_at)`. This is simpler and more reliable than Tiptap Cloud webhooks (no external fetch, no missed-webhook reconciliation). If projection must ship before the collab server lands, an interim backfill fetches docs through the existing gateway (`domain/src/gateway/tiptap.rs`, `GET /api/documents/{name}?format=json`) — interim only, deleted when the collab server arrives.
+- **Phase 1 therefore does not search notes at all.** Indexing `notes.body` would return essentially nothing while implying notes are covered. The `notes` value stays in the `types` vocabulary from day one (it is a known token, never a 400), but yields no hits until PR 5.
+- **PR 5**: notes search activates against a real projection, designed against the planned **self-hosted `docs-collab-server`** (an in-repo replacement for Tiptap Cloud deployed alongside the stack). Two design points to settle with that workspace member:
+  - **Where the plain text lives.** The collab server will persist documents in its own table(s); the projection may be a column or sibling table maintained by its persistence hook (flatten the ProseMirror JSON node tree to plain text on document store) rather than a standalone `note_documents` table owned by search. Decide once the collab server's schema exists — the searcher only needs `(coaching_session_id, plain_text)` with an FTS index, wherever that lives. The legacy `notes` table is not the target; its retirement can be handled separately.
+  - **One-time import.** At cutover, existing documents must be exported from Tiptap Cloud into the collab server's store (fetch via the existing gateway pattern, `GET /api/documents/{name}?format=json`, for every session with a `collab_document_name`). Search piggybacks on that import — flattening happens as documents land — rather than running its own backfill.
 
 ## Transcript search granularity
 
@@ -334,11 +334,11 @@ Both are committed phases, not options.
 | PR | Scope | Size |
 |---|---|---|
 | **PR 0** | This plan document | XS |
-| **PR 1 — Keyword search core** | FTS index migration; searchers for sessions, goals, actions, agreements, topics, notes.body; `domain/src/search.rs` scope + merge/rank + cursor; `GET /search` controller + params + throttle + OpenAPI; all three visibility tiers; date/user/org/session/status filters | L (~4–5 days) |
+| **PR 1 — Keyword search core** | FTS index migration; searchers for sessions, goals, actions, agreements, topics; `domain/src/search.rs` scope + merge/rank + cursor; `GET /search` controller + params + throttle + OpenAPI; all three visibility tiers; date/user/org/session/status filters | L (~4–5 days) |
 | **PR 2 — Transcript search** | Segment FTS index (CONCURRENTLY note), grouped-by-session searcher, `start_ms` deep links | M (~2–3 days) |
 | **PR 3 — Members + organizations** | Users search (admin scopes, `ILIKE` + `LOWER(email)`), organizations search (super admin, active only), ranking/snippet polish | S–M (~1–2 days) |
 | **PR 4 — MCP `search` tool** | Thin adapter over `domain::search` per the MCP filter vocabulary (`keyword`, optional `types`/`coaching_session_id`/`coachee_id`/`status`/`date_from`/`date_to`); PAT identity → same `Scope`; `tz` from `users.timezone`; limit default 10 clamp 25; no cursor (agents refine queries, not paginate); no users/orgs types (admin tools are post-MVP); output strips `score` and `<mark>` markers and adds a frontend `session_url` | S (~1 day) |
-| **PR 5 — Notes projection via docs-collab-server** | `note_documents` table, ProseMirror-JSON→text flattener, persistence-hook ingestion (interim Tiptap Cloud backfill only if needed), notes searcher re-pointed at the projection | M (~2–3 days) |
+| **PR 5 — Notes search via docs-collab-server** | Plain-text projection in/alongside the collab server's document store, ProseMirror-JSON→text flattener, persistence-hook ingestion, one-time Tiptap Cloud import at cutover, notes searcher (activates the `notes` type) | M (~2–3 days) |
 | **PR 6 — Semantic foundation** | pgvector extension, `search_chunks`, chunking, `EmbeddingProvider` trait + concrete provider, backfill job, `mode=semantic` | L (~5+ days) |
 | **PR 7 — Hybrid mode** | `mode=hybrid` RRF merge, relevance evaluation fixtures | S–M (~1–2 days) |
 

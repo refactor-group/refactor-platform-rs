@@ -46,7 +46,7 @@ even if the full record is never returned.
 
 | Sentinel | Where it must appear |
 |---|---|
-| `kumquat` | R1: session title, note body, goal title *and* body, action body, agreement body, one live topic body, one **soft-deleted** topic body, transcript segments (PR 2+) |
+| `kumquat` | R1: session title, goal title *and* body, action body, agreement body, one live topic body, one **soft-deleted** topic body, transcript segments (PR 2+), note body via the collaborative editor (PR 5+) |
 | `tamarind` | R2: same spread |
 | `yuzu` | G1 (Globex): same spread |
 
@@ -230,14 +230,22 @@ Using Casey's PAT against `POST /mcp` (`search` tool):
 | limit | default 10, values above 25 clamped |
 | Robin's PAT after the Scenario G removal | `kumquat` → zero hits — PAT identity honors membership revocation too |
 
-## 13. Notes caveat (phase 1 only)
+## 13. Notes caveat (until PR 5)
 
-Phase 1 searches the `notes.body` Postgres mirror, not the live Tiptap doc.
-Edit an R1 note in the collaborative editor and search for the new text
-immediately: a miss is **expected and acceptable** until the
-`docs-collab-server` projection (PR 5) lands. Log it as a known limitation,
-not a bug — but a *hit on another relationship's* note content is still a
-leak regardless of staleness.
+Notes are **not searched at all** before PR 5: note content lives only in
+Tiptap (the backend never reads it back), so there is no note corpus to
+index yet. Until the `docs-collab-server` projection lands:
+
+| Check | Expected |
+|---|---|
+| `types=notes` alone | 200, zero hits — `notes` is a known token, never a 400 |
+| `q=kumquat` (any types) | **no** hit of `"type": "note"` anywhere |
+| Text typed into an R1 note in the collaborative editor | never matches |
+
+Any `note`-typed hit before PR 5 means a searcher is reading the legacy
+`notes` table — pre-Tiptap stale data that must not surface. Once PR 5
+lands, re-run the leak scenarios (D, F, G, H) with note content included:
+a hit on another relationship's note content is a leak like any other.
 
 ## 14. Failure triage
 
