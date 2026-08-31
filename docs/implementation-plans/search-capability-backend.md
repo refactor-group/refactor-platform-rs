@@ -37,7 +37,7 @@ This plan defines the search API contract, the authorization model, and a phased
 2. **Organization admin**: tier 1 plus every relationship in the org(s) where they hold the `Admin` role.
 3. **Super admin** (global role, `organization_id IS NULL`): everything.
 
-**Filters**: `created_at`/`updated_at` date ranges (timezone-aware), by user, by organization, by coaching session, by status, by entity type.
+**Filters**: `created_at`/`updated_at` date ranges (timezone-aware), by user, by organization, by coaching session, by status, by entity type, and by goal linkage for actions (linked to a particular goal, linked to any goal, or linked to none).
 
 ### Relationship to Tiptap's search API
 
@@ -81,6 +81,8 @@ Standard extractors: `CompareApiVersion` (`X-Version` header), `AuthenticatedUse
 | `organization_id` | uuid, optional | Narrow to one organization. Intersects with the caller's scope (can never widen it). |
 | `user_id` | uuid, optional | "By user": matches the creator (`user_id` column) for notes/goals/actions/agreements/topics; a participant (coach or coachee) for sessions/transcripts; ignored for users/organizations. Intersect-only. |
 | `coaching_session_id` | uuid, optional | Narrow to one session (MCP vocabulary parity). Applies to notes/actions/agreements/topics/transcripts and the session itself. |
+| `goal_id` | uuid, optional | Actions linked to that goal (`actions.goal_id`, the same filter `GET /actions` already exposes) and the goal itself for the `goals` type; ignored for other types — pair with `types=actions` to search within one goal's actions. Intersect-only. |
+| `goal_filter` | enum, optional | `all` (default) / `linked` / `unlinked` — actions by goal linkage (`actions.goal_id IS NOT NULL` / `IS NULL`). Mirrors the `assignee_filter=all\|assigned\|unassigned` precedent on `GET /users/:id/actions`. Ignored for non-action types. `goal_filter=unlinked` combined with `goal_id` is contradictory → 400. |
 | `status` | string, optional | Applies only to types that carry a status (goals, actions, topics). |
 | `created_from` / `created_to` | date (YYYY-MM-DD), optional | Half-open `created_at` window `[from, to + 1 day)`, interpreted in `tz`. |
 | `updated_from` / `updated_to` | date, optional | Same for `updated_at`. |
@@ -146,7 +148,7 @@ pub struct Core {
 | `NoteHit` | `coaching_session_id`, `coaching_relationship_id`, `session_date`, `session_display_title`, `author_user_id` |
 | `TranscriptHit` | `transcription_id`, `coaching_session_id`, `coaching_relationship_id`, `session_date`, `start_ms`, `end_ms`, `speaker_label` — `id` is the segment row; `start_ms` is the playback deep-link offset |
 | `GoalHit` | `coaching_relationship_id`, `status`, `created_in_session_id` |
-| `ActionHit` | `coaching_session_id`, `coaching_relationship_id`, `status`, `due_by`, `session_date`, `session_display_title` |
+| `ActionHit` | `coaching_session_id`, `coaching_relationship_id`, `goal_id` (nullable), `status`, `due_by`, `session_date`, `session_display_title` |
 | `AgreementHit` | `coaching_session_id`, `coaching_relationship_id`, `session_date`, `session_display_title` |
 | `TopicHit` | `coaching_session_id`, `coaching_relationship_id`, `status`, `priority` |
 | `UserHit` | `email`, `first_name`, `last_name`, `display_name`, `organization_ids` — restricted to the intersection of the user's orgs and the requester's admin scope (no membership leakage) |
@@ -334,10 +336,10 @@ Both are committed phases, not options.
 | PR | Scope | Size |
 |---|---|---|
 | **PR 0** | This plan document | XS |
-| **PR 1 — Keyword search core** | FTS index migration; searchers for sessions, goals, actions, agreements, topics; `domain/src/search.rs` scope + merge/rank + cursor; `GET /search` controller + params + throttle + OpenAPI; all three visibility tiers; date/user/org/session/status filters | L (~4–5 days) |
+| **PR 1 — Keyword search core** | FTS index migration; searchers for sessions, goals, actions, agreements, topics; `domain/src/search.rs` scope + merge/rank + cursor; `GET /search` controller + params + throttle + OpenAPI; all three visibility tiers; date/user/org/session/status/goal-linkage filters | L (~4–5 days) |
 | **PR 2 — Transcript search** | Segment FTS index (CONCURRENTLY note), grouped-by-session searcher, `start_ms` deep links | M (~2–3 days) |
 | **PR 3 — Members + organizations** | Users search (admin scopes, `ILIKE` + `LOWER(email)`), organizations search (super admin, active only), ranking/snippet polish | S–M (~1–2 days) |
-| **PR 4 — MCP `search` tool** | Thin adapter over `domain::search` per the MCP filter vocabulary (`keyword`, optional `types`/`coaching_session_id`/`coachee_id`/`status`/`date_from`/`date_to`); PAT identity → same `Scope`; `tz` from `users.timezone`; limit default 10 clamp 25; no cursor (agents refine queries, not paginate); no users/orgs types (admin tools are post-MVP); output strips `score` and `<mark>` markers and adds a frontend `session_url` | S (~1 day) |
+| **PR 4 — MCP `search` tool** | Thin adapter over `domain::search` per the MCP filter vocabulary (`keyword`, optional `types`/`coaching_session_id`/`coachee_id`/`goal_id`/`goal_filter`/`status`/`date_from`/`date_to`); PAT identity → same `Scope`; `tz` from `users.timezone`; limit default 10 clamp 25; no cursor (agents refine queries, not paginate); no users/orgs types (admin tools are post-MVP); output strips `score` and `<mark>` markers and adds a frontend `session_url` | S (~1 day) |
 | **PR 5 — Notes search via docs-collab-server** | Plain-text projection in/alongside the collab server's document store, ProseMirror-JSON→text flattener, persistence-hook ingestion, one-time Tiptap Cloud import at cutover, notes searcher (activates the `notes` type) | M (~2–3 days) |
 | **PR 6 — Semantic foundation** | pgvector extension, `search_chunks`, chunking, `EmbeddingProvider` trait + concrete provider, backfill job, `mode=semantic` | L (~5+ days) |
 | **PR 7 — Hybrid mode** | `mode=hybrid` RRF merge, relevance evaluation fixtures | S–M (~1–2 days) |

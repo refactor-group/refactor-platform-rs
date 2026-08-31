@@ -106,9 +106,11 @@ Still Casey. All against R1 content.
 | `mode=keyword` | same as omitted |
 | `mode=semantic` (before PR 6) | 400 |
 
-## 4. Scenario C: date, user, and session filters
+## 4. Scenario C: date, user, session, and goal filters
 
-Still Casey. R1 needs content created on at least two distinct dates for this.
+Still Casey. R1 needs content created on at least two distinct dates for this,
+plus one `kumquat` action **linked to the R1 goal** and one **unlinked**
+(the bare session's action from the prerequisites is already unlinked).
 
 | Request | Expected |
 |---|---|
@@ -117,6 +119,12 @@ Still Casey. R1 needs content created on at least two distinct dates for this.
 | `user_id=<Robin>` | only R1 content Robin authored (notes/goals/actions/agreements/topics) or participates in (sessions/transcripts) |
 | `coaching_session_id=<R1 session>` | only content of that session plus the session itself |
 | `organization_id=<Acme>` | unchanged (Casey's scope is already Acme-only) |
+| `q=kumquat&types=actions&goal_id=<R1 goal>` | only the linked action; the unlinked one absent; each hit's `goal_id` equals the filter |
+| `q=kumquat&types=actions&goal_filter=unlinked` | only the unlinked action (`goal_id` null on every hit) |
+| `q=kumquat&types=actions&goal_filter=linked` | only the linked action |
+| `q=kumquat&goal_id=<R1 goal>` (no `types`) | sessions/agreements/topics still present (filter ignored for them); actions narrowed to the linked one; goals narrowed to that goal |
+| `goal_filter=unlinked&goal_id=<R1 goal>` | 400 — contradictory combination |
+| `q=kumquat&types=actions&goal_id=<G1 goal>` (Casey, foreign goal) | 200, zero hits — a foreign `goal_id` must not error or leak |
 
 ## 5. Scenario D: regular-user access leaks (the core of this plan)
 
