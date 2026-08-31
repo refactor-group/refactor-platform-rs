@@ -88,7 +88,7 @@ Standard extractors: `CompareApiVersion` (`X-Version` header), `AuthenticatedUse
 | `created_from` / `created_to` | date (YYYY-MM-DD), optional | Half-open `created_at` window `[from, to + 1 day)`, interpreted in `tz`. |
 | `updated_from` / `updated_to` | date, optional | Same for `updated_at`. |
 | `tz` | IANA name, optional | Defaults to UTC. Invalid → 400 `invalid_timezone`. Reuses the `AT TIME ZONE` conversion pattern from `entity_api::coaching_session::SessionQueryOptions`. |
-| `limit` | u32, optional | Default 25, silently clamped to 100. |
+| `limit` | u16, optional | Default 25, silently clamped to 100. Upcast to u64 at the SeaORM boundary; sized to the domain rather than copying the `goal_progress.rs` u32 precedent. |
 | `cursor` | string, optional | Opaque keyset cursor from a previous response's `next_cursor` (base64 of `{score, type, id}`). Malformed → 400. |
 | `mode` | enum, optional | `keyword` (default). `semantic` and `hybrid` reserved — advertised in the OpenAPI schema from day one, rejected with 400 until their phases ship. |
 
@@ -101,7 +101,7 @@ Wrapped in the standard `ApiResponse { status_code, data }` envelope.
 #[derive(Serialize, ToSchema)]
 pub struct Results {
     pub query: String,              // trimmed, post-clamp — what was actually searched
-    pub limit: u32,                 // post-clamp
+    pub limit: u16,                 // post-clamp
     pub hits: Vec<Hit>,             // ordered by (score desc, type, id)
     pub next_cursor: Option<String>,
 }
