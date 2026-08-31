@@ -214,6 +214,15 @@ pub async fn reschedule(
         entity_api::coaching_session::acquire_advisory_lock(&txn, *id).await?;
     }
 
+    // Re-read under the locks. The snapshot above was taken before them, so an individual
+    // reschedule committing in between would have bumped an `ical_sequence` it does not
+    // show. Cancelling a standalone event off that stale number reuses a `SEQUENCE` the
+    // client has already applied, and it drops the cancellation as a duplicate without
+    // erroring anywhere.
+    let replaced_sessions =
+        entity_api::coaching_session::find_future_sessions_by_series_id(&txn, series_id, now_naive)
+            .await?;
+
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &future_ids).await?;
 
     let updated_series = coaching_session_series::update_rule(&txn, series_id, new_rule).await?;
@@ -240,6 +249,7 @@ pub async fn reschedule(
         &updated_series,
         emails::PreviousSeries(&existing),
         &new_sessions,
+        emails::ReplacedSessions(&replaced_sessions),
     )
     .await;
 
@@ -278,6 +288,14 @@ pub async fn delete_with_future_sessions(
         entity_api::coaching_session::acquire_advisory_lock(&txn, *id).await?;
     }
 
+    // Re-read under the locks, for the same reason the series SEQUENCE is bumped inside
+    // this transaction rather than in memory beforehand: the snapshot above predates the
+    // locks, and a per-session cancellation built off a stale `ical_sequence` reuses a
+    // number the client already applied, which it drops as a duplicate.
+    let cancelled_sessions =
+        entity_api::coaching_session::find_future_sessions_by_series_id(&txn, series_id, now_naive)
+            .await?;
+
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &future_ids).await?;
 
     // Bump the SEQUENCE inside the delete transaction so the cancellation outranks any
@@ -297,7 +315,7 @@ pub async fn delete_with_future_sessions(
     cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
 
     if let Some(series) = cancelled {
-        emails::notify_recurring_sessions_cancelled(db, config, &series, &future_sessions).await;
+        emails::notify_recurring_sessions_cancelled(db, config, &series, &cancelled_sessions).await;
     }
 
     Ok(())
@@ -592,16 +610,18 @@ mod tests {
                 last_insert_id: 0,
                 rows_affected: 1,
             }])
-            // 5. bulk_delete_by_ids → DELETE
+            // 5. re-read of the future sessions, now under the locks
+            .append_query_results(vec![future_sessions.clone()])
+            // 6. bulk_delete_by_ids → DELETE
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 2,
             }])
-            // 6. update_rule → a single UPDATE ... RETURNING
+            // 7. update_rule → a single UPDATE ... RETURNING
             .append_query_results(vec![vec![updated_series.clone()]])
-            // 7. bulk_create_recurring → INSERT ... RETURNING
+            // 8. bulk_create_recurring → INSERT ... RETURNING
             .append_query_results(vec![new_sessions.clone()])
-            // 8. COMMIT
+            // 9. COMMIT
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -862,6 +882,8 @@ mod tests {
                 last_insert_id: 0,
                 rows_affected: 1,
             }])
+            // re-read of the future sessions, now under the locks
+            .append_query_results(vec![future_sessions.clone()])
             // bulk_delete_by_ids → DELETE
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
@@ -880,6 +902,107 @@ mod tests {
             .into_connection();
 
         delete_with_future_sessions(&db, &test_config(), series_id).await?;
+        Ok(())
+    }
+
+    /// The pre-transaction read happens before the advisory locks, so an individual
+    /// reschedule committing in between bumps an `ical_sequence` that snapshot cannot see.
+    /// A cancellation built off the stale number reuses a `SEQUENCE` the client already
+    /// applied and is silently dropped, so the rows have to be read again under the locks.
+    #[tokio::test]
+    async fn reschedule_rereads_the_replaced_sessions_under_the_locks() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let session_id = Id::new_v4();
+
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: relationship_id,
+            rule: serde_json::to_value(SeriesRule {
+                start_at: start(),
+                recurrence: weekly_rule_count(1),
+                duration_minutes: 60,
+            })?,
+            ical_sequence: 0,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let session = |ical_sequence: i32| coaching_sessions::Model {
+            id: session_id,
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: start() + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing_series.clone()]])
+            // The pre-lock snapshot still shows SEQUENCE 1.
+            .append_query_results(vec![vec![session(1)]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // Under the locks it reads 4: an individual reschedule got in between.
+            .append_query_results(vec![vec![session(4)]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![session(0)]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        reschedule(
+            &db,
+            &test_config(),
+            series_id,
+            Id::new_v4(),
+            start(),
+            weekly_rule_count(1),
+            Some(Duration::from_minutes_unchecked(60)),
+        )
+        .await?;
+
+        // Two selects against coaching_sessions: one before the locks, one after. Without
+        // the second, the cancellation would be built from a SEQUENCE that is already spent.
+        let selects = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .filter(|statement| {
+                statement.sql.contains("SELECT")
+                    && statement
+                        .sql
+                        .contains(r#"FROM "refactor_platform"."coaching_sessions""#)
+            })
+            .count();
+        assert_eq!(
+            selects, 2,
+            "the replaced sessions must be read again once the locks are held"
+        );
+
         Ok(())
     }
 
@@ -921,6 +1044,8 @@ mod tests {
                 last_insert_id: 0,
                 rows_affected: 1,
             }])
+            // re-read of the future sessions, now under the locks
+            .append_query_results(vec![vec![future_session.clone()]])
             // bulk_delete_by_ids → DELETE
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
