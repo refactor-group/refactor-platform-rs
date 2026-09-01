@@ -224,7 +224,7 @@ pub struct Scope {
 }
 ```
 
-Relationship-anchored searchers scope through a shared `visible_relationships` fragment — the SQL translation of `grants_access_to` (participation **and** current org membership) plus the admin tier:
+Relationship-anchored searchers scope through a shared `visible_relationships` scope, rendered from `coaching_relationships::visible_to(scope)` - the query-form twin of `grants_access_to` (participation **and** current org membership) plus the admin tier:
 
 ```sql
 WITH visible_relationships AS (
@@ -254,11 +254,11 @@ Per-entity anchoring:
 
 ### Duplication and drift
 
-Query-embedded scoping means the participant rule exists in **two** forms: `grants_access_to` (in-memory Rust, one relationship at a time) and the `visible_relationships` fragment (SQL, corpus-wide). The re-expression is forced by the problem shape — a row-by-row Rust predicate cannot drive an indexed, `LIMIT`ed, paginated query, and post-filtering fetched rows through `grants_access_to` breaks limits and cursors (unbounded over-fetch to fill a page). Eliminating the second copy entirely would mean either making every authorization check a DB round-trip (`SELECT EXISTS`) or adopting row-level security — both far bigger trades than this feature justifies. The duplication is instead kept minimal and guarded:
+Query-embedded scoping means the participant rule exists in **two** forms: `grants_access_to` (in-memory Rust, one relationship at a time) and `coaching_relationships::visible_to` (query form, corpus-wide). The re-expression is forced by the problem shape — a row-by-row Rust predicate cannot drive an indexed, `LIMIT`ed, paginated query, and post-filtering fetched rows through `grants_access_to` breaks limits and cursors (unbounded over-fetch to fill a page). Eliminating the second copy entirely would mean either making every authorization check a DB round-trip (`SELECT EXISTS`) or adopting row-level security — both far bigger trades than this feature justifies. The duplication is instead kept minimal and guarded:
 
-- **One fragment, not nine.** `visible_relationships` is defined once in `entity_api/src/search/` and every relationship-anchored searcher joins through it. Searchers never write their own scoping SQL; their per-entity part is only the FK path to a relationship id.
-- **Tier logic is not re-implemented in SQL.** `is_super_admin`, `admin_org_ids`, and `member_org_ids` are derived in Rust, once, from the same preloaded `roles` the extractors already use, and enter the SQL only as bind parameters. The fragment expresses only the structural rule.
-- **Equivalence is pinned by a test.** A DB-backed test seeds the full access matrix — participant/non-participant × current member/removed member/org admin/super admin, across two orgs — and asserts, for every (user, relationship) pair, that `grants_access_to` agrees with membership in the fragment's result set. An edit to either expression that isn't mirrored in the other fails CI rather than shipping a leak or a regression.
+- **One condition, not nine.** The rule's query form lives on the entity as `coaching_relationships::visible_to(scope) -> Condition`, right beside `grants_access_to`, and search renders `visible_relationships` from it. Searchers never write their own scoping SQL; their per-entity part is only the FK path to a relationship id. Future corpus-wide consumers (the MCP tool, exports/reporting) reuse `visible_to` instead of minting a third copy, and the existing extractors can converge on it later — explicitly out of scope here.
+- **Tier logic is not re-implemented in SQL.** `is_super_admin`, `admin_org_ids`, and `member_org_ids` are derived in Rust, once, from the same preloaded `roles` the extractors already use, and enter the SQL only as bind parameters. The condition expresses only the structural rule.
+- **Equivalence is pinned by a test.** A DB-backed test seeds the full access matrix — participant/non-participant × current member/removed member/org admin/super admin, across two orgs — and asserts, for every (user, relationship) pair, that `grants_access_to` agrees with membership in `visible_to`'s result set. An edit to either expression that isn't mirrored in the other fails CI rather than shipping a leak or a regression.
 
 This mirrors an accepted pattern elsewhere in the codebase: the "one role per user per org" invariant exists both in `user_roles::before_save` (Rust) and as partial unique indexes (SQL) — two expressions of one rule, because each runtime needs its own.
 
@@ -268,7 +268,7 @@ Only two searched types don't inherit the relationship rule, because they don't 
 
 | Layer | Module | Responsibility |
 |---|---|---|
-| `entity` | — | No changes in phase 1. `search_chunks` entity added in the semantic phase. |
+| `entity` | `coaching_relationships.rs` | `visible_to(scope) -> Condition` — the participant rule's query form, defined beside `grants_access_to`. `search_chunks` entity added in the semantic phase. |
 | `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait (in `mod.rs`) and its per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`/`ts_headline`, per-searcher `limit + 1` fetch, keyset predicate |
 | `domain` | `search.rs` | `Scope` derivation from roles, concurrent fan-out to searchers, merge + rank + clamp, cursor encode/decode, `display_title` hydration, `Results`/`Hit` types |
 | `web` | `extractors/scope.rs` | `FromRequestParts` extractor wrapping `AuthenticatedUser` → compiled `Scope`, per the access-extractor pattern (`extractors/*_access.rs`) |
@@ -351,7 +351,7 @@ Both are committed phases, not options.
 
 ## Testing strategy
 
-- **entity_api (scoping)**: the `grants_access_to` ⇄ `visible_relationships` equivalence test described in [Duplication and drift](#duplication-and-drift) — the guard against the two expressions of the participant rule drifting apart.
+- **entity (scoping)**: the `grants_access_to` ⇄ `visible_to` equivalence test described in [Duplication and drift](#duplication-and-drift) — the guard against the two expressions of the participant rule drifting apart.
 - **entity_api (per searcher)**: DB-backed integration tests — FTS semantics (stemming, quoted phrases, negation), scope isolation (participant cannot see other relationships; removed-from-org user sees nothing; org admin sees the whole org and nothing outside it; super admin sees all), soft-delete/archive exclusion, timezone edge cases (reuse the `SessionQueryOptions` test style).
 - **domain**: unit tests for `Scope` derivation from role fixtures, merge/rank/clamp/cursor determinism with fixed rank inputs (including equal-score groups split across a page boundary — exactly-once delivery in both directions of the tie-breakers), and the title fallback chain — including a session with no title, no topics, and no goals yielding exactly `Coaching session — YYYY-MM-DD`.
 - **web**: controller tests pinning the `ApiResponse` envelope, the structured error shapes (`invalid_timezone`, 400s), the silent type-drop behavior (regular user requesting `types=users,organizations` gets 200 with those types absent), and clamping.
