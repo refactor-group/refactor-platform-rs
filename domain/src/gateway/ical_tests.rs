@@ -30,7 +30,7 @@ fn invite<'a>(
         sequence: 0,
         method: Method::Request,
         status: EventStatus::Confirmed,
-        summary: "Coaching Session: Acme".into(),
+        summary: "Jane / Alex".into(),
         description: "desc".into(),
         anchor_tz,
         dtstamp: dt(2026, 6, 14, 12, 0),
@@ -313,6 +313,8 @@ fn description_full_single() {
     let parts = DescriptionParts {
         session_url: "https://app.example/sessions/1".into(),
         title: Some("Q3 Planning"),
+        coach_name: "Jim Hodapp",
+        organization_name: "Refactor Group",
         topics: &topics,
         goal_titles: &goals,
         open_actions: &actions,
@@ -321,7 +323,8 @@ fn description_full_single() {
     let out = compose_description(&parts);
 
     assert!(out.contains("Q3 Planning"));
-    assert!(out.contains("View this session: https://app.example/sessions/1"));
+    assert!(out.contains("Coach: Jim Hodapp\nOrganization: Refactor Group"));
+    assert!(out.contains("Join this session: https://app.example/sessions/1"));
     assert!(out.contains("Topics to discuss:"));
     assert!(out.contains("- Roadmap"));
     assert!(out.contains("- Hiring"));
@@ -338,6 +341,8 @@ fn description_minimal_series_shape() {
     let parts = DescriptionParts {
         session_url: "https://app.example/sessions/1".into(),
         title: None,
+        coach_name: "Jim Hodapp",
+        organization_name: "Refactor Group",
         topics: &[],
         goal_titles: &goals,
         open_actions: &[],
@@ -345,7 +350,8 @@ fn description_minimal_series_shape() {
     };
     let out = compose_description(&parts);
 
-    assert!(out.contains("View this session:"));
+    assert!(out.contains("Join this session:"));
+    assert!(out.contains("Coach: Jim Hodapp\nOrganization: Refactor Group"));
     assert!(out.contains("- Ship v2"));
     assert!(!out.contains("Topics to discuss:"));
     assert!(!out.contains("Actions due for this session:"));

@@ -597,9 +597,9 @@ fn ics_uid(id: Id) -> String {
     format!("{id}@{UID_DOMAIN}")
 }
 
-/// The event title as it appears on a calendar.
-fn session_summary(organization: &organizations::Model) -> String {
-    format!("Coaching Session: {}", organization.name)
+/// The event title as it appears on a calendar: coachee first, then coach.
+fn session_summary(coach: &users::Model, coachee: &users::Model) -> String {
+    format!("{} / {}", coachee.first_name, coach.first_name)
 }
 
 /// The platform organizes every invite: calendar clients only apply updates when the
@@ -608,13 +608,17 @@ fn platform_organizer() -> ical::Participant<'static> {
     ical::Participant::new(FROM_DISPLAY_NAME, FROM_ADDRESS)
 }
 
+/// How a user is named to other humans: their chosen display name, else first and last.
+fn full_name(user: &users::Model) -> String {
+    user.display_name
+        .clone()
+        .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name))
+}
+
 /// A user as a calendar participant. The mapping lives here rather than on
 /// `ical::Participant` so the builder stays free of entity types.
 fn participant(user: &users::Model) -> ical::Participant<'_> {
-    let name = user
-        .display_name
-        .clone()
-        .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name));
+    let name = full_name(user);
     ical::Participant::new(&name, &user.email)
 }
 
@@ -751,7 +755,6 @@ fn build_session_invite_ics(
     coach: &users::Model,
     coachee: &users::Model,
     session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
@@ -761,7 +764,7 @@ fn build_session_invite_ics(
         sequence: session.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -785,7 +788,6 @@ fn build_occurrence_reschedule_ics(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
@@ -795,7 +797,7 @@ fn build_occurrence_reschedule_ics(
         sequence: session.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -874,6 +876,8 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
+        coach_name: &full_name(coach),
+        organization_name: &organization.name,
         topics: &topics,
         goal_titles: &goal_titles,
         open_actions: &open_actions,
@@ -892,14 +896,11 @@ async fn send_single_session_invite_email<N: EmailNotification>(
                 coachee,
                 session,
                 series_id,
-                organization,
                 description,
                 dtstamp,
             )
         },
-        |description| {
-            build_session_invite_ics(coach, coachee, session, organization, description, dtstamp)
-        },
+        |description| build_session_invite_ics(coach, coachee, session, description, dtstamp),
     )?;
 
     // Email to coachee: "Your coach, ... has a session with you"
@@ -1306,7 +1307,6 @@ fn build_session_cancel_ics(
     coach: &users::Model,
     coachee: &users::Model,
     session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
     sequence: i32,
@@ -1321,7 +1321,7 @@ fn build_session_cancel_ics(
         sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1344,7 +1344,6 @@ fn build_occurrence_cancel_ics(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
@@ -1356,7 +1355,7 @@ fn build_occurrence_cancel_ics(
         sequence: session.ical_sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1426,22 +1425,13 @@ async fn send_session_cancelled_email(
         session,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         |series_id, description| {
-            build_occurrence_cancel_ics(
-                coach,
-                coachee,
-                session,
-                series_id,
-                organization,
-                description,
-                dtstamp,
-            )
+            build_occurrence_cancel_ics(coach, coachee, session, series_id, description, dtstamp)
         },
         |description| {
             build_session_cancel_ics(
                 coach,
                 coachee,
                 session,
-                organization,
                 description,
                 dtstamp,
                 session.ical_sequence,
@@ -1601,7 +1591,6 @@ fn build_series_invite_ics(
     coach: &users::Model,
     coachee: &users::Model,
     first_session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     series: &coaching_session_series::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
@@ -1613,7 +1602,7 @@ fn build_series_invite_ics(
         sequence: series.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1678,6 +1667,8 @@ async fn send_series_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
+        coach_name: &full_name(coach),
+        organization_name: &organization.name,
         topics: &[],
         goal_titles: &first_goal_titles,
         open_actions: &[],
@@ -1686,18 +1677,10 @@ async fn send_series_invite_email<N: EmailNotification>(
 
     let dtstamp = chrono::Utc::now().naive_utc();
     let ics = SeriesIcs {
-        body: build_series_invite_ics(
-            coach,
-            coachee,
-            first,
-            organization,
-            series,
-            description,
-            dtstamp,
-        )?,
+        body: build_series_invite_ics(coach, coachee, first, series, description, dtstamp)?,
         // The replaced rows are gone from the database, but any standalone events they put
         // on calendars outlive them and are addressed by nothing the new series carries.
-        orphan_cancels: build_orphan_cancels(participants, replaced, organization, dtstamp),
+        orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
     };
 
     // Timezone-independent, so it is computed once rather than per recipient.
@@ -1916,7 +1899,6 @@ fn build_series_cancel_ics(
     coach: &users::Model,
     coachee: &users::Model,
     first_session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     series: &coaching_session_series::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
@@ -1930,7 +1912,7 @@ fn build_series_cancel_ics(
         sequence: series.ical_sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1980,7 +1962,6 @@ fn orphan_cancel_sequence(session: &coaching_sessions::Model) -> i32 {
 fn build_orphan_cancels(
     participants: &Participants<'_>,
     sessions: &[coaching_sessions::Model],
-    organization: &organizations::Model,
     dtstamp: chrono::NaiveDateTime,
 ) -> Vec<String> {
     sessions
@@ -1992,7 +1973,6 @@ fn build_orphan_cancels(
                 participants.coach,
                 participants.coachee,
                 session,
-                organization,
                 SESSION_CANCELLED_DESCRIPTION.to_string(),
                 dtstamp,
                 orphan_cancel_sequence(session),
@@ -2110,19 +2090,13 @@ async fn send_recurring_sessions_cancelled_email(
             coach,
             coachee,
             first,
-            organization,
             series,
             SERIES_CANCELLED_DESCRIPTION.to_string(),
             dtstamp,
         )?,
         // `sessions` is the set the delete removed, so any legacy member's standalone
         // event is in here and would otherwise survive the cancellation.
-        orphan_cancels: build_orphan_cancels(
-            &Participants { coach, coachee },
-            sessions,
-            organization,
-            dtstamp,
-        ),
+        orphan_cancels: build_orphan_cancels(&Participants { coach, coachee }, sessions, dtstamp),
     };
 
     if let Err(e) = send_recurring_sessions_cancelled_email_to_recipient(
