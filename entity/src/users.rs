@@ -6,6 +6,7 @@ use crate::Id;
 use axum_login::AuthUser;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use utoipa::ToSchema;
 
 fn default_timezone() -> String {
@@ -84,10 +85,11 @@ impl Model {
     /// How this user is named to other humans: their chosen display name, else first and
     /// last. Distinct from the bare `first_name` + `last_name` pairing used where a
     /// formal name is wanted regardless of what the user chose to be called.
-    pub fn preferred_name(&self) -> String {
-        self.display_name
-            .clone()
-            .unwrap_or_else(|| format!("{} {}", self.first_name, self.last_name))
+    pub fn preferred_name(&self) -> Cow<'_, str> {
+        match &self.display_name {
+            Some(name) => Cow::Borrowed(name),
+            None => Cow::Owned(format!("{} {}", self.first_name, self.last_name)),
+        }
     }
 }
 
