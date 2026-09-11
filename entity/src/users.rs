@@ -80,6 +80,17 @@ impl Related<super::user_roles::Entity> for Entity {
 
 impl ActiveModelBehavior for ActiveModel {}
 
+impl Model {
+    /// How this user is named to other humans: their chosen display name, else first and
+    /// last. Distinct from the bare `first_name` + `last_name` pairing used where a
+    /// formal name is wanted regardless of what the user chose to be called.
+    pub fn preferred_name(&self) -> String {
+        self.display_name
+            .clone()
+            .unwrap_or_else(|| format!("{} {}", self.first_name, self.last_name))
+    }
+}
+
 impl AuthUser for Model {
     type Id = crate::Id;
 
@@ -118,6 +129,19 @@ mod tests {
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),
         }
+    }
+
+    #[test]
+    fn preferred_name_uses_display_name_when_set() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.preferred_name(), "Jim H.");
+    }
+
+    #[test]
+    fn preferred_name_falls_back_to_first_and_last() {
+        let user = test_user(Uuid::new_v4(), None);
+        assert_eq!(user.preferred_name(), "Test User");
     }
 
     #[test]

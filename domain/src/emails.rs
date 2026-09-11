@@ -608,17 +608,10 @@ fn platform_organizer() -> ical::Participant<'static> {
     ical::Participant::new(FROM_DISPLAY_NAME, FROM_ADDRESS)
 }
 
-/// How a user is named to other humans: their chosen display name, else first and last.
-fn full_name(user: &users::Model) -> String {
-    user.display_name
-        .clone()
-        .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name))
-}
-
 /// A user as a calendar participant. The mapping lives here rather than on
 /// `ical::Participant` so the builder stays free of entity types.
 fn participant(user: &users::Model) -> ical::Participant<'_> {
-    let name = full_name(user);
+    let name = user.preferred_name();
     ical::Participant::new(&name, &user.email)
 }
 
@@ -876,7 +869,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
-        coach_name: &full_name(coach),
+        coach_name: &coach.preferred_name(),
         organization_name: &organization.name,
         topics: &topics,
         goal_titles: &goal_titles,
@@ -1667,7 +1660,7 @@ async fn send_series_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
-        coach_name: &full_name(coach),
+        coach_name: &coach.preferred_name(),
         organization_name: &organization.name,
         topics: &[],
         goal_titles: &first_goal_titles,
