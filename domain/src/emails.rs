@@ -599,7 +599,7 @@ fn ics_uid(id: Id) -> String {
 
 /// The event title as it appears on a calendar: coachee first, then coach.
 fn session_summary(coach: &users::Model, coachee: &users::Model) -> String {
-    format!("{} / {}", coachee.first_name, coach.first_name)
+    format!("{} / {}", coachee.short_name(), coach.short_name())
 }
 
 /// The platform organizes every invite: calendar clients only apply updates when the
