@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
 # Stage 1: Prepare dependency recipe
-FROM lukemathwalker/cargo-chef:latest-rust-bullseye AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
 WORKDIR /usr/src/app
 
 FROM chef AS planner
@@ -27,7 +27,7 @@ RUN cargo build --release -p refactor_platform_rs -p migration
 RUN echo "LIST OF CONTENTS" && ls -lahR /usr/src/app  
 
 # Stage 3: Minimal runtime image
-FROM --platform=${BUILDPLATFORM} debian:bullseye-slim
+FROM --platform=${BUILDPLATFORM} debian:bookworm-slim
 
 # Install runtime dependencies including postgresql-client for schema setup
 RUN apt-get update && apt-get install -y bash postgresql-client && rm -rf /var/lib/apt/lists/*

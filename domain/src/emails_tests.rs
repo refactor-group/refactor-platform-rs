@@ -484,15 +484,22 @@ fn invite_ics_for_participants(coach: &users::Model, coachee: &users::Model) -> 
         .and_hms_opt(19, 0, 0)
         .unwrap();
     session.duration_minutes = 60;
-    let org = create_test_organization();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
         .unwrap();
 
-    let ics =
-        build_session_invite_ics(coach, coachee, &session, &org, "desc".into(), dtstamp).unwrap();
+    let ics = build_session_invite_ics(coach, coachee, &session, "desc".into(), dtstamp).unwrap();
     unfold(&ics)
+}
+
+/// The title is coachee first, then coach.
+#[test]
+fn test_session_summary_puts_the_coachee_first() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+
+    assert_eq!(session_summary(&coach, &coachee), "Jane / Alex");
 }
 
 /// The `ORGANIZER` must equal the sending address: when the two disagree, calendar
@@ -560,8 +567,6 @@ fn test_build_session_invite_ics_structure() {
     session.duration_minutes = 60;
     session.ical_sequence = 0;
     session.meeting_url = Some("https://meet.example/xyz".into());
-    let mut org = create_test_organization();
-    org.name = "Acme".to_string();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -571,8 +576,7 @@ fn test_build_session_invite_ics_structure() {
         &coach,
         &coachee,
         &session,
-        &org,
-        "View this session: https://app/x".into(),
+        "Join this session: https://app/x".into(),
         dtstamp,
     )
     .unwrap();
@@ -581,11 +585,11 @@ fn test_build_session_invite_ics_structure() {
     assert!(ics.contains("METHOD:REQUEST"));
     assert!(ics.contains("STATUS:CONFIRMED"));
     assert!(ics.contains("SEQUENCE:0"));
-    assert!(ics.contains("SUMMARY:Coaching Session: Acme"));
+    assert!(ics.contains("SUMMARY:Jane / Alex"));
     assert!(ics.contains("BEGIN:VTIMEZONE"));
     assert!(ics.contains("TZID:America/New_York"));
     assert!(ics.contains("DTSTART;TZID=America/New_York:20260915T150000"));
-    assert!(ics.contains("View this session: https://app/x"));
+    assert!(ics.contains("Join this session: https://app/x"));
 }
 
 /// A reschedule bumps `ical_sequence`; the invite must carry the bumped
@@ -603,8 +607,6 @@ fn test_build_session_invite_ics_bumped_sequence() {
     session.duration_minutes = 60;
     session.ical_sequence = 1;
     session.meeting_url = Some("https://meet.example/xyz".into());
-    let mut org = create_test_organization();
-    org.name = "Acme".to_string();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -614,8 +616,7 @@ fn test_build_session_invite_ics_bumped_sequence() {
         &coach,
         &coachee,
         &session,
-        &org,
-        "View this session: https://app/x".into(),
+        "Join this session: https://app/x".into(),
         dtstamp,
     )
     .unwrap();
@@ -1332,7 +1333,6 @@ fn test_build_session_cancel_ics_structure() {
     session.duration_minutes = 60;
     // The caller bumps in the delete transaction; the builder carries what it is given.
     session.ical_sequence = 3;
-    let org = create_test_organization();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -1342,7 +1342,6 @@ fn test_build_session_cancel_ics_structure() {
         &coach,
         &coachee,
         &session,
-        &org,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
         session.ical_sequence,
@@ -1519,7 +1518,6 @@ fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
     // The caller bumps in the delete transaction; the builder carries what it is given.
     session.ical_sequence = 3;
     session.duration_minutes = 60;
-    let org = create_test_organization();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -1530,7 +1528,6 @@ fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
         &coachee,
         &session,
         series_id,
-        &org,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
     )
@@ -1563,7 +1560,6 @@ fn test_build_occurrence_reschedule_ics_keeps_original_recurrence_id() {
         .unwrap()
         .and_hms_opt(20, 0, 0)
         .unwrap();
-    let org = create_test_organization();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -1574,8 +1570,7 @@ fn test_build_occurrence_reschedule_ics_keeps_original_recurrence_id() {
         &coachee,
         &session,
         series_id,
-        &org,
-        "View this session: https://app/x".into(),
+        "Join this session: https://app/x".into(),
         dtstamp,
     )
     .unwrap();
@@ -1596,7 +1591,6 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
     let session = create_test_session();
-    let org = create_test_organization();
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
         .unwrap()
         .and_hms_opt(12, 0, 0)
@@ -1605,7 +1599,7 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
     assert!(session.coaching_session_series_id.is_none());
 
     let invite =
-        build_session_invite_ics(&coach, &coachee, &session, &org, "desc".into(), dtstamp).unwrap();
+        build_session_invite_ics(&coach, &coachee, &session, "desc".into(), dtstamp).unwrap();
     assert!(invite.contains(&format!("UID:{}@myrefactor.com", session.id)));
     assert!(!invite.contains("RECURRENCE-ID"));
 
@@ -1613,7 +1607,6 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
         &coach,
         &coachee,
         &session,
-        &org,
         "desc".into(),
         dtstamp,
         session.ical_sequence,
@@ -2397,9 +2390,8 @@ fn test_build_series_invite_ics_structure() {
         &coach,
         &coachee,
         &first,
-        &org,
         &series,
-        "View this session: https://app/x".into(),
+        "Join this session: https://app/x".into(),
         dtstamp,
     )
     .unwrap();
@@ -2412,7 +2404,7 @@ fn test_build_series_invite_ics_structure() {
     assert!(ics.contains("BEGIN:VTIMEZONE"));
     assert!(ics.contains("TZID:America/New_York"));
     assert!(ics.contains("DTSTART;TZID=America/New_York:20260915T150000"));
-    assert!(ics.contains("View this session: https://app/x"));
+    assert!(ics.contains("Join this session: https://app/x"));
 }
 
 /// A series reschedule bumps `ical_sequence`; the invite must carry the bumped
@@ -2428,7 +2420,6 @@ fn test_build_series_invite_ics_carries_bumped_sequence() {
         .and_hms_opt(19, 0, 0)
         .unwrap();
     first.duration_minutes = 60;
-    let org = create_test_organization();
     let mut series = create_test_series();
     series.ical_sequence = 3;
     let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
@@ -2440,9 +2431,8 @@ fn test_build_series_invite_ics_carries_bumped_sequence() {
         &coach,
         &coachee,
         &first,
-        &org,
         &series,
-        "View this session: https://app/x".into(),
+        "Join this session: https://app/x".into(),
         dtstamp,
     )
     .unwrap();
@@ -2973,7 +2963,6 @@ fn test_build_series_cancel_ics_structure() {
         .and_hms_opt(19, 0, 0)
         .unwrap();
     first.duration_minutes = 60;
-    let org = create_test_organization();
     let mut series = create_test_series();
     // The caller bumps in the delete transaction; the builder carries what it is given.
     series.ical_sequence = 5;
@@ -2986,7 +2975,6 @@ fn test_build_series_cancel_ics_structure() {
         &coach,
         &coachee,
         &first,
-        &org,
         &series,
         SERIES_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
@@ -3313,7 +3301,6 @@ fn only_a_previously_invited_legacy_series_member_is_an_orphaned_standalone() {
 fn an_orphan_cancel_outranks_the_invite_that_placed_the_event() {
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let org = create_test_organization();
 
     let mut session = create_test_session();
     session.coaching_session_series_id = Some(Id::new_v4());
@@ -3326,7 +3313,6 @@ fn an_orphan_cancel_outranks_the_invite_that_placed_the_event() {
             coachee: &coachee,
         },
         std::slice::from_ref(&session),
-        &org,
         session.date,
     );
 
