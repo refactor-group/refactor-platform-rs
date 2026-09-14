@@ -6,6 +6,7 @@ use crate::Id;
 use axum_login::AuthUser;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use utoipa::ToSchema;
 
 fn default_timezone() -> String {
@@ -80,6 +81,45 @@ impl Related<super::user_roles::Entity> for Entity {
 
 impl ActiveModelBehavior for ActiveModel {}
 
+impl Model {
+    /// How this user is named to other humans: their chosen display name, else first and
+    /// last, else their email. Distinct from the bare `first_name` + `last_name` pairing
+    /// used where a formal name is wanted regardless of what the user chose to be called.
+    ///
+    /// Profile updates accept blank names, so every field here is treated as absent when
+    /// it is blank and the email backstops a user who cleared all of them.
+    pub fn preferred_name(&self) -> Cow<'_, str> {
+        let display = self
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if !display.is_empty() {
+            return Cow::Borrowed(display);
+        }
+
+        let full = format!("{} {}", self.first_name.trim(), self.last_name.trim());
+        match full.trim() {
+            "" => Cow::Borrowed(&self.email),
+            full => Cow::Owned(full.to_owned()),
+        }
+    }
+
+    /// The shortest name that still identifies this user, for places with only one line
+    /// to spend. Falls through the same blank-tolerant chain as [`Self::preferred_name`].
+    pub fn short_name(&self) -> &str {
+        [
+            self.first_name.as_str(),
+            self.display_name.as_deref().unwrap_or_default(),
+            self.last_name.as_str(),
+        ]
+        .into_iter()
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .unwrap_or(&self.email)
+    }
+}
+
 impl AuthUser for Model {
     type Id = crate::Id;
 
@@ -118,6 +158,55 @@ mod tests {
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),
         }
+    }
+
+    #[test]
+    fn preferred_name_uses_display_name_when_set() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.preferred_name(), "Jim H.");
+    }
+
+    #[test]
+    fn preferred_name_falls_back_to_first_and_last() {
+        let user = test_user(Uuid::new_v4(), None);
+        assert_eq!(user.preferred_name(), "Test User");
+    }
+
+    #[test]
+    fn preferred_name_ignores_a_blank_display_name() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("   ".into());
+        assert_eq!(user.preferred_name(), "Test User");
+    }
+
+    #[test]
+    fn preferred_name_falls_back_to_email_when_every_name_is_blank() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.first_name = "".into();
+        user.last_name = "".into();
+        assert_eq!(user.preferred_name(), "test@example.com");
+    }
+
+    #[test]
+    fn short_name_prefers_the_first_name() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.short_name(), "Test");
+    }
+
+    #[test]
+    fn short_name_falls_through_blank_fields() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.first_name = "".into();
+        assert_eq!(user.short_name(), "User");
+
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.short_name(), "Jim H.");
+
+        user.display_name = None;
+        user.last_name = " ".into();
+        assert_eq!(user.short_name(), "test@example.com");
     }
 
     #[test]
