@@ -941,6 +941,8 @@ mod tests {
             id: session1_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: entity::duration::Duration::default_minutes(),
@@ -950,11 +952,14 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
         let session2 = entity::coaching_sessions::Model {
             id: session2_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: entity::duration::Duration::default_minutes(),
@@ -964,6 +969,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)

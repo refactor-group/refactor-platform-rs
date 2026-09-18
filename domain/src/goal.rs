@@ -33,8 +33,11 @@ pub async fn create(
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    let notify_user_ids =
-        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await?;
+    let Some(notify_user_ids) =
+        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await
+    else {
+        return Ok(goal);
+    };
 
     event_publisher
         .publish(DomainEvent::GoalCreated {
@@ -96,8 +99,11 @@ pub async fn delete(
     // delete_by_id returns the model before deletion so we can publish the event
     let goal = GoalApi::delete_by_id(db, id).await?;
 
-    let notify_user_ids =
-        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await?;
+    let Some(notify_user_ids) =
+        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await
+    else {
+        return Ok(());
+    };
 
     event_publisher
         .publish(DomainEvent::GoalDeleted {
@@ -117,15 +123,31 @@ pub async fn delete(
 
 // ── Event publishing helpers ─────────────────────────────────────────
 
-/// Looks up the coaching relationship and returns the user IDs that should
-/// receive SSE notifications (coach + coachee).
+/// Best-effort SSE notify set for a goal: the relationship's participants who are
+/// still members of its organization. The DB write is the contract, and these lookups
+/// run after it has committed, so a failure here must not fail the mutation. Log and
+/// return None, exactly as the action and agreement paths do.
 async fn find_notify_user_ids_for_relationship(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
-) -> Result<Vec<Id>, Error> {
-    let relationship =
-        crate::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
-    Ok(vec![relationship.coach_id, relationship.coachee_id])
+) -> Option<Vec<Id>> {
+    let relationship = match crate::coaching_relationship::find_by_id(db, coaching_relationship_id)
+        .await
+    {
+        Ok(relationship) => relationship,
+        Err(e) => {
+            error!("goal SSE: failed to resolve relationship {coaching_relationship_id}: {e:?}");
+            return None;
+        }
+    };
+
+    match entity_api::coaching_relationship::notify_member_ids(db, &relationship).await {
+        Ok(ids) => Some(ids),
+        Err(e) => {
+            error!("goal SSE: failed to resolve members for relationship {coaching_relationship_id}: {e:?}");
+            None
+        }
+    }
 }
 
 /// Publishes a `GoalUpdated` SSE event. Shared by `update` and `update_status`.
@@ -134,8 +156,11 @@ async fn publish_goal_updated(
     event_publisher: &EventPublisher,
     goal: &Model,
 ) -> Result<(), Error> {
-    let notify_user_ids =
-        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await?;
+    let Some(notify_user_ids) =
+        find_notify_user_ids_for_relationship(db, goal.coaching_relationship_id).await
+    else {
+        return Ok(());
+    };
 
     event_publisher
         .publish(DomainEvent::GoalUpdated {
@@ -165,6 +190,7 @@ where
 #[cfg(feature = "mock")]
 mod integration_tests {
     use super::*;
+    use crate::test_support::both_participants_are_members;
     use entity_api::coaching_sessions_goals;
     use entity_api::status::Status;
     use events::EventPublisher;
@@ -226,15 +252,49 @@ mod integration_tests {
         );
         let relationship = create_test_relationship(relationship_id);
 
-        // Mock sequence (inside txn): goal save → (no session link) → relationship lookup
+        // Mock sequence (inside txn): goal save → (no session link) → relationship lookup →
+        // membership filter
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![new_goal.clone()]])
-            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = create(&db, &event_publisher, new_goal, Id::new_v4()).await;
 
         assert!(result.is_ok());
+    }
+
+    /// The goal is already committed by the time recipients are resolved, so a failure
+    /// there must not turn a successful write into a failed request.
+    #[tokio::test]
+    async fn create_succeeds_when_the_notify_lookup_fails() {
+        let relationship_id = Id::new_v4();
+        let (publisher, recorded) = crate::test_support::recording_publisher();
+
+        let new_goal = create_test_goal_with(
+            Status::NotStarted,
+            Some("New goal".to_string()),
+            relationship_id,
+        );
+
+        // Goal save succeeds, then the relationship lookup finds nothing and errors.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![new_goal.clone()]])
+            .append_query_results(vec![Vec::<entity_api::coaching_relationships::Model>::new()])
+            .into_connection();
+
+        let result = create(&db, &publisher, new_goal, Id::new_v4()).await;
+
+        assert!(
+            result.is_ok(),
+            "a failed recipient lookup must not fail the committed write: {:?}",
+            result.err()
+        );
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "with no resolvable recipients there is nobody to notify, so no event should fire"
+        );
     }
 
     #[tokio::test]
@@ -276,6 +336,7 @@ mod integration_tests {
         //   6. coaching_session_goal::create — promotion update (UPDATE goals)
         // After commit:
         //   7. relationship lookup
+        //   8. membership filter
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![new_goal.clone()]])
             .append_query_results(vec![vec![new_goal.clone()]])
@@ -283,7 +344,8 @@ mod integration_tests {
             .append_query_results(vec![Vec::<Model>::new()])
             .append_query_results(vec![vec![join_row]])
             .append_query_results(vec![vec![promoted_goal]])
-            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = create(&db, &event_publisher, new_goal, Id::new_v4()).await;
@@ -303,11 +365,12 @@ mod integration_tests {
         );
         let relationship = create_test_relationship(relationship_id);
 
-        // Mock sequence: find_by_id → update_status save → relationship lookup
+        // Mock sequence: find_by_id → update_status save → relationship lookup → membership filter
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![current_goal.clone()]])
             .append_query_results(vec![vec![current_goal.clone()]])
-            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let result = update_status(&db, &event_publisher, current_goal.id, Status::Completed).await;

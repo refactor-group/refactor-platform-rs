@@ -12,7 +12,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{coaching_session as CoachingSessionApi, emails as EmailsApi, Id};
+use domain::{coaching_session as CoachingSessionApi, Id};
 use service::config::ApiVersion;
 
 use log::*;
@@ -175,13 +175,6 @@ pub async fn create(
 
     debug!("New Coaching Session: {coaching_session:?}");
 
-    EmailsApi::notify_session_scheduled(
-        app_state.db_conn_ref(),
-        &app_state.config,
-        &coaching_session,
-    )
-    .await;
-
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
         coaching_session,
@@ -213,7 +206,13 @@ pub async fn update(
     Path(coaching_session_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session_id, params).await?;
+    CoachingSessionApi::update(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        coaching_session_id,
+        params,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
 
@@ -248,6 +247,7 @@ pub async fn update_title(
 ) -> Result<impl IntoResponse, Error> {
     let updated = CoachingSessionApi::update_title(
         app_state.db_conn_ref(),
+        &app_state.config,
         app_state.event_publisher.as_ref(),
         coaching_session.id,
         params,
@@ -312,6 +312,8 @@ mod tests {
             id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: 60,
@@ -321,6 +323,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
         }
     }
 
@@ -335,10 +338,21 @@ mod tests {
             ..session.clone()
         };
 
+        let bumped = domain::coaching_sessions::Model {
+            ical_sequence: 1,
+            ..updated.clone()
+        };
+
+        // Setting the title bumps SEQUENCE: find_by_id → UPDATE ... RETURNING →
+        // increment_ical_sequence (find_by_id → UPDATE ... RETURNING) → the title event,
+        // whose participant lookup short-circuits on the empty result below.
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results(vec![vec![session.clone()]]) // domain update: find_by_id
                 .append_query_results(vec![vec![updated.clone()]]) // UPDATE ... RETURNING
+                .append_query_results(vec![vec![session.clone()]]) // increment: find_by_id
+                .append_query_results(vec![vec![bumped.clone()]]) // increment: UPDATE ... RETURNING
+                .append_query_results::<domain::coaching_sessions::Model, Vec<domain::coaching_sessions::Model>, _>(vec![vec![]]) // participant lookup: empty
                 .into_connection(),
         );
 

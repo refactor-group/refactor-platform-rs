@@ -1,11 +1,16 @@
+use crate::error::WebErrorKind;
+use crate::extractors::organization_admin_access::OrganizationAdminAccess;
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::organization_user_access::OrganizationUserAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
+use crate::params::user::CreateMemberParams;
 use crate::{controller::ApiResponse, AppState, Error};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use domain::{emails as EmailsAPI, user as UserApi, users};
+use domain::users::Role;
+use domain::Actor;
+use domain::{emails as EmailsAPI, user as UserApi};
 use service::config::ApiVersion;
 
 use log::*;
@@ -42,7 +47,9 @@ pub async fn index(
 }
 
 /// CREATE a User for an organization
-/// This function creates a new user associated with the specified organization.
+///
+/// Creates a new user associated with the specified organization, optionally
+/// assigning them a coach in the same transaction.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/users",
@@ -50,11 +57,12 @@ pub async fn index(
         ApiVersion,
         ("organization_id" = Id, Path, description = "The ID of the organization"),
     ),
-    request_body = domain::users::Model,
+    request_body = CreateMemberParams,
     responses(
         (status = 201, description = "User created successfully", body = domain::users::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
+        (status = 422, description = "The requested coach cannot be assigned"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -64,15 +72,31 @@ pub async fn index(
 pub(crate) async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(authenticated_user): AuthenticatedUser,
-    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
-    Json(user_model): Json<users::Model>,
+    OrganizationAdminAccess {
+        organization,
+        authenticated_user,
+    }: OrganizationAdminAccess,
+    Json(params): Json<CreateMemberParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let user =
-        UserApi::create_by_organization(app_state.db_conn_ref(), organization_id, user_model)
-            .await?;
-    info!("User created: {user:?}");
+    let user = UserApi::create_in_organization(
+        app_state.db_conn_ref(),
+        Actor::new(authenticated_user.id),
+        organization.id,
+        params.user,
+        params.coach_id,
+    )
+    .await?;
+    // Id only. The Debug form of the model carries the hashed password.
+    info!("User created: {}", user.id);
+    info!(
+        "role_change actor={} target={} org={} previous=none new={}",
+        authenticated_user.id,
+        user.id,
+        organization.id,
+        Role::User
+    );
 
+    // Must stay after the commit: a failed coach assignment invites nobody.
     EmailsAPI::notify_welcome_email(
         app_state.db_conn_ref(),
         &app_state.config,
@@ -108,8 +132,9 @@ pub(crate) async fn create(
 pub(crate) async fn resend_invite(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    AuthenticatedUser(authenticated_user): AuthenticatedUser,
-    OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess {
+        authenticated_user, ..
+    }: OrganizationAdminAccess,
     OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
     if user.password.is_some() {
@@ -155,11 +180,35 @@ pub(crate) async fn resend_invite(
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    OrganizationMemberAccess(_organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess {
+        authenticated_user, ..
+    }: OrganizationAdminAccess,
     OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
+    if user.id == authenticated_user.id {
+        return Err(Error::Web(WebErrorKind::Forbidden));
+    }
+
     info!("Deleting user: {:?}", user.id);
-    UserApi::delete(app_state.db_conn_ref(), user.id).await?;
+    let destroyed_roles = UserApi::delete(
+        app_state.db_conn_ref(),
+        Actor::new(authenticated_user.id),
+        user.id,
+    )
+    .await?;
+
+    // Account deletion drops every role the user held, a global SuperAdmin grant
+    // included, so each is reported on the same channel as a scoped role change.
+    for destroyed in &destroyed_roles {
+        let scope = destroyed
+            .organization_id
+            .map_or_else(|| "global".to_string(), |id| id.to_string());
+        info!(
+            "role_change actor={} target={} org={scope} previous={} new=none reason=account_deleted",
+            authenticated_user.id, user.id, destroyed.role
+        );
+    }
+
     Ok(Json(ApiResponse::<()>::no_content(
         StatusCode::NO_CONTENT.into(),
     )))

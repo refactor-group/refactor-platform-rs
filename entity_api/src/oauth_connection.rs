@@ -114,6 +114,15 @@ pub async fn update_tokens(
     Ok(active_model.update(db).await?.try_into_model()?)
 }
 
+/// Deletes an OAuth connection by ID, succeeding when the row is already gone
+pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
+    debug!("Deleting OAuth connection: {id}");
+
+    Entity::delete_by_id(id).exec(db).await?;
+
+    Ok(())
+}
+
 /// Deletes an OAuth connection by user ID and provider (disconnect)
 pub async fn delete_by_user_and_provider(
     db: &DatabaseConnection,

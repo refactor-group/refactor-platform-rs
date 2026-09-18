@@ -149,7 +149,6 @@ mod tests {
             ),
             created_at: now.into(),
             updated_at: now.into(),
-            role: users::Role::User,
             roles: vec![], // Will be populated by find_with_related
             invite_status: None,
         };

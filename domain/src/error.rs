@@ -1,10 +1,12 @@
 //! Error types for the `domain` layer.
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
+use entity_api::Id;
 use meeting_auth::error::{
     Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
 };
 use std::error::Error as StdError;
 use std::fmt;
+use std::time::Duration;
 
 /// Top-level domain error type.
 /// Errors in the Domain layer are modeled as a tree structure
@@ -34,6 +36,16 @@ pub enum DomainErrorKind {
 pub enum InternalErrorKind {
     Entity(EntityErrorKind),
     Config,
+    /// Refused for now. Retrying is expected.
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
+    /// Upstream failed. Retrying may resolve it.
+    Unavailable(String),
+    /// The request itself was refused, so retrying it unchanged gets the same answer.
+    /// Also covers a payload rejected before it was sent, which is refused just as surely.
+    Rejected(String),
+    /// The request could not be made at all, which says nothing about the request.
     Other(String),
 }
 
@@ -61,12 +73,26 @@ pub enum EntityErrorKind {
         name: String,
     },
     OrganizationArchived,
+    /// User already holds a role in the target organization.
+    UserAlreadyInOrganization {
+        organization_id: Id,
+    },
+    /// Removing this user would leave the organization with no admin.
+    LastOrganizationAdmin {
+        organization_id: Id,
+    },
+    /// User belongs to more than one organization; global delete refused.
+    UserBelongsToMultipleOrganizations {
+        organization_count: u64,
+    },
     /// Token missing, expired, or has wrong purpose. Collapsed deliberately
     /// for password-reset endpoints so attackers can't distinguish these
     /// three cases via the response.
     InvalidOrExpiredToken,
     /// User has exceeded the per-email password-reset request rate limit.
     PasswordResetRateLimited,
+    /// Requester has exceeded the per-user cap on user-lookup requests.
+    UserLookupRateLimited,
     DbTransaction,
     ServiceUnavailable,
     Other(String),
@@ -164,6 +190,21 @@ impl From<EntityApiError> for Error {
                 EntityErrorKind::OrganizationNameTaken { name: name.clone() }
             }
             EntityApiErrorKind::OrganizationArchived => EntityErrorKind::OrganizationArchived,
+            EntityApiErrorKind::UserAlreadyInOrganization { organization_id } => {
+                EntityErrorKind::UserAlreadyInOrganization {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::LastOrganizationAdmin { organization_id } => {
+                EntityErrorKind::LastOrganizationAdmin {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::UserBelongsToMultipleOrganizations { organization_count } => {
+                EntityErrorKind::UserBelongsToMultipleOrganizations {
+                    organization_count: *organization_count,
+                }
+            }
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };

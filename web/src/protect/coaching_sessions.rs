@@ -30,9 +30,7 @@ pub(crate) async fn index(
             .await;
     match coaching_relationship {
         Ok(coaching_relationship) => {
-            if coaching_relationship.coach_id == user.id
-                || coaching_relationship.coachee_id == user.id
-            {
+            if coaching_relationship.grants_access_to(&user) {
                 // User has access to coaching relationship
                 next.run(request).await
             } else {
@@ -73,7 +71,7 @@ pub(crate) async fn update(
             }
         };
 
-    if coaching_relationship.coach_id == user.id {
+    if coaching_relationship.coach_id == user.id && coaching_relationship.grants_access_to(&user) {
         debug!(
             "PUT auth passed: coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
@@ -116,7 +114,7 @@ pub(crate) async fn delete(
             }
         };
 
-    if coaching_relationship.coach_id == user.id {
+    if coaching_relationship.coach_id == user.id && coaching_relationship.grants_access_to(&user) {
         debug!(
             "DELETE auth passed: coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
@@ -130,3 +128,8 @@ pub(crate) async fn delete(
         (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_sessions_revocation_tests.rs"]
+mod revocation_tests;

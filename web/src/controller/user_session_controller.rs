@@ -79,7 +79,6 @@ pub async fn login(
             "last_name": user.last_name,
             "display_name": user.display_name,
             "timezone": user.timezone,
-            "role": user.role,
             "roles": user.roles
     });
 

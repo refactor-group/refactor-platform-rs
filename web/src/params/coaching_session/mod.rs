@@ -166,6 +166,8 @@ impl CreateParams {
             id: Id::nil(),
             coaching_relationship_id: self.coaching_relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: self.date,
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -175,6 +177,7 @@ impl CreateParams {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
         }
     }
 }

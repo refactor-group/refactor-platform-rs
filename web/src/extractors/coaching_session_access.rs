@@ -82,15 +82,18 @@ where
                 }
             };
 
-        if !(coaching_relationship.coach_id == authenticated_user.id
-            || coaching_relationship.coachee_id == authenticated_user.id)
-        {
+        if !coaching_relationship.grants_access_to(&authenticated_user) {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
         Ok(CoachingSessionAccess(coaching_session))
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_access_revocation_tests.rs"]
+mod revocation_tests;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
@@ -131,7 +134,6 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
             roles: vec![],
             invite_status: None,
             created_at: now.into(),
@@ -150,13 +152,14 @@ mod tests {
         // Create mock database with expected results
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
+        let organization_id = Id::new_v4();
         let now = Utc::now();
         let test_user = create_test_user();
 
         let test_role = user_roles::Model {
             id: Id::new_v4(),
             role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
+            organization_id: Some(organization_id),
             user_id: test_user.id,
             created_at: now.into(),
             updated_at: now.into(),
@@ -166,6 +169,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -175,6 +180,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -187,7 +193,7 @@ mod tests {
                         id: relationship_id,
                         coach_id: Id::new_v4(),
                         coachee_id: test_user.id,
-                        organization_id: Id::new_v4(),
+                        organization_id,
                         slug: "test".to_string(),
                         created_at: now.into(),
                         updated_at: now.into(),
@@ -278,6 +284,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -287,6 +295,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -388,6 +397,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -397,6 +408,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -558,6 +570,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -567,6 +581,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -645,13 +660,14 @@ mod tests {
     async fn test_coaching_session_extractor_success_with_id_param() {
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
+        let organization_id = Id::new_v4();
         let now = Utc::now();
         let test_user = create_test_user();
 
         let test_role = user_roles::Model {
             id: Id::new_v4(),
             role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
+            organization_id: Some(organization_id),
             user_id: test_user.id,
             created_at: now.into(),
             updated_at: now.into(),
@@ -661,6 +677,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -668,6 +686,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -682,7 +701,7 @@ mod tests {
                         id: relationship_id,
                         coach_id: Id::new_v4(),
                         coachee_id: test_user.id,
-                        organization_id: Id::new_v4(),
+                        organization_id,
                         slug: "test".to_string(),
                         created_at: now.into(),
                         updated_at: now.into(),
@@ -752,13 +771,14 @@ mod tests {
     async fn test_coaching_session_extractor_success_with_nested_route() {
         let session_id = Id::new_v4();
         let relationship_id = Id::new_v4();
+        let organization_id = Id::new_v4();
         let now = Utc::now();
         let test_user = create_test_user();
 
         let test_role = user_roles::Model {
             id: Id::new_v4(),
             role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
+            organization_id: Some(organization_id),
             user_id: test_user.id,
             created_at: now.into(),
             updated_at: now.into(),
@@ -768,6 +788,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -775,6 +797,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -789,7 +812,7 @@ mod tests {
                         id: relationship_id,
                         coach_id: Id::new_v4(),
                         coachee_id: test_user.id,
-                        organization_id: Id::new_v4(),
+                        organization_id,
                         slug: "test".to_string(),
                         created_at: now.into(),
                         updated_at: now.into(),

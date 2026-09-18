@@ -193,7 +193,6 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
             roles: vec![],
             invite_status: None,
             created_at: now.into(),
@@ -201,12 +200,17 @@ mod tests {
         }
     }
 
+    /// Fixtures share one organization so a participant is also a member of it.
+    fn fixture_organization_id() -> Id {
+        Id::from_u128(1)
+    }
+
     fn test_role(user_id: Id) -> user_roles::Model {
         let now = Utc::now();
         user_roles::Model {
             id: Id::new_v4(),
             role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
+            organization_id: Some(fixture_organization_id()),
             user_id,
             created_at: now.into(),
             updated_at: now.into(),
@@ -296,6 +300,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -303,6 +309,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -311,7 +318,7 @@ mod tests {
             id: relationship_id,
             coach_id: Id::new_v4(),
             coachee_id: user.id,
-            organization_id: Id::new_v4(),
+            organization_id: fixture_organization_id(),
             slug: "test".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
@@ -356,6 +363,8 @@ mod tests {
             id: session_id,
             coaching_relationship_id: relationship_id,
             coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
@@ -363,6 +372,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -371,7 +381,7 @@ mod tests {
             id: relationship_id,
             coach_id: Id::new_v4(),
             coachee_id: user.id,
-            organization_id: Id::new_v4(),
+            organization_id: fixture_organization_id(),
             slug: "test".to_string(),
             created_at: now.into(),
             updated_at: now.into(),

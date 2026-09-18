@@ -3,11 +3,7 @@ pub use entity::coaching_session_series::Model;
 use entity::coaching_session_series::{ActiveModel, Column, Entity};
 use entity::Id;
 use log::debug;
-use sea_orm::{
-    entity::prelude::*,
-    ActiveValue::{Set, Unchanged},
-    ConnectionTrait, QueryOrder, TryIntoModel,
-};
+use sea_orm::{entity::prelude::*, ActiveValue::Set, ConnectionTrait, QueryOrder, TryIntoModel};
 
 /// Inserts a new coaching_session_series row. The `id`, `created_at`, and
 /// `updated_at` fields on `model` are ignored — the DB assigns them.
@@ -52,22 +48,51 @@ pub async fn find_by_relationship(
 }
 
 /// Replaces the JSONB `rule` on an existing series and bumps `updated_at`.
-/// Used by the reschedule flow.
+/// Used by the reschedule flow. Every rule replacement moves the calendar, so
+/// `ical_sequence` (RFC 5545 SEQUENCE) is incremented in the same statement, as a
+/// column expression rather than a read-then-write: two concurrent reschedules
+/// must not land on the same SEQUENCE, or a calendar client drops the second
+/// invite as a duplicate.
 pub async fn update_rule(
     db: &impl ConnectionTrait,
     id: Id,
     rule: serde_json::Value,
 ) -> Result<Model, Error> {
-    let existing = find_by_id(db, id).await?;
-    let active_model = ActiveModel {
-        id: Unchanged(existing.id),
-        coaching_relationship_id: Unchanged(existing.coaching_relationship_id),
-        rule: Set(rule),
-        created_by_user_id: Unchanged(existing.created_by_user_id),
-        created_at: Unchanged(existing.created_at),
-        updated_at: Set(chrono::Utc::now().into()),
-    };
-    Ok(active_model.update(db).await?.try_into_model()?)
+    Entity::update_many()
+        .col_expr(Column::Rule, Expr::value(rule))
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .col_expr(
+            Column::UpdatedAt,
+            Expr::value::<DateTimeWithTimeZone>(chrono::Utc::now().into()),
+        )
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
+/// Bump a series' `ical_sequence` by 1 without touching its rule.
+///
+/// Used by the cancellation path, which needs a SEQUENCE strictly higher than any
+/// concurrently-committed reschedule. Same column-expression increment as
+/// [`update_rule`], so the row lock orders it against a competing update.
+pub async fn increment_ical_sequence(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::update_many()
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
 }
 
 pub async fn delete(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
@@ -79,7 +104,7 @@ pub async fn delete(db: &impl ConnectionTrait, id: Id) -> Result<(), Error> {
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
     fn sample_model() -> Model {
         let now = chrono::Utc::now();
@@ -87,6 +112,7 @@ mod tests {
             id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
             rule: serde_json::json!({"frequency": "weekly", "interval": 1}),
+            ical_sequence: 0,
             created_by_user_id: Id::new_v4(),
             created_at: now.into(),
             updated_at: now.into(),
@@ -157,13 +183,53 @@ mod tests {
             ..existing.clone()
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![existing.clone()]])
             .append_query_results(vec![vec![after.clone()]])
             .into_connection();
 
         let result = update_rule(&db, existing.id, new_rule.clone()).await?;
         assert_eq!(result.id, existing.id);
         assert_eq!(result.rule, new_rule);
+        Ok(())
+    }
+
+    /// Collect the SQL of every UPDATE of coaching_session_series in the transaction log.
+    fn series_update_sql(log: &[Transaction]) -> Vec<String> {
+        log.iter()
+            .flat_map(|txn| txn.statements())
+            .filter(|stmt| {
+                stmt.sql.contains("UPDATE") && stmt.sql.contains(r#""coaching_session_series""#)
+            })
+            .map(|stmt| stmt.sql.clone())
+            .collect()
+    }
+
+    /// A rule replacement is a calendar reschedule, so the emitted UPDATE must bump
+    /// `ical_sequence` relative to its own stored value rather than to a value read in
+    /// an earlier statement. Two concurrent reschedules that both read N would both
+    /// write N+1, and a calendar client drops the second invite as a duplicate.
+    /// Asserting on the returned model would prove nothing: MockDatabase echoes
+    /// whatever row the test appended.
+    #[tokio::test]
+    async fn update_rule_bumps_ical_sequence_atomically() -> Result<(), Error> {
+        let existing = sample_model();
+        let new_rule = serde_json::json!({"frequency": "monthly"});
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()]])
+            .into_connection();
+
+        update_rule(&db, existing.id, new_rule.clone()).await?;
+
+        let statements = series_update_sql(&db.into_transaction_log());
+        assert_eq!(
+            statements.len(),
+            1,
+            "expected exactly one series UPDATE: {statements:?}"
+        );
+        assert!(
+            statements[0].contains(r#""ical_sequence" = "ical_sequence" + "#),
+            "SEQUENCE must be incremented in SQL, not read-then-written: {}",
+            statements[0]
+        );
         Ok(())
     }
 }

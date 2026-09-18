@@ -4,8 +4,10 @@ use super::roles::Role;
 use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
+#[schema(as = domain::user_roles::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "user_roles")]
 pub struct Model {
     #[sea_orm(primary_key)]

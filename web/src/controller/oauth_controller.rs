@@ -151,6 +151,9 @@ pub async fn read(
 /// DELETE /oauth/connections/:provider
 ///
 /// Disconnects (deletes) the OAuth connection for the authenticated user and given provider.
+///
+/// Revokes the stored grant with the provider before deleting the connection. Revocation is best
+/// effort: the connection is removed, and this endpoint reports success, even when it fails.
 #[utoipa::path(
     delete,
     path = "/oauth/connections/{provider}",
@@ -172,8 +175,13 @@ pub async fn delete(
     State(app_state): State<AppState>,
     Path(provider): Path<Provider>,
 ) -> Result<impl IntoResponse, Error> {
-    oauth_connection::delete_by_user_and_provider(app_state.db_conn_ref(), user.id, provider)
-        .await?;
+    oauth_connection::delete_by_user_and_provider(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        user.id,
+        provider,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::<()>::no_content(
         StatusCode::NO_CONTENT.into(),
