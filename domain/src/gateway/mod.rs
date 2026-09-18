@@ -1,3 +1,4 @@
+pub(crate) mod auth;
 pub mod google_meet;
 pub(crate) mod ical;
 pub mod oauth;

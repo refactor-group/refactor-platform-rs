@@ -75,6 +75,11 @@ jobs:
       - name: Run clippy (mock feature)
         run: cargo clippy -p entity_api -p domain -p web --all-targets --features "domain/mock,web/mock" -- -D warnings
 
+      # docs-collab-server is excluded from workspace default-members, so the
+      # --all-targets clippy above skips it; lint it explicitly.
+      - name: Run clippy (docs-collab-server)
+        run: cargo clippy -p docs-collab-server --all-targets -- -D warnings
+
       - name: Run format check
         run: cargo fmt --all -- --check
 
@@ -124,6 +129,12 @@ jobs:
       - name: Run mock-gated tests
         run: cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"
 
+      # Excluded from default-members, so `cargo test` above skips it. Runs the
+      # unit + frozen protocol-conformance suites; DB-backed tests are ignored
+      # without a live Postgres.
+      - name: Run docs-collab-server tests
+        run: cargo test -p docs-collab-server
+
       - name: Show sccache stats
         run: sccache --show-stats
 
@@ -162,6 +173,9 @@ jobs:
           IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository }}/${BRANCH_NAME}"
           echo "backend_tags=$IMAGE_NAME:latest,$IMAGE_NAME:${{ github.sha }}" >> $GITHUB_OUTPUT
           echo "backend_image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          DOCS_COLLAB_IMAGE_NAME="${IMAGE_NAME}/docs-collab"
+          echo "docs_collab_tags=$DOCS_COLLAB_IMAGE_NAME:latest,$DOCS_COLLAB_IMAGE_NAME:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "docs_collab_image_name=$DOCS_COLLAB_IMAGE_NAME" >> $GITHUB_OUTPUT
 
       - name: Build and Push Backend Image
         id: push_backend
@@ -181,6 +195,24 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      - name: Build and Push docs-collab Image
+        id: push_docs_collab
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docs-collab-server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          tags: ${{ steps.tags.outputs.docs_collab_tags }}
+          cache-from: type=gha,scope=docs-collab
+          cache-to: type=gha,scope=docs-collab,mode=max
+          labels: |
+            org.opencontainers.image.title=Refactor Platform docs-collab-server
+            org.opencontainers.image.description=Self-hosted collaborative document server
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
       - name: Attest Backend Build
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/attest-build-provenance@v2
@@ -196,6 +228,9 @@ jobs:
           echo "📦 Backend Image Pushed:"
           echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:latest"
           echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:${{ github.sha }}"
+          echo ""
+          echo "📦 docs-collab Image Pushed:"
+          echo "  docker pull ${{ steps.tags.outputs.docs_collab_image_name }}:latest"
           echo ""
           echo "🚀 Run Backend:"
           echo "  docker run --rm --env-file .env -p ${{ vars.BACKEND_PORT || '4000' }}:${{ vars.BACKEND_PORT || '4000' }} ${{ steps.tags.outputs.backend_image_name }}:latest"
