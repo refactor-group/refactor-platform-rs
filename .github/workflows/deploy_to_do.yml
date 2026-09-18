@@ -105,6 +105,11 @@ jobs:
           # ?sslmode=verify-full&sslrootcert=/app/root.crt in the value.
           # The CA cert path is shared with the app (POSTGRES_SSL_ROOT_CERT).
           DOCS_COLLAB_DATABASE_URL=${{ secrets.DOCS_COLLAB_DATABASE_URL }}
+          # Collab server sqlx pool sizing. Shares the same per-cluster
+          # connection ceiling as the app pool below, so budget them together.
+          # Compose falls back to 4 / 1 when these are unset or empty.
+          DOCS_COLLAB_DB_MAX_CONNECTIONS=${{ vars.DOCS_COLLAB_DB_MAX_CONNECTIONS }}
+          DOCS_COLLAB_DB_MIN_CONNECTIONS=${{ vars.DOCS_COLLAB_DB_MIN_CONNECTIONS }}
 
           # -------- Database Pool Config
           # Pool sizing must stay below the managed Postgres max connections
