@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
 # Stage 1: prepare dependency recipe
-FROM lukemathwalker/cargo-chef:latest-rust-bullseye AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
 WORKDIR /usr/src/app
 
 FROM chef AS planner
@@ -19,7 +19,7 @@ COPY . .
 RUN cargo build --release -p docs-collab-server
 
 # Stage 3: minimal runtime image
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates curl \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1001 -s /bin/bash appuser
