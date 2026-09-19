@@ -93,6 +93,18 @@ Standard extractors: `CompareApiVersion` (`X-Version` header), `AuthenticatedUse
 | `mode` | enum, optional | `keyword` (default). `semantic` and `hybrid` reserved — advertised in the OpenAPI schema from day one, rejected with 400 until their phases ship. |
 | `keyword_weight` | float, optional | Keyword-vs-semantic preference for `mode=hybrid` (weighted RRF; see [Semantic and hybrid phases](#semantic-and-hybrid-phases)). Default `0.5` (plain RRF), validated to `[0.0, 1.0]` → 400 outside. Meaningful only with `mode=hybrid`; supplying it with another mode is contradictory → 400 (the `goal_filter=unlinked` + `goal_id` precedent). Like `mode`, advertised from day one and 400 until PR 7 ships; like `mode`, it must be identical across pages of one cursor walk since it changes the ordering the cursor keyset traverses. |
 
+### Error types for the 400s
+
+Every 400 above is boundary validation, decided in `web` before the domain is called, so all of them surface through the existing `WebErrorKind` enum (`web/src/error.rs`) — no new top-level error type, and no new `domain`/`entity_api` error kinds. They cannot ride the domain error chain anyway: `DomainErrorKind::Validation` maps to 422, not 400, so raising these below the web layer would silently change their documented status codes. (`websearch_to_tsquery` never throws on user input, so there is no query-parse error to bubble up from `entity_api` either.)
+
+Concretely:
+
+- **`tz`** reuses `WebErrorKind::InvalidTimezone` verbatim.
+- **`status` / `topic_status`** are rejected by serde during `Query<IndexParams>` deserialization, exactly as `GET /users/:id/actions` already handles an invalid `status` — no error variant involved.
+- **The rest** (`q` too short, unknown `types` token, `goal_filter` + `goal_id` contradiction, malformed `cursor`, unavailable `mode`, `keyword_weight` out of range or off-mode) share one new generic variant modeled on the `InvalidTimezone` shape: `WebErrorKind::InvalidParam { error: &'static str, message: String }`, rendering the same structured `{status_code: 400, error, message}` body with a stable discriminator per failure (`query_too_short`, `unknown_type`, `contradictory_params`, `malformed_cursor`, `mode_unavailable`, `keyword_weight_out_of_range`). One variant carrying context in fields follows the Error Variant Reuse rule in `.claude/coding-standards.md` (same status code + same caller handling = same variant), keeps `WebErrorKind` from growing a case per validation rule, and still gives the frontend a deterministic string to branch on; the web tests pin each discriminator. The variant is deliberately not search-specific — it is the generalization of what `InvalidTimezone` hard-codes, reusable by any future endpoint needing a discriminated 400. `Cursor::decode`'s `Err` maps to it at the controller, so a malformed cursor never routes through the domain's 422 path.
+
+No new error enums are required; the only new enums the plan introduces are param vocabulary (`mode`, `goal_filter`, the `types` tokens), which fail at serde/validation time rather than as error types.
+
 ### Response shape
 
 Wrapped in the standard `ApiResponse { status_code, data }` envelope.
