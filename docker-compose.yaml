@@ -146,6 +146,7 @@ services:
       - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
     networks:
       - backend_network
+    restart: unless-stopped
 
   docs-collab:
     image: ${DOCS_COLLAB_IMAGE_NAME}
@@ -207,6 +208,7 @@ services:
       - rust-app
     networks:
       - backend_network
+    restart: unless-stopped
 
 networks:
   backend_network:
