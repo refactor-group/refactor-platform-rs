@@ -21,8 +21,9 @@ even if the full record is never returned.
 > Scenario applicability by delivery phase:
 > A–H apply from **PR 1** (keyword core). I applies from **PR 2**
 > (transcripts). J applies from **PR 3** (members/organizations). K applies
-> from **PR 4** (MCP tool). Run the full plan again after each phase lands —
-> every new searchable type is a new potential leak path.
+> from **PR 4** (MCP tool). L applies from **PR 6** (semantic). Run the full
+> plan again after each phase lands — every new searchable type is a new
+> potential leak path.
 
 ## 1. Prerequisites
 
@@ -238,7 +239,38 @@ Using Casey's PAT against `POST /mcp` (`search` tool):
 | limit | default 10, values above 25 clamped |
 | Robin's PAT after the Scenario G removal | `kumquat` → zero hits — PAT identity honors membership revocation too |
 
-## 13. Notes caveat (until PR 5)
+## 13. Scenario L: semantic recall under selective scope (PR 6+)
+
+Leak testing asks "does search return what it must not"; this scenario asks
+the opposite — **does semantic search still return what it must**. An HNSW
+scan finds the approximate nearest neighbors of the *whole* index and the
+visibility scope is applied to those candidates afterward, so a regular
+user's tiny visible slice can be filtered out entirely: an empty result
+despite visible matches. The failure only manifests at scale, which is why
+it gets a manual scenario against a realistically-sized corpus and not just
+the automated fixture.
+
+Additional seeding on top of the prerequisites:
+
+- Bulk-seed a **large invisible corpus** relative to Casey: several thousand
+  chunks' worth of content across R2 and G1 (long transcripts and notes are
+  the cheapest way to get volume).
+- Seed a handful of R1 items that are **semantically related to a probe
+  phrase without sharing its keywords** — e.g. content about "postponing the
+  quarterly review because of scheduling conflicts", probed with
+  `q=meeting delayed due to calendar clash`. Keyword overlap would let FTS
+  mask a semantic miss, so verify first that `mode=keyword` with the probe
+  phrase returns **zero** hits for it.
+
+| Check | Expected |
+|---|---|
+| Casey: probe phrase, `mode=semantic` | the seeded R1 items appear — a **false empty is the failure** this scenario exists to catch |
+| Casey: same query, `mode=hybrid` | the R1 items appear (the semantic arm contributes them) |
+| Sam: same query, `mode=semantic` | a superset of Casey's hits — confirms the content is findable at all, isolating recall from relevance |
+| Scenario D probes re-run with `mode=semantic` and `mode=hybrid` | all still zero hits — the recall mitigation (iterative scans / exact-scan fallback) must widen the *candidate walk*, never the *visibility scope* |
+| Latency sanity | Casey's scoped semantic query completes in interactive time — if the exact-scan fallback engaged, it should be fast at tier-1 corpus sizes |
+
+## 14. Notes caveat (until PR 5)
 
 Notes are **not searched at all** before PR 5: note content lives only in
 Tiptap (the backend never reads it back), so there is no note corpus to
@@ -255,7 +287,7 @@ Any `note`-typed hit before PR 5 means a searcher is reading the legacy
 lands, re-run the leak scenarios (D, F, G, H) with note content included:
 a hit on another relationship's note content is a leak like any other.
 
-## 14. Failure triage
+## 15. Failure triage
 
 | Symptom | Likely cause |
 |---|---|
@@ -264,3 +296,4 @@ a hit on another relationship's note content is a leak like any other.
 | Hits but empty/garbled snippets | `ts_headline` running over a different expression than the index/query |
 | Correct hits but sequential-scan slowness | query expression drifted from the index expression (see the shared-constants rule in the implementation plan) |
 | Soft-deleted topic or archived org appears | searcher missing its `deleted_at`/`archived_at` predicate |
+| Semantic search empty for a tier-1 user but fine for a super admin | HNSW post-filter recall — check `hnsw.iterative_scan` is enabled and the scoped exact-scan threshold (see the ANN recall bullet in the implementation plan) |
