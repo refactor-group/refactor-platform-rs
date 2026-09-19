@@ -282,14 +282,50 @@ Only two searched types don't inherit the relationship rule, because they don't 
 | Layer | Module | Responsibility |
 |---|---|---|
 | `entity` | `coaching_relationships.rs` | `visible_to(scope) -> Condition` — the participant rule's query form, defined beside `grants_access_to`. `search_chunks` entity added in the semantic phase. |
-| `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait (in `mod.rs`) and its per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`/`ts_headline`, per-searcher `limit + 1` fetch, keyset predicate |
-| `domain` | `search.rs` | `Scope` derivation from roles, `Filters` (the compiled, validated form of `IndexParams`, shared by every searcher signature), concurrent fan-out to searchers, merge + rank + clamp, cursor encode/decode, `display_title` hydration, `Results`/`Hit` types |
+| `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait, the `Filters` and `Request` structs it takes (see [the sketch below](#the-searcher-trait-and-its-inputs)), and the per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`/`ts_headline`, per-searcher `limit + 1` fetch, keyset predicate |
+| `domain` | `search.rs` | `Scope` derivation from roles, compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), concurrent fan-out to searchers, merge + rank + clamp, cursor encode/decode, `display_title` hydration, `Results`/`Hit` types |
 | `web` | `extractors/scope.rs` | `FromRequestParts` extractor wrapping `AuthenticatedUser` → compiled `Scope`, per the access-extractor pattern (`extractors/*_access.rs`) |
 | `web` | `params/search.rs` | `IndexParams`, comma-split `types` parsing, clamps, utoipa `IntoParams`; compiles into `domain::search::Filters` |
 | `web` | `controller/search_controller.rs` | `GET /search` handler, `ApiResponse` envelope, utoipa path |
 | `web` | `router.rs` | Route + OpenAPI registration + `ThrottlePolicy::SEARCH_ENDPOINT` layer |
 | `web` | `mcp/tools/*` (PR 4) | `search` MCP tool reusing `domain::search` with PAT-derived identity |
 | `migration` | one migration per index PR | GIN expression indexes (fenced SQL below) |
+
+### The `Searcher` trait and its inputs
+
+The "uniform signature" concretely: the trait takes one shared request struct rather than a parameter list. `Filters` is the union of every filter param — that union costs nothing at the signature level, because a searcher ignoring a field is simply a no-op read.
+
+```rust
+// entity_api/src/search/mod.rs
+pub struct Filters {
+    // the compiled, validated form of IndexParams — union of all filter params
+    pub organization_id: Option<Id>,
+    pub user_id: Option<Id>,
+    pub coaching_session_id: Option<Id>,
+    pub goal_id: Option<Id>,
+    pub goal_filter: GoalFilter,
+    pub status: Option<Status>,
+    pub topic_status: Option<TopicStatus>,
+    pub created: Option<DateTimeRange>,   // tz already applied
+    pub updated: Option<DateTimeRange>,
+}
+
+pub struct Request<'a> {
+    pub q: &'a str,              // trimmed, clamped
+    pub scope: &'a Scope,
+    pub filters: &'a Filters,    // each searcher reads only its relevant fields
+    pub cursor: Option<&'a Cursor>,
+    pub fetch: u64,              // limit + 1
+}
+
+#[async_trait]
+pub trait Searcher {
+    fn hit_type(&self) -> HitType;
+    async fn search(&self, db: &DatabaseConnection, req: &Request<'_>) -> Result<Vec<Hit>, Error>;
+}
+```
+
+Nine unit structs implement the trait; the domain fans out over the full set and the `types` filter skips implementations before dispatch. Layering note: the trait consumes `Filters`, so the struct is **declared in `entity_api::search` and re-exported up through `domain`'s `lib.rs`** — `entity_api` cannot import `domain` types, and web still imports it as `domain::search::Filters`, so references to that path elsewhere in this plan describe the web-visible import, not the declaration site. `Scope` follows the same pattern, since `entity`'s `visible_to(scope)` already consumes it below `entity_api`.
 
 ## Migrations
 
