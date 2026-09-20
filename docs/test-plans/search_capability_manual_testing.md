@@ -91,6 +91,8 @@ Still Casey. All against R1 content.
 | Request | Expected |
 |---|---|
 | `q=kumquats` (plural) | same hits as `q=kumquat` — stemming works |
+| `q=kumq` (partial final word) | same hits as `q=kumquat` — the final token is prefix-matched for as-you-type |
+| `q=kumq ` (same, trailing space) | zero hits — trailing whitespace marks the word finished, prefixing off |
 | `q="kumquat harvest"` where only "harvest kumquat" exists | no phrase match (quoted phrases are order-sensitive) |
 | `q=kumquat -goal` (word `goal` present in the goal body) | goal hit disappears, others remain |
 | `q=kumquat or tamarind` | identical to `q=kumquat` — the `or` arm matches nothing *visible*; see D |
@@ -308,3 +310,4 @@ a hit on another relationship's note content is a leak like any other.
 | Same note or session appears several times in semantic/hybrid results | chunk-to-entity collapse missing, or running after fusion instead of within each retrieval arm (see the collapse bullet in the implementation plan) |
 | Repeated queries return garbage relevance right after an embedding-model swap, novel queries are fine | embedding cache key is missing `embedding_model` — cached old-model vectors are being compared against the new-model index |
 | Hybrid latency ≈ semantic + keyword latencies summed | the hybrid arms run sequentially — the keyword retrieval should fire in parallel with the embedding call (see the latency-budget bullet in the implementation plan) |
+| As-you-type feels dead — zero hits until a word is fully typed | final-token prefix matching missing, or the server trims the query before inspecting the raw tail for the trailing-whitespace opt-out |
