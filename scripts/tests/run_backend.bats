@@ -198,6 +198,22 @@ teardown() {
     [ "$status" -eq 130 ]
 }
 
+@test "stop_children returns promptly even for children it never recorded" {
+    # Reproduce a signal landing mid-launch: a reader blocked on a FIFO with no
+    # writer, and a running binary whose PID was never added to pids. The
+    # worker carries its own watchdog so a hang can never outlive the test.
+    bash -c "
+        source '$SCRIPT'
+        fifo_dir=\$(mktemp -d); mkfifo \"\$fifo_dir/x\"
+        ( cat < \"\$fifo_dir/x\" ) &
+        ( exec sleep 30 ) &
+        ( sleep 5; pkill -9 -P \$\$; kill -9 \$\$ ) &
+        stop_children
+        echo cleaned
+    " > "$ROOT/stop.out" 2>&1 3>&-
+    grep -q '^cleaned$' "$ROOT/stop.out"
+}
+
 # --- launch: supervision ------------------------------------------------------
 
 @test "a binary that exits non-zero fails the launcher with that status" {
@@ -213,7 +229,7 @@ teardown() {
 }
 
 @test "SIGTERM stops both binaries and exits 143, not a wait error" {
-    "$LAUNCHER" > "$ROOT/launch.out" 2>&1 &
+    "$LAUNCHER" > "$ROOT/launch.out" 2>&1 3>&- &
     launcher=$!
     for _ in $(seq 1 50); do
         grep -q 'refactor_platform_rs started' "$ROOT/launch.out" 2>/dev/null && break

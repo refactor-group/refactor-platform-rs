@@ -103,7 +103,6 @@ ensure_collab_db() {
 }
 
 pids=()
-readers=()
 fifo_dir=""
 
 # Run a binary in the background with each output line tagged. The binary is
@@ -116,17 +115,19 @@ prefixed() {
     local fifo="$fifo_dir/$tag"
     mkfifo "$fifo"
     ( while IFS= read -r line; do printf '[%s] %s\n' "$tag" "$line"; done < "$fifo" ) &
-    readers+=($!)
     ( exec "$@" > "$fifo" 2>&1 ) &
     pids+=($!)
 }
 
-# Stop the tracked binaries by PID (never the process group, so a caller that
-# shares it is not signalled), then reap them and their log readers.
+# Stop every background job this shell started (never the process group, so a
+# caller that shares it is not signalled), then reap them. Enumerating jobs
+# rather than the recorded PIDs also covers a signal that lands between a
+# launch and the line recording it: a reader still waiting on its FIFO, or a
+# binary not yet in `pids`, would otherwise make the bare `wait` hang.
 stop_children() {
     local pid
     for pid in "${pids[@]:-}"; do
-        [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+        kill -TERM "$pid" 2>/dev/null || true
     done
     wait 2>/dev/null || true
     if [[ -n "$fifo_dir" ]]; then
