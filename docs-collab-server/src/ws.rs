@@ -2,8 +2,9 @@
 //!
 //! On upgrade, splits the socket and runs one task that owns the sink so direct
 //! protocol replies and peer fan-out share a single writer. Authentication
-//! happens per-document on the first `AuthToken` frame; subsequent sync frames
-//! for an un-authed document are rejected with `PermissionDenied`.
+//! happens per-document on the first `AuthToken` frame; sync frames that arrive
+//! for a document before its token are held (bounded) and replayed once it
+//! authenticates, matching the reference Hocuspocus server.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,13 +26,21 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
 use tracing::{debug, info, warn};
 
-use crate::auth::{Authenticator, JwtAuthenticator, Scope};
+use crate::auth::{Authenticator, JwtAuthenticator};
 use crate::config::Config;
 use crate::document::{ConnectionId, Document};
 use crate::protocol::{Body, Frame};
 use crate::registry::DocumentRegistry;
 use crate::rest;
 use crate::storage::{PostgresStorage, Storage, StorageError};
+
+/// Frames one connection may hold for a document that has not authenticated yet.
+pub const PREAUTH_QUEUE_MAX_FRAMES: usize = 64;
+/// Total encoded bytes those held frames may occupy per document.
+pub const PREAUTH_QUEUE_MAX_BYTES: usize = 256 * 1024;
+/// Distinct documents one connection may have awaiting a token at once. The
+/// provider multiplexes a small fixed set, so this only bites an abuser.
+pub const PREAUTH_QUEUE_MAX_DOCS: usize = 8;
 
 /// Shared, clone-cheap server state. Cloned by axum on every request via the
 /// `State<AppState>` extractor; all heavyweight fields are `Arc`-shared.
@@ -192,15 +201,71 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| run_connection(socket, state))
 }
 
+/// Per-document authentication state on one connection. A document becomes
+/// `Pending` the moment any frame names it and `Authed` on a valid token;
+/// frames that arrive while `Pending` are held and replayed on auth.
+enum DocAuth {
+    Pending(PendingFrames),
+    Authed,
+}
+
+/// Frames held for a document awaiting its token, capped by count and bytes.
+/// `@hocuspocus/provider` sends awareness before `Auth` whenever its token
+/// callback is slow, so refusing these would fail every slow-link client.
+#[derive(Default)]
+struct PendingFrames {
+    frames: Vec<Body>,
+    bytes: usize,
+    /// Once tripped, nothing further is held until the document authenticates.
+    overflowed: bool,
+}
+
+impl PendingFrames {
+    /// Hold `body`, or report that a cap was exceeded. Overflow clears the
+    /// queue so an unauthenticated peer cannot pin memory.
+    fn push(&mut self, body: Body, wire_len: usize) -> Result<(), ()> {
+        let over = self.overflowed
+            || self.frames.len() >= PREAUTH_QUEUE_MAX_FRAMES
+            || self.bytes + wire_len > PREAUTH_QUEUE_MAX_BYTES;
+        if over {
+            self.frames.clear();
+            self.bytes = 0;
+            self.overflowed = true;
+            return Err(());
+        }
+        self.frames.push(body);
+        self.bytes += wire_len;
+        Ok(())
+    }
+}
+
+/// Mutable per-connection state shared by the actor loop and frame dispatch.
+struct Connection {
+    auth: HashMap<String, DocAuth>,
+    joined: HashMap<String, (Arc<Document>, ConnectionId)>,
+    peers: StreamMap<String, BroadcastStream<Vec<u8>>>,
+}
+
+impl Connection {
+    fn pending_doc_count(&self) -> usize {
+        self.auth
+            .values()
+            .filter(|a| matches!(a, DocAuth::Pending(_)))
+            .count()
+    }
+}
+
 /// Per-connection actor. Owns the WS sink + stream and the per-doc broadcast
 /// receivers. Multiplexes inbound frames, peer-published frames, and the
 /// shutdown signal through a single `tokio::select!`, so writes from each
 /// source are naturally serialized on the one sink.
 async fn run_connection(socket: WebSocket, mut state: AppState) {
     let (mut sink, mut stream) = socket.split();
-    let mut authed: HashMap<String, Scope> = HashMap::new();
-    let mut joined: HashMap<String, (Arc<Document>, ConnectionId)> = HashMap::new();
-    let mut peers: StreamMap<String, BroadcastStream<Vec<u8>>> = StreamMap::new();
+    let mut conn = Connection {
+        auth: HashMap::new(),
+        joined: HashMap::new(),
+        peers: StreamMap::new(),
+    };
 
     loop {
         tokio::select! {
@@ -209,16 +274,9 @@ async fn run_connection(socket: WebSocket, mut state: AppState) {
                 match msg {
                     Message::Binary(bytes) => match Frame::decode(&bytes) {
                         Ok(frame) => {
-                            if dispatch_frame(
-                                &state,
-                                &mut sink,
-                                &mut authed,
-                                &mut joined,
-                                &mut peers,
-                                frame,
-                            )
-                            .await
-                            .is_err()
+                            if dispatch_frame(&state, &mut sink, &mut conn, frame, bytes.len())
+                                .await
+                                .is_err()
                             {
                                 break;
                             }
@@ -231,7 +289,7 @@ async fn run_connection(socket: WebSocket, mut state: AppState) {
             }
             // Guarded so an empty StreamMap (which yields `None` immediately)
             // does not spin the select loop.
-            peer = peers.next(), if !peers.is_empty() => {
+            peer = conn.peers.next(), if !conn.peers.is_empty() => {
                 let Some((name, item)) = peer else { continue };
                 let bytes = match item {
                     Ok(b) => b,
@@ -250,44 +308,63 @@ async fn run_connection(socket: WebSocket, mut state: AppState) {
         }
     }
 
-    for (_, (doc, id)) in joined.drain() {
+    for (_, (doc, id)) in conn.joined.drain() {
         doc.leave(id);
     }
 }
 
+/// Encode and write one frame. `Err(())` means the sink stopped accepting.
+async fn send_frame(
+    sink: &mut SplitSink<WebSocket, Message>,
+    name: &str,
+    body: Body,
+) -> Result<(), ()> {
+    let bytes = Frame {
+        name: name.to_string(),
+        body,
+    }
+    .encode();
+    sink.send(Message::Binary(bytes)).await.map_err(|_| ())
+}
+
 /// Pure per-frame dispatch. `Err(())` signals the actor loop to break (the sink
 /// has stopped accepting writes, so the connection is effectively dead).
+/// `wire_len` is the encoded size, used to bound the pre-auth queue.
 async fn dispatch_frame(
     state: &AppState,
     sink: &mut SplitSink<WebSocket, Message>,
-    authed: &mut HashMap<String, Scope>,
-    joined: &mut HashMap<String, (Arc<Document>, ConnectionId)>,
-    peers: &mut StreamMap<String, BroadcastStream<Vec<u8>>>,
+    conn: &mut Connection,
     frame: Frame,
+    wire_len: usize,
 ) -> Result<(), ()> {
     let Frame { name, body } = frame;
     match body {
         Body::AuthToken(token) => {
+            // Already authenticated: ignore, as the reference server does. Any
+            // reply here, especially PermissionDenied, would make the client
+            // treat a live session as terminally unauthorized.
+            if matches!(conn.auth.get(&name), Some(DocAuth::Authed)) {
+                debug!(name = %name, "ignoring auth token for an already-authenticated document");
+                return Ok(());
+            }
             match state.authenticator.authenticate(&token, &name).await {
-                Ok(scope) => {
-                    authed.insert(name.clone(), scope);
-                    let reply = Frame {
-                        name,
-                        body: Body::Authenticated("readwrite".to_string()),
+                Ok(_scope) => {
+                    // Frames held while the token was in flight replay in arrival order.
+                    let held = match conn.auth.insert(name.clone(), DocAuth::Authed) {
+                        Some(DocAuth::Pending(pending)) => pending.frames,
+                        _ => Vec::new(),
+                    };
+                    send_frame(sink, &name, Body::Authenticated("readwrite".to_string())).await?;
+                    for held_body in held {
+                        handle_sync_frame(state, sink, conn, &name, held_body).await?;
                     }
-                    .encode();
-                    sink.send(Message::Binary(reply)).await.map_err(|_| ())?;
                 }
                 Err(e) => {
-                    // Reply with PermissionDenied; do NOT insert into `authed`.
-                    // Leaving the socket open lets the client see the rejection
-                    // before its own close handshake fires.
-                    let reply = Frame {
-                        name,
-                        body: Body::PermissionDenied(e.to_string()),
-                    }
-                    .encode();
-                    let _ = sink.send(Message::Binary(reply)).await;
+                    // Discard anything held under the failed attempt. Reply
+                    // without closing so the client sees the rejection before
+                    // its own close handshake fires.
+                    conn.auth.remove(&name);
+                    let _ = send_frame(sink, &name, Body::PermissionDenied(e.to_string())).await;
                 }
             }
         }
@@ -296,63 +373,27 @@ async fn dispatch_frame(
         | Body::Update(_)
         | Body::Awareness(_)
         | Body::AwarenessQuery) => {
-            if !authed.contains_key(&name) {
-                let reply = Frame {
-                    name: name.clone(),
-                    body: Body::PermissionDenied(format!(
-                        "document {name} requires authentication"
-                    )),
-                }
-                .encode();
-                let _ = sink.send(Message::Binary(reply)).await;
+            if matches!(conn.auth.get(&name), Some(DocAuth::Authed)) {
+                return handle_sync_frame(state, sink, conn, &name, body).await;
+            }
+            // Bound the number of names one un-authed socket can register, so
+            // the per-document caps cannot be multiplied by inventing names.
+            let is_new = !conn.auth.contains_key(&name);
+            if is_new && conn.pending_doc_count() >= PREAUTH_QUEUE_MAX_DOCS {
+                let reason = format!("document {name} requires authentication");
+                let _ = send_frame(sink, &name, Body::PermissionDenied(reason)).await;
                 return Ok(());
             }
-
-            let (doc, id) = match joined.get(&name) {
-                Some((doc, id)) => (doc.clone(), *id),
-                None => match join_document(state, peers, &name).await {
-                    Ok(pair) => {
-                        joined.insert(name.clone(), pair.clone());
-                        // Mirror Hocuspocus's on-connect handshake: send our
-                        // SyncStep1 (so the client returns any state we lack,
-                        // e.g. edits made while it was disconnected) then the
-                        // existing peers' awareness (so presence shows on load).
-                        let mut join_frames = vec![pair.0.sync_step1()];
-                        join_frames.extend(pair.0.current_awareness_reply());
-                        for join_body in join_frames {
-                            let bytes = Frame {
-                                name: name.clone(),
-                                body: join_body,
-                            }
-                            .encode();
-                            sink.send(Message::Binary(bytes)).await.map_err(|_| ())?;
-                        }
-                        pair
-                    }
-                    Err(reason) => {
-                        let reply = Frame {
-                            name: name.clone(),
-                            body: Body::PermissionDenied(reason),
-                        }
-                        .encode();
-                        let _ = sink.send(Message::Binary(reply)).await;
-                        return Ok(());
-                    }
-                },
+            let entry = conn
+                .auth
+                .entry(name.clone())
+                .or_insert_with(|| DocAuth::Pending(PendingFrames::default()));
+            let DocAuth::Pending(pending) = entry else {
+                return Ok(());
             };
-
-            match doc.handle(id, body).await {
-                Ok(replies) => {
-                    for reply_body in replies {
-                        let bytes = Frame {
-                            name: name.clone(),
-                            body: reply_body,
-                        }
-                        .encode();
-                        sink.send(Message::Binary(bytes)).await.map_err(|_| ())?;
-                    }
-                }
-                Err(e) => warn!(name = %name, error = %e, "doc.handle failed"),
+            if pending.push(body, wire_len).is_err() {
+                let reason = format!("document {name} requires authentication");
+                let _ = send_frame(sink, &name, Body::PermissionDenied(reason)).await;
             }
         }
         // Server-bound or client-info only; no server action.
@@ -361,6 +402,47 @@ async fn dispatch_frame(
         | Body::Close
         | Body::Authenticated(_)
         | Body::PermissionDenied(_) => {}
+    }
+    Ok(())
+}
+
+/// Apply one sync/awareness frame for an authenticated document, joining it
+/// on first use (which mirrors Hocuspocus's on-connect handshake: our
+/// `SyncStep1` so the client returns state we lack, then existing peers'
+/// awareness so presence shows on load).
+async fn handle_sync_frame(
+    state: &AppState,
+    sink: &mut SplitSink<WebSocket, Message>,
+    conn: &mut Connection,
+    name: &str,
+    body: Body,
+) -> Result<(), ()> {
+    let (doc, id) = match conn.joined.get(name) {
+        Some((doc, id)) => (doc.clone(), *id),
+        None => match join_document(state, &mut conn.peers, name).await {
+            Ok(pair) => {
+                conn.joined.insert(name.to_string(), pair.clone());
+                let mut join_frames = vec![pair.0.sync_step1()];
+                join_frames.extend(pair.0.current_awareness_reply());
+                for join_body in join_frames {
+                    send_frame(sink, name, join_body).await?;
+                }
+                pair
+            }
+            Err(reason) => {
+                let _ = send_frame(sink, name, Body::PermissionDenied(reason)).await;
+                return Ok(());
+            }
+        },
+    };
+
+    match doc.handle(id, body).await {
+        Ok(replies) => {
+            for reply_body in replies {
+                send_frame(sink, name, reply_body).await?;
+            }
+        }
+        Err(e) => warn!(name = %name, error = %e, "doc.handle failed"),
     }
     Ok(())
 }
