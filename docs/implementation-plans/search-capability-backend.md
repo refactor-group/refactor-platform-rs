@@ -237,29 +237,30 @@ pub struct Scope {
 }
 ```
 
-Relationship-anchored searchers scope through a shared `visible_relationships` scope, rendered from `coaching_relationships::visible_to(scope)` - the query-form twin of `grants_access_to` (participation **and** current org membership) plus the admin tier:
+Relationship-anchored searchers all scope on the same set — the relationships visible to the caller — and that set is constant for the whole request and small: a handful of ids for a regular user, an org's worth for an org admin (bounded either way; Postgres hashes large `= ANY` arrays). So the domain resolves it **once per request** instead of embedding the scoping join in every searcher's SQL. One query, rendered from `coaching_relationships::visible_to(scope)` - the query-form twin of `grants_access_to` (participation **and** current org membership) plus the admin tier:
 
 ```sql
-WITH visible_relationships AS (
-  SELECT cr.id, cr.organization_id
-  FROM refactor_platform.coaching_relationships cr
-  WHERE
-    -- tier 1: participant AND currently a member of the relationship's org
-    ((cr.coach_id = $user_id OR cr.coachee_id = $user_id)
-       AND cr.organization_id = ANY($member_org_ids))
-    -- tier 2: org admin sees every relationship in their org(s)
-    OR cr.organization_id = ANY($admin_org_ids)
-    -- tier 3 (super admin): this WHERE clause is omitted entirely
-)
+-- executed once per request, in domain::search, before searcher fan-out
+SELECT cr.id
+FROM refactor_platform.coaching_relationships cr
+WHERE
+  -- tier 1: participant AND currently a member of the relationship's org
+  ((cr.coach_id = $user_id OR cr.coachee_id = $user_id)
+     AND cr.organization_id = ANY($member_org_ids))
+  -- tier 2: org admin sees every relationship in their org(s)
+  OR cr.organization_id = ANY($admin_org_ids)
+  -- tier 3 (super admin): the query is skipped entirely — no filter
 ```
+
+The result is `visible_relationship_ids: Option<Vec<Id>>` (`None` = super admin, unrestricted), handed to every searcher as an array bind, so each searcher's scope predicate is an indexed membership test rather than a join through `coaching_relationships`. Roles are preloaded on `AuthenticatedUser` but relationships are not, so resolving the set costs one cheap indexed query per request — one instead of seven.
 
 Per-entity anchoring:
 
 | Type | Scope path |
 |---|---|
-| coaching_sessions, goals | `coaching_relationship_id IN (SELECT id FROM visible_relationships)` |
-| notes, actions, agreements, topics | join `coaching_sessions` on `coaching_session_id`, then relationship-in-visible; topics add `deleted_at IS NULL` |
-| transcripts | `transcript_segments → transcriptions → coaching_sessions`, then relationship-in-visible |
+| coaching_sessions, goals | `coaching_relationship_id = ANY($visible_relationship_ids)` |
+| notes, actions, agreements, topics | join `coaching_sessions` on `coaching_session_id`, then `cs.coaching_relationship_id = ANY($visible_relationship_ids)`; topics add `deleted_at IS NULL` |
+| transcripts | `transcript_segments → transcriptions → coaching_sessions`, then `cs.coaching_relationship_id = ANY($visible_relationship_ids)` |
 | users | admins only; membership via `user_roles.organization_id = ANY($admin_org_ids)` (so members without a relationship yet are still findable); super admin unrestricted |
 | organizations | super admin only; `archived_at IS NULL` |
 
@@ -269,7 +270,7 @@ Per-entity anchoring:
 
 Query-embedded scoping means the participant rule exists in **two** forms: `grants_access_to` (in-memory Rust, one relationship at a time) and `coaching_relationships::visible_to` (query form, corpus-wide). The re-expression is forced by the problem shape — a row-by-row Rust predicate cannot drive an indexed, `LIMIT`ed, paginated query, and post-filtering fetched rows through `grants_access_to` breaks limits and cursors (unbounded over-fetch to fill a page). Eliminating the second copy entirely would mean either making every authorization check a DB round-trip (`SELECT EXISTS`) or adopting row-level security — both far bigger trades than this feature justifies. The duplication is instead kept minimal and guarded:
 
-- **One condition, not nine.** The rule's query form lives on the entity as `coaching_relationships::visible_to(scope) -> Condition`, right beside `grants_access_to`, and search renders `visible_relationships` from it. Searchers never write their own scoping SQL; their per-entity part is only the FK path to a relationship id. Future corpus-wide consumers (the MCP tool, exports/reporting) reuse `visible_to` instead of minting a third copy, and the existing extractors can converge on it later — explicitly out of scope here.
+- **One condition, not nine.** The rule's query form lives on the entity as `coaching_relationships::visible_to(scope) -> Condition`, right beside `grants_access_to`, and search evaluates it in exactly one query per request to resolve the visible relationship id set. Searchers never write their own scoping SQL — never even touch `coaching_relationships`; their per-entity part is only the FK path to a relationship id, tested against the resolved ids. Future corpus-wide consumers (the MCP tool, exports/reporting) reuse `visible_to` instead of minting a third copy, and the existing extractors can converge on it later — explicitly out of scope here.
 - **Tier logic is not re-implemented in SQL.** `is_super_admin`, `admin_org_ids`, and `member_org_ids` are derived in Rust, once, from the same preloaded `roles` the extractors already use, and enter the SQL only as bind parameters. The condition expresses only the structural rule.
 - **Equivalence is pinned by a test.** A DB-backed test seeds the full access matrix — participant/non-participant × current member/removed member/org admin/super admin, across two orgs — and asserts, for every (user, relationship) pair, that `grants_access_to` agrees with membership in `visible_to`'s result set. An edit to either expression that isn't mirrored in the other fails CI rather than shipping a leak or a regression.
 
@@ -283,7 +284,7 @@ Only two searched types don't inherit the relationship rule, because they don't 
 |---|---|---|
 | `entity` | `coaching_relationships.rs` | `visible_to(scope) -> Condition` — the participant rule's query form, defined beside `grants_access_to`. `search_chunks` entity added in the semantic phase. |
 | `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait, the `Filters` and `Request` structs it takes (see [the sketch below](#the-searcher-trait-and-its-inputs)), and the per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`/`ts_headline`, per-searcher `limit + 1` fetch, keyset predicate |
-| `domain` | `search.rs` | `Scope` derivation from roles, compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), concurrent fan-out to searchers, merge + rank + clamp, cursor encode/decode, `display_title` hydration, `Results`/`Hit` types |
+| `domain` | `search.rs` | `Scope` derivation from roles, resolving the visible relationship id set once per request via `visible_to` (super admin: `None`), compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), concurrent fan-out to searchers, merge + rank + clamp, cursor encode/decode, `display_title` hydration, `Results`/`Hit` types |
 | `web` | `extractors/scope.rs` | `FromRequestParts` extractor wrapping `AuthenticatedUser` → compiled `Scope`, per the access-extractor pattern (`extractors/*_access.rs`) |
 | `web` | `params/search.rs` | `IndexParams`, comma-split `types` parsing, clamps, utoipa `IntoParams`; compiles into `domain::search::Filters` |
 | `web` | `controller/search_controller.rs` | `GET /search` handler, `ApiResponse` envelope, utoipa path |
@@ -313,6 +314,7 @@ pub struct Filters {
 pub struct Request<'a> {
     pub q: &'a str,              // trimmed, clamped
     pub scope: &'a Scope,
+    pub visible_relationship_ids: Option<&'a [Id]>, // resolved once per request; None = super admin, no filter
     pub filters: &'a Filters,    // each searcher reads only its relevant fields
     pub cursor: Option<&'a Cursor>,
     pub fetch: u64,              // limit + 1
@@ -376,7 +378,7 @@ Segment-level matching, session-level grouping:
 
 Both are committed phases, not options.
 
-- **Storage**: `CREATE EXTENSION vector` (pgvector; available on DigitalOcean managed Postgres, created as `doadmin` in a manual pre-step — see the [Migrations](#migrations) note) + a `search_chunks` projection table: `(id, entity_type, entity_id, coaching_relationship_id?, coaching_session_id?, organization_id, chunk_index, text, embedding vector(1536), embedding_model, tsv tsvector generated, created_at, updated_at)` with an HNSW index (`USING hnsw (embedding vector_cosine_ops)`). `coaching_relationship_id` is what makes the visibility scope join *uniform*: every chunk scopes through the single `visible_relationships` CTE join, with no per-type join-back to source tables — goals are the forcing case (they hang off a relationship with no session, so `coaching_session_id` alone cannot scope them). Denormalizing it is safe: an entity's relationship anchor is immutable, and chunk removal is transactional with the source row (see [Ingestion and lifecycle](#semantic-and-hybrid-phases)). It is nullable only for content types that have no relationship anchor, should any ever be chunked. `vector(1536)` is the *current* model's dimensionality, not a schema-level commitment to one provider — the typmod is fixed per column because HNSW requires it, and the versioning bullet below covers what happens when the model changes.
+- **Storage**: `CREATE EXTENSION vector` (pgvector; available on DigitalOcean managed Postgres, created as `doadmin` in a manual pre-step — see the [Migrations](#migrations) note) + a `search_chunks` projection table: `(id, entity_type, entity_id, coaching_relationship_id?, coaching_session_id?, organization_id, chunk_index, text, embedding vector(1536), embedding_model, tsv tsvector generated, created_at, updated_at)` with an HNSW index (`USING hnsw (embedding vector_cosine_ops)`). `coaching_relationship_id` is what makes visibility scoping *uniform*: every chunk scopes through the same `coaching_relationship_id = ANY($visible_relationship_ids)` membership test (the id set resolved once per request — see [Authorization scoping](#authorization-scoping)), with no per-type join-back to source tables — goals are the forcing case (they hang off a relationship with no session, so `coaching_session_id` alone cannot scope them). Denormalizing it is safe: an entity's relationship anchor is immutable, and chunk removal is transactional with the source row (see [Ingestion and lifecycle](#semantic-and-hybrid-phases)). It is nullable only for content types that have no relationship anchor, should any ever be chunked. `vector(1536)` is the *current* model's dimensionality, not a schema-level commitment to one provider — the typmod is fixed per column because HNSW requires it, and the versioning bullet below covers what happens when the model changes.
 - **Coexistence with the phase-1 GIN indexes**: the two index families coexist — semantic joins keyword, it does not replace it. `mode=keyword` stays the always-available deterministic path (no embedding call, works when the provider is down), and `mode=hybrid` *requires* both retrievals by definition: FTS ranking plus vector similarity, merged with RRF. They also differ in freshness. The per-table GIN indexes update inside the writing transaction, so keyword results are exact and current; `search_chunks` is populated by an async ingestion job (embedding calls are slow external requests), so anything served from it can briefly lag a write. Two end states are possible, decided at hybrid-phase time with real ingestion-latency data:
   - **A — permanent coexistence** (likely default): GIN on source tables serves keyword, HNSW on `search_chunks` serves semantic, hybrid uses both. Cost: two index families, slight ranking non-uniformity between modes.
   - **B — consolidation**: keyword re-points at the generated `search_chunks.tsv` column and the per-table GIN indexes are dropped in a two-line cleanup migration. Buys a uniform corpus and ranking for both retrievals; costs keyword search its just-typed-now-searchable freshness. Cheap to do later precisely because phase 1 chose expression indexes over stored columns — there is no schema to unwind.
@@ -391,7 +393,7 @@ Both are committed phases, not options.
 - **Provider outage at query time**: `mode=semantic` and `mode=hybrid` embed the query itself per request, so a down provider is a request-time failure, not just an ingestion one. Both modes fail loud with a 502-style upstream error — never a silent substitution of keyword results labeled as another mode, which would mislead relevance expectations and hide the outage. This follows from the mode-vocabulary bullet below: `semantic` and `hybrid` are strategies the caller chose, and graceful degradation is precisely the delegation reserved for the future `auto` mode. `mode=keyword` remains the always-available path throughout.
 - **ANN recall under selective scopes**: an HNSW scan returns the approximate top-k nearest neighbors of the *whole* index, and Postgres applies the visibility WHERE clause to those candidates afterward. A regular user's scope is a tiny slice of a mature corpus (one or two relationships out of every org's data), so all k global neighbors can be rows they cannot see — the query returns zero hits even though visible matches exist. The keyword path is immune (GIN intersects the match set with the scope condition *before* ranking); the semantic path must mitigate explicitly, and the plan commits to a layered pair:
   - **Primary — iterative index scans** (pgvector ≥ 0.8, which becomes an explicit PR 6 prerequisite to verify against the managed-Postgres offering): `SET LOCAL hnsw.iterative_scan = relaxed_order`, bounded by `hnsw.max_scan_tuples`, so the index keeps walking until enough candidates survive the scope filter.
-  - **Fallback and small-scope optimization — scoped exact scan**: the domain derives `Scope` before querying, so when the visible chunk count is small (precisely the population the problem hits), run an exact `ORDER BY embedding <=> $q` over the pre-filtered visible set — fast at that size and perfect recall, no ANN involved. The count threshold is tuned at PR 6 time.
+  - **Fallback and small-scope optimization — scoped exact scan**: the domain resolves the visible relationship ids before querying (see [Authorization scoping](#authorization-scoping)), so the visible chunk count is one cheap indexed count away; when it is small (precisely the population the problem hits), run an exact `ORDER BY embedding <=> $q` over the pre-filtered visible set — fast at that size and perfect recall, no ANN involved. The count threshold is tuned at PR 6 time.
   - Raising `hnsw.ef_search` alone was considered and set aside as the relied-upon fix: it is a fixed bound, so it shifts the failure point rather than removing it.
 - **Pagination in semantic and hybrid modes is bounded-depth by design** — the keyword keyset predicate does not transfer, so these modes get their own mechanism rather than an implied reuse. A "resume after distance" predicate cannot ride the HNSW index, which only serves `ORDER BY embedding <=> $q LIMIT k`; resuming means walking deeper and skipping. Hybrid is worse: an RRF-fused score is a function of an item's rank *within the retrieved lists*, so fetching deeper lists on a later page would re-rank rows already returned — the keyset invariant (every row below the cursor stays below it) does not survive lists that deepen between pages. Both modes therefore retrieve a **fixed pool** per query (on the order of the top ~200 per retrieval arm; the exact depth is set at PR 6/7 time with data), fuse once over that frozen pool, and paginate within it. Freezing the depth is precisely what restores the invariant: fused scores cannot shift when the lists never deepen. `next_cursor` goes null at pool exhaustion — a documented bounded-depth contract for these modes, versus keyword's full-corpus walk. That asymmetry is a deliberate trade: deep paging of a relevance-ranked semantic result set has no real consumer (the MCP tool doesn't paginate at all), and every mainstream search engine bounds its deep-paging window for the same reason. The wire contract is untouched — the cursor is opaque, and its day-one mode/version discriminator lets semantic/hybrid cursors carry a pool-position payload instead of `{score, type, id}` without ambiguity. This is also the concrete reason `keyword_weight` (next bullet) must be constant across one cursor walk: it determines the frozen pool's fused ordering.
 - **`keyword_weight` — the hybrid preference knob**: hybrid fusion is weighted RRF, `fused = w·1/(k + rank_keyword) + (1−w)·1/(k + rank_semantic)` with `w = keyword_weight`. The default `0.5` reduces exactly to plain RRF, so the parameter is backward-compatible by construction; a keyword-leaning caller sends `0.7`, a semantic-leaning one `0.3`. It is one param and two multipliers in the domain merge loop — no change to searchers, storage, or the response shape. Extreme values just degenerate toward single-mode results at hybrid's latency, so the useful range is narrow in practice; PR 7's relevance fixtures pin the fused ordering at the default and at representative off-center weights before the knob is documented as tuned.

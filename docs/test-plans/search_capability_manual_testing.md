@@ -296,7 +296,7 @@ a hit on another relationship's note content is a leak like any other.
 
 | Symptom | Likely cause |
 |---|---|
-| Foreign sentinel returns hits | a searcher's scope join is missing or wrong — treat as a release blocker |
+| Foreign sentinel returns hits | the resolved visible-relationship id set is wrong, or a searcher isn't applying the `= ANY($visible_relationship_ids)` bind — treat as a release blocker |
 | 403 instead of silent drop | type gating implemented at the wrong layer (middleware/handler instead of searcher selection) |
 | Hits but empty/garbled snippets | `ts_headline` running over a different expression than the index/query |
 | Correct hits but sequential-scan slowness | query expression drifted from the index expression (see the shared-constants rule in the implementation plan) |
