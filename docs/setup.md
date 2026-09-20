@@ -158,12 +158,45 @@ OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 RECALL_AI_API_KEY=<recall-api-key>
 RECALL_AI_REGION=us-east-1
 RECALL_AI_WEBHOOK_SECRET=whsec_<signing-secret>
+
+# ==============================
+#   Collaborative notes (docs-collab-server)
+# ==============================
+TIPTAP_URL=http://localhost:1234
+TIPTAP_AUTH_KEY=<any shared secret; the launcher passes it to both servers>
+TIPTAP_JWT_SIGNING_KEY=<any shared secret; the launcher passes it to both servers>
 ```
 
-### 6. Development Flow
+### 6. Collaborative Notes Server (docs-collab-server)
+
+Coaching-session notes sync through the self-hosted `docs-collab-server`, not TipTap Cloud. The frontend has no Cloud fallback: if its collab URL is set but nothing is listening, the editor opens local-only with **no error**, and notes silently never sync. So the server has to be running whenever you work on notes.
+
+`scripts/run_backend.sh` builds and starts it alongside the app server, deriving everything from `.env`:
+
+- `JWT_SIGNING_KEY` and `MANAGEMENT_AUTH_KEY` come from `TIPTAP_JWT_SIGNING_KEY` and `TIPTAP_AUTH_KEY`, so they match the app by construction.
+- It uses its own local database, `refactor_collab`, built from the `POSTGRES_*` values and created on first run. This mirrors production and PR preview, and means notes survive `scripts/rebuild_db.sh`. Override with `COLLAB_DATABASE_URL` if you want it elsewhere.
+- It binds `127.0.0.1:1234` (override with `COLLAB_BIND_ADDR`).
+
+One-time `.env` change so the app talks to the local server instead of Cloud:
+
+```env
+TIPTAP_URL=http://localhost:1234
+```
+
+The script warns at startup if this is still pointing at Cloud. On the frontend side, `.env.local` needs `NEXT_PUBLIC_DOCS_COLLAB_URL="ws://localhost:1234"`.
+
+Sanity check once it's up:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:1234/health   # 200
+```
+
+If notes open but never sync or show presence, check that the collab server is running before anything else.
+
+### 7. Development Flow
 
 1. Generate and set `ENCRYPTION_KEY`.
-2. Start the backend: `cargo run`.
+2. Start the backend: `scripts/run_backend.sh` (app server plus collab server).
 3. Start an ngrok tunnel: `ngrok http 4000`.
 4. Register the ngrok URL as the Recall.ai webhook endpoint (see above).
 5. In the frontend, connect Google Meet via the settings page — this triggers the OAuth flow to `GOOGLE_REDIRECT_URI`.

@@ -63,7 +63,18 @@ Please note that the script assumes that the password for the new PostgreSQL use
 
 ## Starting the Backend
 
-To run the backend directly outside of a container:
+The quickest way to run the full local backend (the app server plus the
+collaborative-notes server, `docs-collab-server`) is the launcher script, which
+reads your `.env` and starts both:
+
+```bash
+scripts/run_backend.sh              # both binaries
+scripts/run_backend.sh --app-only   # app server only
+scripts/run_backend.sh --collab-only
+```
+
+See `docs/setup.md` for the collab server's one-time setup. To run the app
+server directly outside of a container:
 
 The first example will start the backend with log level DEBUG and attempt to connect to a Postgres DB server on the same machine with user `refactor` and password `password` on port `5432` and selecting the database named `refactor_platform`.
 
