@@ -261,12 +261,16 @@ Additional seeding on top of the prerequisites:
   `q=meeting delayed due to calendar clash`. Keyword overlap would let FTS
   mask a semantic miss, so verify first that `mode=keyword` with the probe
   phrase returns **zero** hits for it.
+- Make one of those R1 items a **long note** — several chunks' worth of
+  content, all on the probe topic — so chunk-to-entity collapse is
+  exercised by the same probe.
 
 | Check | Expected |
 |---|---|
 | Casey: probe phrase, `mode=semantic` | the seeded R1 items appear — a **false empty is the failure** this scenario exists to catch |
 | Casey: same query, `mode=hybrid` | the R1 items appear (the semantic arm contributes them) |
 | Sam: same query, `mode=semantic` | a superset of Casey's hits — confirms the content is findable at all, isolating recall from relevance |
+| The long multi-chunk note, `mode=semantic` and `mode=hybrid` | appears **exactly once** — the failure signature is the same note repeated with adjacent, near-identical snippets; in hybrid, duplicates also crowding out other entities on page 1 means collapse is running *after* fusion instead of before |
 | Scenario D probes re-run with `mode=semantic` and `mode=hybrid` | all still zero hits — the recall mitigation (iterative scans / exact-scan fallback) must widen the *candidate walk*, never the *visibility scope* |
 | Latency sanity | Casey's scoped semantic query completes in interactive time — if the exact-scan fallback engaged, it should be fast at tier-1 corpus sizes |
 
@@ -297,3 +301,4 @@ a hit on another relationship's note content is a leak like any other.
 | Correct hits but sequential-scan slowness | query expression drifted from the index expression (see the shared-constants rule in the implementation plan) |
 | Soft-deleted topic or archived org appears | searcher missing its `deleted_at`/`archived_at` predicate |
 | Semantic search empty for a tier-1 user but fine for a super admin | HNSW post-filter recall — check `hnsw.iterative_scan` is enabled and the scoped exact-scan threshold (see the ANN recall bullet in the implementation plan) |
+| Same note or session appears several times in semantic/hybrid results | chunk-to-entity collapse missing, or running after fusion instead of within each retrieval arm (see the collapse bullet in the implementation plan) |
