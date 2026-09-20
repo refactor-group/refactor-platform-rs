@@ -148,7 +148,9 @@ pub struct Core {
     pub title: String,
     /// Plain-text excerpt via ts_headline; matched terms wrapped in
     /// <mark>…</mark> markers. Not HTML — the FE splits on the markers and
-    /// renders text nodes (no dangerouslySetInnerHTML).
+    /// renders text nodes (no dangerouslySetInnerHTML). Hydrated post-merge
+    /// for the returned page only, never computed by the searchers — see
+    /// the two-pass note under the Searcher trait.
     pub snippet: Option<String>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: Option<DateTimeWithTimeZone>,
@@ -283,8 +285,8 @@ Only two searched types don't inherit the relationship rule, because they don't 
 | Layer | Module | Responsibility |
 |---|---|---|
 | `entity` | `coaching_relationships.rs` | `visible_to(scope) -> Condition` — the participant rule's query form, defined beside `grants_access_to`. `search_chunks` entity added in the semantic phase. |
-| `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait, the `Filters` and `Request` structs it takes (see [the sketch below](#the-searcher-trait-and-its-inputs)), and the per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`/`ts_headline`, per-searcher `limit + 1` fetch, keyset predicate |
-| `domain` | `search.rs` | `Scope` derivation from roles, resolving the visible relationship id set once per request via `visible_to` (super admin: `None`), compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), concurrent fan-out to searchers, merge + rank + clamp, cursor encode/decode, `display_title` hydration, `Results`/`Hit` types |
+| `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait, the `Filters` and `Request` structs it takes (see [the sketch below](#the-searcher-trait-and-its-inputs)), and the per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`, per-searcher `limit + 1` fetch, keyset predicate — **no `ts_headline` in the searcher pass**; a batched per-type snippet-hydration function beside the searchers computes headlines for merge winners only |
+| `domain` | `search.rs` | `Scope` derivation from roles, resolving the visible relationship id set once per request via `visible_to` (super admin: `None`), compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), concurrent fan-out to searchers, merge + rank + clamp, cursor encode/decode, post-merge hydration of `display_title` and snippets for exactly the returned page, `Results`/`Hit` types |
 | `web` | `extractors/scope.rs` | `FromRequestParts` extractor wrapping `AuthenticatedUser` → compiled `Scope`, per the access-extractor pattern (`extractors/*_access.rs`) |
 | `web` | `params/search.rs` | `IndexParams`, comma-split `types` parsing, clamps, utoipa `IntoParams`; compiles into `domain::search::Filters` |
 | `web` | `controller/search_controller.rs` | `GET /search` handler, `ApiResponse` envelope, utoipa path |
@@ -329,6 +331,8 @@ pub trait Searcher {
 
 Nine unit structs implement the trait; the domain fans out over the full set and the `types` filter skips implementations before dispatch. Layering note: the trait consumes `Filters`, so the struct is **declared in `entity_api::search` and re-exported up through `domain`'s `lib.rs`** — `entity_api` cannot import `domain` types, and web still imports it as `domain::search::Filters`, so references to that path elsewhere in this plan describe the web-visible import, not the declaration site. `Scope` follows the same pattern, since `entity`'s `visible_to(scope)` already consumes it below `entity_api`.
 
+**Snippets are two-pass.** `ts_headline` re-parses the raw document text per row, cannot use the GIN index, and its cost scales with document length — worst exactly where matches concentrate (notes projection, transcript text). If searchers computed it, 7 FTS searchers at limit 25 would pay ~180 headline computations to display 25 hits. So the searcher pass returns hits with `snippet: None` (ids, ranks, and per-type fields that are cheap column reads), and after the merge picks the page, the domain hydrates snippets for exactly the returned hits — one batched `ts_headline` query per entity type present in the page, each over at most a page's worth of ids, alongside the existing `display_title` hydration step. Users and organizations are untouched by this: their `ILIKE` searchers snippet from name/email fields directly. The rule carries forward: in hybrid, snippets are computed per returned page, never for the ~200-per-arm retrieval pool; in semantic mode the winning chunk's stored text is the snippet source, hydrated in the same post-merge step.
+
 ## Migrations
 
 Phase 1 — `migration/src/m20260825_000000_add_search_fts_indexes.rs`, via `execute_unprepared`:
@@ -370,7 +374,7 @@ The live collaborative note document is **not in Postgres** — it lives in Tipt
 
 Segment-level matching, session-level grouping:
 
-- Match `transcript_segments.text`; return grouped hits — the top 3 matching segments per transcription via `ROW_NUMBER() OVER (PARTITION BY transcription_id ORDER BY rank DESC)`, each with its `ts_headline` snippet and `start_ms` deep link.
+- Match `transcript_segments.text`; return grouped hits — the top 3 matching segments per transcription via `ROW_NUMBER() OVER (PARTITION BY transcription_id ORDER BY rank DESC)`, each with its `start_ms` deep link; `ts_headline` snippets are computed in the post-merge hydration pass, only for segments whose transcription survives the merge.
 - Group rank = max segment rank (not sum, which would favor long rambly sessions).
 - Ships as its own PR: `transcript_segments` is the only genuinely large table (hundreds to thousands of rows per session), so its index build and query tuning deserve isolation.
 
