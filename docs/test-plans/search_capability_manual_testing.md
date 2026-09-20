@@ -272,6 +272,7 @@ Additional seeding on top of the prerequisites:
 | Sam: same query, `mode=semantic` | a superset of Casey's hits — confirms the content is findable at all, isolating recall from relevance |
 | The long multi-chunk note, `mode=semantic` and `mode=hybrid` | appears **exactly once** — the failure signature is the same note repeated with adjacent, near-identical snippets; in hybrid, duplicates also crowding out other entities on page 1 means collapse is running *after* fusion instead of before |
 | Scenario D probes re-run with `mode=semantic` and `mode=hybrid` | all still zero hits — the recall mitigation (iterative scans / exact-scan fallback) must widen the *candidate walk*, never the *visibility scope* |
+| Delete (or soft-delete) one of the seeded R1 items, re-run the probe in `mode=semantic` | the item is gone **immediately** — chunk removal is transactional with the source delete, so there is no async lag window; a hit here means its chunks linger in `search_chunks` (Scenario E's leak framing, extended to the projection) |
 | Latency sanity | Casey's scoped semantic query completes in interactive time — if the exact-scan fallback engaged, it should be fast at tier-1 corpus sizes |
 
 ## 14. Notes caveat (until PR 5)
