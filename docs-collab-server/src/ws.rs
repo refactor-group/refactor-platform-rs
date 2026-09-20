@@ -38,6 +38,13 @@ use crate::storage::{PostgresStorage, Storage, StorageError};
 pub const PREAUTH_QUEUE_MAX_FRAMES: usize = 64;
 /// Total encoded bytes those held frames may occupy per document.
 pub const PREAUTH_QUEUE_MAX_BYTES: usize = 256 * 1024;
+/// Distinct documents one connection may have awaiting a token at once. The
+/// provider multiplexes a small fixed set, so this only bites an abuser.
+pub const PREAUTH_QUEUE_MAX_DOCS: usize = 8;
+/// Largest single WebSocket message accepted. Real frames are a few KiB; a
+/// full-state `SyncStep2` for a large document is well under this. Replaces
+/// axum's 64 MiB default on an endpoint reachable before authentication.
+pub const MAX_WS_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Shared, clone-cheap server state. Cloned by axum on every request via the
 /// `State<AppState>` extractor; all heavyweight fields are `Arc`-shared.
@@ -195,7 +202,8 @@ async fn health_handler() -> StatusCode {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| run_connection(socket, state))
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| run_connection(socket, state))
 }
 
 /// Per-document authentication state on one connection. A document becomes
@@ -241,6 +249,15 @@ struct Connection {
     auth: HashMap<String, DocAuth>,
     joined: HashMap<String, (Arc<Document>, ConnectionId)>,
     peers: StreamMap<String, BroadcastStream<Vec<u8>>>,
+}
+
+impl Connection {
+    fn pending_doc_count(&self) -> usize {
+        self.auth
+            .values()
+            .filter(|a| matches!(a, DocAuth::Pending(_)))
+            .count()
+    }
 }
 
 /// Per-connection actor. Owns the WS sink + stream and the per-doc broadcast
@@ -341,10 +358,13 @@ async fn dispatch_frame(
                     }
                 }
                 Err(e) => {
-                    // Discard anything held under the failed attempt. Reply
+                    // Discard anything held under the failed attempt, but never
+                    // demote a document this socket already authenticated. Reply
                     // without closing so the client sees the rejection before
                     // its own close handshake fires.
-                    conn.auth.remove(&name);
+                    if matches!(conn.auth.get(&name), Some(DocAuth::Pending(_))) {
+                        conn.auth.remove(&name);
+                    }
                     let _ = send_frame(sink, &name, Body::PermissionDenied(e.to_string())).await;
                 }
             }
@@ -356,6 +376,14 @@ async fn dispatch_frame(
         | Body::AwarenessQuery) => {
             if matches!(conn.auth.get(&name), Some(DocAuth::Authed)) {
                 return handle_sync_frame(state, sink, conn, &name, body).await;
+            }
+            // Bound the number of names one un-authed socket can register, so
+            // the per-document caps cannot be multiplied by inventing names.
+            let is_new = !conn.auth.contains_key(&name);
+            if is_new && conn.pending_doc_count() >= PREAUTH_QUEUE_MAX_DOCS {
+                let reason = format!("document {name} requires authentication");
+                let _ = send_frame(sink, &name, Body::PermissionDenied(reason)).await;
+                return Ok(());
             }
             let entry = conn
                 .auth

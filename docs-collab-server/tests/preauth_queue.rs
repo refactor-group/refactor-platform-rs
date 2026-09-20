@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use docs_collab_server::ws::{PREAUTH_QUEUE_MAX_BYTES, PREAUTH_QUEUE_MAX_FRAMES};
+use docs_collab_server::ws::{
+    PREAUTH_QUEUE_MAX_BYTES, PREAUTH_QUEUE_MAX_DOCS, PREAUTH_QUEUE_MAX_FRAMES,
+};
 use docs_collab_server::{
     build_router, AppState, Body, DocumentRegistry, Frame, JwtAuthenticator, MemoryStorage, Storage,
 };
@@ -399,5 +401,91 @@ async fn auth_first_still_works_unchanged() {
     assert!(
         frames.iter().any(is_step2_for(DOC_A)),
         "post-auth SyncStep1 must be answered with SyncStep2; got {frames:?}"
+    );
+}
+
+/// The per-document caps alone would let one socket hold state for an
+/// unbounded number of distinct names. Past the per-connection document cap
+/// the server must refuse without recording the name at all.
+#[tokio::test]
+async fn pending_documents_per_connection_are_capped() {
+    let server = start_server().await;
+    let mut ws = connect(&server).await;
+
+    let names: Vec<String> = (0..=PREAUTH_QUEUE_MAX_DOCS)
+        .map(|i| format!("org.rel.{i:08}-0000-0000-0000-000000000000-v0"))
+        .collect();
+    let (within, past) = names.split_at(PREAUTH_QUEUE_MAX_DOCS);
+
+    for name in within {
+        send(&mut ws, name, step1()).await;
+    }
+    assert_eq!(
+        recv(&mut ws, QUIET).await,
+        None,
+        "up to the cap, distinct documents must each be queued silently"
+    );
+
+    let extra = &past[0];
+    send(&mut ws, extra, step1()).await;
+    let reply = recv(&mut ws, REPLY)
+        .await
+        .expect("frame past the document cap must be answered");
+    assert!(
+        reply.name == *extra && is_denied(&reply),
+        "the document past the cap must be refused with PermissionDenied, got {reply:?}"
+    );
+
+    // The refused name must not have been recorded: authenticating it yields
+    // no replay, while a name within the cap still replays its queued frame.
+    send(&mut ws, extra, Body::AuthToken(mint(SECRET))).await;
+    let frames = recv_until(&mut ws, QUIET, is_step2_for(extra)).await;
+    assert!(
+        matches!(
+            frames.first().map(|f| &f.body),
+            Some(Body::Authenticated(_))
+        ),
+        "the refused document must still be able to authenticate; got {frames:?}"
+    );
+    assert!(
+        !frames.iter().any(is_step2_for(extra)),
+        "a frame refused at the document cap must not have been queued: {frames:?}"
+    );
+
+    let kept = &within[0];
+    send(&mut ws, kept, Body::AuthToken(mint(SECRET))).await;
+    let frames = recv_until(&mut ws, REPLY, is_step2_for(kept)).await;
+    assert!(
+        frames.iter().any(is_step2_for(kept)),
+        "documents within the cap keep their queued frames; got {frames:?}"
+    );
+}
+
+/// A rejected token must not demote a document that already authenticated on
+/// this socket: its later frames are applied, not queued.
+#[tokio::test]
+async fn rejected_token_does_not_revoke_an_authenticated_document() {
+    let server = start_server().await;
+    let mut ws = connect(&server).await;
+
+    authenticate(&mut ws, DOC_A).await;
+    send(&mut ws, DOC_A, step1()).await;
+    let _ = recv_until(&mut ws, QUIET, |_| false).await;
+
+    send(&mut ws, DOC_A, Body::AuthToken(mint("wrong-secret"))).await;
+    let reply = recv(&mut ws, REPLY)
+        .await
+        .expect("bad token must be answered");
+    assert!(
+        is_denied(&reply),
+        "expected PermissionDenied, got {:?}",
+        reply.body
+    );
+
+    send(&mut ws, DOC_A, step1()).await;
+    let frames = recv_until(&mut ws, REPLY, is_step2_for(DOC_A)).await;
+    assert!(
+        frames.iter().any(is_step2_for(DOC_A)),
+        "an already-authenticated document must keep applying frames after an unrelated bad token; got {frames:?}"
     );
 }
