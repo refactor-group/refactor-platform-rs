@@ -175,7 +175,8 @@ Coaching-session notes sync through the self-hosted `docs-collab-server`, not Ti
 
 - `JWT_SIGNING_KEY` and `MANAGEMENT_AUTH_KEY` come from `TIPTAP_JWT_SIGNING_KEY` and `TIPTAP_AUTH_KEY`, so they match the app by construction.
 - It uses its own local database, `refactor_collab`, built from the `POSTGRES_*` values and created on first run. This mirrors production and PR preview, and means notes survive `scripts/rebuild_db.sh`. Override with `COLLAB_DATABASE_URL` if you want it elsewhere.
-- It binds `127.0.0.1:1234` (override with `COLLAB_BIND_ADDR`).
+- It binds `127.0.0.1:1234` (override with `COLLAB_BIND_ADDR`). If you change the bind address or port, the app-facing URL follows it (`http://localhost:<port>`, or set `COLLAB_URL` explicitly), and the frontend's `NEXT_PUBLIC_DOCS_COLLAB_URL` must be changed to match by hand; nothing validates that side.
+- It exits with the status of the first binary that dies, so a startup failure such as a port already in use is reported as a failure, not a clean exit.
 
 One-time `.env` change so the app talks to the local server instead of Cloud:
 

@@ -53,6 +53,9 @@ jobs:
       - name: Run dispatch-workflow regex tests (bats)
         run: bats .github/workflows/tests/dispatch-pr-preview.bats
 
+      - name: Run local backend launcher tests (bats)
+        run: bats scripts/tests/run_backend.bats
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
