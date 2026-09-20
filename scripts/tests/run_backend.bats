@@ -189,6 +189,15 @@ teardown() {
     grep -q 'env: BIND_ADDR=0.0.0.0:4321$' "$CALLS"
 }
 
+# --- unit: signal handling ----------------------------------------------------
+
+@test "on_signal exits 128 plus the signal number even before any child was started" {
+    run bash -c "source '$SCRIPT'; on_signal TERM"
+    [ "$status" -eq 143 ]
+    run bash -c "source '$SCRIPT'; on_signal INT"
+    [ "$status" -eq 130 ]
+}
+
 # --- launch: supervision ------------------------------------------------------
 
 @test "a binary that exits non-zero fails the launcher with that status" {
@@ -201,6 +210,20 @@ teardown() {
     [ "$status" -eq 7 ]
     sleep 1
     ! pgrep -f "$ROOT/target/debug/docs-collab-server" >/dev/null
+}
+
+@test "SIGTERM stops both binaries and exits 143, not a wait error" {
+    "$LAUNCHER" > "$ROOT/launch.out" 2>&1 &
+    launcher=$!
+    for _ in $(seq 1 50); do
+        grep -q 'refactor_platform_rs started' "$ROOT/launch.out" 2>/dev/null && break
+        sleep 0.2
+    done
+    kill -TERM "$launcher"
+    wait "$launcher" && status=0 || status=$?
+    [ "$status" -eq 143 ]
+    sleep 1
+    ! pgrep -f "$ROOT/target/debug/" >/dev/null
 }
 
 @test "unknown flags are rejected with usage" {

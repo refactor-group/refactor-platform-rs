@@ -103,26 +103,45 @@ ensure_collab_db() {
 }
 
 pids=()
+readers=()
+fifo_dir=""
 
-# Run a command in the background with each output line tagged. Works on the
-# bash 3.2 that macOS ships, which lacks `wait -n`. With pipefail inherited,
-# the wrapper's status is the binary's, not the log loop's.
+# Run a binary in the background with each output line tagged. The binary is
+# `exec`ed so the tracked PID is the binary itself (a direct child, with its
+# own argv), fed through a FIFO to a reader subshell that prefixes lines.
+# Works on the bash 3.2 that macOS ships, which lacks `wait -n`.
 prefixed() {
     local tag="$1"; shift
-    ( "$@" 2>&1 | while IFS= read -r line; do printf '[%s] %s\n' "$tag" "$line"; done ) &
+    [[ -n "$fifo_dir" ]] || fifo_dir="$(mktemp -d)"
+    local fifo="$fifo_dir/$tag"
+    mkfifo "$fifo"
+    ( while IFS= read -r line; do printf '[%s] %s\n' "$tag" "$line"; done < "$fifo" ) &
+    readers+=($!)
+    ( exec "$@" > "$fifo" 2>&1 ) &
     pids+=($!)
 }
 
-# Stop the tracked children (each is a subshell whose direct children are the
-# binary and its log-prefix loop). Targets PIDs rather than the process group
-# so a caller that shares the group (make, another script, CI) is never
-# signalled.
+# Stop the tracked binaries by PID (never the process group, so a caller that
+# shares it is not signalled), then reap them and their log readers.
 stop_children() {
     local pid
     for pid in "${pids[@]:-}"; do
-        [[ -n "$pid" ]] && pkill -TERM -P "$pid" 2>/dev/null || true
+        [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
     done
     wait 2>/dev/null || true
+    if [[ -n "$fifo_dir" ]]; then
+        rm -rf "$fifo_dir"
+    fi
+}
+
+# On Ctrl-C or an external TERM, stop the children and exit with the
+# conventional 128 + signal status (130 / 143) so callers can tell intentional
+# termination from a launcher error.
+on_signal() {
+    local signal="$1"
+    trap - INT TERM EXIT
+    stop_children
+    exit $(( 128 + $(kill -l "$signal") ))
 }
 
 # Block until the first child exits and return its status, so a binary that
@@ -198,7 +217,9 @@ main() {
     echo "==> cargo build ${packages[*]}"
     cargo build "${packages[@]}"
 
-    trap 'trap - INT TERM EXIT; stop_children' INT TERM EXIT
+    trap 'on_signal INT' INT
+    trap 'on_signal TERM' TERM
+    trap 'trap - INT TERM EXIT; stop_children' EXIT
 
     if $run_collab; then
         local database_url="${COLLAB_DATABASE_URL:-}"
