@@ -39,37 +39,22 @@ Leave `TIPTAP_AUTH_KEY`, `TIPTAP_JWT_SIGNING_KEY`, `TIPTAP_APP_ID` as-is. (If th
 are duplicate `TIPTAP_URL` lines in `.env`, the last one wins — make sure the final
 one is the local URL.)
 
-## Start the three services (three terminals)
+## Start the services (two terminals)
 
-### Terminal 1 — docs-collab-server (port 1234)
-Reads only process env (no `.env`), so pass values inline. This pulls the two shared
-secrets straight from the app `.env` so they match by construction:
+### Terminal 1: both backend binaries
 ```bash
 cd ~/Projects/refactor-coaching/refactor-platform-rs
-set -a; source .env; set +a            # load app .env into this shell
-JWT_SIGNING_KEY="$TIPTAP_JWT_SIGNING_KEY" \
-MANAGEMENT_AUTH_KEY="$TIPTAP_AUTH_KEY" \
-DATABASE_URL="$DATABASE_URL" \
-DATABASE_SCHEMA=refactor_platform \
-BIND_ADDR=127.0.0.1:1234 \
-RUST_LOG=info,docs_collab_server=debug \
-cargo run -p docs-collab-server
+scripts/run_backend.sh
 ```
-Expect: `docs-collab-server listening addr=127.0.0.1:1234`. (Schema/table bootstrap
-logs are normal, including "already exists, skipping".)
+This builds and starts `docs-collab-server` (port 1234, own `refactor_collab`
+database, secrets taken from the app `.env` so they match by construction) and the
+app backend (port 4000), with each log line prefixed `[collab]` or `[app]`. Expect
+`docs-collab-server listening addr=127.0.0.1:1234` and the app's
+`listening for connections on http://127.0.0.1:4000`. Schema/table bootstrap logs
+are normal, including "already exists, skipping". The script warns if `TIPTAP_URL`
+still points at Cloud. Ctrl-C stops both.
 
-### Terminal 2 — app backend (port 4000)
-```bash
-cd ~/Projects/refactor-coaching/refactor-platform-rs
-RUST_LOG=info cargo run
-```
-(`docs-collab-server` is excluded from `default-members`, so plain `cargo run` builds
-and runs the app backend, not the collab server.) Expect it to bind on
-`BACKEND_PORT=4000` and connect to the DB. It loads `.env` via dotenvy
-(`service/src/lib.rs`), so the `TIPTAP_URL=http://localhost:1234` change is picked up
-on restart.
-
-### Terminal 3 — frontend (port 3000)
+### Terminal 2: frontend (port 3000)
 ```bash
 cd ~/Projects/refactor-coaching/refactor-platform-fe
 npm run dev
