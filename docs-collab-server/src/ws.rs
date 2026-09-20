@@ -33,6 +33,11 @@ use crate::registry::DocumentRegistry;
 use crate::rest;
 use crate::storage::{PostgresStorage, Storage, StorageError};
 
+/// Frames one connection may hold for a document that has not authenticated yet.
+pub const PREAUTH_QUEUE_MAX_FRAMES: usize = 64;
+/// Total encoded bytes those held frames may occupy per document.
+pub const PREAUTH_QUEUE_MAX_BYTES: usize = 256 * 1024;
+
 /// Shared, clone-cheap server state. Cloned by axum on every request via the
 /// `State<AppState>` extractor; all heavyweight fields are `Arc`-shared.
 #[derive(Clone)]
