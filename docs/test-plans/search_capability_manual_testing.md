@@ -274,6 +274,9 @@ Additional seeding on top of the prerequisites:
 | Scenario D probes re-run with `mode=semantic` and `mode=hybrid` | all still zero hits — the recall mitigation (iterative scans / exact-scan fallback) must widen the *candidate walk*, never the *visibility scope* |
 | Delete (or soft-delete) one of the seeded R1 items, re-run the probe in `mode=semantic` | the item is gone **immediately** — chunk removal is transactional with the source delete, so there is no async lag window; a hit here means its chunks linger in `search_chunks` (Scenario E's leak framing, extended to the projection) |
 | Latency sanity | Casey's scoped semantic query completes in interactive time — if the exact-scan fallback engaged, it should be fast at tier-1 corpus sizes |
+| Same semantic query twice, back-to-back | the second call is noticeably faster (query-embedding cache hit); roughly equal latency means the cache isn't wired |
+| Same query, `mode=hybrid` vs `mode=semantic` | latencies roughly equal — the embed call dominates both; hybrid landing near semantic-plus-keyword *summed* suggests the arms run sequentially instead of in parallel |
+| Simulated provider outage (if feasible): a query embedded moments earlier, then a novel query | the recent query may still succeed from the embedding cache — that is legitimate, not a fail-loud violation; the **novel** query must return the 502-style upstream error, never keyword results labeled as semantic |
 
 ## 14. Notes caveat (until PR 5)
 
@@ -303,3 +306,5 @@ a hit on another relationship's note content is a leak like any other.
 | Soft-deleted topic or archived org appears | searcher missing its `deleted_at`/`archived_at` predicate |
 | Semantic search empty for a tier-1 user but fine for a super admin | HNSW post-filter recall — check `hnsw.iterative_scan` is enabled and the scoped exact-scan threshold (see the ANN recall bullet in the implementation plan) |
 | Same note or session appears several times in semantic/hybrid results | chunk-to-entity collapse missing, or running after fusion instead of within each retrieval arm (see the collapse bullet in the implementation plan) |
+| Repeated queries return garbage relevance right after an embedding-model swap, novel queries are fine | embedding cache key is missing `embedding_model` — cached old-model vectors are being compared against the new-model index |
+| Hybrid latency ≈ semantic + keyword latencies summed | the hybrid arms run sequentially — the keyword retrieval should fire in parallel with the embedding call (see the latency-budget bullet in the implementation plan) |
