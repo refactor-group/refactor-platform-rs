@@ -461,10 +461,12 @@ async fn pending_documents_per_connection_are_capped() {
     );
 }
 
-/// A rejected token must not demote a document that already authenticated on
-/// this socket: its later frames are applied, not queued.
+/// A duplicate token for a document that already authenticated on this socket
+/// is ignored, valid or not: no reply, no re-validation, and the document keeps
+/// applying frames. Any `PermissionDenied` here would make the client treat the
+/// session as terminally unauthorized (the reference server logs and ignores).
 #[tokio::test]
-async fn rejected_token_does_not_revoke_an_authenticated_document() {
+async fn duplicate_token_for_an_authenticated_document_is_ignored() {
     let server = start_server().await;
     let mut ws = connect(&server).await;
 
@@ -473,19 +475,24 @@ async fn rejected_token_does_not_revoke_an_authenticated_document() {
     let _ = recv_until(&mut ws, QUIET, |_| false).await;
 
     send(&mut ws, DOC_A, Body::AuthToken(mint("wrong-secret"))).await;
-    let reply = recv(&mut ws, REPLY)
-        .await
-        .expect("bad token must be answered");
-    assert!(
-        is_denied(&reply),
-        "expected PermissionDenied, got {:?}",
-        reply.body
+    assert_eq!(
+        recv(&mut ws, QUIET).await,
+        None,
+        "a bad token for an already-authenticated document must be ignored, not answered"
+    );
+
+    send(&mut ws, DOC_A, Body::AuthToken(mint(SECRET))).await;
+    assert_eq!(
+        recv(&mut ws, QUIET).await,
+        None,
+        "a redundant valid token must not produce a second Authenticated"
     );
 
     send(&mut ws, DOC_A, step1()).await;
     let frames = recv_until(&mut ws, REPLY, is_step2_for(DOC_A)).await;
+    assert_none_denied(&frames);
     assert!(
         frames.iter().any(is_step2_for(DOC_A)),
-        "an already-authenticated document must keep applying frames after an unrelated bad token; got {frames:?}"
+        "the document must keep applying frames after duplicate tokens; got {frames:?}"
     );
 }

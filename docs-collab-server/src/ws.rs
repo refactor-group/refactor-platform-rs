@@ -41,10 +41,6 @@ pub const PREAUTH_QUEUE_MAX_BYTES: usize = 256 * 1024;
 /// Distinct documents one connection may have awaiting a token at once. The
 /// provider multiplexes a small fixed set, so this only bites an abuser.
 pub const PREAUTH_QUEUE_MAX_DOCS: usize = 8;
-/// Largest single WebSocket message accepted. Real frames are a few KiB; a
-/// full-state `SyncStep2` for a large document is well under this. Replaces
-/// axum's 64 MiB default on an endpoint reachable before authentication.
-pub const MAX_WS_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Shared, clone-cheap server state. Cloned by axum on every request via the
 /// `State<AppState>` extractor; all heavyweight fields are `Arc`-shared.
@@ -202,8 +198,7 @@ async fn health_handler() -> StatusCode {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
-        .on_upgrade(move |socket| run_connection(socket, state))
+    ws.on_upgrade(move |socket| run_connection(socket, state))
 }
 
 /// Per-document authentication state on one connection. A document becomes
@@ -345,6 +340,13 @@ async fn dispatch_frame(
     let Frame { name, body } = frame;
     match body {
         Body::AuthToken(token) => {
+            // Already authenticated: ignore, as the reference server does. Any
+            // reply here, especially PermissionDenied, would make the client
+            // treat a live session as terminally unauthorized.
+            if matches!(conn.auth.get(&name), Some(DocAuth::Authed)) {
+                debug!(name = %name, "ignoring auth token for an already-authenticated document");
+                return Ok(());
+            }
             match state.authenticator.authenticate(&token, &name).await {
                 Ok(_scope) => {
                     // Frames held while the token was in flight replay in arrival order.
@@ -358,13 +360,10 @@ async fn dispatch_frame(
                     }
                 }
                 Err(e) => {
-                    // Discard anything held under the failed attempt, but never
-                    // demote a document this socket already authenticated. Reply
+                    // Discard anything held under the failed attempt. Reply
                     // without closing so the client sees the rejection before
                     // its own close handshake fires.
-                    if matches!(conn.auth.get(&name), Some(DocAuth::Pending(_))) {
-                        conn.auth.remove(&name);
-                    }
+                    conn.auth.remove(&name);
                     let _ = send_frame(sink, &name, Body::PermissionDenied(e.to_string())).await;
                 }
             }
