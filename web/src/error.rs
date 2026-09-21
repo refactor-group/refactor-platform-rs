@@ -10,6 +10,7 @@ use axum::Json;
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
 };
+use domain::transcript_export::SpeakerRole;
 
 use log::*;
 
@@ -34,6 +35,9 @@ pub enum WebErrorKind {
     /// timezone identifier. Payload carries the offending value for
     /// debuggability.
     InvalidTimezone(String),
+    /// Caller supplied a `speaker` query value outside the `coach` | `coachee` enum.
+    /// Payload carries the raw query string for debuggability.
+    InvalidSpeaker(String),
     Conflict,
     /// Caller is authenticated but not permitted to act on this resource.
     Forbidden,
@@ -264,6 +268,50 @@ impl Error {
                 });
                 (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
             }
+            EntityErrorKind::TranscriptionNotFound => {
+                warn!(
+                    "EntityErrorKind::TranscriptionNotFound: Responding with 404 Not Found. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 404,
+                    "error": "transcription_not_found",
+                    "message": "No transcription with that id belongs to this coaching session.",
+                });
+                (StatusCode::NOT_FOUND, Json(body)).into_response()
+            }
+            EntityErrorKind::TranscriptionNotCompleted => {
+                warn!(
+                    "EntityErrorKind::TranscriptionNotCompleted: Responding with 409 Conflict. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "transcription_not_completed",
+                    "message": "The transcript is not available for download until transcription has completed.",
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::SpeakerNotIdentified { role, labels } => {
+                warn!(
+                    "EntityErrorKind::SpeakerNotIdentified: Responding with 422 Unprocessable Entity. Error: {self:?}"
+                );
+                let role = match role {
+                    SpeakerRole::Coach => "coach",
+                    SpeakerRole::Coachee => "coachee",
+                };
+                let labels = if labels.is_empty() {
+                    "(no speakers)".to_string()
+                } else {
+                    labels.join(", ")
+                };
+                let body = serde_json::json!({
+                    "status_code": 422,
+                    "error": "speaker_not_identified",
+                    "message": format!(
+                        "Could not identify the {role} among the transcript speakers: {labels}."
+                    ),
+                });
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
+            }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
                     "EntityErrorKind::ServiceUnavailable: Responding with 503 Service Unavailable. Error: {self:?}"
@@ -338,6 +386,17 @@ impl Error {
                     "status_code": 400,
                     "error": "invalid_timezone",
                     "message": format!("'{value}' is not a recognized IANA timezone identifier."),
+                });
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
+            WebErrorKind::InvalidSpeaker(value) => {
+                warn!(
+                    "WebErrorKind::InvalidSpeaker: Responding with 400 Bad Request. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 400,
+                    "error": "invalid_speaker",
+                    "message": format!("'{value}' is not a valid speaker. Expected one of: coach, coachee."),
                 });
                 (StatusCode::BAD_REQUEST, Json(body)).into_response()
             }
@@ -548,6 +607,85 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
         assert_eq!(body["status_code"], 409);
         assert_eq!(body["error"], "organization_archived");
+    }
+
+    #[tokio::test]
+    async fn transcription_not_found_produces_structured_404() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::TranscriptionNotFound,
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 404);
+        assert_eq!(body["error"], "transcription_not_found");
+        assert!(!body["message"]
+            .as_str()
+            .expect("message is a string")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn transcription_not_completed_produces_structured_409() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::TranscriptionNotCompleted,
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "transcription_not_completed");
+        assert!(!body["message"]
+            .as_str()
+            .expect("message is a string")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn speaker_not_identified_produces_structured_422_naming_role_and_labels() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::SpeakerNotIdentified {
+                    role: SpeakerRole::Coachee,
+                    labels: vec!["Jim H".to_string(), "Guest".to_string()],
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 422);
+        assert_eq!(body["error"], "speaker_not_identified");
+        let message = body["message"].as_str().expect("message is a string");
+        assert!(message.contains("coachee"), "got: {message}");
+        assert!(message.contains("Jim H"), "got: {message}");
+        assert!(message.contains("Guest"), "got: {message}");
+        assert!(!message.contains("Coachee"), "got: {message}");
+    }
+
+    #[tokio::test]
+    async fn invalid_speaker_produces_structured_400_listing_the_enum() {
+        let err = Error::Web(WebErrorKind::InvalidSpeaker("bob".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 400);
+        assert_eq!(body["error"], "invalid_speaker");
+        let message = body["message"].as_str().expect("message is a string");
+        assert!(message.contains("bob"), "got: {message}");
+        assert!(message.contains("coach"), "got: {message}");
+        assert!(message.contains("coachee"), "got: {message}");
     }
 
     // Locks the authn/authz status-code split: an authorization failure
