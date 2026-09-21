@@ -1,5 +1,5 @@
 use axum::http::{
-    header::{AUTHORIZATION, CONTENT_TYPE},
+    header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
     HeaderName, HeaderValue, Method,
 };
 use axum_login::{
@@ -222,7 +222,10 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
             "X-Real-IP".parse::<HeaderName>().unwrap(),
             "X-Request-ID".parse::<HeaderName>().unwrap(),
         ])
-        .expose_headers([ApiVersion::field_name().parse::<HeaderName>().unwrap()])
+        .expose_headers([
+            ApiVersion::field_name().parse::<HeaderName>().unwrap(),
+            CONTENT_DISPOSITION,
+        ])
         .allow_private_network(true)
         .allow_origin(allow_origin);
 

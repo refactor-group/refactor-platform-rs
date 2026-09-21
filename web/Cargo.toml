@@ -14,6 +14,7 @@ secrecy = "0.8"
 sse = { path = "../sse" }
 
 axum = "0.7.7"
+axum-extra = { version = "0.9", features = ["query"] }
 axum-login = "0.16.0"
 chrono = { version = "0.4.38", features = ["serde"] }
 chrono-tz = "0.10"
