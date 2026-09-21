@@ -1,6 +1,6 @@
 //! Speaker resolution and plain-text rendering for transcript downloads.
 
-use crate::error::Error;
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::users;
 use chrono::NaiveDate;
 use entity::transcript_segment::Model as Segment;
@@ -8,48 +8,197 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Which participant of the coaching relationship a speaker label resolved to.
+///
+/// Transcript speaker labels are meeting display names reported by the recording
+/// provider, so this names the participant a label was matched to by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(example = "coach")]
 pub enum SpeakerRole {
+    /// The relationship's coach, matched by name against the transcript's speaker labels.
     Coach,
+    /// The relationship's coachee, matched by name against the transcript's speaker labels.
     Coachee,
 }
 
 /// A distinct transcript speaker label and the participant it resolved to, if any.
+///
+/// One entry per distinct label in the transcript, in first-appearance order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
 pub struct Speaker {
+    /// The speaker label exactly as it appears on transcript lines.
+    #[schema(example = "Jim Hodapp")]
     pub label: String,
+    /// Which participant the label resolved to.
+    ///
+    /// `null` when it matched neither participant: a guest, `Unknown`, or a name
+    /// that differs from the participant's platform name.
     pub role: Option<SpeakerRole>,
 }
 
 /// A rendered plain-text transcript and the filename to serve it under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rendered {
+    /// The full plain-text transcript body.
     pub body: String,
+    /// The filename to offer the download under.
     pub filename: String,
 }
 
+/// Resolves the transcript's distinct speaker labels to the relationship's participants.
+///
+/// Coach first, then coachee; each tries preferred name, then full name, then first
+/// name, matching case- and whitespace-insensitively. Each user claims at most one label.
 pub fn resolve_speakers(
-    _coach: &users::Model,
-    _coachee: &users::Model,
-    _segments: &[Segment],
+    coach: &users::Model,
+    coachee: &users::Model,
+    segments: &[Segment],
 ) -> Vec<Speaker> {
-    todo!("Phase 2")
+    let labels = distinct_labels(segments);
+    let normalized: Vec<String> = labels.iter().map(|label| normalize(label)).collect();
+
+    let coach_index = claim_label(coach, &normalized, None);
+    let coachee_index = claim_label(coachee, &normalized, coach_index);
+
+    labels
+        .into_iter()
+        .enumerate()
+        .map(|(index, label)| Speaker {
+            label: label.to_owned(),
+            role: match Some(index) {
+                i if i == coach_index => Some(SpeakerRole::Coach),
+                i if i == coachee_index => Some(SpeakerRole::Coachee),
+                _ => None,
+            },
+        })
+        .collect()
 }
 
+/// Renders the selected segments as the downloadable plain-text transcript.
+///
+/// Segments are sorted by `(start_ms, id)` and blank ones dropped; the header lists the
+/// filtered speaker labels in appearance order. Fails when a filtered role has no label.
 pub fn render_plain_text(
-    _session_date: NaiveDate,
-    _speakers: &[Speaker],
-    _segments: &[Segment],
-    _filter: &[SpeakerRole],
+    session_date: NaiveDate,
+    speakers: &[Speaker],
+    segments: &[Segment],
+    filter: &[SpeakerRole],
 ) -> Result<Rendered, Error> {
-    todo!("Phase 2")
+    let resolved: Vec<&str> = filter
+        .iter()
+        .map(|role| {
+            speakers
+                .iter()
+                .find(|speaker| speaker.role == Some(*role))
+                .map(|speaker| speaker.label.as_str())
+                .ok_or_else(|| speaker_not_identified(*role, speakers))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let selected = |label: &str| filter.is_empty() || resolved.contains(&label);
+
+    let header_labels = speakers
+        .iter()
+        .filter(|speaker| selected(&speaker.label))
+        .map(|speaker| speaker.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut lines: Vec<&Segment> = segments
+        .iter()
+        .filter(|segment| selected(&segment.speaker_label) && !segment.text.trim().is_empty())
+        .collect();
+    lines.sort_by_key(|segment| (segment.start_ms, segment.id));
+
+    let date = session_date.format("%Y-%m-%d");
+    let body = lines.iter().fold(
+        format!("Coaching session transcript\nDate: {date}\nSpeakers: {header_labels}\n\n"),
+        |mut body, segment| {
+            body.push_str(&format!(
+                "[{}] {}: {}\n",
+                format_timestamp(segment.start_ms),
+                segment.speaker_label,
+                segment.text.trim()
+            ));
+            body
+        },
+    );
+
+    let suffix = if filter.is_empty() { "" } else { "-filtered" };
+
+    Ok(Rendered {
+        body,
+        filename: format!("transcript-{date}{suffix}.txt"),
+    })
 }
 
-// Scaffold only: the allow goes away once Phase 2 calls this from the renderer.
-#[allow(dead_code)]
-fn format_timestamp(_ms: i32) -> String {
-    todo!("Phase 2")
+/// The distinct speaker labels in first-appearance order, compared exactly as stored.
+fn distinct_labels(segments: &[Segment]) -> Vec<&str> {
+    segments
+        .iter()
+        .map(|segment| segment.speaker_label.as_str())
+        .fold(Vec::new(), |mut labels, label| {
+            if !labels.contains(&label) {
+                labels.push(label);
+            }
+            labels
+        })
+}
+
+/// Lowercases, trims, and collapses internal whitespace runs to a single space.
+fn normalize(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The index of the first normalized label a user's name tiers match, skipping `taken`.
+fn claim_label(user: &users::Model, normalized: &[String], taken: Option<usize>) -> Option<usize> {
+    [
+        user.preferred_name().into_owned(),
+        format!("{} {}", user.first_name, user.last_name),
+        user.first_name.clone(),
+    ]
+    .iter()
+    .find_map(|candidate| {
+        let candidate = normalize(candidate);
+        normalized
+            .iter()
+            .enumerate()
+            .find(|(index, label)| Some(*index) != taken && **label == candidate)
+            .map(|(index, _)| index)
+    })
+}
+
+fn speaker_not_identified(role: SpeakerRole, speakers: &[Speaker]) -> Error {
+    Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::SpeakerNotIdentified {
+                role,
+                labels: speakers
+                    .iter()
+                    .map(|speaker| speaker.label.clone())
+                    .collect(),
+            },
+        )),
+    }
+}
+
+/// Formats milliseconds as `m:ss`, or `h:mm:ss` at or over one hour, truncating sub-seconds.
+fn format_timestamp(ms: i32) -> String {
+    let total_seconds = ms.max(0) / 1000;
+    let (hours, minutes, seconds) = (
+        total_seconds / 3600,
+        (total_seconds % 3600) / 60,
+        total_seconds % 60,
+    );
+    match hours {
+        0 => format!("{minutes}:{seconds:02}"),
+        _ => format!("{hours}:{minutes:02}:{seconds:02}"),
+    }
 }
 
 #[cfg(test)]
