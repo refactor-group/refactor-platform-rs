@@ -6,16 +6,38 @@ pub use entity_api::transcription::{
     update_status,
 };
 
+use crate::coaching_sessions;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::transcript_export::{self, Rendered, Speaker, SpeakerRole};
+use crate::users;
 use entity::meeting_recording::Model as RecordingModel;
 use entity::transcript_segment::ActiveModel as SegmentActiveModel;
 use entity::Id;
-use entity_api::{transcript_segment as segment_api, transcription as transcription_api};
+use entity_api::{
+    coaching_relationship, transcript_segment as segment_api, transcription as transcription_api,
+    user,
+};
 use log::*;
 use meeting_ai::traits::transcription as transcription_trait;
 use meeting_ai::types::transcription as transcription_types;
 use sea_orm::{ActiveValue::Set, DatabaseConnection};
+use serde::Serialize;
 use std::collections::HashMap;
+use utoipa::ToSchema;
+
+/// A transcription plus the speakers found in its transcript.
+///
+/// `speakers` lists every distinct speaker label in first-appearance order with the
+/// relationship participant it resolved to, so a client can tell in advance whether
+/// filtering the plain-text download by `coach` or `coachee` will succeed. Empty until
+/// segments exist.
+#[derive(Clone, Debug, PartialEq, Serialize, ToSchema)]
+#[schema(as = domain::transcription::WithSpeakers)]
+pub struct WithSpeakers {
+    #[serde(flatten)]
+    pub transcription: Model,
+    pub speakers: Vec<Speaker>,
+}
 
 /// Triggers async transcription for the given recording and persists the `transcriptions` row.
 ///
@@ -172,3 +194,89 @@ pub async fn handle_completion(
 
     Ok(())
 }
+
+/// Finds a transcription, requiring it to belong to the given coaching session.
+///
+/// A transcription under another session reads as missing, so the id cannot be used to
+/// confirm transcriptions outside the session the caller is authorized for.
+pub async fn find_for_session(
+    db: &DatabaseConnection,
+    transcription_id: Id,
+    coaching_session_id: Id,
+) -> Result<Model, Error> {
+    transcription_api::find_by_id(db, transcription_id)
+        .await?
+        .filter(|transcription| transcription.coaching_session_id == coaching_session_id)
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::TranscriptionNotFound,
+            )),
+        })
+}
+
+/// The coach and coachee of the session's coaching relationship, in that order.
+async fn load_participants(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+) -> Result<(users::Model, users::Model), Error> {
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+    let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
+
+    Ok((coach, coachee))
+}
+
+/// Renders the session's transcript as plain text, optionally limited to given roles.
+///
+/// Refuses a transcription that has not completed, since its segments are still partial.
+/// An empty `filter` keeps every speaker.
+pub async fn export_plain_text(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    transcription_id: Id,
+    filter: &[SpeakerRole],
+) -> Result<Rendered, Error> {
+    let transcription = find_for_session(db, transcription_id, session.id).await?;
+
+    if transcription.status != TranscriptionStatus::Completed {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::TranscriptionNotCompleted,
+            )),
+        });
+    }
+
+    let segments =
+        segment_api::find_by_transcription_and_session(db, transcription_id, session.id).await?;
+    let (coach, coachee) = load_participants(db, session).await?;
+    let speakers = transcript_export::resolve_speakers(&coach, &coachee, &segments);
+
+    transcript_export::render_plain_text(session.date.date(), &speakers, &segments, filter)
+}
+
+/// Reads the session's transcription along with its resolved speakers.
+///
+/// Readable at any status: the speaker list simply stays empty until segments land.
+pub async fn read_with_speakers(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    transcription_id: Id,
+) -> Result<WithSpeakers, Error> {
+    let transcription = find_for_session(db, transcription_id, session.id).await?;
+    let segments =
+        segment_api::find_by_transcription_and_session(db, transcription_id, session.id).await?;
+    let (coach, coachee) = load_participants(db, session).await?;
+
+    Ok(WithSpeakers {
+        transcription,
+        speakers: transcript_export::resolve_speakers(&coach, &coachee, &segments),
+    })
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "transcription_tests.rs"]
+mod tests;
