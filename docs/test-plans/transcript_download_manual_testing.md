@@ -92,7 +92,9 @@ dl coach text/plain ""
 
 **Pass:** 200, `content-type: text/plain; charset=utf-8`,
 `content-disposition: attachment; filename="transcript-<YYYY-MM-DD>.txt"` where
-the date is the session's stored date. Body starts with the three-line header
+the date is the session's start in the coach's timezone (seeded users are UTC, so
+it equals the stored date; set the coach to `America/Los_Angeles` and a session at
+01:30 UTC to see it roll back a day). Body starts with the three-line header
 block, a blank line, then `[0:00] Jim H: Good morning.`. The whitespace-only
 segment at 12s is absent. The 59s line reads `[0:59]`.
 
