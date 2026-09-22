@@ -1253,6 +1253,7 @@ dependencies = [
  "entity",
  "entity_api",
  "events",
+ "futures",
  "hex",
  "icalendar",
  "imagesize",
