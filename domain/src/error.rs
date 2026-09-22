@@ -1,13 +1,15 @@
 //! Error types for the `domain` layer.
-use crate::transcript_export::SpeakerRole;
+use std::error::Error as StdError;
+use std::fmt;
+use std::time::Duration;
+
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::Id;
 use meeting_auth::error::{
     Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
 };
-use std::error::Error as StdError;
-use std::fmt;
-use std::time::Duration;
+
+use crate::transcript_export::SpeakerRole;
 
 /// Top-level domain error type.
 /// Errors in the Domain layer are modeled as a tree structure

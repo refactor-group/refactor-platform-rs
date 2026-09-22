@@ -6,12 +6,10 @@ use std::error::Error as StdError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
 };
 use domain::transcript_export::SpeakerRole;
-
 use log::*;
 
 pub type Result<T> = core::result::Result<T, Error>;

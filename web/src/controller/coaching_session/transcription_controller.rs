@@ -1,9 +1,3 @@
-use crate::controller::ApiResponse;
-use crate::error::WebErrorKind;
-use crate::extractors::{
-    coaching_session_access::CoachingSessionAccess, compare_api_version::CompareApiVersion,
-};
-use crate::{AppState, Error};
 use axum::extract::{Path, State};
 use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
@@ -17,6 +11,13 @@ use log::*;
 use serde::Deserialize;
 use service::config::ApiVersion;
 
+use crate::controller::ApiResponse;
+use crate::error::WebErrorKind;
+use crate::extractors::{
+    coaching_session_access::CoachingSessionAccess, compare_api_version::CompareApiVersion,
+};
+use crate::{AppState, Error};
+
 /// The repeatable `speaker` query parameter limiting the plain-text transcript.
 #[derive(Debug, Deserialize)]
 pub(crate) struct SpeakerParams {
@@ -25,6 +26,7 @@ pub(crate) struct SpeakerParams {
 }
 
 /// The representation the caller's `Accept` header asked for.
+#[derive(Clone, Copy)]
 enum Representation {
     Json,
     PlainText,
@@ -167,11 +169,12 @@ fn speaker_values(query: &str) -> String {
         .collect()
 }
 
-/// Picks the representation from `Accept`, ignoring q-values.
+/// Picks the representation from `Accept`, honouring quality values.
 ///
-/// Absent means JSON. Otherwise the first listed media type that is supported wins:
-/// `*/*`, `application/json`, `application/*` select JSON; `text/plain`, `text/*`
-/// select the transcript file. Nothing supported means 406.
+/// Absent means JSON. Otherwise the supported media type with the highest `q` wins,
+/// earlier entries first on a tie, and `q=0` excludes a type. `*/*`, `application/json`,
+/// `application/*` select JSON; `text/plain`, `text/*` select the transcript file.
+/// Nothing acceptable means 406.
 fn negotiate(headers: &HeaderMap) -> Option<Representation> {
     let mut values = headers.get_all(ACCEPT).iter().peekable();
     if values.peek().is_none() {
@@ -181,13 +184,28 @@ fn negotiate(headers: &HeaderMap) -> Option<Representation> {
     values
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
-        .filter_map(|media| media.split(';').next())
-        .map(|media| media.trim().to_ascii_lowercase())
-        .find_map(|media| match media.as_str() {
-            "*/*" | "application/json" | "application/*" => Some(Representation::Json),
-            "text/plain" | "text/*" => Some(Representation::PlainText),
-            _ => None,
+        .filter_map(|entry| {
+            let mut parts = entry.split(';');
+            let media = parts.next()?.trim().to_ascii_lowercase();
+            let quality = parts
+                .filter_map(|param| param.trim().strip_prefix("q="))
+                .find_map(|q| q.trim().parse::<f32>().ok())
+                .unwrap_or(1.0);
+            let representation = match media.as_str() {
+                "*/*" | "application/json" | "application/*" => Representation::Json,
+                "text/plain" | "text/*" => Representation::PlainText,
+                _ => return None,
+            };
+            (quality > 0.0).then_some((quality, representation))
         })
+        .fold(
+            None,
+            |best: Option<(f32, Representation)>, candidate| match best {
+                Some((quality, _)) if quality >= candidate.0 => best,
+                _ => Some(candidate),
+            },
+        )
+        .map(|(_, representation)| representation)
 }
 
 #[cfg(test)]

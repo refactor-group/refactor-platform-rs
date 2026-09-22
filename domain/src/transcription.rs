@@ -6,10 +6,8 @@ pub use entity_api::transcription::{
     update_status,
 };
 
-use crate::coaching_sessions;
-use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
-use crate::transcript_export::{self, Rendered, Speaker, SpeakerRole};
-use crate::users;
+use std::collections::HashMap;
+
 use chrono::{NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use entity::meeting_recording::Model as RecordingModel;
@@ -24,8 +22,12 @@ use meeting_ai::traits::transcription as transcription_trait;
 use meeting_ai::types::transcription as transcription_types;
 use sea_orm::{ActiveValue::Set, DatabaseConnection};
 use serde::Serialize;
-use std::collections::HashMap;
 use utoipa::ToSchema;
+
+use crate::coaching_sessions;
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::transcript_export::{self, Rendered, Speaker, SpeakerRole};
+use crate::users;
 
 /// A transcription plus the speakers found in its transcript.
 ///

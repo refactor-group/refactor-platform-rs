@@ -1,11 +1,12 @@
 //! Speaker resolution and plain-text rendering for transcript downloads.
 
-use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
-use crate::users;
 use chrono::NaiveDate;
 use entity::transcript_segment::Model as Segment;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::users;
 
 /// Which participant of the coaching relationship a speaker label resolved to.
 ///
@@ -143,10 +144,12 @@ pub fn render_plain_text(
     })
 }
 
-/// The distinct speaker labels in first-appearance order, compared exactly as stored.
+/// The distinct speaker labels in `(start_ms, id)` order, compared exactly as stored.
 fn distinct_labels(segments: &[Segment]) -> Vec<&str> {
-    segments
-        .iter()
+    let mut ordered: Vec<&Segment> = segments.iter().collect();
+    ordered.sort_by_key(|segment| (segment.start_ms, segment.id));
+    ordered
+        .into_iter()
         .map(|segment| segment.speaker_label.as_str())
         .fold(Vec::new(), |mut labels, label| {
             if !labels.contains(&label) {

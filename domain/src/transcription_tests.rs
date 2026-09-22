@@ -1,8 +1,9 @@
-use super::*;
-use crate::coaching_relationships;
 use chrono::{NaiveDate, Utc};
 use entity::transcript_segment::Model as Segment;
 use sea_orm::{DatabaseBackend, MockDatabase};
+
+use super::*;
+use crate::coaching_relationships;
 
 fn session(coaching_relationship_id: Id) -> coaching_sessions::Model {
     let now = Utc::now();

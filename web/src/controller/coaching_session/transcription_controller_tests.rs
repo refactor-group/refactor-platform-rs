@@ -1,6 +1,5 @@
-use super::read;
-use crate::middleware::auth::require_auth;
-use crate::AppState;
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use axum::{body::Body, extract::Request, middleware::from_fn, routing::get, Router};
 use axum_login::{
@@ -16,10 +15,13 @@ use domain::{
 use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, MockDatabase};
 use service::config::Config;
-use std::sync::Arc;
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
+
+use super::read;
+use crate::middleware::auth::require_auth;
+use crate::AppState;
 
 const ROUTE: &str = "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id";
 
@@ -447,6 +449,66 @@ async fn wildcard_and_json_accept_select_json() {
             "accept: {accept}"
         );
     }
+}
+
+#[tokio::test]
+async fn quality_values_pick_the_preferred_supported_type() {
+    for (accept, content_type) in [
+        ("application/json;q=0, text/plain", "text/plain"),
+        (
+            "text/plain;q=0.5, application/json;q=0.9",
+            "application/json",
+        ),
+        ("text/plain; q=0.9, */*; q=0.8", "text/plain"),
+        (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "application/json",
+        ),
+    ] {
+        let (world, cookie) = completed_world().await;
+
+        let response = get_transcript(
+            &world.app,
+            &cookie,
+            world.session_id,
+            world.transcription_id,
+            Some(accept),
+            "",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK, "accept: {accept}");
+        assert!(
+            header(&response, "content-type").starts_with(content_type),
+            "accept: {accept}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_zero_quality_on_every_supported_type_is_406() {
+    let organization_id = Id::new_v4();
+    let coach = coach();
+    let role = role(coach.id, organization_id);
+    let coachee = coachee();
+    let relationship = relationship(organization_id, coach.id, coachee.id);
+    let session = session(relationship.id);
+
+    let db = authorized(&coach, &role, &session, &relationship).into_connection();
+    let app = build_app(Arc::new(db));
+    let cookie = login_cookie(&app).await;
+
+    let response = get_transcript(
+        &app,
+        &cookie,
+        session.id,
+        Id::new_v4(),
+        Some("text/plain;q=0, image/png"),
+        "",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
 }
 
 #[tokio::test]

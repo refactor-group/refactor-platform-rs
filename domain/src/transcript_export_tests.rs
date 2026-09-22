@@ -1,10 +1,11 @@
 //! Frozen acceptance tests for transcript speaker resolution and plain-text rendering.
 //! Written by the overseer before implementation; read-only during the build.
 
+use chrono::Utc;
+
 use super::*;
 use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
 use crate::Id;
-use chrono::Utc;
 
 fn user(first: &str, last: &str, display: Option<&str>) -> users::Model {
     let now = Utc::now();
@@ -157,6 +158,17 @@ fn resolver_leaves_a_label_both_participants_answer_to_unresolved() {
     let segments = [segment("Sam", "a", 0), segment("Sam Coach", "b", 1000)];
     let speakers = resolve_speakers(&sam_coach, &sam_coachee, &segments);
     assert_eq!(roles(&speakers), [None, Some(SpeakerRole::Coach)]);
+}
+
+#[test]
+fn resolver_orders_labels_by_start_then_id_not_input_order() {
+    let segments = [
+        segment_with_id(Id::from_u128(2), "Caleb Bourg", "b", 0),
+        segment_with_id(Id::from_u128(1), "Jim H", "a", 0),
+        segment("Guest", "c", 0),
+    ];
+    let speakers = resolve_speakers(&coach(), &coachee(), &segments);
+    assert_eq!(labels(&speakers)[..2], ["Jim H", "Caleb Bourg"]);
 }
 
 #[test]
