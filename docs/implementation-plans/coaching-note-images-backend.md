@@ -78,10 +78,23 @@ GET /coaching_session_images/{image_id}
 
 | Phase | Scope | Status |
 |---|---|---|
-| **B1** | Config fields + `ObjectStore` trait, local + Spaces impls, wired onto `AppState` | pending |
+| **B1** | Config fields + `ObjectStore` trait, local + Spaces impls, wired onto `AppState` | **done** (`0b15fb8b`) |
 | **B2** | Migration, entity, entity_api, domain (validation + create/find) | pending |
 | **B3** | Extractor, controller, router registration, `DefaultBodyLimit`, utoipa | pending |
 | **B4** | `.env*`, docker-compose ×3, `docs/setup.md`, preview nginx body-size check | pending |
+
+## Local backend notes (from B1)
+
+- `LocalObjectStore` writes a `<key>.content-type` sidecar beside each object so reads return the
+  stored type faithfully instead of re-sniffing.
+- Its key guard is two-layered: a lexical check rejecting absolute keys and non-`Normal` components,
+  then a canonicalization check that the deepest existing ancestor still resolves inside the root —
+  which catches a symlink escaping the tree, something a lexical check cannot see.
+- Local filesystem I/O failures use the existing `Internal(InternalErrorKind::Other)`; neither
+  `Config` nor `External(Network)` describes a failed disk write honestly. No new error variants
+  were added.
+- `Bucket::new` needs a `url::Url`; we use `reqwest::Url`, a re-export of the same crate, rather
+  than adding a `url` dependency.
 
 ## Storage key convention
 
