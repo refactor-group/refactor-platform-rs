@@ -1,10 +1,5 @@
 //! `GET /search` — unified keyword search across the caller's visible corpus.
 
-use crate::controller::ApiResponse;
-use crate::extractors::{compare_api_version::CompareApiVersion, scope::Scope};
-use crate::params::search::IndexParams;
-use crate::{AppState, Error};
-
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -12,6 +7,11 @@ use axum::Json;
 use domain::search as SearchApi;
 use log::*;
 use service::config::ApiVersion;
+
+use crate::controller::ApiResponse;
+use crate::extractors::{compare_api_version::CompareApiVersion, scope::Scope};
+use crate::params::search::IndexParams;
+use crate::{AppState, Error};
 
 /// Search every entity type the caller may see, merged into one ranked list.
 ///

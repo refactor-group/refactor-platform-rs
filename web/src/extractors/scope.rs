@@ -8,10 +8,10 @@
 //! pure (preloaded roles, zero queries).
 
 use axum::{async_trait, extract::FromRequestParts, http::request::Parts};
-
-use crate::extractors::{authenticated_user::AuthenticatedUser, RejectionType};
 use domain::coaching_relationships;
 use domain::search::scope_for;
+
+use crate::extractors::{authenticated_user::AuthenticatedUser, RejectionType};
 
 pub(crate) struct Scope(pub coaching_relationships::Scope);
 

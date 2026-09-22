@@ -7,16 +7,16 @@ use std::str::FromStr;
 
 use chrono::{NaiveDate, TimeZone};
 use chrono_tz::Tz;
-use serde::Deserialize;
-use utoipa::{IntoParams, ToSchema};
-
-use crate::error::WebErrorKind;
-use crate::Error;
 use domain::search::{Cursor, Filters, GoalFilter, HitType, Spec, TimeRange};
 use domain::status::Status;
 use domain::topic_status::Status as TopicStatus;
 use domain::Id;
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
+use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
+
+use crate::error::WebErrorKind;
+use crate::Error;
 
 const MIN_QUERY_CHARS: usize = 2;
 const MAX_QUERY_CHARS: usize = 256;
