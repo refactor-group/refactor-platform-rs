@@ -120,6 +120,7 @@ plus one `kumquat` action **linked to the R1 goal** and one **unlinked**
 | `created_from=<yesterday>&created_to=<yesterday>&tz=America/New_York` | only rows whose `created_at` falls on that New-York calendar day; the window is inclusive of the whole day |
 | `tz=Not/AZone` | 400 with `"error": "invalid_timezone"` |
 | `user_id=<Robin>` | only R1 content Robin authored (notes/goals/actions/agreements/topics) or participates in (sessions/transcripts) |
+| `coaching_relationship_id=<R1>` | identical to the unfiltered search — Casey's scope is exactly R1, so this only proves the filter doesn't drop in-scope content; the discriminating narrowing check runs as Alex in F, and the foreign-id probe as Casey in D |
 | `coaching_session_id=<R1 session>` | only content of that session plus the session itself |
 | `organization_id=<Acme>` | unchanged (Casey's scope is already Acme-only) |
 | `q=kumquat&types=actions&goal_id=<R1 goal>` | only the linked action; the unlinked one absent; each hit's `goal_id` equals the filter |
@@ -143,6 +144,7 @@ response-shape difference from an ordinary empty result is a leak.
 | Filter as a widening device | `q=tamarind&user_id=<Morgan>` | `user_id` must intersect scope, never expand it |
 | Foreign org id | `q=yuzu&organization_id=<Globex>` | Robin *is* a Globex member but **Casey is not**; zero hits |
 | Foreign session probe | `q=tamarind&coaching_session_id=<R2 session>` | existence of the session is not confirmed (empty result, not 404/403) |
+| Foreign relationship probe | `q=tamarind&coaching_relationship_id=<R2>` | existence of the relationship is not confirmed (empty result, not 404/403) — the filter intersects scope, never widens it |
 | Snippet leak via `or` | `q=kumquat or tamarind` | hit list identical to plain `q=kumquat`; no snippet contains `tamarind` |
 | Timing sanity (coarse) | compare `q=tamarind` vs `q=xyzzynonsense` | both empty; grossly different latency would hint the scoped query still scanned foreign rows — note it if observed |
 
@@ -170,6 +172,7 @@ Logged in as **Alex** (Acme admin, participant in nothing).
 |---|---|
 | `q=kumquat` | full R1 hit set — admin sees relationships they're not part of |
 | `q=tamarind` | full R2 hit set |
+| `q=kumquat&coaching_relationship_id=<R1>` | full R1 hit set; `q=tamarind&coaching_relationship_id=<R1>` → zero hits — Alex sees both R1 and R2, so this is the discriminating narrowing check for the relationship filter (Scenario C's version is degenerate) |
 | `q=yuzu` | **zero hits** — Alex administers Acme, not Globex |
 | `q=kumquat&types=organizations` | zero hits, silently dropped — organizations remain super-admin-only |
 
