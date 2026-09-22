@@ -1,12 +1,15 @@
 //! Error types for the `domain` layer.
+use std::error::Error as StdError;
+use std::fmt;
+use std::time::Duration;
+
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::Id;
 use meeting_auth::error::{
     Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
 };
-use std::error::Error as StdError;
-use std::fmt;
-use std::time::Duration;
+
+use crate::transcript_export::SpeakerRole;
 
 /// Top-level domain error type.
 /// Errors in the Domain layer are modeled as a tree structure
@@ -93,6 +96,15 @@ pub enum EntityErrorKind {
     PasswordResetRateLimited,
     /// Requester has exceeded the per-user cap on user-lookup requests.
     UserLookupRateLimited,
+    /// Transcription id is not under the requested coaching session.
+    TranscriptionNotFound,
+    /// Plain-text export requested before the transcription reached `completed`.
+    TranscriptionNotCompleted,
+    /// A requested speaker role's participant matched none of the transcript's labels.
+    SpeakerNotIdentified {
+        role: SpeakerRole,
+        labels: Vec<String>,
+    },
     DbTransaction,
     ServiceUnavailable,
     Other(String),
