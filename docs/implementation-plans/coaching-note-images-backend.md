@@ -49,6 +49,15 @@ serves both apps from one origin (`nginx/conf.d/refactor-platform.conf` routes `
 
 **Moving the API to a different registrable domain breaks every note image with no client-side fix.**
 
+## Rejection is a value, not an error variant
+
+`DomainErrorKind::Validation(String)` maps to 422 in `web/src/error.rs`, and there is no 413/415
+mapping. The frontend distinguishes "too large" from "unsupported type", and the standards forbid
+adding error variants. So `domain::coaching_session_note_image::inspect_image` returns
+`Result<InspectedImage, ImageRejection>` where `ImageRejection` is a plain domain **value type** —
+the same shape as `entity::duration::OutOfRange`, which the standards name as the sanctioned
+pattern. The controller matches it to a status code.
+
 ## Endpoints
 
 ```
