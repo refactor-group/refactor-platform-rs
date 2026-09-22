@@ -480,6 +480,37 @@ async fn unknown_speaker_is_400_for_json_too() {
 }
 
 #[tokio::test]
+async fn invalid_speaker_message_names_only_the_speaker_values() {
+    let organization_id = Id::new_v4();
+    let coach = coach();
+    let role = role(coach.id, organization_id);
+    let coachee = coachee();
+    let relationship = relationship(organization_id, coach.id, coachee.id);
+    let session = session(relationship.id);
+
+    let db = authorized(&coach, &role, &session, &relationship).into_connection();
+    let app = build_app(Arc::new(db));
+    let cookie = login_cookie(&app).await;
+
+    let response = get_transcript(
+        &app,
+        &cookie,
+        session.id,
+        Id::new_v4(),
+        Some("text/plain"),
+        "?speaker=coach&speaker=bogus&foo=1",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = body_json(response).await;
+    let message = body["message"].as_str().unwrap_or_default().to_string();
+    assert!(message.contains("coach, bogus"), "{message}");
+    assert!(!message.contains("foo"), "{message}");
+}
+
+#[tokio::test]
 async fn transcription_under_another_session_is_404() {
     let organization_id = Id::new_v4();
     let coach = coach();

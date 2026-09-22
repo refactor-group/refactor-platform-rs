@@ -48,7 +48,8 @@ pub struct Rendered {
 /// Resolves the transcript's distinct speaker labels to the relationship's participants.
 ///
 /// Coach first, then coachee; each tries preferred name, then full name, then first
-/// name, matching case- and whitespace-insensitively. Each user claims at most one label.
+/// name, matching case- and whitespace-insensitively. Each user claims at most one
+/// label, and a label both participants answer to stays unresolved rather than guessed.
 pub fn resolve_speakers(
     coach: &users::Model,
     coachee: &users::Model,
@@ -56,19 +57,29 @@ pub fn resolve_speakers(
 ) -> Vec<Speaker> {
     let labels = distinct_labels(segments);
     let normalized: Vec<String> = labels.iter().map(|label| normalize(label)).collect();
+    let coach_names = name_tiers(coach);
+    let coachee_names = name_tiers(coachee);
 
-    let coach_index = claim_label(coach, &normalized, None);
-    let coachee_index = claim_label(coachee, &normalized, coach_index);
+    let ambiguous: Vec<bool> = normalized
+        .iter()
+        .map(|label| coach_names.contains(label) && coachee_names.contains(label))
+        .collect();
+    let coach_index = claim_label(&coach_names, &normalized, |index| ambiguous[index]);
+    let coachee_index = claim_label(&coachee_names, &normalized, |index| {
+        ambiguous[index] || Some(index) == coach_index
+    });
 
     labels
         .into_iter()
         .enumerate()
         .map(|(index, label)| Speaker {
             label: label.to_owned(),
-            role: match Some(index) {
-                i if i == coach_index => Some(SpeakerRole::Coach),
-                i if i == coachee_index => Some(SpeakerRole::Coachee),
-                _ => None,
+            role: if Some(index) == coach_index {
+                Some(SpeakerRole::Coach)
+            } else if Some(index) == coachee_index {
+                Some(SpeakerRole::Coachee)
+            } else {
+                None
             },
         })
         .collect()
@@ -154,20 +165,29 @@ fn normalize(value: &str) -> String {
         .to_lowercase()
 }
 
-/// The index of the first normalized label a user's name tiers match, skipping `taken`.
-fn claim_label(user: &users::Model, normalized: &[String], taken: Option<usize>) -> Option<usize> {
+/// A user's names in matching order, normalized: preferred, full, then first.
+fn name_tiers(user: &users::Model) -> Vec<String> {
     [
         user.preferred_name().into_owned(),
         format!("{} {}", user.first_name, user.last_name),
         user.first_name.clone(),
     ]
     .iter()
-    .find_map(|candidate| {
-        let candidate = normalize(candidate);
+    .map(|name| normalize(name))
+    .collect()
+}
+
+/// The index of the first normalized label a name tier matches, skipping `skip` indexes.
+fn claim_label(
+    names: &[String],
+    normalized: &[String],
+    skip: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    names.iter().find_map(|name| {
         normalized
             .iter()
             .enumerate()
-            .find(|(index, label)| Some(*index) != taken && **label == candidate)
+            .find(|(index, label)| !skip(*index) && *label == name)
             .map(|(index, _)| index)
     })
 }

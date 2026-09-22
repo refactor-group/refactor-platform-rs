@@ -151,12 +151,12 @@ fn resolver_lets_each_user_claim_at_most_one_label() {
 }
 
 #[test]
-fn resolver_gives_a_shared_label_to_the_coach_first() {
+fn resolver_leaves_a_label_both_participants_answer_to_unresolved() {
     let sam_coach = user("Sam", "Coach", None);
     let sam_coachee = user("Sam", "Coachee", None);
-    let segments = [segment("Sam", "a", 0)];
+    let segments = [segment("Sam", "a", 0), segment("Sam Coach", "b", 1000)];
     let speakers = resolve_speakers(&sam_coach, &sam_coachee, &segments);
-    assert_eq!(roles(&speakers), [Some(SpeakerRole::Coach)]);
+    assert_eq!(roles(&speakers), [None, Some(SpeakerRole::Coach)]);
 }
 
 #[test]

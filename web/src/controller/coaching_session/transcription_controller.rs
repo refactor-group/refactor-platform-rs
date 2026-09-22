@@ -66,7 +66,9 @@ pub async fn read_latest(
 ///
 /// `Accept: text/plain` serves the rendered transcript as a file attachment; any other
 /// supported value, or no `Accept` at all, serves JSON metadata with the resolved speakers.
-/// `speaker` narrows the plain-text file to the named participants and is ignored by JSON.
+/// `speaker` narrows the plain-text file to the named participants; JSON validates it but
+/// does not apply it. Browsers send `text/html, ..., */*`, which selects JSON, so a plain
+/// link downloads JSON; fetch with an explicit `Accept: text/plain` and build the file.
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{coaching_session_id}/transcriptions/{transcription_id}",
@@ -74,7 +76,7 @@ pub async fn read_latest(
         ApiVersion,
         ("coaching_session_id" = Id, Path, description = "Coaching session id"),
         ("transcription_id" = Id, Path, description = "Transcription id"),
-        ("speaker" = Option<Vec<SpeakerRole>>, Query, explode, description = "Limit the plain-text transcript to these participants. Repeat the parameter for both. Omitted means every speaker. Ignored for the JSON representation."),
+        ("speaker" = Option<Vec<SpeakerRole>>, Query, explode, description = "Limit the plain-text transcript to these participants. Repeat the parameter for both. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
     ),
     responses(
         (status = 200, description = "JSON metadata with resolved speakers, or the plain-text transcript file when `Accept: text/plain`", content(
@@ -102,9 +104,9 @@ pub async fn read(
 ) -> Result<Response, Error> {
     // An unparseable `speaker` is a 400 regardless of the representation asked for.
     let Query(SpeakerParams { speaker }) = speaker.map_err(|_| {
-        Error::Web(WebErrorKind::InvalidSpeaker(
-            uri.query().unwrap_or_default().to_owned(),
-        ))
+        Error::Web(WebErrorKind::InvalidSpeaker(speaker_values(
+            uri.query().unwrap_or_default(),
+        )))
     })?;
 
     debug!(
@@ -151,6 +153,18 @@ pub async fn read(
                 .into_response())
         }
     }
+}
+
+/// The raw `speaker` values in a query string, bounded, for the 400 message.
+fn speaker_values(query: &str) -> String {
+    query
+        .split('&')
+        .filter_map(|pair| pair.strip_prefix("speaker="))
+        .collect::<Vec<_>>()
+        .join(", ")
+        .chars()
+        .take(80)
+        .collect()
 }
 
 /// Picks the representation from `Accept`, ignoring q-values.

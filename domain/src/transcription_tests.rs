@@ -212,6 +212,37 @@ async fn export_plain_text_renders_the_relationship_participants() {
 }
 
 #[tokio::test]
+async fn export_plain_text_dates_the_file_in_the_coach_timezone() {
+    let coach = users::Model {
+        timezone: "America/Los_Angeles".to_string(),
+        ..coach()
+    };
+    let coachee = coachee();
+    let relationship = relationship(coach.id, coachee.id);
+    let mut session = session(relationship.id);
+    // 01:30 UTC on the 22nd is still the evening of the 21st in Los Angeles.
+    session.date = NaiveDate::from_ymd_opt(2026, 9, 22)
+        .and_then(|date| date.and_hms_opt(1, 30, 0))
+        .unwrap_or_default();
+    let row = transcription(session.id, TranscriptionStatus::Completed);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[row.clone()]])
+        .append_query_results([segments(row.id)])
+        .append_query_results([[relationship]])
+        .append_query_results([[coach]])
+        .append_query_results([[coachee]])
+        .into_connection();
+
+    let rendered = export_plain_text(&db, &session, row.id, &[])
+        .await
+        .expect("renders");
+
+    assert_eq!(rendered.filename, "transcript-2026-09-21.txt");
+    assert!(rendered.body.contains("Date: 2026-09-21\n"));
+}
+
+#[tokio::test]
 async fn export_plain_text_reports_an_unidentified_role() {
     let coach = coach();
     let coachee = user("Nobody", "Here", None);

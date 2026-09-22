@@ -10,6 +10,8 @@ use crate::coaching_sessions;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::transcript_export::{self, Rendered, Speaker, SpeakerRole};
 use crate::users;
+use chrono::{NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
 use entity::meeting_recording::Model as RecordingModel;
 use entity::transcript_segment::ActiveModel as SegmentActiveModel;
 use entity::Id;
@@ -254,7 +256,23 @@ pub async fn export_plain_text(
     let (coach, coachee) = load_participants(db, session).await?;
     let speakers = transcript_export::resolve_speakers(&coach, &coachee, &segments);
 
-    transcript_export::render_plain_text(session.date.date(), &speakers, &segments, filter)
+    transcript_export::render_plain_text(
+        local_session_date(session, &coach),
+        &speakers,
+        &segments,
+        filter,
+    )
+}
+
+/// The session's calendar date where the coach is; the schedule is anchored on them.
+///
+/// `session.date` is a UTC instant, so an evening session in the Americas would
+/// otherwise be dated tomorrow.
+fn local_session_date(session: &coaching_sessions::Model, coach: &users::Model) -> NaiveDate {
+    let tz: Tz = coach.timezone.parse().unwrap_or(chrono_tz::UTC);
+    Utc.from_utc_datetime(&session.date)
+        .with_timezone(&tz)
+        .date_naive()
 }
 
 /// Reads the session's transcription along with its resolved speakers.
