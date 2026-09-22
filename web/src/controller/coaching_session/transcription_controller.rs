@@ -186,7 +186,7 @@ fn speaker_values(query: &str) -> String {
 /// Picks the representation from `Accept`, honouring quality values.
 ///
 /// Absent means JSON. Otherwise the supported media type with the highest `q` wins,
-/// earlier entries first on a tie, and `q=0` excludes a type. `*/*`, `application/json`,
+/// earlier entries first on a tie, `q=0` excludes a type, and a malformed `q` drops its entry. `*/*`, `application/json`,
 /// `application/*` select JSON; `text/plain`, `text/*` select the transcript file.
 /// Nothing acceptable means 406.
 fn negotiate(headers: &HeaderMap) -> Option<Representation> {
@@ -201,10 +201,16 @@ fn negotiate(headers: &HeaderMap) -> Option<Representation> {
         .filter_map(|entry| {
             let mut parts = entry.split(';');
             let media = parts.next()?.trim().to_ascii_lowercase();
-            let quality = parts
-                .filter_map(|param| param.trim().strip_prefix("q="))
-                .find_map(|q| q.trim().parse::<f32>().ok())
-                .unwrap_or(1.0);
+            // `q` is case-insensitive and must be 0..=1; a malformed one is no valid request.
+            let quality = match parts
+                .filter_map(|param| param.split_once('='))
+                .find(|(name, _)| name.trim().eq_ignore_ascii_case("q"))
+                .map(|(_, value)| value.trim().parse::<f32>().ok())
+            {
+                Some(Some(q)) if (0.0..=1.0).contains(&q) => q,
+                Some(_) => return None,
+                None => 1.0,
+            };
             let representation = match media.as_str() {
                 "*/*" | "application/json" | "application/*" => Representation::Json,
                 "text/plain" | "text/*" => Representation::PlainText,

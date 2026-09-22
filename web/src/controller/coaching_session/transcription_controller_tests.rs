@@ -463,6 +463,12 @@ async fn quality_values_pick_the_preferred_supported_type() {
             "application/json",
         ),
         ("text/plain; q=0.9, */*; q=0.8", "text/plain"),
+        ("application/json, text/plain;Q=0", "application/json"),
+        (
+            "text/plain;q=invalid, application/json;q=0.5",
+            "application/json",
+        ),
+        ("text/plain;q=7, application/json;q=0.5", "application/json"),
         (
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "application/json",
