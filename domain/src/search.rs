@@ -245,32 +245,13 @@ pub async fn search(db: &DatabaseConnection, scope: &Scope, spec: Spec) -> Resul
         .collect()
         .await;
 
-    let mut merged: Vec<Hit> = results
+    let merged: Vec<Hit> = results
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .flatten()
         .collect();
-
-    merged.sort_by(|a, b| {
-        b.core()
-            .score
-            .total_cmp(&a.core().score)
-            .then_with(|| a.hit_type().cmp(&b.hit_type()))
-            .then_with(|| a.core().id.cmp(&b.core().id))
-    });
-
-    let limit = usize::from(spec.limit);
-    let next_cursor = (merged.len() > limit).then(|| {
-        let last = &merged[limit - 1];
-        Cursor {
-            score: last.core().score,
-            hit_type: last.hit_type(),
-            id: last.core().id,
-        }
-        .encode()
-    });
-    merged.truncate(limit);
+    let (mut merged, next_cursor) = merge_and_paginate(merged, spec.limit);
 
     hydrate_session_display_titles(db, &mut merged).await?;
     hydrate_snippets(db, &spec.q_raw, &mut merged).await?;
@@ -281,6 +262,33 @@ pub async fn search(db: &DatabaseConnection, scope: &Scope, spec: Spec) -> Resul
         hits: merged,
         next_cursor,
     })
+}
+
+/// Order the pooled searcher rows by `(score DESC, type ASC, id ASC)` — the
+/// response sort the per-searcher cursor folds mirror — then cut the page:
+/// an overflow row (searchers fetch `limit + 1`) proves a next page exists,
+/// and the cursor keys on the last *returned* hit.
+fn merge_and_paginate(mut merged: Vec<Hit>, limit: u16) -> (Vec<Hit>, Option<String>) {
+    merged.sort_by(|a, b| {
+        b.core()
+            .score
+            .total_cmp(&a.core().score)
+            .then_with(|| a.hit_type().cmp(&b.hit_type()))
+            .then_with(|| a.core().id.cmp(&b.core().id))
+    });
+
+    let limit = usize::from(limit);
+    let next_cursor = (merged.len() > limit).then(|| {
+        let last = &merged[limit - 1];
+        Cursor {
+            score: last.core().score,
+            hit_type: last.hit_type(),
+            id: last.core().id,
+        }
+        .encode()
+    });
+    merged.truncate(limit);
+    (merged, next_cursor)
 }
 
 /// Fill session display titles for the returned page: a `SessionHit`'s
