@@ -81,7 +81,7 @@ GET /coaching_session_images/{image_id}
 | **B1** | Config fields + `ObjectStore` trait, local + Spaces impls, wired onto `AppState` | **done** (`0b15fb8b`) |
 | **B2** | Migration, entity, entity_api, domain (validation + create/find) | **done** |
 | **B3** | Extractor, controller, router registration, `DefaultBodyLimit`, utoipa | **done** |
-| **B4** | `.env*`, docker-compose ×3, `docs/setup.md`, preview nginx body-size check | pending |
+| **B4** | Deploy workflows, compose, preview nginx body-size fix, `docs/setup.md` | **done** |
 
 ## Local backend notes (from B1)
 
@@ -130,6 +130,22 @@ it cannot silently go vacuous. Both tests are needed; neither replaces the other
 - **Omitting `CompareApiVersion` on `read` is pinned by six tests**, not one: the test helper never
   sends `x-version`, so adding that extractor back fails the whole read-path suite. Verified by
   mutation.
+
+## Deployment surface (from the B4 review)
+
+`.env*` is gitignored and **nothing** in the repo supplies production env. Both deploy workflows
+build an env file from GitHub secrets and vars and ship it to the host, so that is the only surface
+that matters:
+
+- `deploy_to_do.yml` hardcodes `OBJECT_STORE_BACKEND=spaces`. Deliberate: an unset value is
+  stripped by `Config::sanitize_empty_env` (whose doc comment names the cause — compose expands
+  `KEY: ${KEY}` to `""`), clap then applies `default_value = "local"`, and note images land in the
+  container filesystem where a redeploy destroys them. Silent, delayed data loss. Do not make it a
+  `vars` entry.
+- `ci-deploy-pr-preview.yml` uses `vars.OBJECT_STORE_BACKEND || 'spaces'`, so `local` is
+  unreachable from either path.
+- The two numeric settings are passed blank rather than `'UNUSED'`, matching the existing
+  session-reminder precedent: `'UNUSED'` fails `u64` parsing and crashes startup.
 
 ## Accepted gaps
 

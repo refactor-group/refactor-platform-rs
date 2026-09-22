@@ -26,6 +26,24 @@ Implementation plan: `docs/implementation-plans/coaching-note-images-backend.md`
 - Every request needs the `x-version` header **except** the image GET, which deliberately
   omits `CompareApiVersion` because a browser `<img>` tag cannot send custom headers.
 
+### 1.0 Before a deployed run (previews or production)
+
+The code is inert until the GitHub environment is populated. Until then the service boots fine and
+the image endpoints return **503 with a warning** — the loud failure, deliberately chosen over
+silently accepting uploads that would be lost. Set these first:
+
+- **Secrets:** `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY`
+- **Vars:** `SPACES_ENDPOINT`, `SPACES_REGION`, `SPACES_BUCKET`
+  (`NOTE_IMAGE_MAX_BYTES` and `NOTE_IMAGE_PRESIGN_TTL_SECONDS` are optional; blank uses the
+  in-code defaults of 10 MB and 900s.)
+
+`OBJECT_STORE_BACKEND` is **not** one of these — it is hardcoded to `spaces` in
+`deploy_to_do.yml` on purpose. An unset value would be stripped by `Config::sanitize_empty_env`
+and fall back to the `local` default, writing images into the container filesystem where a
+redeploy destroys them. Do not make it configurable.
+
+**Local runs need none of this** — the default `local` backend writes to a gitignored directory.
+
 ### 1.1 Helpers
 
 ```sh
