@@ -11,7 +11,7 @@ use crate::error::Error;
 use crate::gateway::object_storage::ObjectStore;
 use crate::Id;
 
-pub use entity_api::coaching_session_image::find_by_id;
+pub use entity_api::coaching_session_image::{find_by_id, restore, soft_delete};
 
 /// Image types we will accept and later serve from our own origin. `image/svg+xml` is
 /// absent deliberately: SVG is XML that can carry script, so serving it back would be

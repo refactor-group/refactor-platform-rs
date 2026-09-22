@@ -34,6 +34,9 @@ pub struct Model {
     pub width: Option<i32>,
     #[serde(skip_deserializing)]
     pub height: Option<i32>,
+    // Internal bookkeeping for the deferred purge, never a client's business.
+    #[serde(skip)]
+    pub deleted_at: Option<DateTimeWithTimeZone>,
     #[serde(skip_deserializing)]
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]

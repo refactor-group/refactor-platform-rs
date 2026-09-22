@@ -6,7 +6,7 @@ use axum_login::{
     tower_sessions::{Expiry, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
-use domain::jobs::{password_reset, session_reminder, Scheduler};
+use domain::jobs::{coaching_session_image_purge, password_reset, session_reminder, Scheduler};
 use domain::user::Backend;
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
@@ -110,6 +110,14 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         None => info!(
             "SESSION_REMINDER_EMAIL_TEMPLATE_ID not set — upcoming-session reminders disabled"
         ),
+    }
+    match coaching_session_image_purge::Purge::from_config(&app_state.config) {
+        Some(purge) => {
+            scheduler.spawn(purge);
+        }
+        None => {
+            info!("Object storage is not configured — coaching note image purging disabled")
+        }
     }
     let job_handles = scheduler.into_handles();
 

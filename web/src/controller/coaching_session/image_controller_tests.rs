@@ -162,6 +162,7 @@ fn image(session_id: Id, uploaded_by_id: Id) -> coaching_session_images::Model {
         byte_size: TINY_PNG.len() as i64,
         width: Some(2),
         height: Some(3),
+        deleted_at: None,
         created_at: now.into(),
         updated_at: now.into(),
     }

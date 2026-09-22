@@ -24,6 +24,9 @@ impl MigrationTrait for Migration {
             byte_size BIGINT NOT NULL,
             width INTEGER,
             height INTEGER,
+            -- Marks a removal pending purge, not a tombstone the reads filter on: GET
+            -- keeps serving the image so an undo in the editor resurrects it for free.
+            deleted_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             CONSTRAINT fk_session_images_session
@@ -48,6 +51,18 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(create_index_sql)
+            .await?;
+
+        // Partial index for the purge scan. Nearly every row has deleted_at IS NULL and
+        // the job only ever looks at the ones that do not, so indexing the rest is waste.
+        let create_deleted_at_index_sql =
+            "CREATE INDEX IF NOT EXISTS coaching_session_images_deleted_at_idx
+            ON refactor_platform.coaching_session_images(deleted_at)
+            WHERE deleted_at IS NOT NULL";
+
+        manager
+            .get_connection()
+            .execute_unprepared(create_deleted_at_index_sql)
             .await?;
 
         // Set table ownership to refactor user to avoid permission issues
