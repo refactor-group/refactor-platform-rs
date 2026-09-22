@@ -89,7 +89,7 @@ pub fn resolve_speakers(
 /// Renders the selected segments as the downloadable plain-text transcript.
 ///
 /// Segments are sorted by `(start_ms, id)` and blank ones dropped; the header lists the
-/// filtered speaker labels in appearance order. Fails when a filtered role has no label.
+/// speakers with at least one surviving line, in appearance order. Fails when a filtered role has no label.
 pub fn render_plain_text(
     session_date: NaiveDate,
     speakers: &[Speaker],
@@ -109,18 +109,19 @@ pub fn render_plain_text(
 
     let selected = |label: &str| filter.is_empty() || resolved.contains(&label);
 
-    let header_labels = speakers
-        .iter()
-        .filter(|speaker| selected(&speaker.label))
-        .map(|speaker| speaker.label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-
     let mut lines: Vec<&Segment> = segments
         .iter()
         .filter(|segment| selected(&segment.speaker_label) && !segment.text.trim().is_empty())
         .collect();
     lines.sort_by_key(|segment| (segment.start_ms, segment.id));
+
+    // Only speakers who contribute a line are named, so a blank-only speaker is absent.
+    let header_labels = speakers
+        .iter()
+        .filter(|speaker| lines.iter().any(|line| line.speaker_label == speaker.label))
+        .map(|speaker| speaker.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let date = session_date.format("%Y-%m-%d");
     let body = lines.iter().fold(

@@ -329,6 +329,7 @@ async fn no_accept_returns_json_with_speakers() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert!(header(&response, "content-type").starts_with("application/json"));
+    assert_eq!(header(&response, "vary"), "accept");
 
     let transcription_id = world.transcription_id;
     let body = body_json(response).await;
@@ -370,6 +371,7 @@ async fn text_plain_returns_the_file_with_both_headers() {
         header(&response, "content-disposition"),
         "attachment; filename=\"transcript-2026-09-21.txt\""
     );
+    assert_eq!(header(&response, "vary"), "accept");
     assert!(body_string(response).await.starts_with(
         "Coaching session transcript\nDate: 2026-09-21\nSpeakers: Test User, Caleb Bourg, Guest\n\n[0:00] Test User: Good morning.\n"
     ));
@@ -422,6 +424,7 @@ async fn unsupported_accept_is_406() {
     .await;
 
     assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(header(&response, "vary"), "accept");
 }
 
 #[tokio::test]
@@ -560,7 +563,7 @@ async fn invalid_speaker_message_names_only_the_speaker_values() {
         session.id,
         Id::new_v4(),
         Some("text/plain"),
-        "?speaker=coach&speaker=bogus&foo=1",
+        "?speaker=Jim%20H&speaker=bogus&foo=1",
     )
     .await;
 
@@ -568,7 +571,8 @@ async fn invalid_speaker_message_names_only_the_speaker_values() {
 
     let body = body_json(response).await;
     let message = body["message"].as_str().unwrap_or_default().to_string();
-    assert!(message.contains("coach, bogus"), "{message}");
+    assert!(message.contains("'Jim H, bogus'"), "{message}");
+    assert!(!message.contains("%20"), "{message}");
     assert!(!message.contains("foo"), "{message}");
 }
 

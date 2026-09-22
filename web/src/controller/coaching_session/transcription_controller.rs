@@ -1,5 +1,7 @@
+use std::borrow::Cow;
+
 use axum::extract::{Path, State};
-use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, VARY};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -116,8 +118,8 @@ pub async fn read(
         session.id
     );
 
-    match negotiate(&headers) {
-        None => Ok((StatusCode::NOT_ACCEPTABLE, "NOT ACCEPTABLE").into_response()),
+    let mut response = match negotiate(&headers) {
+        None => (StatusCode::NOT_ACCEPTABLE, "NOT ACCEPTABLE").into_response(),
         Some(Representation::Json) => {
             let body = TranscriptionApi::read_with_speakers(
                 app_state.db_conn_ref(),
@@ -126,7 +128,7 @@ pub async fn read(
             )
             .await?;
 
-            Ok(Json(ApiResponse::new(StatusCode::OK.into(), body)).into_response())
+            Json(ApiResponse::new(StatusCode::OK.into(), body)).into_response()
         }
         Some(Representation::PlainText) => {
             let rendered = TranscriptionApi::export_plain_text(
@@ -141,7 +143,7 @@ pub async fn read(
                 HeaderValue::from_str(&format!("attachment; filename=\"{}\"", rendered.filename))
                     .map_err(|_| Error::Web(WebErrorKind::Other))?;
 
-            Ok((
+            (
                 StatusCode::OK,
                 [
                     (
@@ -152,16 +154,28 @@ pub async fn read(
                 ],
                 rendered.body,
             )
-                .into_response())
+                .into_response()
         }
-    }
+    };
+
+    // One URL, two representations: caches must key on Accept.
+    response
+        .headers_mut()
+        .insert(VARY, HeaderValue::from_static("accept"));
+    Ok(response)
 }
 
-/// The raw `speaker` values in a query string, bounded, for the 400 message.
+/// The decoded `speaker` values in a query string, bounded, for the 400 message.
 fn speaker_values(query: &str) -> String {
     query
         .split('&')
         .filter_map(|pair| pair.strip_prefix("speaker="))
+        .map(|value| {
+            let spaced = value.replace('+', " ");
+            urlencoding::decode(&spaced)
+                .map(Cow::into_owned)
+                .unwrap_or(spaced)
+        })
         .collect::<Vec<_>>()
         .join(", ")
         .chars()

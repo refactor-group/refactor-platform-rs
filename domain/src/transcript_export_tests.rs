@@ -267,12 +267,15 @@ fn render_filtered_to_both_roles_drops_guests_and_keeps_appearance_order() {
 }
 
 #[test]
-fn render_header_lists_only_labels_that_survive_the_filter() {
-    let segments = vec![segment("Caleb Bourg", "Morning.", 0)];
-    let rendered = render_plain_text(date(), &three_speakers(), &segments, &[SpeakerRole::Coach])
-        .expect("renders");
+fn render_header_lists_only_speakers_with_surviving_lines() {
+    let segments = vec![
+        segment("Jim H", "Hello.", 0),
+        segment("Caleb Bourg", "   ", 1000),
+    ];
+    let rendered = render_plain_text(date(), &three_speakers(), &segments, &[]).expect("renders");
     assert!(rendered.body.contains("Speakers: Jim H\n"));
     assert!(!rendered.body.contains("Caleb Bourg"));
+    assert!(!rendered.body.contains("Guest"));
 }
 
 #[test]
