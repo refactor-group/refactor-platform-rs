@@ -3,6 +3,8 @@ use serde_json::Value;
 use utoipa::OpenApi;
 
 const ROLE_PATH: &str = "/organizations/{organization_id}/users/{user_id}/role";
+const TRANSCRIPT_PATH: &str =
+    "/coaching_sessions/{coaching_session_id}/transcriptions/{transcription_id}";
 
 fn spec() -> Value {
     serde_json::to_value(ApiDoc::openapi()).expect("the derived spec must serialize")
@@ -82,5 +84,72 @@ fn the_membership_schema_references_the_role_enum() {
     assert!(
         referenced.iter().any(|name| name == "Role"),
         "the membership must reference the Role enum: {referenced:?}"
+    );
+}
+
+/// The transcript download is the one operation whose two representations are only
+/// visible in the spec: a consumer cannot discover the `text/plain` file or the
+/// `speaker` values from the route alone.
+#[test]
+fn the_transcript_download_operation_is_served_with_its_schemas() {
+    let spec = spec();
+    let operation = &spec["paths"][TRANSCRIPT_PATH]["get"];
+    assert!(
+        operation.is_object(),
+        "the transcript path must serve a get"
+    );
+
+    let content = &operation["responses"]["200"]["content"];
+    ["application/json", "text/plain"].iter().for_each(|media| {
+        assert!(
+            content.get(*media).is_some(),
+            "the 200 must offer {media}: {content}"
+        );
+    });
+
+    let speaker = operation["parameters"]
+        .as_array()
+        .expect("the operation must declare parameters")
+        .iter()
+        .find(|parameter| parameter["name"] == "speaker")
+        .expect("the speaker query parameter must be declared");
+
+    let mut speaker_refs = Vec::new();
+    schema_refs(speaker, &mut speaker_refs);
+    assert_eq!(speaker_refs, ["SpeakerRole"]);
+
+    let schemas = spec["components"]["schemas"]
+        .as_object()
+        .expect("the spec must define schemas");
+
+    assert_eq!(
+        schemas["SpeakerRole"]["enum"],
+        serde_json::json!(["coach", "coachee"])
+    );
+    ["Speaker", "domain.transcription.WithSpeakers"]
+        .iter()
+        .for_each(|name| assert!(schemas.contains_key(*name), "missing schema {name}"));
+
+    // Sweep the operation and the three schemas it publishes: an unresolvable ref
+    // leaves a consumer unable to render the download at all.
+    let mut referenced = Vec::new();
+    schema_refs(operation, &mut referenced);
+    [
+        "SpeakerRole",
+        "Speaker",
+        "domain.transcription.WithSpeakers",
+    ]
+    .iter()
+    .for_each(|name| schema_refs(&schemas[*name], &mut referenced));
+
+    let dangling: Vec<&String> = referenced
+        .iter()
+        .filter(|name| !["Id", "Version", "DateTimeWithTimeZone"].contains(&name.as_str()))
+        .filter(|name| !schemas.contains_key(name.as_str()))
+        .collect();
+
+    assert!(
+        dangling.is_empty(),
+        "the transcript download references schemas the spec does not define: {dangling:?}"
     );
 }

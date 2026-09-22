@@ -34,6 +34,7 @@ pub enum TranscriptionStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
+#[schema(as = domain::transcription::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "transcriptions")]
 pub struct Model {
     #[serde(skip_deserializing)]
