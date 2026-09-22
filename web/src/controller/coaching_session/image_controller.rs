@@ -56,7 +56,7 @@ pub async fn create(
 
     let bytes = match file_bytes(multipart).await {
         Ok(bytes) => bytes,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     debug!("POST note image for session {}", session.id);
@@ -234,14 +234,20 @@ fn stream(stored: domain::gateway::object_storage::StoredObject) -> Result<Respo
 /// Bytes of the `file` part. `Err` carries the response to return: a multipart failure
 /// reports its own status (413 once the route's body limit is hit), while an absent or
 /// empty part is the caller sending us nothing to store.
-async fn file_bytes(mut multipart: Multipart) -> Result<Vec<u8>, Response> {
+///
+/// The error is boxed because `Response` owns a body, headers and extensions, which puts
+/// it well over clippy's `result_large_err` threshold.
+async fn file_bytes(mut multipart: Multipart) -> Result<Vec<u8>, Box<Response>> {
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(IntoResponse::into_response)?
+        .map_err(|e| Box::new(e.into_response()))?
     {
         if field.name() == Some("file") {
-            let bytes = field.bytes().await.map_err(IntoResponse::into_response)?;
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| Box::new(e.into_response()))?;
 
             return (!bytes.is_empty())
                 .then(|| bytes.to_vec())
@@ -252,8 +258,8 @@ async fn file_bytes(mut multipart: Multipart) -> Result<Vec<u8>, Response> {
     Err(missing_file_part())
 }
 
-fn missing_file_part() -> Response {
-    (StatusCode::BAD_REQUEST, "MISSING FILE PART").into_response()
+fn missing_file_part() -> Box<Response> {
+    Box::new((StatusCode::BAD_REQUEST, "MISSING FILE PART").into_response())
 }
 
 /// Rejected bytes, mapped to the two statuses the frontend branches on. Nowhere else in
