@@ -79,7 +79,7 @@ GET /coaching_session_images/{image_id}
 | Phase | Scope | Status |
 |---|---|---|
 | **B1** | Config fields + `ObjectStore` trait, local + Spaces impls, wired onto `AppState` | **done** (`0b15fb8b`) |
-| **B2** | Migration, entity, entity_api, domain (validation + create/find) | pending |
+| **B2** | Migration, entity, entity_api, domain (validation + create/find) | **done** |
 | **B3** | Extractor, controller, router registration, `DefaultBodyLimit`, utoipa | pending |
 | **B4** | `.env*`, docker-compose ×3, `docs/setup.md`, preview nginx body-size check | pending |
 
@@ -101,6 +101,18 @@ GET /coaching_session_images/{image_id}
 `coaching-sessions/{session_id}/notes/{image_id}.{ext}` — session-prefixed so a future
 session-delete can drop a whole prefix, and so logos can sit under a sibling prefix in the same
 bucket.
+
+## Manual verification
+
+`docs/test-plans/coaching_note_images_manual_testing.md` covers the API end to end, including
+the cases no mock reaches: a real bucket, a real cookie on a subresource request, the
+presign-vs-cache-lifetime inequality, revoked-participant access, and a 503 when storage is
+unconfigured.
+
+**A note on the allowlist test.** `infer` has no signature for SVG, so the SVG rejection test
+is satisfied by the sniff returning nothing and never reaches `ALLOWED_MIME_TYPES`. The
+allowlist is guarded separately by a BMP case, which asserts the bytes are sniffable first so
+it cannot silently go vacuous. Both tests are needed; neither replaces the other.
 
 ## Accepted gaps
 
