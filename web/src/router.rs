@@ -5,6 +5,7 @@ use crate::{
     params, protect, AppState,
 };
 use axum::{
+    extract::DefaultBodyLimit,
     middleware::{from_fn, from_fn_with_state},
     routing::{delete, get, patch, post, put},
     Router,
@@ -60,6 +61,8 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
+            coaching_session::note_image_controller::create,
+            coaching_session::note_image_controller::read,
             coaching_session::topic_controller::index,
             coaching_session::topic_controller::create,
             coaching_session::topic_controller::update,
@@ -175,6 +178,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
                 domain::coaching_session::SessionWithDisplayTitle,
+                domain::coaching_session_note_images::Model,
                 domain::coaching_session_topics::Model,
                 domain::coaching_session_view::MarkViewed,
                 domain::coaching_sessions::Model,
@@ -241,6 +245,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(goal_routes(app_state.clone()))
         .merge(coaching_session_goal_routes(app_state.clone()))
         .merge(coaching_session_meeting_recording_routes(app_state.clone()))
+        .merge(coaching_session_note_image_routes(app_state.clone()))
         .merge(coaching_session_topic_routes(app_state.clone()))
         .merge(coaching_session_transcription_routes(app_state.clone()))
         .merge(coaching_session_transcription_segment_routes(
@@ -867,6 +872,35 @@ fn coaching_session_topic_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_sessions/:coaching_session_id/topics/:topic_id/undo",
             post(coaching_session::topic_controller::undo),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Multipart framing (boundaries, part headers, filenames) rides along with the bytes, so
+/// the transport limit sits a little above the image cap the handler enforces.
+const MULTIPART_FRAMING_SLACK_BYTES: u64 = 64 * 1024;
+
+fn coaching_session_note_image_routes(app_state: AppState) -> Router {
+    // Raised on this route alone: axum's 2 MB default would 413 an ordinary phone photo
+    // with an error the handler never sees, and every other endpoint wants the default.
+    let body_limit = usize::try_from(
+        app_state
+            .config
+            .note_image_max_bytes()
+            .saturating_add(MULTIPART_FRAMING_SLACK_BYTES),
+    )
+    .unwrap_or(usize::MAX);
+
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/images",
+            post(coaching_session::note_image_controller::create)
+                .layer(DefaultBodyLimit::max(body_limit)),
+        )
+        .route(
+            "/coaching_session_images/:image_id",
+            get(coaching_session::note_image_controller::read),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
