@@ -4,7 +4,7 @@ Verify `POST /coaching_sessions/{id}/images` and `GET /coaching_session_images/{
 enforce participation, sniff real content types, honour the size cap, and serve bytes
 through a signed redirect (Spaces) or a stream (local filesystem).
 
-Frontend counterpart: `refactor-platform-fe/docs/test-plans/coaching_note_images_manual_testing.md`.
+Frontend counterpart: `refactor-platform-fe/docs/test-plans/coaching_session_images_manual_testing.md`.
 Implementation plan: `docs/implementation-plans/coaching-note-images-backend.md`.
 
 > [!IMPORTANT]
@@ -34,7 +34,7 @@ silently accepting uploads that would be lost. Set these first:
 
 - **Secrets:** `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY`
 - **Vars:** `SPACES_ENDPOINT`, `SPACES_REGION`, `SPACES_BUCKET`
-  (`NOTE_IMAGE_MAX_BYTES` and `NOTE_IMAGE_PRESIGN_TTL_SECONDS` are optional; blank uses the
+  (`COACHING_SESSION_IMAGE_MAX_BYTES` and `COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS` are optional; blank uses the
   in-code defaults of 10 MB and 900s.)
 
 `OBJECT_STORE_BACKEND` is **not** one of these — it is hardcoded to `spaces` in
@@ -161,7 +161,7 @@ up coach /tmp/big.png
 
 **Pass:** 413. Note the body limit layer may reject before the handler reads the part, so an
 empty body with a 413 status is acceptable. Confirm nothing was written to the bucket or the
-`coaching_session_note_images` table.
+`coaching_session_images` table.
 
 ### Case 7: fetching an image — local backend
 
@@ -187,7 +187,7 @@ img coach $IMAGE
 **Pass:** **302**, `location:` a `digitaloceanspaces.com` URL carrying `X-Amz-Signature=`
 and `response-cache-control=private%2C%20max-age%3D86400%2C%20immutable`.
 `cache-control: private, max-age=600` on the redirect itself, and that max-age **must be
-less than** `NOTE_IMAGE_PRESIGN_TTL_SECONDS` (default 900) so a cached redirect can never
+less than** `COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS` (default 900) so a cached redirect can never
 outlive its own signature. Follow it and confirm the bytes arrive:
 
 ```sh
@@ -278,12 +278,12 @@ in `LocalObjectStore::resolve` and check that exactly that test fails.
 curl -s -X DELETE -b /tmp/coach.jar -H "$VER" "$BASE/coaching_sessions/<throwaway session id>"
 ```
 
-**Pass:** the `coaching_session_note_images` rows for that session are gone (FK cascade).
+**Pass:** the `coaching_session_images` rows for that session are gone (FK cascade).
 The **objects remain in storage** — that is the known, accepted v1 gap, not a bug. Confirm by
 listing the bucket prefix or the local directory.
 
 ```sql
-SELECT count(*) FROM refactor_platform.coaching_session_note_images
+SELECT count(*) FROM refactor_platform.coaching_session_images
 WHERE coaching_session_id = '<throwaway session id>';  -- expect 0
 ```
 

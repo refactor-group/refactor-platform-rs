@@ -53,12 +53,12 @@ const DEFAULT_SESSION_REMINDER_POLL_MINUTES: u64 = 15;
 const DEFAULT_PASSWORD_RESET_TOKEN_EXPIRY_SECONDS: u64 = 1800;
 
 /// Default cap on a coaching note image upload (10 MiB).
-const DEFAULT_NOTE_IMAGE_MAX_BYTES: u64 = 10485760;
+const DEFAULT_COACHING_SESSION_IMAGE_MAX_BYTES: u64 = 10485760;
 
 /// Default lifetime of a presigned note-image GET URL (15 minutes). Must stay longer
 /// than the `Cache-Control` max-age the read endpoint sets, or a cached 302 outlives
 /// the URL it points at.
-const DEFAULT_NOTE_IMAGE_PRESIGN_TTL_SECONDS: u64 = 900;
+const DEFAULT_COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS: u64 = 900;
 
 /// All config field names registered with Clap, used for value source tracking.
 /// This is the single source of truth for field key names across the Config type.
@@ -120,8 +120,8 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "spaces_bucket",
     "spaces_access_key_id",
     "spaces_secret_access_key",
-    "note_image_max_bytes",
-    "note_image_presign_ttl_seconds",
+    "coaching_session_image_max_bytes",
+    "coaching_session_image_presign_ttl_seconds",
 ];
 
 #[derive(Deserialize, IntoParams)]
@@ -513,12 +513,12 @@ pub struct Config {
     spaces_secret_access_key: Option<String>,
 
     /// Maximum accepted size, in bytes, of an image pasted into a coaching note
-    #[arg(long, env, default_value_t = DEFAULT_NOTE_IMAGE_MAX_BYTES)]
-    note_image_max_bytes: u64,
+    #[arg(long, env, default_value_t = DEFAULT_COACHING_SESSION_IMAGE_MAX_BYTES)]
+    coaching_session_image_max_bytes: u64,
 
     /// Lifetime, in seconds, of a presigned GET URL issued for a note image
-    #[arg(long, env, default_value_t = DEFAULT_NOTE_IMAGE_PRESIGN_TTL_SECONDS)]
-    note_image_presign_ttl_seconds: u64,
+    #[arg(long, env, default_value_t = DEFAULT_COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS)]
+    coaching_session_image_presign_ttl_seconds: u64,
 
     /// Tracks whether each config field was explicitly set or uses its default.
     /// Populated during construction; not a CLI argument.
@@ -808,10 +808,13 @@ impl Config {
         self.debug_field("spaces_endpoint", &self.spaces_endpoint);
         self.debug_field("spaces_region", &self.spaces_region);
         self.debug_field("spaces_bucket", &self.spaces_bucket);
-        self.debug_field("note_image_max_bytes", &self.note_image_max_bytes);
         self.debug_field(
-            "note_image_presign_ttl_seconds",
-            &self.note_image_presign_ttl_seconds,
+            "coaching_session_image_max_bytes",
+            &self.coaching_session_image_max_bytes,
+        );
+        self.debug_field(
+            "coaching_session_image_presign_ttl_seconds",
+            &self.coaching_session_image_presign_ttl_seconds,
         );
     }
 
@@ -1122,13 +1125,13 @@ impl Config {
     }
 
     /// Returns the maximum accepted size, in bytes, of a coaching note image.
-    pub fn note_image_max_bytes(&self) -> u64 {
-        self.note_image_max_bytes
+    pub fn coaching_session_image_max_bytes(&self) -> u64 {
+        self.coaching_session_image_max_bytes
     }
 
     /// Returns the lifetime, in seconds, of a presigned note-image GET URL.
-    pub fn note_image_presign_ttl_seconds(&self) -> u64 {
-        self.note_image_presign_ttl_seconds
+    pub fn coaching_session_image_presign_ttl_seconds(&self) -> u64 {
+        self.coaching_session_image_presign_ttl_seconds
     }
 }
 

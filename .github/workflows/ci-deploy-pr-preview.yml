@@ -1277,8 +1277,8 @@ jobs:
                   SPACES_SECRET_ACCESS_KEY='${{ secrets.SPACES_SECRET_ACCESS_KEY || 'UNUSED' }}'
                   # Blank, not 'UNUSED': these parse as numbers, and an empty value
                   # falls back to the in-code defaults (10 MB / 900s).
-                  NOTE_IMAGE_MAX_BYTES='${{ vars.NOTE_IMAGE_MAX_BYTES }}'
-                  NOTE_IMAGE_PRESIGN_TTL_SECONDS='${{ vars.NOTE_IMAGE_PRESIGN_TTL_SECONDS }}'
+                  COACHING_SESSION_IMAGE_MAX_BYTES='${{ vars.COACHING_SESSION_IMAGE_MAX_BYTES }}'
+                  COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS='${{ vars.COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS }}'
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
                   RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}'

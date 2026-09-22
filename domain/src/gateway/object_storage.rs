@@ -426,7 +426,7 @@ mod tests {
     async fn local_put_get_round_trip_preserves_bytes_and_content_type() {
         let root = TempRoot::new();
         let store = LocalObjectStore::new(&root.path);
-        let key = "coaching-sessions/abc/notes/def.png";
+        let key = "coaching-sessions/abc/images/def.png";
 
         store
             .put(key, vec![0x89, b'P', b'N', b'G'], "image/png")
@@ -479,7 +479,7 @@ mod tests {
     fn spaces_presigned_get_signs_an_immutable_cache_url() {
         let url = spaces_store()
             .presigned_get(
-                "coaching-sessions/abc/notes/def.png",
+                "coaching-sessions/abc/images/def.png",
                 Duration::from_secs(900),
             )
             .expect("signing succeeds")
@@ -487,7 +487,7 @@ mod tests {
 
         assert!(url.contains("test-bucket"), "url names the bucket: {url}");
         assert!(
-            url.contains("coaching-sessions/abc/notes/def.png"),
+            url.contains("coaching-sessions/abc/images/def.png"),
             "url names the key: {url}"
         );
         assert!(url.contains("X-Amz-Signature="), "url is signed: {url}");

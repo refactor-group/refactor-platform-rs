@@ -148,8 +148,8 @@ bytes back instead of redirecting to a presigned URL.
 ```env
 OBJECT_STORE_BACKEND=local
 OBJECT_STORE_LOCAL_PATH=./.local-object-store
-NOTE_IMAGE_MAX_BYTES=10485760          # 10 MB upload cap
-NOTE_IMAGE_PRESIGN_TTL_SECONDS=900     # lifetime of a presigned image GET URL
+COACHING_SESSION_IMAGE_MAX_BYTES=10485760          # 10 MB upload cap
+COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=900     # lifetime of a presigned image GET URL
 ```
 
 #### Using DigitalOcean Spaces
@@ -176,7 +176,7 @@ If the backend is `spaces` but any of these is missing, the app still boots — 
 the image endpoints return 503 rather than failing startup.
 
 To verify the whole pipeline end to end, follow
-[docs/test-plans/coaching_note_images_manual_testing.md](test-plans/coaching_note_images_manual_testing.md).
+[docs/test-plans/coaching_session_images_manual_testing.md](test-plans/coaching_session_images_manual_testing.md).
 
 ### 6. Full `.env` Snippet
 
@@ -206,8 +206,8 @@ RECALL_AI_WEBHOOK_SECRET=whsec_<signing-secret>
 # ==============================
 OBJECT_STORE_BACKEND=local
 OBJECT_STORE_LOCAL_PATH=./.local-object-store
-NOTE_IMAGE_MAX_BYTES=10485760
-NOTE_IMAGE_PRESIGN_TTL_SECONDS=900
+COACHING_SESSION_IMAGE_MAX_BYTES=10485760
+COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=900
 
 # ==============================
 #   Collaborative notes (docs-collab-server)
@@ -322,8 +322,8 @@ SPACES_REGION=nyc3
 SPACES_BUCKET=<space-name>
 SPACES_ACCESS_KEY_ID=<access-key-id from secrets manager>
 SPACES_SECRET_ACCESS_KEY=<secret-access-key from secrets manager>
-NOTE_IMAGE_MAX_BYTES=10485760
-NOTE_IMAGE_PRESIGN_TTL_SECONDS=900
+COACHING_SESSION_IMAGE_MAX_BYTES=10485760
+COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=900
 ```
 
 ### 5. Deployment

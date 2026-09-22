@@ -19,7 +19,7 @@ use domain::error::Error as DomainError;
 use domain::gateway::object_storage::{ObjectStore, StoredObject};
 use domain::user::Backend;
 use domain::{
-    coaching_relationships, coaching_session_note_images, coaching_sessions, user_roles, users, Id,
+    coaching_relationships, coaching_session_images, coaching_sessions, user_roles, users, Id,
 };
 use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, MockDatabase};
@@ -151,13 +151,13 @@ fn session(relationship_id: Id) -> coaching_sessions::Model {
     }
 }
 
-fn image(session_id: Id, uploaded_by_id: Id) -> coaching_session_note_images::Model {
+fn image(session_id: Id, uploaded_by_id: Id) -> coaching_session_images::Model {
     let now = Utc::now();
-    coaching_session_note_images::Model {
+    coaching_session_images::Model {
         id: Id::new_v4(),
         coaching_session_id: session_id,
         uploaded_by_id,
-        storage_key: "coaching-sessions/abc/notes/def.png".to_string(),
+        storage_key: "coaching-sessions/abc/images/def.png".to_string(),
         mime_type: "image/png".to_string(),
         byte_size: TINY_PNG.len() as i64,
         width: Some(2),
@@ -189,7 +189,7 @@ fn build_app(
     let body_limit = usize::try_from(
         app_state
             .config
-            .note_image_max_bytes()
+            .coaching_session_image_max_bytes()
             .saturating_add(64 * 1024),
     )
     .unwrap_or(usize::MAX);
@@ -414,7 +414,7 @@ async fn a_fetch_without_an_api_version_header_is_served() {
 #[tokio::test]
 async fn the_cache_lifetime_is_shorter_than_the_presign_ttl() {
     let world = fetch_world(true, presigning_store()).await;
-    let presign_ttl = Config::default().note_image_presign_ttl_seconds();
+    let presign_ttl = Config::default().coaching_session_image_presign_ttl_seconds();
 
     let response = fetch(&world.app, Some(&world.cookie), world.image_id).await;
 
@@ -430,7 +430,7 @@ async fn the_cache_lifetime_is_shorter_than_the_presign_ttl() {
 #[tokio::test]
 async fn a_backend_that_cannot_presign_streams_the_bytes() {
     let world = fetch_world(true, streaming_store()).await;
-    let presign_ttl = Config::default().note_image_presign_ttl_seconds();
+    let presign_ttl = Config::default().coaching_session_image_presign_ttl_seconds();
 
     let response = fetch(&world.app, Some(&world.cookie), world.image_id).await;
 

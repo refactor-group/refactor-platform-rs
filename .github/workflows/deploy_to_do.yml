@@ -246,8 +246,8 @@ jobs:
           SPACES_SECRET_ACCESS_KEY=${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           # Upload cap and presigned GET lifetime; blank falls back to the in-code
           # defaults (10 MB / 900s)
-          NOTE_IMAGE_MAX_BYTES=${{ vars.NOTE_IMAGE_MAX_BYTES }}
-          NOTE_IMAGE_PRESIGN_TTL_SECONDS=${{ vars.NOTE_IMAGE_PRESIGN_TTL_SECONDS }}
+          COACHING_SESSION_IMAGE_MAX_BYTES=${{ vars.COACHING_SESSION_IMAGE_MAX_BYTES }}
+          COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=${{ vars.COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS }}
 
           # -------- Nginx Reverse Proxy Config
           SSL_DHPARAMS_PATH=${{ vars.SSL_DHPARAMS_PATH }}

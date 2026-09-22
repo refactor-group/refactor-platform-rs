@@ -3,15 +3,15 @@
 //! Validation lives here because this is the security boundary — the declared content type
 //! from the request never reaches this module, only the bytes themselves.
 
-use entity_api::coaching_session_note_image::NewNoteImage;
+use entity_api::coaching_session_image::NewCoachingSessionImage;
 use sea_orm::DatabaseConnection;
 
-use crate::coaching_session_note_images::Model;
+use crate::coaching_session_images::Model;
 use crate::error::Error;
 use crate::gateway::object_storage::ObjectStore;
 use crate::Id;
 
-pub use entity_api::coaching_session_note_image::find_by_id;
+pub use entity_api::coaching_session_image::find_by_id;
 
 /// Image types we will accept and later serve from our own origin. `image/svg+xml` is
 /// absent deliberately: SVG is XML that can carry script, so serving it back would be
@@ -86,7 +86,7 @@ pub struct StoreImageParams<'a> {
 /// Object storage path for one note image. Session-prefixed so a future cleanup can drop
 /// a whole prefix, and so other asset kinds can sit under a sibling prefix.
 fn storage_key(coaching_session_id: Id, image_id: Id, extension: &str) -> String {
-    format!("coaching-sessions/{coaching_session_id}/notes/{image_id}.{extension}")
+    format!("coaching-sessions/{coaching_session_id}/images/{image_id}.{extension}")
 }
 
 /// Stores the bytes and records the metadata row that points at them.
@@ -114,9 +114,9 @@ pub async fn create(
         .put(&key, params.bytes, &params.inspected.mime_type)
         .await?;
 
-    Ok(entity_api::coaching_session_note_image::create(
+    Ok(entity_api::coaching_session_image::create(
         db,
-        NewNoteImage {
+        NewCoachingSessionImage {
             coaching_session_id: params.coaching_session_id,
             uploaded_by_id: params.uploaded_by_id,
             storage_key: key,

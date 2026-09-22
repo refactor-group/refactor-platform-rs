@@ -53,7 +53,7 @@ serves both apps from one origin (`nginx/conf.d/refactor-platform.conf` routes `
 
 `DomainErrorKind::Validation(String)` maps to 422 in `web/src/error.rs`, and there is no 413/415
 mapping. The frontend distinguishes "too large" from "unsupported type", and the standards forbid
-adding error variants. So `domain::coaching_session_note_image::inspect_image` returns
+adding error variants. So `domain::coaching_session_image::inspect_image` returns
 `Result<InspectedImage, ImageRejection>` where `ImageRejection` is a plain domain **value type** —
 the same shape as `entity::duration::OutOfRange`, which the standards name as the sanctioned
 pattern. The controller matches it to a status code.
@@ -68,7 +68,7 @@ POST /coaching_sessions/{coaching_session_id}/images
   400 no file part · 403/404 no access · 413 oversize · 415 unsupported/SVG · 503 storage unconfigured
 
 GET /coaching_session_images/{image_id}
-  CoachingSessionNoteImageAccess only — deliberately NO CompareApiVersion
+  CoachingSessionImageAccess only — deliberately NO CompareApiVersion
   302 → presigned GET, or 200 with the bytes when the backend cannot sign
   Cache-Control: private, max-age=600   (MUST be < the presign TTL)
   Vary: Cookie
@@ -98,13 +98,13 @@ GET /coaching_session_images/{image_id}
 
 ## Storage key convention
 
-`coaching-sessions/{session_id}/notes/{image_id}.{ext}` — session-prefixed so a future
+`coaching-sessions/{session_id}/images/{image_id}.{ext}` — session-prefixed so a future
 session-delete can drop a whole prefix, and so logos can sit under a sibling prefix in the same
 bucket.
 
 ## Manual verification
 
-`docs/test-plans/coaching_note_images_manual_testing.md` covers the API end to end, including
+`docs/test-plans/coaching_session_images_manual_testing.md` covers the API end to end, including
 the cases no mock reaches: a real bucket, a real cookie on a subresource request, the
 presign-vs-cache-lifetime inequality, revoked-participant access, and a 503 when storage is
 unconfigured.
@@ -123,7 +123,7 @@ it cannot silently go vacuous. Both tests are needed; neither replaces the other
   like a bug and is not.
 - **Cache lifetime is derived, not duplicated:** `cache_max_age(ttl) = ttl / 3 * 2`, applied to both
   the 302 and the streaming branch from one place so they cannot drift. A test pins
-  `max_age < note_image_presign_ttl_seconds()` as an inequality against the config accessor, with no
+  `max_age < coaching_session_image_presign_ttl_seconds()` as an inequality against the config accessor, with no
   literals. A configured TTL of 0 yields max-age 0, which is equal rather than strictly less; that
   is a degenerate config (a zero-second signature is already expired, and `max-age=0` means do not
   reuse), so it is left alone deliberately.

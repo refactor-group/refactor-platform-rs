@@ -1,11 +1,11 @@
 use super::error::{EntityApiErrorKind, Error};
-use entity::coaching_session_note_images::{ActiveModel, Entity, Model};
+use entity::coaching_session_images::{ActiveModel, Entity, Model};
 use entity::Id;
 use sea_orm::{entity::prelude::*, ActiveValue::Set, TryIntoModel};
 
 /// Everything needed to record one stored image. Bundled so `create` stays at two
 /// arguments and reads as a single statement at the call site.
-pub struct NewNoteImage {
+pub struct NewCoachingSessionImage {
     pub coaching_session_id: Id,
     pub uploaded_by_id: Id,
     pub storage_key: String,
@@ -21,7 +21,10 @@ pub struct NewNoteImage {
 ///
 /// Returns `EntityApiErrorKind::SystemError` when the insert fails, including the
 /// unique-violation on `storage_key`.
-pub async fn create(db: &impl ConnectionTrait, params: NewNoteImage) -> Result<Model, Error> {
+pub async fn create(
+    db: &impl ConnectionTrait,
+    params: NewCoachingSessionImage,
+) -> Result<Model, Error> {
     let now = chrono::Utc::now();
 
     let active = ActiveModel {
@@ -68,7 +71,7 @@ mod tests {
             id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
             uploaded_by_id: Id::new_v4(),
-            storage_key: "coaching-sessions/abc/notes/def.png".to_owned(),
+            storage_key: "coaching-sessions/abc/images/def.png".to_owned(),
             mime_type: "image/png".to_owned(),
             byte_size: 1234,
             width: Some(640),
@@ -79,7 +82,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_returns_a_new_note_image_model() -> Result<(), Error> {
+    async fn create_returns_a_new_coaching_session_image_model() -> Result<(), Error> {
         let expected = image_model();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -88,7 +91,7 @@ mod tests {
 
         let image = create(
             &db,
-            NewNoteImage {
+            NewCoachingSessionImage {
                 coaching_session_id: expected.coaching_session_id,
                 uploaded_by_id: expected.uploaded_by_id,
                 storage_key: expected.storage_key.clone(),

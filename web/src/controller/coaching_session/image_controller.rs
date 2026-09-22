@@ -5,7 +5,9 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, LOCATION, VARY};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use domain::coaching_session_note_image::{self as NoteImageApi, ImageRejection, StoreImageParams};
+use domain::coaching_session_image::{
+    self as CoachingSessionImageApi, ImageRejection, StoreImageParams,
+};
 use log::*;
 use service::config::ApiVersion;
 
@@ -13,7 +15,7 @@ use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, coaching_session_access::CoachingSessionAccess,
-    coaching_session_note_image_access::CoachingSessionNoteImageAccess,
+    coaching_session_image_access::CoachingSessionImageAccess,
     compare_api_version::CompareApiVersion,
 };
 use crate::{AppState, Error};
@@ -30,7 +32,7 @@ use crate::{AppState, Error};
     ),
     request_body(content = String, description = "multipart/form-data with a `file` part", content_type = "multipart/form-data"),
     responses(
-        (status = 201, description = "Image stored", body = domain::coaching_session_note_images::Model),
+        (status = 201, description = "Image stored", body = domain::coaching_session_images::Model),
         (status = 400, description = "No `file` part, or an empty one"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller is not a participant in the coaching session"),
@@ -59,13 +61,15 @@ pub async fn create(
 
     debug!("POST note image for session {}", session.id);
 
-    let inspected =
-        match NoteImageApi::inspect_image(&bytes, app_state.config.note_image_max_bytes()) {
-            Ok(inspected) => inspected,
-            Err(rejection) => return Ok(rejected(rejection)),
-        };
+    let inspected = match CoachingSessionImageApi::inspect_image(
+        &bytes,
+        app_state.config.coaching_session_image_max_bytes(),
+    ) {
+        Ok(inspected) => inspected,
+        Err(rejection) => return Ok(rejected(rejection)),
+    };
 
-    let image = NoteImageApi::create(
+    let image = CoachingSessionImageApi::create(
         app_state.db_conn_ref(),
         store.as_ref(),
         StoreImageParams {
@@ -102,14 +106,16 @@ pub async fn create(
     security(("cookie_auth" = []))
 )]
 pub async fn read(
-    CoachingSessionNoteImageAccess(image): CoachingSessionNoteImageAccess,
+    CoachingSessionImageAccess(image): CoachingSessionImageAccess,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
     let Some(store) = app_state.object_store.clone() else {
         return Ok(storage_unavailable());
     };
 
-    let presign_ttl_seconds = app_state.config.note_image_presign_ttl_seconds();
+    let presign_ttl_seconds = app_state
+        .config
+        .coaching_session_image_presign_ttl_seconds();
 
     let mut response =
         match store.presigned_get(&image.storage_key, Duration::from_secs(presign_ttl_seconds))? {
@@ -207,5 +213,5 @@ fn header_value(value: &str) -> Result<HeaderValue, Error> {
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
-#[path = "note_image_controller_tests.rs"]
+#[path = "image_controller_tests.rs"]
 mod tests;

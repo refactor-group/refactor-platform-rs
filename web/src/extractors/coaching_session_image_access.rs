@@ -3,7 +3,7 @@ use axum::{
     extract::{FromRef, FromRequestParts},
     http::{request::Parts, StatusCode},
 };
-use domain::{coaching_session, coaching_session_note_image, coaching_session_note_images};
+use domain::{coaching_session, coaching_session_image, coaching_session_images};
 
 use crate::{
     extractors::{
@@ -20,10 +20,10 @@ use crate::{
 /// relationship. A missing or unparseable id is a 400, an unknown image collapses to 404
 /// so its existence is not revealed, and a non-participant gets 403. On success, yields
 /// the image model so the handler needs no second query.
-pub(crate) struct CoachingSessionNoteImageAccess(pub coaching_session_note_images::Model);
+pub(crate) struct CoachingSessionImageAccess(pub coaching_session_images::Model);
 
 #[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionNoteImageAccess
+impl<S> FromRequestParts<S> for CoachingSessionImageAccess
 where
     AppState: FromRef<S>,
     S: Send + Sync,
@@ -38,7 +38,7 @@ where
 
         let image_id = parse_path_id_from_parts(parts, "image_id").await?;
 
-        let image = coaching_session_note_image::find_by_id(app_state.db_conn_ref(), image_id)
+        let image = coaching_session_image::find_by_id(app_state.db_conn_ref(), image_id)
             .await
             .map_err(|_| not_found())?;
 
@@ -55,6 +55,6 @@ where
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
-        Ok(CoachingSessionNoteImageAccess(image))
+        Ok(CoachingSessionImageAccess(image))
     }
 }

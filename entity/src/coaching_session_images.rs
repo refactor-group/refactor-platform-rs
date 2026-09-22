@@ -9,10 +9,10 @@ use utoipa::ToSchema;
 /// server-derived — the client uploads bytes and nothing else — so the whole model
 /// skips deserialization.
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
-#[schema(as = entity::coaching_session_note_images::Model)]
+#[schema(as = entity::coaching_session_images::Model)]
 #[sea_orm(
     schema_name = "refactor_platform",
-    table_name = "coaching_session_note_images"
+    table_name = "coaching_session_images"
 )]
 pub struct Model {
     #[serde(skip_deserializing)]
