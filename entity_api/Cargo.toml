@@ -13,6 +13,7 @@ serde = { version = "1.0.210", features = ["derive"] }
 log = "0.4.22"
 axum-login = "0.16.0"
 async-trait = "0.1.83"
+base64 = "0.22"
 password-auth = "1.0.0"
 slugify = "0.1.0"
 utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
