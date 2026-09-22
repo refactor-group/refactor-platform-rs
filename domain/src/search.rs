@@ -107,7 +107,24 @@ async fn resolve_visible_relationship_ids(
     if scope.is_super_admin {
         return Ok(match (coaching_relationship_id, organization_id) {
             // Intersect-only: a bogus id yields an empty result, never an error.
-            (Some(rel_id), _) => Some(vec![rel_id]),
+            (Some(rel_id), None) => Some(vec![rel_id]),
+            // Both filters intersect: keep the relationship only if it belongs
+            // to the requested organization.
+            (Some(rel_id), Some(org_id)) => Some(
+                coaching_relationships::Entity::find()
+                    .select_only()
+                    .column(coaching_relationships::Column::Id)
+                    .column(coaching_relationships::Column::OrganizationId)
+                    .filter(coaching_relationships::Column::Id.eq(rel_id))
+                    .filter(coaching_relationships::Column::OrganizationId.eq(org_id))
+                    .into_model::<RelationshipRow>()
+                    .all(db)
+                    .await
+                    .map_err(entity_api::error::Error::from)?
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect(),
+            ),
             (None, Some(org_id)) => Some(
                 coaching_relationships::Entity::find()
                     .select_only()
