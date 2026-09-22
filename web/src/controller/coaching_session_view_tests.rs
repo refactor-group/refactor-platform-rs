@@ -84,6 +84,7 @@ fn app_state(db: &Arc<sea_orm::DatabaseConnection>) -> AppState {
         domain::events::EventPublisher::default(),
         None,
         None,
+        None,
     )
 }
 

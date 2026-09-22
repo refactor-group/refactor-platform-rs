@@ -244,6 +244,7 @@ mod tests {
             domain::events::EventPublisher::default(),
             None,
             None,
+            None,
         );
 
         let session_store = MemoryStore::default();

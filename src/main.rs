@@ -23,7 +23,7 @@
 //! and/or teams by providing a single application that facilitates and enhances
 //! your coaching practice.
 
-use domain::gateway::recall_ai;
+use domain::gateway::{object_storage, recall_ai};
 use events::EventPublisher;
 use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
@@ -97,6 +97,11 @@ async fn main() {
             }
         };
 
+    let object_store = object_storage::from_config(&service_state.config);
+    if object_store.is_none() {
+        info!("Object storage is not configured — coaching note image upload and serving disabled");
+    }
+
     // Create web-level state (adds domain and SSE concerns)
     let web_state = web::AppState::new(
         service_state,
@@ -104,6 +109,7 @@ async fn main() {
         event_publisher,
         recording_bot_provider,
         transcription_provider,
+        object_store,
     );
 
     web::init_server(web_state).await.unwrap();

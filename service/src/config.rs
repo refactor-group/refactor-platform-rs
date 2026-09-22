@@ -52,6 +52,14 @@ const DEFAULT_SESSION_REMINDER_POLL_MINUTES: u64 = 15;
 /// keyboard when requesting reset.
 const DEFAULT_PASSWORD_RESET_TOKEN_EXPIRY_SECONDS: u64 = 1800;
 
+/// Default cap on a coaching note image upload (10 MiB).
+const DEFAULT_NOTE_IMAGE_MAX_BYTES: u64 = 10485760;
+
+/// Default lifetime of a presigned note-image GET URL (15 minutes). Must stay longer
+/// than the `Cache-Control` max-age the read endpoint sets, or a cached 302 outlives
+/// the URL it points at.
+const DEFAULT_NOTE_IMAGE_PRESIGN_TTL_SECONDS: u64 = 900;
+
 /// All config field names registered with Clap, used for value source tracking.
 /// This is the single source of truth for field key names across the Config type.
 const CONFIG_FIELD_KEYS: &[&str] = &[
@@ -105,6 +113,15 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "recall_ai_api_key",
     "recall_ai_region",
     "recall_ai_webhook_secret",
+    "object_store_backend",
+    "object_store_local_path",
+    "spaces_endpoint",
+    "spaces_region",
+    "spaces_bucket",
+    "spaces_access_key_id",
+    "spaces_secret_access_key",
+    "note_image_max_bytes",
+    "note_image_presign_ttl_seconds",
 ];
 
 #[derive(Deserialize, IntoParams)]
@@ -467,6 +484,42 @@ pub struct Config {
     #[arg(long, env)]
     recall_ai_webhook_secret: Option<String>,
 
+    /// Object storage backend: "local" (filesystem) or "spaces" (DigitalOcean Spaces)
+    #[arg(long, env, default_value = "local")]
+    object_store_backend: String,
+
+    /// Filesystem root used by the "local" object storage backend
+    #[arg(long, env, default_value = "./.local-object-store")]
+    object_store_local_path: String,
+
+    /// DigitalOcean Spaces endpoint URL (e.g. https://nyc3.digitaloceanspaces.com)
+    #[arg(long, env)]
+    spaces_endpoint: Option<String>,
+
+    /// DigitalOcean Spaces region
+    #[arg(long, env, default_value = "nyc3")]
+    spaces_region: String,
+
+    /// DigitalOcean Spaces bucket name
+    #[arg(long, env)]
+    spaces_bucket: Option<String>,
+
+    /// DigitalOcean Spaces access key id
+    #[arg(long, env)]
+    spaces_access_key_id: Option<String>,
+
+    /// DigitalOcean Spaces secret access key
+    #[arg(long, env)]
+    spaces_secret_access_key: Option<String>,
+
+    /// Maximum accepted size, in bytes, of an image pasted into a coaching note
+    #[arg(long, env, default_value_t = DEFAULT_NOTE_IMAGE_MAX_BYTES)]
+    note_image_max_bytes: u64,
+
+    /// Lifetime, in seconds, of a presigned GET URL issued for a note image
+    #[arg(long, env, default_value_t = DEFAULT_NOTE_IMAGE_PRESIGN_TTL_SECONDS)]
+    note_image_presign_ttl_seconds: u64,
+
     /// Tracks whether each config field was explicitly set or uses its default.
     /// Populated during construction; not a CLI argument.
     #[arg(skip)]
@@ -750,6 +803,16 @@ impl Config {
             "session_reminder_poll_minutes",
             &self.session_reminder_poll_minutes,
         );
+        self.debug_field("object_store_backend", &self.object_store_backend);
+        self.debug_field("object_store_local_path", &self.object_store_local_path);
+        self.debug_field("spaces_endpoint", &self.spaces_endpoint);
+        self.debug_field("spaces_region", &self.spaces_region);
+        self.debug_field("spaces_bucket", &self.spaces_bucket);
+        self.debug_field("note_image_max_bytes", &self.note_image_max_bytes);
+        self.debug_field(
+            "note_image_presign_ttl_seconds",
+            &self.note_image_presign_ttl_seconds,
+        );
     }
 
     pub fn api_version(&self) -> &str {
@@ -1019,6 +1082,53 @@ impl Config {
 
     pub fn recall_ai_webhook_secret(&self) -> Option<String> {
         self.recall_ai_webhook_secret.clone()
+    }
+
+    // Object storage accessors
+
+    /// Returns which object storage backend to build: "local" or "spaces".
+    pub fn object_store_backend(&self) -> &str {
+        &self.object_store_backend
+    }
+
+    /// Returns the filesystem root of the "local" object storage backend.
+    pub fn object_store_local_path(&self) -> &str {
+        &self.object_store_local_path
+    }
+
+    /// Returns the DigitalOcean Spaces endpoint URL, if configured.
+    pub fn spaces_endpoint(&self) -> Option<String> {
+        self.spaces_endpoint.clone()
+    }
+
+    /// Returns the DigitalOcean Spaces region.
+    pub fn spaces_region(&self) -> &str {
+        &self.spaces_region
+    }
+
+    /// Returns the DigitalOcean Spaces bucket name, if configured.
+    pub fn spaces_bucket(&self) -> Option<String> {
+        self.spaces_bucket.clone()
+    }
+
+    /// Returns the DigitalOcean Spaces access key id, if configured.
+    pub fn spaces_access_key_id(&self) -> Option<String> {
+        self.spaces_access_key_id.clone()
+    }
+
+    /// Returns the DigitalOcean Spaces secret access key, if configured.
+    pub fn spaces_secret_access_key(&self) -> Option<String> {
+        self.spaces_secret_access_key.clone()
+    }
+
+    /// Returns the maximum accepted size, in bytes, of a coaching note image.
+    pub fn note_image_max_bytes(&self) -> u64 {
+        self.note_image_max_bytes
+    }
+
+    /// Returns the lifetime, in seconds, of a presigned note-image GET URL.
+    pub fn note_image_presign_ttl_seconds(&self) -> u64 {
+        self.note_image_presign_ttl_seconds
     }
 }
 

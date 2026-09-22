@@ -43,6 +43,8 @@ pub struct AppState {
     pub oauth_state_manager: meeting_auth::oauth::StateManager,
     pub recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
     pub transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
+    /// `None` when object storage is unconfigured, which the image endpoints report as 503.
+    pub object_store: Option<Arc<dyn domain::gateway::object_storage::ObjectStore>>,
 }
 
 impl AppState {
@@ -52,6 +54,7 @@ impl AppState {
         event_publisher: domain::events::EventPublisher,
         recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
         transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
+        object_store: Option<Arc<dyn domain::gateway::object_storage::ObjectStore>>,
     ) -> Self {
         Self {
             database_connection: service_state.database_connection,
@@ -61,6 +64,7 @@ impl AppState {
             oauth_state_manager: meeting_auth::oauth::StateManager::new(),
             recording_bot_provider,
             transcription_provider,
+            object_store,
         }
     }
 

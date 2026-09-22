@@ -14,6 +14,7 @@ entity = { path = "../entity" }
 entity_api = { path = "../entity_api" }
 events = { path = "../events" }
 hex = "0.4"
+infer = "0.16"
 icalendar = { version = "0.17", features = ["recurrence", "chrono-tz"] }
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 meeting-ai = { path = "../meeting-ai" }
@@ -23,6 +24,7 @@ service = { path = "../service" }
 log = "0.4.22"
 rand = "0.8"
 reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
+rusty-s3 = "0.10"
 sha2 = "0.10"
 serde_json = "1.0.128"
 serde = {version = "1.0.210", features = ["derive"] }

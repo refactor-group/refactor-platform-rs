@@ -108,6 +108,7 @@ async fn status_for_protected_request(db: Arc<DatabaseConnection>, session_id: I
         domain::events::EventPublisher::default(),
         None,
         None,
+        None,
     );
 
     let session_store = MemoryStore::default();
