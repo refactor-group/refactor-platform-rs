@@ -68,8 +68,8 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::set_rating,
             coaching_session::topic_controller::set_status,
             coaching_session::topic_controller::undo,
+            coaching_session::transcription_controller::read_latest,
             coaching_session::transcription_controller::read,
-            coaching_session::transcription_controller::read_one,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
             magic_link_controller::validate,
@@ -876,11 +876,11 @@ fn coaching_session_transcription_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
             "/coaching_sessions/:coaching_session_id/transcriptions",
-            get(coaching_session::transcription_controller::read),
+            get(coaching_session::transcription_controller::read_latest),
         )
         .route(
             "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id",
-            get(coaching_session::transcription_controller::read_one),
+            get(coaching_session::transcription_controller::read),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

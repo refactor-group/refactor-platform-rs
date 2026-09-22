@@ -30,7 +30,9 @@ enum Representation {
     PlainText,
 }
 
-/// GET transcription metadata and status for a coaching session
+/// Read the most recent transcription for a coaching session
+///
+/// A session can hold several transcriptions; this returns the latest by creation time.
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{coaching_session_id}/transcriptions",
@@ -45,7 +47,7 @@ enum Representation {
     ),
     security(("cookie_auth" = []))
 )]
-pub async fn read(
+pub async fn read_latest(
     CompareApiVersion(_v): CompareApiVersion,
     CoachingSessionAccess(session): CoachingSessionAccess,
     State(app_state): State<AppState>,
@@ -89,7 +91,7 @@ pub async fn read(
     ),
     security(("cookie_auth" = []))
 )]
-pub async fn read_one(
+pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
     CoachingSessionAccess(session): CoachingSessionAccess,
     State(app_state): State<AppState>,

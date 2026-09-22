@@ -1,4 +1,4 @@
-use super::read_one;
+use super::read;
 use crate::middleware::auth::require_auth;
 use crate::AppState;
 use axum::http::StatusCode;
@@ -178,7 +178,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         )
         .merge(
             Router::new()
-                .route(ROUTE, get(read_one))
+                .route(ROUTE, get(read))
                 .route_layer(from_fn(require_auth)),
         )
         .layer(auth_layer)
