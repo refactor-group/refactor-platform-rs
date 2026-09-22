@@ -89,6 +89,12 @@ pub async fn create(
 /// DELIBERATELY NO `CompareApiVersion`: this URL is loaded by a browser `<img>` tag, which
 /// cannot send the `X-Version` header. Adding that extractor here to make the API uniform
 /// would silently break every image in the product.
+///
+/// DELIBERATELY SERVES SOFT-DELETED IMAGES: `deleted_at` is never consulted. If the row is
+/// still here the object is still here, and that is exactly what lets an undo in the editor
+/// resurrect the image during the grace window. Filtering deleted rows out looks like an
+/// obvious improvement and would silently break undo; after the purge job runs the row is
+/// gone and this 404s on its own.
 #[utoipa::path(
     get,
     path = "/coaching_session_images/{image_id}",
@@ -136,6 +142,69 @@ pub async fn read(
     headers.insert(VARY, HeaderValue::from_static("Cookie"));
 
     Ok(response)
+}
+
+/// Mark one note image removed, without destroying anything
+///
+/// The frontend signals a removal it detected inside the opaque note document; the bytes and
+/// the row survive until the purge job's grace period elapses, which is what keeps undo free.
+/// Idempotent, and it has to be: both participants observe the same removal and both may
+/// signal it, so a repeat call must not extend the grace window.
+#[utoipa::path(
+    delete,
+    path = "/coaching_session_images/{image_id}",
+    params(
+        ApiVersion,
+        ("image_id" = domain::Id, Path, description = "Note image id"),
+    ),
+    responses(
+        (status = 200, description = "Image marked deleted", body = domain::coaching_session_images::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller is not a participant in the image's coaching session"),
+        (status = 404, description = "No such image"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn delete(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionImageAccess(image): CoachingSessionImageAccess,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("DELETE note image {}", image.id);
+
+    let image = CoachingSessionImageApi::soft_delete(app_state.db_conn_ref(), image.id).await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), image)))
+}
+
+/// Clear the removal mark on one note image, which is how an undo resurrects it
+///
+/// Idempotent for the same reason `delete` is: restoring a live image is a no-op.
+#[utoipa::path(
+    post,
+    path = "/coaching_session_images/{image_id}/restore",
+    params(
+        ApiVersion,
+        ("image_id" = domain::Id, Path, description = "Note image id"),
+    ),
+    responses(
+        (status = 200, description = "Image restored", body = domain::coaching_session_images::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller is not a participant in the image's coaching session"),
+        (status = 404, description = "No such image"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn restore(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionImageAccess(image): CoachingSessionImageAccess,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("RESTORE note image {}", image.id);
+
+    let image = CoachingSessionImageApi::restore(app_state.db_conn_ref(), image.id).await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), image)))
 }
 
 /// Cache lifetime for a note image response, derived from the presign TTL rather than

@@ -28,12 +28,13 @@ use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
 
-use super::{create, read};
+use super::{create, delete, read, restore};
 use crate::middleware::auth::require_auth;
 use crate::AppState;
 
 const UPLOAD_ROUTE: &str = "/coaching_sessions/:coaching_session_id/images";
 const FETCH_ROUTE: &str = "/coaching_session_images/:image_id";
+const RESTORE_ROUTE: &str = "/coaching_session_images/:image_id/restore";
 const BOUNDARY: &str = "note-image-test-boundary";
 const PRESIGNED_URL: &str = "https://example.digitaloceanspaces.com/key?X-Amz-Signature=abc";
 
@@ -151,7 +152,7 @@ fn session(relationship_id: Id) -> coaching_sessions::Model {
     }
 }
 
-fn image(session_id: Id, uploaded_by_id: Id) -> coaching_session_images::Model {
+fn image(session_id: Id, uploaded_by_id: Id, deleted: bool) -> coaching_session_images::Model {
     let now = Utc::now();
     coaching_session_images::Model {
         id: Id::new_v4(),
@@ -162,7 +163,7 @@ fn image(session_id: Id, uploaded_by_id: Id) -> coaching_session_images::Model {
         byte_size: TINY_PNG.len() as i64,
         width: Some(2),
         height: Some(3),
-        deleted_at: None,
+        deleted_at: deleted.then(|| now.into()),
         created_at: now.into(),
         updated_at: now.into(),
     }
@@ -206,7 +207,8 @@ fn build_app(
                     UPLOAD_ROUTE,
                     post(create).layer(DefaultBodyLimit::max(body_limit)),
                 )
-                .route(FETCH_ROUTE, get(read))
+                .route(FETCH_ROUTE, get(read).delete(delete))
+                .route(RESTORE_ROUTE, post(restore))
                 .route_layer(from_fn(require_auth)),
         )
         .layer(auth_layer)
@@ -318,13 +320,22 @@ struct World {
 /// Builds a fetch world. `participant` decides whether the logged-in user is the coach of
 /// the image's session or a stranger holding a valid image id.
 async fn fetch_world(participant: bool, object_store: Option<Arc<dyn ObjectStore>>) -> World {
+    fetch_world_for(participant, object_store, false).await
+}
+
+/// As `fetch_world`, with control over whether the stored row is already marked deleted.
+async fn fetch_world_for(
+    participant: bool,
+    object_store: Option<Arc<dyn ObjectStore>>,
+    deleted: bool,
+) -> World {
     let organization_id = Id::new_v4();
     let user = coach();
     let role = role(user.id, organization_id);
     let coach_id = if participant { user.id } else { Id::new_v4() };
     let relationship = relationship(organization_id, coach_id, Id::new_v4());
     let session = session(relationship.id);
-    let image = image(session.id, coach_id);
+    let image = image(session.id, coach_id, deleted);
 
     let db = authenticated(&user, &role)
         .append_query_results([vec![image.clone()]])
@@ -350,7 +361,7 @@ async fn upload_world(participant: bool, object_store: Option<Arc<dyn ObjectStor
     let coach_id = if participant { user.id } else { Id::new_v4() };
     let relationship = relationship(organization_id, coach_id, Id::new_v4());
     let session = session(relationship.id);
-    let image = image(session.id, coach_id);
+    let image = image(session.id, coach_id, false);
 
     let db = authenticated(&user, &role)
         .append_query_results([vec![(session.clone(), relationship.clone())]])
@@ -576,4 +587,180 @@ async fn a_fetch_without_object_storage_is_service_unavailable() {
         .status();
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// A removal-signal world, plus the wire form of the row the domain update returns.
+struct Signal {
+    world: World,
+    updated: serde_json::Value,
+}
+
+/// Builds a world for a removal signal. The last appended row is what the domain update
+/// returns, so `returns_deleted` decides the `deleted_at` that update produced.
+///
+/// `deleted_at` is `#[serde(skip)]` on the model, so it cannot be asserted through the
+/// response. The row the update returns is given a distinct `updated_at` instead and
+/// compared whole: that is what fails if a handler stops delegating and simply echoes the
+/// extractor's row back.
+async fn signal_world(participant: bool, returns_deleted: bool) -> Signal {
+    let organization_id = Id::new_v4();
+    let user = coach();
+    let role = role(user.id, organization_id);
+    let coach_id = if participant { user.id } else { Id::new_v4() };
+    let relationship = relationship(organization_id, coach_id, Id::new_v4());
+    let session = session(relationship.id);
+    // The stored row starts in the opposite state, so the update has something to change.
+    let stored = image(session.id, coach_id, !returns_deleted);
+    let updated = coaching_session_images::Model {
+        deleted_at: returns_deleted.then(|| Utc::now().into()),
+        updated_at: (Utc::now() + chrono::Duration::seconds(1)).into(),
+        ..stored.clone()
+    };
+    let updated_wire = serde_json::to_value(&updated).expect("the model must serialize");
+
+    let db = authenticated(&user, &role)
+        .append_query_results([vec![stored.clone()]])
+        .append_query_results([vec![(session.clone(), relationship.clone())]])
+        .append_query_results([vec![updated]])
+        .into_connection();
+
+    let app = build_app(Arc::new(db), presigning_store());
+    let cookie = login_cookie(&app).await;
+
+    Signal {
+        world: World {
+            app,
+            cookie,
+            session_id: session.id,
+            image_id: stored.id,
+        },
+        updated: updated_wire,
+    }
+}
+
+/// Signals a removal (`DELETE`) or an undo (`POST .../restore`). Both are called by our own
+/// API module over `sessionGuard`, so both send `x-version`.
+async fn signal(
+    app: &Router,
+    cookie: Option<&str>,
+    image_id: Id,
+    method: &str,
+    suffix: &str,
+) -> axum::response::Response {
+    let request = Request::builder()
+        .uri(format!("/coaching_session_images/{image_id}{suffix}"))
+        .method(method)
+        .header("x-version", "1.0.0-beta1");
+    let request = match cookie {
+        Some(cookie) => request.header("cookie", cookie),
+        None => request,
+    };
+
+    app.clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn soft_delete(app: &Router, cookie: Option<&str>, image_id: Id) -> axum::response::Response {
+    signal(app, cookie, image_id, "DELETE", "").await
+}
+
+async fn undo(app: &Router, cookie: Option<&str>, image_id: Id) -> axum::response::Response {
+    signal(app, cookie, image_id, "POST", "/restore").await
+}
+
+async fn json_body(response: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).expect("the response must be JSON")
+}
+
+#[tokio::test]
+async fn a_participant_marks_an_image_deleted() {
+    let signal = signal_world(true, true).await;
+    let world = &signal.world;
+
+    let response = soft_delete(&world.app, Some(&world.cookie), world.image_id).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = json_body(response).await;
+    assert_eq!(body["status_code"], 200);
+    assert_eq!(
+        body["data"], signal.updated,
+        "the response must carry the row the soft delete returned, not the extractor's"
+    );
+}
+
+#[tokio::test]
+async fn a_participant_restores_a_deleted_image() {
+    let signal = signal_world(true, false).await;
+    let world = &signal.world;
+
+    let response = undo(&world.app, Some(&world.cookie), world.image_id).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = json_body(response).await;
+    assert_eq!(body["status_code"], 200);
+    assert_eq!(
+        body["data"], signal.updated,
+        "the response must carry the row the restore returned, not the extractor's"
+    );
+}
+
+/// The headline case. Destruction is deferred precisely so an undo can resurrect the node
+/// with the same id, which only works while the fetch keeps serving a marked row. This
+/// fails the moment someone filters soft-deleted rows out of `read`.
+#[tokio::test]
+async fn a_fetch_still_serves_an_image_that_is_marked_deleted() {
+    let world = fetch_world_for(true, presigning_store(), true).await;
+
+    let status = fetch(&world.app, Some(&world.cookie), world.image_id)
+        .await
+        .status();
+
+    assert!(
+        status == StatusCode::FOUND || status == StatusCode::OK,
+        "a soft-deleted image must still be served during the grace window, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn a_non_participant_cannot_delete_an_image_it_holds_the_id_for() {
+    let world = signal_world(false, true).await.world;
+
+    let status = soft_delete(&world.app, Some(&world.cookie), world.image_id)
+        .await
+        .status();
+
+    assert!(
+        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+        "a non-participant must be refused, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn a_non_participant_cannot_restore_an_image_it_holds_the_id_for() {
+    let world = signal_world(false, false).await.world;
+
+    let status = undo(&world.app, Some(&world.cookie), world.image_id)
+        .await
+        .status();
+
+    assert!(
+        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+        "a non-participant must be refused, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn an_unauthenticated_delete_is_unauthorized() {
+    let world = signal_world(true, true).await.world;
+
+    let status = soft_delete(&world.app, None, world.image_id).await.status();
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

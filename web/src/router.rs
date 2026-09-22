@@ -63,6 +63,8 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::meeting_recording_controller::delete,
             coaching_session::image_controller::create,
             coaching_session::image_controller::read,
+            coaching_session::image_controller::delete,
+            coaching_session::image_controller::restore,
             coaching_session::topic_controller::index,
             coaching_session::topic_controller::create,
             coaching_session::topic_controller::update,
@@ -900,7 +902,12 @@ fn coaching_session_image_routes(app_state: AppState) -> Router {
         )
         .route(
             "/coaching_session_images/:image_id",
-            get(coaching_session::image_controller::read),
+            get(coaching_session::image_controller::read)
+                .delete(coaching_session::image_controller::delete),
+        )
+        .route(
+            "/coaching_session_images/:image_id/restore",
+            post(coaching_session::image_controller::restore),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

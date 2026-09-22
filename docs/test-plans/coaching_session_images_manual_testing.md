@@ -2,7 +2,9 @@
 
 Verify `POST /coaching_sessions/{id}/images` and `GET /coaching_session_images/{image_id}`
 enforce participation, sniff real content types, honour the size cap, and serve bytes
-through a signed redirect (Spaces) or a stream (local filesystem).
+through a signed redirect (Spaces) or a stream (local filesystem). Section 2b covers the
+deferred-deletion signals, `DELETE /coaching_session_images/{image_id}` and
+`POST /coaching_session_images/{image_id}/restore`, and the purge job that eventually acts on them.
 
 Frontend counterpart: `refactor-platform-fe/docs/test-plans/coaching_session_images_manual_testing.md`.
 Implementation plan: `docs/implementation-plans/coaching-note-images-backend.md`.
@@ -61,6 +63,16 @@ up() { curl -s -i -b "/tmp/$1.jar" -H "$VER" -F "file=@$2" \
 
 # Fetch an image. $1 = jar, $2 = image id. No x-version, no -L: we want to SEE the redirect.
 img() { curl -s -i -b "/tmp/$1.jar" "$BASE/coaching_session_images/$2"; }
+
+# Signal a removal. $1 = jar, $2 = image id. These DO send x-version: our own API module calls them.
+del() { curl -s -i -X DELETE -b "/tmp/$1.jar" -H "$VER" "$BASE/coaching_session_images/$2"; }
+
+# Signal an undo. $1 = jar, $2 = image id.
+undel() { curl -s -i -X POST -b "/tmp/$1.jar" -H "$VER" "$BASE/coaching_session_images/$2/restore"; }
+
+# The removal mark for an image, read straight from the DB. $1 = image id.
+mark() { psql "$DATABASE_URL" -tAc \
+  "select coalesce(deleted_at::text, 'NULL') from refactor_platform.coaching_session_images where id = '$1';"; }
 
 login coach james.hodapp@gmail.com password
 login coachee calebbourg2@gmail.com password
@@ -287,13 +299,144 @@ SELECT count(*) FROM refactor_platform.coaching_session_images
 WHERE coaching_session_id = '<throwaway session id>';  -- expect 0
 ```
 
+## 2b. Deferred deletion
+
+Removing an image from a note happens inside an opaque Yjs blob, so the frontend *signals* it and
+the backend only marks the row. The bytes survive a grace period
+(`COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS`, default 168) so an undo can resurrect the image with
+the same id. These cases prove the mark, the survival, and the eventual destruction.
+
+Implementation plan: `docs/implementation-plans/coaching-session-image-deferred-delete.md`.
+
+Upload a fresh image first and keep its id:
+
+```sh
+up coach /tmp/small.png
+IMAGE=<id from the response>
+```
+
+### Case 17: a removal marks the row
+
+```sh
+del coach $IMAGE
+mark $IMAGE
+```
+
+**Pass:** HTTP 200 with `"status_code": 200` in the body and the image model in `data`
+(`deleted_at` is `#[serde(skip)]` and deliberately never crosses the wire, so read it from SQL).
+`mark` prints a timestamp, not `NULL`.
+
+### Case 18: a marked image is still served
+
+```sh
+img coach $IMAGE | head -1
+```
+
+**Pass:** 200 or 302, exactly as before the removal. **This is the case that proves undo will
+work.** If the row exists the object exists, so the fetch never consults `deleted_at`. A 404 here
+means someone filtered soft-deleted rows out of the read handler and silently broke undo.
+
+### Case 19: a second removal does not extend the grace window
+
+```sh
+FIRST=$(mark $IMAGE); echo "first: $FIRST"
+del coach $IMAGE | head -1
+SECOND=$(mark $IMAGE); echo "second: $SECOND"
+[ "$FIRST" = "$SECOND" ] && echo "timestamp preserved"
+```
+
+**Pass:** 200, and the two timestamps are **identical**. Both participants observe the same removal
+and both may signal it; a repeat call that reset the clock would keep the image alive forever.
+
+### Case 20: an undo clears the mark
+
+```sh
+undel coach $IMAGE
+mark $IMAGE
+img coach $IMAGE | head -1
+```
+
+**Pass:** the restore returns 200 with `"status_code": 200`, `mark` prints `NULL`, and the fetch
+still returns 200/302. Restoring an image that is already live is a no-op, not an error — run
+`undel coach $IMAGE` twice to confirm.
+
+### Case 21: a non-participant can neither remove nor restore
+
+```sh
+del outsider $IMAGE | head -1
+undel outsider $IMAGE | head -1
+```
+
+**Pass:** both 403 or 404, and `mark $IMAGE` is unchanged by either call. The image id lives
+forever inside note bytes, so it must not act as a bearer token on these routes either.
+
+### Case 22: a forced purge destroys a marked image
+
+Restart the backend with the grace period collapsed so the job fires immediately:
+
+```sh
+COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS=0 \
+COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES=1 \
+cargo run
+```
+
+Upload two images. Mark **one** of them and leave the other alone:
+
+```sh
+up coach /tmp/small.png     # DOOMED=<id>
+up coach /tmp/small.png     # LIVE=<id>
+DOOMED=<first id>; LIVE=<second id>
+del coach $DOOMED | head -1
+# wait for one poll tick, then:
+mark $DOOMED
+img coach $DOOMED | head -1
+```
+
+**Pass:** after a tick, `mark` returns **no row at all**, the fetch returns **404**, and the object
+is gone from storage (`ls -R ./.local-object-store`, or list the bucket prefix). The object goes
+first and the row second, so a storage failure leaves the row for the next tick to retry — an
+orphaned object with nothing pointing at it is the failure this ordering avoids.
+
+### Case 23: the purge cannot touch a live image
+
+In the **same** forced-purge run as Case 22, immediately after that tick:
+
+```sh
+mark $LIVE                  # expect NULL
+img coach $LIVE | head -1   # expect 200 or 302
+```
+
+**Pass:** the live image's row is still there with `deleted_at` null, and it is still served. **This
+is the safety guard end to end:** with the grace period at zero, every row is old enough to purge,
+so the only thing keeping this image alive is the `deleted_at IS NOT NULL` predicate. If this case
+fails, the job is destroying images users can still see. Restore the default grace period before
+moving on.
+
 ## 3. Cleanup
 
 ```sh
 rm -f /tmp/small.png /tmp/evil.svg /tmp/liar.jpg /tmp/doc.pdf /tmp/big.png /tmp/got.png
 rm -f /tmp/coach.jar /tmp/coachee.jar /tmp/outsider.jar
-rm -rf ./.local-object-store        # local backend artifacts
 ```
 
-Restore any relationship you revoked in Case 12 and delete test objects from the Spaces
-bucket if you ran Case 8.
+> [!WARNING]
+> **Do not delete `./.local-object-store` while image rows still exist.** The rows point at those
+> files; removing the directory leaves every one of them broken, and the notes referencing them
+> render a permanent "image isn't available" state. Check first:
+>
+> ```sh
+> psql "$DATABASE_URL" -tAc "select count(*) from refactor_platform.coaching_session_images;"
+> ```
+>
+> Only when that count is `0` is the directory safe to remove:
+>
+> ```sh
+> rm -rf ./.local-object-store        # local backend artifacts
+> ```
+>
+> If the count is non-zero and you want a clean slate, delete the rows first (or reseed the
+> database), then remove the directory.
+
+Restore any relationship you revoked in Case 12, restore the default
+`COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS` if you ran Case 22, and delete test objects from the
+Spaces bucket if you ran Case 8.
