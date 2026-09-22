@@ -14,6 +14,7 @@ pub(crate) mod oauth_controller;
 pub(crate) mod organization;
 pub(crate) mod organization_controller;
 pub(crate) mod password_reset_controller;
+pub(crate) mod search_controller;
 pub(crate) mod tiptap_metrics_controller;
 pub(crate) mod user;
 pub(crate) mod user_controller;

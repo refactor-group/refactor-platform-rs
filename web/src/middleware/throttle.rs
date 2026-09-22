@@ -72,6 +72,14 @@ impl ThrottlePolicy {
         period_secs: 6,
         burst: 10,
     };
+
+    /// Policy for `GET /search` — authenticated, read-only, but sized for
+    /// search-as-you-type: roughly **1 req/sec sustained per IP with a burst
+    /// of 10**, so a typing burst passes while sustained scraping does not.
+    pub const SEARCH_ENDPOINT: Self = Self {
+        period_secs: 1,
+        burst: 10,
+    };
 }
 
 /// Per-IP throttle backed by an in-process token bucket (`tower_governor`).
