@@ -136,7 +136,49 @@ RECALL_AI_REGION=us-east-1          # or eu-west-2
 RECALL_AI_WEBHOOK_SECRET=whsec_<base64-encoded-secret>
 ```
 
-### 5. Full `.env` Snippet
+### 5. Coaching Note Images (Object Storage)
+
+Images pasted into a coaching note are uploaded to object storage; the note itself stores only an
+image id and resolves the URL at render time. `OBJECT_STORE_BACKEND` picks the backend.
+
+**Local development needs no DigitalOcean Spaces account.** The default `local` backend writes to
+`OBJECT_STORE_LOCAL_PATH`, a gitignored directory under the repo, and the read endpoint streams the
+bytes back instead of redirecting to a presigned URL.
+
+```env
+OBJECT_STORE_BACKEND=local
+OBJECT_STORE_LOCAL_PATH=./.local-object-store
+NOTE_IMAGE_MAX_BYTES=10485760          # 10 MB upload cap
+NOTE_IMAGE_PRESIGN_TTL_SECONDS=900     # lifetime of a presigned image GET URL
+```
+
+#### Using DigitalOcean Spaces
+
+Only needed to exercise the production path, and required in PR previews and production.
+
+1. Create a Space at [cloud.digitalocean.com/spaces](https://cloud.digitalocean.com/spaces) and note
+   its region (e.g. `nyc3`) and name.
+2. Under **Settings → Spaces Keys**, generate an access key pair. The secret is shown once — store it
+   in your secrets manager.
+3. Set `OBJECT_STORE_BACKEND=spaces` plus the variables below. The regional endpoint must match
+   `SPACES_REGION`.
+
+```env
+OBJECT_STORE_BACKEND=spaces
+SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
+SPACES_REGION=nyc3
+SPACES_BUCKET=<space-name>
+SPACES_ACCESS_KEY_ID=<access-key-id>
+SPACES_SECRET_ACCESS_KEY=<secret-access-key>
+```
+
+If the backend is `spaces` but any of these is missing, the app still boots — it logs a warning and
+the image endpoints return 503 rather than failing startup.
+
+To verify the whole pipeline end to end, follow
+[docs/test-plans/coaching_note_images_manual_testing.md](test-plans/coaching_note_images_manual_testing.md).
+
+### 6. Full `.env` Snippet
 
 ```env
 # ==============================
@@ -160,6 +202,14 @@ RECALL_AI_REGION=us-east-1
 RECALL_AI_WEBHOOK_SECRET=whsec_<signing-secret>
 
 # ==============================
+#   Coaching note images
+# ==============================
+OBJECT_STORE_BACKEND=local
+OBJECT_STORE_LOCAL_PATH=./.local-object-store
+NOTE_IMAGE_MAX_BYTES=10485760
+NOTE_IMAGE_PRESIGN_TTL_SECONDS=900
+
+# ==============================
 #   Collaborative notes (docs-collab-server)
 # ==============================
 TIPTAP_URL=http://localhost:1234
@@ -167,7 +217,7 @@ TIPTAP_AUTH_KEY=<any shared secret; the launcher passes it to both servers>
 TIPTAP_JWT_SIGNING_KEY=<any shared secret; the launcher passes it to both servers>
 ```
 
-### 6. Collaborative Notes Server (docs-collab-server)
+### 7. Collaborative Notes Server (docs-collab-server)
 
 Coaching-session notes sync through the self-hosted `docs-collab-server`, not TipTap Cloud. The frontend has no Cloud fallback: if its collab URL is set but nothing is listening, the editor opens local-only with **no error**, and notes silently never sync. So the server has to be running whenever you work on notes.
 
@@ -194,7 +244,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:1234/health   # 200
 
 If notes open but never sync or show presence, check that the collab server is running before anything else.
 
-### 7. Development Flow
+### 8. Development Flow
 
 1. Generate and set `ENCRYPTION_KEY`.
 2. Start the backend: `scripts/run_backend.sh` (app server plus collab server).
@@ -264,6 +314,16 @@ OAUTH_SUCCESS_REDIRECT_URI=https://myrefactor.com/settings
 RECALL_AI_API_KEY=<production-api-key>
 RECALL_AI_REGION=us-east-1
 RECALL_AI_WEBHOOK_SECRET=whsec_<production-signing-secret>
+
+# Coaching note images (see "Coaching Note Images" under Development Setup)
+OBJECT_STORE_BACKEND=spaces
+SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
+SPACES_REGION=nyc3
+SPACES_BUCKET=<space-name>
+SPACES_ACCESS_KEY_ID=<access-key-id from secrets manager>
+SPACES_SECRET_ACCESS_KEY=<secret-access-key from secrets manager>
+NOTE_IMAGE_MAX_BYTES=10485760
+NOTE_IMAGE_PRESIGN_TTL_SECONDS=900
 ```
 
 ### 5. Deployment

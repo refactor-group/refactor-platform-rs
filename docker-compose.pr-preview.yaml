@@ -149,6 +149,18 @@ services:
       RECALL_AI_API_KEY: ${RECALL_AI_API_KEY}
       RECALL_AI_REGION: ${RECALL_AI_REGION}
       RECALL_AI_WEBHOOK_SECRET: ${RECALL_AI_WEBHOOK_SECRET}
+
+      # Coaching note image storage (values set in ci-deploy-pr-preview.yml heredoc).
+      # Previews use the "spaces" backend so images survive the ephemeral container.
+      OBJECT_STORE_BACKEND: ${OBJECT_STORE_BACKEND}
+      OBJECT_STORE_LOCAL_PATH: ${OBJECT_STORE_LOCAL_PATH}
+      SPACES_ENDPOINT: ${SPACES_ENDPOINT}
+      SPACES_REGION: ${SPACES_REGION}
+      SPACES_BUCKET: ${SPACES_BUCKET}
+      SPACES_ACCESS_KEY_ID: ${SPACES_ACCESS_KEY_ID}
+      SPACES_SECRET_ACCESS_KEY: ${SPACES_SECRET_ACCESS_KEY}
+      NOTE_IMAGE_MAX_BYTES: ${NOTE_IMAGE_MAX_BYTES}
+      NOTE_IMAGE_PRESIGN_TTL_SECONDS: ${NOTE_IMAGE_PRESIGN_TTL_SECONDS}
     # Expose port to Docker networks only (no host port binding)
     expose:
       - "4000"                            # Container listens on port 4000 (entrypoint.sh default)

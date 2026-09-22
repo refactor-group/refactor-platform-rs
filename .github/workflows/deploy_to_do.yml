@@ -230,6 +230,25 @@ jobs:
           # Recall.ai webhook signing secret (Svix whsec_... format)
           RECALL_AI_WEBHOOK_SECRET=${{ secrets.RECALL_AI_WEBHOOK_SECRET }}
 
+          # -------- Coaching Note Image Storage Config
+          # Hardcoded intentionally: an empty value is stripped before parsing and
+          # would fall back to the "local" default, silently writing note images
+          # into the container filesystem where a redeploy destroys them.
+          OBJECT_STORE_BACKEND=spaces
+          # DigitalOcean Spaces regional endpoint, must match SPACES_REGION
+          SPACES_ENDPOINT=${{ vars.SPACES_ENDPOINT }}
+          # DigitalOcean Spaces region (e.g. nyc3)
+          SPACES_REGION=${{ vars.SPACES_REGION }}
+          # DigitalOcean Spaces bucket (Space) name
+          SPACES_BUCKET=${{ vars.SPACES_BUCKET }}
+          # Spaces access key pair; missing credentials disable image endpoints (503)
+          SPACES_ACCESS_KEY_ID=${{ secrets.SPACES_ACCESS_KEY_ID }}
+          SPACES_SECRET_ACCESS_KEY=${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          # Upload cap and presigned GET lifetime; blank falls back to the in-code
+          # defaults (10 MB / 900s)
+          NOTE_IMAGE_MAX_BYTES=${{ vars.NOTE_IMAGE_MAX_BYTES }}
+          NOTE_IMAGE_PRESIGN_TTL_SECONDS=${{ vars.NOTE_IMAGE_PRESIGN_TTL_SECONDS }}
+
           # -------- Nginx Reverse Proxy Config
           SSL_DHPARAMS_PATH=${{ vars.SSL_DHPARAMS_PATH }}
 

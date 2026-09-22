@@ -11,6 +11,9 @@ dbml-error.log
 # environment files
 .env*
 
+# Local object storage root (OBJECT_STORE_LOCAL_PATH) — uploaded note images
+.local-object-store/
+
 # CA certificates
 *.crt
 

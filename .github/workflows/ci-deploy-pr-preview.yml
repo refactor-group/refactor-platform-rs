@@ -1264,6 +1264,21 @@ jobs:
                   RECALL_AI_API_KEY='${{ secrets.RECALL_AI_API_KEY || 'UNUSED' }}'
                   RECALL_AI_REGION='${{ vars.RECALL_AI_REGION || 'us-west-2' }}'
                   RECALL_AI_WEBHOOK_SECRET='${{ secrets.RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
+                  # Coaching note image storage. Defaulted to 'spaces', never 'local':
+                  # an empty value is stripped before parsing and would fall back to
+                  # the "local" default, writing images into the ephemeral container.
+                  # Absent Spaces credentials the image endpoints return 503, which is
+                  # the loud failure we want over silently discarded uploads.
+                  OBJECT_STORE_BACKEND='${{ vars.OBJECT_STORE_BACKEND || 'spaces' }}'
+                  SPACES_ENDPOINT='${{ vars.SPACES_ENDPOINT || 'UNUSED' }}'
+                  SPACES_REGION='${{ vars.SPACES_REGION || 'nyc3' }}'
+                  SPACES_BUCKET='${{ vars.SPACES_BUCKET || 'UNUSED' }}'
+                  SPACES_ACCESS_KEY_ID='${{ secrets.SPACES_ACCESS_KEY_ID || 'UNUSED' }}'
+                  SPACES_SECRET_ACCESS_KEY='${{ secrets.SPACES_SECRET_ACCESS_KEY || 'UNUSED' }}'
+                  # Blank, not 'UNUSED': these parse as numbers, and an empty value
+                  # falls back to the in-code defaults (10 MB / 900s).
+                  NOTE_IMAGE_MAX_BYTES='${{ vars.NOTE_IMAGE_MAX_BYTES }}'
+                  NOTE_IMAGE_PRESIGN_TTL_SECONDS='${{ vars.NOTE_IMAGE_PRESIGN_TTL_SECONDS }}'
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
                   RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}'
