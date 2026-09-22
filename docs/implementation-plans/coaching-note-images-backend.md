@@ -80,7 +80,7 @@ GET /coaching_session_images/{image_id}
 |---|---|---|
 | **B1** | Config fields + `ObjectStore` trait, local + Spaces impls, wired onto `AppState` | **done** (`0b15fb8b`) |
 | **B2** | Migration, entity, entity_api, domain (validation + create/find) | **done** |
-| **B3** | Extractor, controller, router registration, `DefaultBodyLimit`, utoipa | pending |
+| **B3** | Extractor, controller, router registration, `DefaultBodyLimit`, utoipa | **done** |
 | **B4** | `.env*`, docker-compose ×3, `docs/setup.md`, preview nginx body-size check | pending |
 
 ## Local backend notes (from B1)
@@ -114,6 +114,23 @@ is satisfied by the sniff returning nothing and never reaches `ALLOWED_MIME_TYPE
 allowlist is guarded separately by a BMP case, which asserts the bytes are sniffable first so
 it cannot silently go vacuous. Both tests are needed; neither replaces the other.
 
+## Notes from the B3 review
+
+- **Create returns HTTP 200 with `status_code: 201` in the envelope**, matching every other create
+  in this codebase (`Json(ApiResponse::new(...))` does not set the response line). The *error*
+  paths — 400/413/415/503 — and the read path's 302/200 are real HTTP statuses. The manual test
+  plan says so explicitly, because `curl -i` showing `HTTP/1.1 200 OK` on a successful upload looks
+  like a bug and is not.
+- **Cache lifetime is derived, not duplicated:** `cache_max_age(ttl) = ttl / 3 * 2`, applied to both
+  the 302 and the streaming branch from one place so they cannot drift. A test pins
+  `max_age < note_image_presign_ttl_seconds()` as an inequality against the config accessor, with no
+  literals. A configured TTL of 0 yields max-age 0, which is equal rather than strictly less; that
+  is a degenerate config (a zero-second signature is already expired, and `max-age=0` means do not
+  reuse), so it is left alone deliberately.
+- **Omitting `CompareApiVersion` on `read` is pinned by six tests**, not one: the test helper never
+  sends `x-version`, so adding that extractor back fails the whole read-path suite. Verified by
+  mutation.
+
 ## Accepted gaps
 
 - **Orphaned objects.** Removing an image from a note is invisible to the backend. v1 deletes
@@ -122,3 +139,7 @@ it cannot silently go vacuous. Both tests are needed; neither replaces the other
   `imageId` attrs, which is Node-side work.
 - **Pre-existing, separate issue:** `collab_documents` has no foreign key to `coaching_sessions`,
   so deleting a session already orphans its note blob.
+- **`router_tests.rs` does not pin note-image registration.** The B3 handoff asserted it would fail
+  until the handlers were added to the utoipa `paths(...)`; the implementer checked and it did not —
+  that test only walks the role and transcript paths. The handlers *are* registered, but nothing
+  guards it. A follow-up assertion would close the gap.

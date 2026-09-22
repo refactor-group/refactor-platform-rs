@@ -86,7 +86,10 @@ Each case: command, expected status, expected headers or body shape.
 up coach /tmp/small.png
 ```
 
-**Pass:** 201. JSON `ApiResponse` whose `data` carries `id`, `coaching_session_id` equal to
+**Pass:** **HTTP 200** with `"status_code": 201` inside the body. That looks wrong and is not —
+successful creates in this codebase return the envelope's status in the body, not on the response
+line (compare `topic_controller::create`). Only the *error* paths below use real HTTP statuses.
+JSON `ApiResponse` whose `data` carries `id`, `coaching_session_id` equal to
 `$SESSION`, `mime_type: "image/png"`, a `byte_size` matching the file, and non-null
 `width`/`height`. **`storage_key` must NOT appear** — it is `#[serde(skip)]` so the bucket
 layout never reaches a client. Save the id:
@@ -101,7 +104,8 @@ IMAGE=<id from the response>
 up coachee /tmp/small.png
 ```
 
-**Pass:** 201. Both participants may add images; this is a shared note.
+**Pass:** HTTP 200 with `"status_code": 201` in the body, as in Case 1. Both participants may add
+images; this is a shared note.
 
 ### Case 3: the declared content type is ignored
 
@@ -109,7 +113,8 @@ up coachee /tmp/small.png
 up coach /tmp/liar.jpg
 ```
 
-**Pass:** 201 with `mime_type: "image/png"`, not `image/jpeg`. The sniffed type wins and is
+**Pass:** HTTP 200 with `"status_code": 201` in the body and `mime_type: "image/png"`, not
+`image/jpeg`. The sniffed type wins and is
 what gets stored on the object.
 
 ### Case 4: SVG is refused
