@@ -42,6 +42,20 @@ undo        ──▶ restore ──▶ deleted_at = NULL
 | **Object first, then row** | A failed object delete leaves the row, so the next tick retries. Deleting the row first would orphan the object with nothing pointing at it. |
 | **Signal is best-effort** | A failed `DELETE`, a closed tab, a client that never reconnects — each leaks one row. Bounded and invisible. That is the accepted residual. |
 
+### `deleted_at` never crosses the wire
+
+The column is `#[serde(skip)]` on the entity, so it appears in no request or response. That is
+deliberate: it is purge bookkeeping, not part of the client contract, and the frontend branches on
+the `200` alone.
+
+One consequence for tests, found during the B7 review: a controller test **cannot** assert the
+transition at the wire boundary, because the only field that changes is invisible. Asserting "it
+returned 200" would pass even if the handler echoed the extractor's row and never called the domain
+at all. The controller tests therefore give the domain-returned row a distinct `updated_at`, seed
+the pre-update row in the *opposite* state, and assert the whole `data` payload — which fails the
+moment a handler stops delegating. The `deleted_at` transition itself is covered by the entity_api
+unit tests and end to end by the manual plan.
+
 ### Config
 
 | Variable | Default |
