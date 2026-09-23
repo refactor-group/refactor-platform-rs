@@ -1275,10 +1275,12 @@ jobs:
                   SPACES_BUCKET='${{ vars.SPACES_BUCKET || 'UNUSED' }}'
                   SPACES_ACCESS_KEY_ID='${{ secrets.SPACES_ACCESS_KEY_ID || 'UNUSED' }}'
                   SPACES_SECRET_ACCESS_KEY='${{ secrets.SPACES_SECRET_ACCESS_KEY || 'UNUSED' }}'
-                  # Blank, not 'UNUSED': these parse as numbers, and an empty value
-                  # falls back to the in-code defaults (10 MB / 900s).
+                  # Blank, not 'UNUSED': these parse as numbers, and an empty value falls
+                  # back to the in-code defaults (10 MB / 900s / 168h / 60min).
                   COACHING_SESSION_IMAGE_MAX_BYTES='${{ vars.COACHING_SESSION_IMAGE_MAX_BYTES }}'
                   COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS='${{ vars.COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS }}'
+                  COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS='${{ vars.COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS }}'
+                  COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES='${{ vars.COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES }}'
                   GHCR_PAT='${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}'
                   GHCR_USERNAME='${{ secrets.GHCR_USERNAME || github.actor }}'
                   RPI5_USERNAME='${{ secrets.RPI5_USERNAME }}'
