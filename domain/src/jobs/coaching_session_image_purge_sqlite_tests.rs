@@ -18,7 +18,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::error::{DomainErrorKind, ExternalErrorKind};
 use crate::gateway::object_storage::{LocalObjectStore, StoredObject};
-use crate::sqlite_test_support::{database, within_time_limit};
+use crate::test_utils::sqlite::{database, within_time_limit};
 use crate::Id;
 
 const GRACE: chrono::Duration = chrono::Duration::days(7);

@@ -580,7 +580,7 @@ fn generate_document_name(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::test_support::{both_participants_are_members, recording_publisher};
+    use crate::test_utils::mock::{both_participants_are_members, recording_publisher};
     use crate::{
         coaching_relationships, coaching_session_images, coaching_sessions, goals,
         meeting_provider::Provider, oauth_connections, organizations,

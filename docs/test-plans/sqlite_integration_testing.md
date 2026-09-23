@@ -58,8 +58,9 @@ Production runs Postgres. These gaps stay covered some other way:
 
   Gate it on `#[cfg(test)]` only: never on the `mock` feature, never `#[ignore]`. The tier
   then runs in plain `cargo test`, locally and in CI, with no database to install.
-- Get a database from `crate::sqlite_test_support::database()` (in `domain`). To test
-  another table, create it in that harness from its entity the same way.
+- Get a database from `crate::test_utils::sqlite::database()` (in `domain`, see
+  `domain/src/test_utils/README.md`). To test another table, create it in that harness from
+  its entity the same way.
 - Wrap every test body in `within_time_limit(async { ... }).await` from the same module, a
   5 minute ceiling per test. A test returning `Result` ends its block with
   `Ok::<(), Error>(())` so `?` inside it knows the error type.

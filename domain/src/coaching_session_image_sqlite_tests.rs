@@ -8,7 +8,7 @@ use entity::coaching_session_images::ActiveModel;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use super::*;
-use crate::sqlite_test_support::{database, within_time_limit};
+use crate::test_utils::sqlite::{database, within_time_limit};
 
 /// Records an image in `coaching_session_id`, removed when `removed` is set.
 async fn image(db: &DatabaseConnection, coaching_session_id: Id, removed: bool) -> Model {

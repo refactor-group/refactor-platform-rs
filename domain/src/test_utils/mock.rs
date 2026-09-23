@@ -1,4 +1,4 @@
-//! Shared test-only helpers for the domain crate.
+//! Helpers for mock database tests: a recording event publisher and membership fixtures.
 
 use crate::coaching_relationships;
 use crate::events::{DomainEvent, EventPublisher};

@@ -2,7 +2,7 @@ use super::*;
 use crate::coaching_relationships;
 use crate::coaching_sessions;
 use crate::events::DomainEvent;
-use crate::test_support::{both_participants_are_members, recording_publisher};
+use crate::test_utils::mock::{both_participants_are_members, recording_publisher};
 use entity::coaching_session_topics::TopicSnapshot;
 use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase};
