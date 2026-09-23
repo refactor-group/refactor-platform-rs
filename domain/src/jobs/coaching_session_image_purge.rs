@@ -7,7 +7,7 @@
 //! Each tick re-derives what is due from `deleted_at` alone, so a restore in between
 //! simply removes the row from the next tick's result set. Nothing has to be cancelled.
 //! A restore that lands during a tick is handled by claiming each row under a lock before
-//! destroying anything; see [`Purge::purge_one`].
+//! destroying anything; see `Purge::purge_one`.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 

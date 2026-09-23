@@ -293,8 +293,8 @@ pub async fn create(
 /// with [`destroy_objects`] after the delete commits.
 ///
 /// An upload committing between this read and the delete is cascaded away with its object
-/// left behind. Unfenced on purpose: the fix is locking the session `FOR UPDATE` for the
-/// whole delete, and the leak is orphan bytes, never a row pointing at bytes that are gone.
+/// left behind. Locking the session would not help: [`create`] stores the object before its
+/// row, so a blocked upload orphans it on the failed insert instead. A reaper owns these.
 ///
 /// # Errors
 ///
