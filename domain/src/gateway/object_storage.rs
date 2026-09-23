@@ -10,11 +10,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use log::*;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::Url;
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
+use reqwest::{Body, Url};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use service::config::Config;
 use tokio::fs;
+use tokio_util::io::ReaderStream;
 
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 
@@ -27,8 +28,21 @@ const CONTENT_TYPE_SUFFIX: &str = ".content-type";
 /// Signature lifetime for uploads and deletes. Both are sent immediately after signing.
 const IMMEDIATE_SIGNATURE_TTL: Duration = Duration::from_secs(60);
 
-/// Objects are keyed by a generated id and never rewritten, so a long byte cache is safe
-/// and makes a repeat view cost only the cheap redirect.
+/// Bounds every Spaces request, so a hung connection cannot hold a caller forever. The
+/// purge job holds a row lock across its delete, which makes an unbounded wait a stall.
+const SPACES_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const SPACES_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Read size when streaming an upload from disk. The only upload buffer held in memory.
+const UPLOAD_STREAM_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Objects are keyed by a generated id and never rewritten, so a long byte cache is safe.
+///
+/// It is not as long as it looks. Every signing stamps a fresh `X-Amz-Date` and signature,
+/// so each redirect points at a different URL and the browser's cache, keyed on that URL,
+/// starts over. The 24 hours only apply within one signature's lifetime; a viewer still
+/// re-fetches the bytes roughly once per presign TTL. A stable URL would need a signature
+/// that lives as long as the cache entry, which trades link lifetime for bandwidth.
 const IMMUTABLE_CACHE_CONTROL: &str = "private, max-age=86400, immutable";
 
 /// A stored object's bytes plus the content type to serve them with.
@@ -40,17 +54,23 @@ pub struct StoredObject {
 /// Storage backend for binary assets. One implementation is built at startup and shared.
 #[async_trait]
 pub trait ObjectStore: Send + Sync + 'static {
-    /// Store `bytes` at `key`, recording `content_type` on the object.
+    /// Store the file at `source` under `key`, recording `content_type` on the object.
+    ///
+    /// Takes a file rather than bytes so no backend ever needs the whole object in memory.
     ///
     /// # Errors
     ///
     /// Returns `InternalErrorKind::Config` for a key that escapes the store root, and
     /// a transport error kind when the write itself fails.
-    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), Error>;
+    async fn put(&self, key: &str, source: &Path, content_type: &str) -> Result<(), Error>;
 
     /// A time-limited URL a browser can fetch directly, when this backend supports signing.
     /// Returns `Ok(None)` when it does not (the local backend), in which case callers fall
     /// back to `get`.
+    ///
+    /// Signing touches no network, so a key with no object behind it still signs. The
+    /// caller's 404 for a missing object therefore only comes from [`ObjectStore::get`];
+    /// on a presigning backend the miss surfaces as the store's own 404 at the signed URL.
     ///
     /// # Errors
     ///
@@ -61,15 +81,16 @@ pub trait ObjectStore: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns `InternalErrorKind::Config` for a key that escapes the store root, and
-    /// a transport error kind when the object cannot be read.
+    /// Returns `InternalErrorKind::Config` for a key that escapes the store root,
+    /// `EntityErrorKind::NotFound` when there is no object at `key`, and a transport
+    /// error kind when the object cannot be read.
     async fn get(&self, key: &str) -> Result<StoredObject, Error>;
 
-    /// Remove an object. Not called in v1; present so a future reaper does not reshape the trait.
+    /// Remove an object.
     ///
     /// # Errors
     ///
-    /// Returns a transport error kind when the removal fails. A already-absent object is `Ok`.
+    /// Returns a transport error kind when the removal fails. An already-absent object is `Ok`.
     async fn delete(&self, key: &str) -> Result<(), Error>;
 }
 
@@ -91,8 +112,20 @@ fn transport_error(message: String) -> Error {
     }
 }
 
-/// The object is not there. A row can outlive its bytes — a failed upload, a purge that
-/// got halfway, a bucket restored from an older snapshot — and that is a 404, not a fault
+/// A Spaces request that never completed. The URL is dropped before the error is ever
+/// rendered: these requests are presigned, so the URL carries `X-Amz-Credential` (which
+/// embeds the access key id) and `X-Amz-Signature`, and both `Debug` and `Display` on a
+/// `reqwest::Error` print it. Propagating the error as-is would write a usable signature
+/// and a permanent key id into the logs on any DNS blip or connect failure.
+fn spaces_transport_error(operation: &str, key: &str, err: reqwest::Error) -> Error {
+    transport_error(format!(
+        "Spaces {operation} of {key} failed: {}",
+        err.without_url()
+    ))
+}
+
+/// The object is not there. A row can outlive its bytes (a failed upload, a purge that
+/// got halfway, a bucket restored from an older snapshot), and that is a 404, not a fault
 /// in this server. Mapping it to an internal error would page someone for a missing file.
 fn object_not_found(key: &str) -> Error {
     warn!("Object store has no object at {key}");
@@ -103,13 +136,13 @@ fn object_not_found(key: &str) -> Error {
 }
 
 /// Local disk failure. `Internal(Other)` rather than `External(Network)` because nothing
-/// left the process — a reader seeing "network" for a full disk would be misled.
-fn local_io_error(context: &str, err: std::io::Error) -> Error {
-    warn!("Local object store failed to {context}: {err}");
+/// left the process, and a reader seeing "network" for a full disk would be misled.
+pub(crate) fn io_error(context: &str, err: std::io::Error) -> Error {
+    warn!("Failed to {context}: {err}");
     Error {
         source: Some(Box::new(err)),
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
-            "local object store failed to {context}"
+            "failed to {context}"
         ))),
     }
 }
@@ -182,24 +215,25 @@ impl LocalObjectStore {
 
 #[async_trait]
 impl ObjectStore for LocalObjectStore {
-    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), Error> {
+    async fn put(&self, key: &str, source: &Path, content_type: &str) -> Result<(), Error> {
         let path = self.resolve(key)?;
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|e| local_io_error("create the object's parent directory", e))?;
+                .map_err(|e| io_error("create the object's parent directory", e))?;
         }
 
-        fs::write(&path, bytes)
+        // A copy, not a rename: the source may sit on another filesystem.
+        fs::copy(source, &path)
             .await
-            .map_err(|e| local_io_error("write the object", e))?;
+            .map_err(|e| io_error("write the object", e))?;
 
         // Recorded alongside the bytes so `get` reports what the uploader declared
         // rather than re-sniffing and possibly disagreeing with the stored row.
         fs::write(Self::content_type_path(&path), content_type)
             .await
-            .map_err(|e| local_io_error("write the object's content type", e))
+            .map_err(|e| io_error("write the object's content type", e))
     }
 
     fn presigned_get(&self, _key: &str, _ttl: Duration) -> Result<Option<String>, Error> {
@@ -211,7 +245,7 @@ impl ObjectStore for LocalObjectStore {
 
         let bytes = fs::read(&path).await.map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => object_not_found(key),
-            _ => local_io_error("read the object", e),
+            _ => io_error("read the object", e),
         })?;
 
         let content_type = fs::read_to_string(Self::content_type_path(&path))
@@ -231,7 +265,7 @@ impl ObjectStore for LocalObjectStore {
             // An already-absent object is the outcome we wanted.
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(local_io_error("remove the object", e)),
+            Err(e) => Err(io_error("remove the object", e)),
         }?;
 
         // Best effort: an orphaned sidecar is harmless, and its absence is the normal case.
@@ -284,14 +318,28 @@ impl SpacesObjectStore {
         Ok(Self {
             bucket,
             credentials: Credentials::new(access_key_id, secret_access_key),
-            client: reqwest::Client::builder().use_rustls_tls().build()?,
+            client: reqwest::Client::builder()
+                .use_rustls_tls()
+                .connect_timeout(SPACES_CONNECT_TIMEOUT)
+                .timeout(SPACES_REQUEST_TIMEOUT)
+                .build()?,
         })
     }
 }
 
 #[async_trait]
 impl ObjectStore for SpacesObjectStore {
-    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), Error> {
+    async fn put(&self, key: &str, source: &Path, content_type: &str) -> Result<(), Error> {
+        let file = fs::File::open(source)
+            .await
+            .map_err(|e| io_error("open the upload to stream it", e))?;
+        // S3 rejects a chunked PUT, so the length has to be declared before the first byte.
+        let content_length = file
+            .metadata()
+            .await
+            .map_err(|e| io_error("read the upload's length", e))?
+            .len();
+
         let url = self
             .bucket
             .put_object(Some(&self.credentials), key)
@@ -301,9 +349,14 @@ impl ObjectStore for SpacesObjectStore {
             .client
             .put(url)
             .header(CONTENT_TYPE, content_type)
-            .body(bytes)
+            .header(CONTENT_LENGTH, content_length)
+            .body(Body::wrap_stream(ReaderStream::with_capacity(
+                file,
+                UPLOAD_STREAM_CHUNK_BYTES,
+            )))
             .send()
-            .await?;
+            .await
+            .map_err(|e| spaces_transport_error("upload", key, e))?;
 
         match response.status() {
             status if status.is_success() => Ok(()),
@@ -328,7 +381,12 @@ impl ObjectStore for SpacesObjectStore {
             .presigned_get(key, IMMEDIATE_SIGNATURE_TTL)?
             .ok_or_else(|| config_error(format!("Failed to sign a GET URL for {key}")))?;
 
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| spaces_transport_error("read", key, e))?;
 
         let status = response.status();
         if status.as_u16() == 404 {
@@ -347,8 +405,16 @@ impl ObjectStore for SpacesObjectStore {
             .unwrap_or(DEFAULT_CONTENT_TYPE)
             .to_string();
 
+        // `Vec::from` takes over the buffer where it can; `to_vec` always copied it.
+        let bytes = Vec::from(
+            response
+                .bytes()
+                .await
+                .map_err(|e| spaces_transport_error("read", key, e))?,
+        );
+
         Ok(StoredObject {
-            bytes: response.bytes().await?.to_vec(),
+            bytes,
             content_type,
         })
     }
@@ -359,7 +425,12 @@ impl ObjectStore for SpacesObjectStore {
             .delete_object(Some(&self.credentials), key)
             .sign(IMMEDIATE_SIGNATURE_TTL);
 
-        let response = self.client.delete(url).send().await?;
+        let response = self
+            .client
+            .delete(url)
+            .send()
+            .await
+            .map_err(|e| spaces_transport_error("delete", key, e))?;
 
         match response.status() {
             // 404 means the object is already gone, which is the outcome we wanted.
@@ -415,6 +486,13 @@ mod tests {
         }
     }
 
+    /// Writes `bytes` to a source file outside the store root, as an upload would arrive.
+    fn source_file(bytes: &[u8]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().expect("source file is created");
+        std::io::Write::write_all(&mut file, bytes).expect("source bytes are written");
+        file
+    }
+
     fn assert_config_error(error: Error, context: &str) {
         assert_eq!(
             error.error_kind,
@@ -443,8 +521,9 @@ mod tests {
         let store = LocalObjectStore::new(&root.path);
         let key = "coaching-sessions/abc/images/def.png";
 
+        let source = source_file(&[0x89, b'P', b'N', b'G']);
         store
-            .put(key, vec![0x89, b'P', b'N', b'G'], "image/png")
+            .put(key, source.path(), "image/png")
             .await
             .expect("put succeeds");
 
@@ -515,9 +594,10 @@ mod tests {
         let root = TempRoot::new();
         let store = LocalObjectStore::new(&root.path);
 
+        let source = source_file(&[1, 2, 3]);
         for key in ["../../etc/passwd", "/etc/passwd"] {
             let put = store
-                .put(key, vec![1, 2, 3], "image/png")
+                .put(key, source.path(), "image/png")
                 .await
                 .expect_err("traversal key must not be written");
             assert_config_error(put, &format!("put({key})"));
@@ -532,6 +612,51 @@ mod tests {
             !Path::new("/etc/passwd.content-type").exists(),
             "a rejected key must not have written a sidecar outside the root"
         );
+    }
+
+    /// The production upload path. S3 refuses a chunked `PUT`, so the streamed body has to
+    /// go out with its length declared up front, and every byte has to arrive. The source
+    /// spans several read chunks so the stream is really a stream.
+    #[tokio::test]
+    async fn spaces_put_streams_the_file_with_a_declared_length() {
+        let mut server = mockito::Server::new_async().await;
+        let body: Vec<u8> = (0..300 * 1024).map(|i| (i % 251) as u8).collect();
+        let source = source_file(&body);
+
+        let upload = server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"^/test-bucket/coaching-sessions/abc/images/def\.png\?".into(),
+                ),
+            )
+            .match_header("content-length", body.len().to_string().as_str())
+            .match_header("content-type", "image/png")
+            .match_header("transfer-encoding", mockito::Matcher::Missing)
+            .match_body(body.clone())
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let endpoint = Url::parse(&server.url()).expect("the mock server has a URL");
+        let store = SpacesObjectStore {
+            // Path style: a virtual-host bucket would need DNS for `test-bucket.127.0.0.1`.
+            bucket: Bucket::new(endpoint, UrlStyle::Path, "test-bucket", "nyc3")
+                .expect("the bucket builds"),
+            credentials: Credentials::new("test-key-id", "test-secret"),
+            client: reqwest::Client::new(),
+        };
+
+        store
+            .put(
+                "coaching-sessions/abc/images/def.png",
+                source.path(),
+                "image/png",
+            )
+            .await
+            .expect("the upload succeeds");
+
+        upload.assert_async().await;
     }
 
     #[test]

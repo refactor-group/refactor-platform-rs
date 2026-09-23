@@ -6,6 +6,8 @@
 //!
 //! Each tick re-derives what is due from `deleted_at` alone, so a restore in between
 //! simply removes the row from the next tick's result set. Nothing has to be cancelled.
+//! A restore that lands during a tick is handled by claiming each row under a lock before
+//! destroying anything; see [`Purge::purge_one`].
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -14,12 +16,23 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use entity_api::coaching_session_image::{claim_purgeable, delete_by_id, find_purgeable};
 use log::*;
+use sea_orm::prelude::DateTimeWithTimeZone;
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use service::config::Config;
 
 use crate::error::Error;
 use crate::gateway::object_storage::{self, ObjectStore};
 use crate::jobs::{Context, FirstRun, Job, Outcome};
+use crate::Id;
+
+/// What happened to one image the scan found due.
+enum Purged {
+    Destroyed,
+    /// Restored after the scan, so there was nothing left to claim.
+    Restored,
+}
 
 pub struct Purge {
     store: Arc<dyn ObjectStore>,
@@ -50,6 +63,33 @@ impl Purge {
             interval: config.coaching_session_image_purge_poll_interval(),
         })
     }
+
+    /// Destroys one image, holding its row locked from the claim to the commit.
+    ///
+    /// The object delete is the irreversible step, so the lock has to cover it. Without it
+    /// a restore could clear `deleted_at` between the scan and the delete: the undo would
+    /// report success and the image would already be gone. With it, a restore either lands
+    /// first and there is nothing to claim, or waits and then finds no row.
+    async fn purge_one(
+        &self,
+        db: &DatabaseConnection,
+        id: Id,
+        cutoff: DateTimeWithTimeZone,
+    ) -> Result<Purged, Error> {
+        let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+        let Some(image) = claim_purgeable(&txn, id, cutoff).await? else {
+            return Ok(Purged::Restored);
+        };
+
+        // Object first, row second. Deleting the row first would leave the object with
+        // nothing pointing at it, and no later tick could ever find it again.
+        self.store.delete(&image.storage_key).await?;
+        delete_by_id(&txn, image.id).await?;
+
+        txn.commit().await.map_err(entity_api::error::Error::from)?;
+        Ok(Purged::Destroyed)
+    }
 }
 
 #[async_trait]
@@ -69,54 +109,47 @@ impl Job for Purge {
     }
 
     async fn run(&self, ctx: &Context) -> Result<Outcome, Error> {
-        let cutoff = Utc::now() - self.grace;
-        let due =
-            entity_api::coaching_session_image::find_purgeable(&*ctx.db, cutoff.into()).await?;
-
-        if due.is_empty() {
-            return Ok(Outcome::IDLE);
-        }
+        let cutoff: DateTimeWithTimeZone = (Utc::now() - self.grace).into();
+        let due = find_purgeable(&*ctx.db, cutoff).await?;
 
         let mut purged = 0;
+        let mut attempted = 0;
         for image in &due {
-            // Object first, row second. Deleting the row first would leave the object
-            // with nothing pointing at it, and no later tick could ever find it again.
-            if let Err(e) = self.store.delete(&image.storage_key).await {
-                warn!(
-                    "[coaching-session-image-purge] could not delete object {} for image {}; \
-                     the row stays and the next tick retries: {e:?}",
-                    image.storage_key, image.id
-                );
-                continue;
+            match self.purge_one(&ctx.db, image.id, cutoff).await {
+                Ok(Purged::Destroyed) => {
+                    purged += 1;
+                    attempted += 1;
+                }
+                Ok(Purged::Restored) => {
+                    debug!(
+                        "[coaching-session-image-purge] image {} was restored; skipped",
+                        image.id
+                    );
+                }
+                Err(e) => {
+                    // The transaction rolled back, so the row stays and the next tick retries.
+                    // If the object went before the failure, the retry's delete is a no-op.
+                    warn!(
+                        "[coaching-session-image-purge] could not purge image {}; the next tick \
+                         retries: {e:?}",
+                        image.id
+                    );
+                    attempted += 1;
+                }
             }
-
-            if let Err(e) =
-                entity_api::coaching_session_image::delete_by_id(&*ctx.db, image.id).await
-            {
-                // The object is already gone, so the retry is a no-op against storage and
-                // the row is removed then.
-                warn!(
-                    "[coaching-session-image-purge] deleted object {} but could not delete \
-                     image row {}: {e:?}",
-                    image.storage_key, image.id
-                );
-                continue;
-            }
-
-            purged += 1;
         }
 
-        let found = due.len() as u64;
-        Ok(if purged == found {
+        Ok(if purged == attempted {
             Outcome::processed(purged)
         } else {
-            Outcome::partial(purged, found)
+            Outcome::partial(purged, attempted)
         })
     }
 }
 
 #[cfg(all(test, feature = "mock"))]
 mod tests {
+    use std::path::Path;
     use std::sync::Mutex;
 
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
@@ -154,7 +187,7 @@ mod tests {
 
     #[async_trait]
     impl ObjectStore for RecordingStore {
-        async fn put(&self, _key: &str, _bytes: Vec<u8>, _content_type: &str) -> Result<(), Error> {
+        async fn put(&self, _key: &str, _source: &Path, _content_type: &str) -> Result<(), Error> {
             unimplemented!("the purge job never writes")
         }
 
@@ -200,25 +233,51 @@ mod tests {
         }
     }
 
-    /// Builds a context whose mock database returns `due` from the purge scan and, when
-    /// `row_delete_succeeds`, accepts one row delete after it.
-    fn context(due: Vec<Model>, row_delete_succeeds: bool) -> Context {
-        let mut db =
-            MockDatabase::new(DatabaseBackend::Postgres).append_query_results(vec![due.clone()]);
-
-        if row_delete_succeeds {
-            db = db.append_exec_results(vec![
+    /// Builds a context whose mock database returns `due` from the scan, then answers each
+    /// row's claim from `claims` in order (`None` for a row restored since the scan), and
+    /// accepts `row_deletes` deletes.
+    fn context(due: Vec<Model>, claims: Vec<Option<Model>>, row_deletes: usize) -> Context {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![due])
+            .append_query_results(
+                claims
+                    .into_iter()
+                    .map(|claim| claim.into_iter().collect::<Vec<_>>()),
+            )
+            .append_exec_results(vec![
                 MockExecResult {
                     last_insert_id: 0,
                     rows_affected: 1,
                 };
-                due.len()
+                row_deletes
             ]);
-        }
 
         Context {
             db: Arc::new(db.into_connection()),
             config: Config::from_args(["test"]),
+        }
+    }
+
+    /// The `DELETE` statements a tick issued, debug-formatted with their bound values. The
+    /// claims also carry each row's id, so assertions about deletion must look only here.
+    fn row_deletes(ctx: Context) -> String {
+        let Ok(db) = Arc::try_unwrap(ctx.db) else {
+            panic!("the job must not retain a handle to the database");
+        };
+
+        db.into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .filter(|stmt| stmt.sql.starts_with("DELETE"))
+            .map(|stmt| format!("{stmt:?}"))
+            .collect()
+    }
+
+    fn job(store: &Arc<RecordingStore>) -> Purge {
+        Purge {
+            store: Arc::clone(store) as Arc<dyn ObjectStore>,
+            grace: chrono::Duration::hours(168),
+            interval: Duration::from_secs(3600),
         }
     }
 
@@ -254,14 +313,9 @@ mod tests {
     #[tokio::test]
     async fn a_tick_with_nothing_due_is_idle() {
         let store = Arc::new(RecordingStore::default());
-        let job = Purge {
-            store: Arc::clone(&store) as Arc<dyn ObjectStore>,
-            grace: chrono::Duration::hours(168),
-            interval: Duration::from_secs(3600),
-        };
 
-        let outcome = job
-            .run(&context(Vec::new(), false))
+        let outcome = job(&store)
+            .run(&context(Vec::new(), Vec::new(), 0))
             .await
             .expect("an empty scan is not a failure");
 
@@ -274,24 +328,24 @@ mod tests {
 
     /// The object must go before the row, proved by a tick where one of two objects
     /// refuses to be deleted. In the right order the failing row survives and only the
-    /// other one is deleted from the database; in the wrong order both rows would already
-    /// be gone by the time storage was asked, and the surviving row's id would be absent
-    /// from neither statement. Deleting the row first would strand the bytes with nothing
-    /// pointing at them.
+    /// other one is deleted from the database. Deleting the row first would strand the
+    /// bytes with nothing pointing at them.
     #[tokio::test]
     async fn deletes_the_object_before_the_row() {
         let stubborn_key = "coaching-sessions/abc/images/stubborn.png";
         let store = Arc::new(RecordingStore::failing_for(&[stubborn_key]));
         let stubborn = deleted_image(stubborn_key);
         let removable = deleted_image("coaching-sessions/abc/images/removable.png");
-        let ctx = context(vec![stubborn.clone(), removable.clone()], true);
-        let job = Purge {
-            store: Arc::clone(&store) as Arc<dyn ObjectStore>,
-            grace: chrono::Duration::hours(168),
-            interval: Duration::from_secs(3600),
-        };
+        let ctx = context(
+            vec![stubborn.clone(), removable.clone()],
+            vec![Some(stubborn.clone()), Some(removable.clone())],
+            1,
+        );
 
-        let outcome = job.run(&ctx).await.expect("a partial tick still succeeds");
+        let outcome = job(&store)
+            .run(&ctx)
+            .await
+            .expect("a partial tick still succeeds");
 
         assert_eq!(
             store.calls(),
@@ -304,10 +358,7 @@ mod tests {
         assert_eq!(outcome.processed, 1);
         assert_eq!(outcome.attempted, 2);
 
-        let Ok(db) = Arc::try_unwrap(ctx.db) else {
-            panic!("the job must not retain a handle to the database");
-        };
-        let deletes = format!("{:?}", db.into_transaction_log());
+        let deletes = row_deletes(ctx);
         assert!(
             deletes.contains(&removable.id.to_string()),
             "the row whose object went must be deleted: {deletes}"
@@ -326,14 +377,9 @@ mod tests {
             "coaching-sessions/abc/images/def.png",
         ]));
         let image = deleted_image("coaching-sessions/abc/images/def.png");
-        let ctx = context(vec![image.clone()], false);
-        let job = Purge {
-            store: Arc::clone(&store) as Arc<dyn ObjectStore>,
-            grace: chrono::Duration::hours(168),
-            interval: Duration::from_secs(3600),
-        };
+        let ctx = context(vec![image.clone()], vec![Some(image.clone())], 0);
 
-        let outcome = job
+        let outcome = job(&store)
             .run(&ctx)
             .await
             .expect("a failed object delete is survivable");
@@ -345,15 +391,75 @@ mod tests {
             vec!["delete:coaching-sessions/abc/images/def.png".to_string()],
             "the object delete was attempted"
         );
+        assert!(
+            row_deletes(ctx).is_empty(),
+            "the row must survive an object delete that failed"
+        );
+    }
+
+    /// An undo that lands after the scan. The claim finds the row no longer due, so the
+    /// image is left whole: the object stays in storage and the row stays in the table.
+    /// Destroying either here would lose an image the user was just told they got back.
+    #[tokio::test]
+    async fn an_image_restored_after_the_scan_is_left_whole() {
+        let store = Arc::new(RecordingStore::default());
+        let image = deleted_image("coaching-sessions/abc/images/restored.png");
+        let ctx = context(vec![image], vec![None], 0);
+
+        let outcome = job(&store)
+            .run(&ctx)
+            .await
+            .expect("a restored row is not a failure");
+
+        assert!(
+            store.calls().is_empty(),
+            "a restored image's object must not be deleted"
+        );
+        assert_eq!(
+            (outcome.processed, outcome.attempted),
+            (0, 0),
+            "a restore is not a failed purge"
+        );
+        assert!(
+            row_deletes(ctx).is_empty(),
+            "a restored image's row must not be deleted"
+        );
+    }
+
+    /// The lock is what makes the claim mean anything. The claim must come before the
+    /// object delete and inside the same transaction as the row delete, or a restore can
+    /// still slip between them.
+    #[tokio::test]
+    async fn the_claim_and_the_row_delete_share_one_transaction() {
+        let store = Arc::new(RecordingStore::default());
+        let image = deleted_image("coaching-sessions/abc/images/def.png");
+        let ctx = context(vec![image.clone()], vec![Some(image)], 1);
+
+        job(&store).run(&ctx).await.expect("the purge succeeds");
 
         let Ok(db) = Arc::try_unwrap(ctx.db) else {
             panic!("the job must not retain a handle to the database");
         };
+        let log = db.into_transaction_log();
+        let txn = log
+            .iter()
+            .find(|txn| {
+                txn.statements()
+                    .iter()
+                    .any(|stmt| stmt.sql.contains("FOR UPDATE"))
+            })
+            .unwrap_or_else(|| panic!("no transaction took the row lock: {log:?}"));
+        let sql: Vec<&str> = txn
+            .statements()
+            .iter()
+            .map(|stmt| stmt.sql.as_str())
+            .collect();
+
+        let claim = sql.iter().position(|q| q.contains("FOR UPDATE"));
+        let delete = sql.iter().position(|q| q.starts_with("DELETE"));
         assert!(
-            !format!("{:?}", db.into_transaction_log())
-                .to_uppercase()
-                .contains("DELETE FROM"),
-            "the row must survive an object delete that failed"
+            matches!((claim, delete), (Some(claim), Some(delete)) if claim < delete),
+            "the lock must be taken before, and in the same transaction as, the delete: {sql:?}"
         );
     }
 }

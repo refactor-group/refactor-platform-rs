@@ -12,8 +12,9 @@ impl MigrationTrait for Migration {
         // We use execute_unprepared() for consistency with other migrations and to ensure
         // proper PostgreSQL schema qualification (refactor_platform.coaching_session_images)
         //
-        // The session FK cascades on delete deliberately: a future cleanup job can read a
-        // deleted session's storage keys in one query before the rows disappear.
+        // The session FK cascades on delete: an image cannot outlive the note it sits in.
+        // Nothing can recover the storage keys once it fires, so the delete paths in
+        // domain::coaching_session read them and destroy the objects beforehand.
         let create_table_sql =
             "CREATE TABLE IF NOT EXISTS refactor_platform.coaching_session_images (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

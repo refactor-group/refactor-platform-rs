@@ -2,7 +2,12 @@ use super::error::{EntityApiErrorKind, Error};
 use entity::coaching_session_images::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::sea_query::{Expr, Func};
-use sea_orm::{entity::prelude::*, ActiveValue::Set, TryIntoModel};
+use sea_orm::{entity::prelude::*, ActiveValue::Set, QueryOrder, QuerySelect, TryIntoModel};
+
+/// Ceiling on one purge scan. Every row costs a network round trip, so an unbounded
+/// result set after an outage of the job would make a single tick run far past its own
+/// poll interval. Oldest first, and the next tick takes the remainder.
+const PURGE_SCAN_LIMIT: u64 = 500;
 
 /// Everything needed to record one stored image. Bundled so `create` stays at two
 /// arguments and reads as a single statement at the call site.
@@ -112,8 +117,8 @@ pub async fn restore(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> 
         .and_then(only_updated)
 }
 
-/// Rows marked deleted strictly before `cutoff`. Never returns a row whose
-/// `deleted_at` is null.
+/// Rows marked deleted strictly before `cutoff`, oldest first, capped at
+/// `PURGE_SCAN_LIMIT`. Never returns a row whose `deleted_at` is null.
 ///
 /// The `IS NOT NULL` predicate is redundant against SQL's three-valued logic — a null
 /// never compares less than anything — and is stated anyway because it is the safety
@@ -129,6 +134,55 @@ pub async fn find_purgeable(
     Entity::find()
         .filter(Column::DeletedAt.is_not_null())
         .filter(Column::DeletedAt.lt(cutoff))
+        .order_by_asc(Column::DeletedAt)
+        .limit(PURGE_SCAN_LIMIT)
+        .all(db)
+        .await
+        .map_err(Into::into)
+}
+
+/// Locks one image row for the purge, but only while it is still due.
+///
+/// A restore clears `deleted_at` on this same row, so taking the lock with the predicate
+/// re-checked serializes the two: a restore that committed first leaves nothing to claim,
+/// and one that arrives later waits for the purge to commit and then finds no row. Hold
+/// the returned lock (the caller's transaction) until the row is deleted.
+///
+/// # Errors
+///
+/// Returns `EntityApiErrorKind::SystemError` when the query fails.
+pub async fn claim_purgeable(
+    db: &impl ConnectionTrait,
+    id: Id,
+    cutoff: DateTimeWithTimeZone,
+) -> Result<Option<Model>, Error> {
+    Entity::find_by_id(id)
+        .filter(Column::DeletedAt.is_not_null())
+        .filter(Column::DeletedAt.lt(cutoff))
+        .lock_exclusive()
+        .one(db)
+        .await
+        .map_err(Into::into)
+}
+
+/// Every image belonging to any of `coaching_session_ids`, deleted or not.
+///
+/// Read before a session is deleted: the session FK cascades, so this is the last moment
+/// the storage keys exist anywhere. An empty slice never reaches the database.
+///
+/// # Errors
+///
+/// Returns `EntityApiErrorKind::SystemError` when the query fails.
+pub async fn find_by_coaching_session_ids(
+    db: &impl ConnectionTrait,
+    coaching_session_ids: &[Id],
+) -> Result<Vec<Model>, Error> {
+    if coaching_session_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Entity::find()
+        .filter(Column::CoachingSessionId.is_in(coaching_session_ids.iter().copied()))
         .all(db)
         .await
         .map_err(Into::into)
@@ -364,6 +418,87 @@ mod tests {
 
         assert_eq!(purgeable.len(), 1);
         assert_eq!(purgeable[0].id, expected.id);
+
+        Ok(())
+    }
+
+    /// An outage of the purge job leaves a backlog, and every row costs a network round
+    /// trip. Without the cap one tick would run far past its own poll interval.
+    #[tokio::test]
+    async fn find_purgeable_caps_and_orders_the_scan() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        find_purgeable(&db, chrono::Utc::now().into()).await?;
+
+        let sql = statements_of(db);
+        // The cap binds as a parameter, so the clause and the value are asserted apart.
+        assert!(sql.contains("LIMIT $"), "the scan must be bounded: {sql}");
+        assert!(
+            sql.contains(&format!("BigUnsigned(Some({PURGE_SCAN_LIMIT}))")),
+            "the bound cap must be the one the module declares: {sql}"
+        );
+        assert!(
+            sql.contains(r#"\"deleted_at\" ASC"#),
+            "oldest removals must be purged first: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// The claim is what stops a purge destroying an image restored after the scan. Without
+    /// the lock a restore could commit mid-purge; without the predicate the claim would lock
+    /// a row that is no longer due.
+    #[tokio::test]
+    async fn claim_purgeable_locks_the_row_and_rechecks_that_it_is_due() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let claimed = claim_purgeable(&db, Id::new_v4(), chrono::Utc::now().into()).await?;
+        assert!(claimed.is_none(), "a restored row is not claimed");
+
+        let sql = statements_of(db);
+        assert!(sql.contains("FOR UPDATE"), "the row must be locked: {sql}");
+        assert!(
+            sql.contains(r#"\"deleted_at\" IS NOT NULL"#) && sql.contains(r#"\"deleted_at\" < "#),
+            "the claim must re-check that the row is still due: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// Called from the session-delete path, which may have no sessions to clean up. An
+    /// unguarded `IN ()` would be a statement the database has to answer for nothing.
+    #[tokio::test]
+    async fn find_by_coaching_session_ids_does_not_query_for_an_empty_slice() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        assert!(find_by_coaching_session_ids(&db, &[]).await?.is_empty());
+        assert_eq!(
+            statements_of(db),
+            "[]",
+            "an empty slice must not reach the database"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_by_coaching_session_ids_returns_the_session_images() -> Result<(), Error> {
+        let expected = image_model();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![expected.clone()]])
+            .into_connection();
+
+        let images = find_by_coaching_session_ids(&db, &[expected.coaching_session_id]).await?;
+
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].storage_key, expected.storage_key);
 
         Ok(())
     }

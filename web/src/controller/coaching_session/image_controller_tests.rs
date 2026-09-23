@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
 use async_trait::async_trait;
@@ -58,7 +59,7 @@ impl ObjectStore for TestObjectStore {
     async fn put(
         &self,
         _key: &str,
-        _bytes: Vec<u8>,
+        _source: &Path,
         _content_type: &str,
     ) -> Result<(), DomainError> {
         Ok(())
@@ -73,6 +74,46 @@ impl ObjectStore for TestObjectStore {
             bytes: TINY_PNG.to_vec(),
             content_type: "image/png".to_string(),
         })
+    }
+
+    async fn delete(&self, _key: &str) -> Result<(), DomainError> {
+        Ok(())
+    }
+}
+
+/// Records what each `put` was handed, reading the source while it still exists.
+#[derive(Default)]
+struct SpyObjectStore {
+    received: Mutex<Vec<(PathBuf, Vec<u8>)>>,
+}
+
+impl SpyObjectStore {
+    fn received(&self) -> Vec<(PathBuf, Vec<u8>)> {
+        self.received
+            .lock()
+            .map(|received| received.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl ObjectStore for SpyObjectStore {
+    async fn put(&self, _key: &str, source: &Path, _content_type: &str) -> Result<(), DomainError> {
+        let bytes = tokio::fs::read(source)
+            .await
+            .expect("the spooled upload is readable during put");
+        if let Ok(mut received) = self.received.lock() {
+            received.push((source.to_path_buf(), bytes));
+        }
+        Ok(())
+    }
+
+    fn presigned_get(&self, _key: &str, _ttl: StdDuration) -> Result<Option<String>, DomainError> {
+        Ok(Some(PRESIGNED_URL.to_string()))
+    }
+
+    async fn get(&self, _key: &str) -> Result<StoredObject, DomainError> {
+        unimplemented!("uploads never read")
     }
 
     async fn delete(&self, _key: &str) -> Result<(), DomainError> {
@@ -527,6 +568,38 @@ async fn a_participant_uploads_an_image() {
     assert!(
         body["data"].get("storage_key").is_none(),
         "the storage key must not cross the wire: {body}"
+    );
+}
+
+/// The bytes reach storage whole, streamed from a spool file that is gone once the
+/// request has finished.
+#[tokio::test]
+async fn an_upload_streams_its_bytes_to_storage_and_leaves_no_spool_file() {
+    let spy = Arc::new(SpyObjectStore::default());
+    let world = upload_world(true, Some(Arc::clone(&spy) as Arc<dyn ObjectStore>)).await;
+
+    let status = upload(
+        &world.app,
+        &world.cookie,
+        world.session_id,
+        multipart_body("file", &TINY_PNG),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let received = spy.received();
+    let [(source, bytes)] = received.as_slice() else {
+        panic!("storage must receive exactly one object: {received:?}");
+    };
+    assert_eq!(
+        bytes.as_slice(),
+        TINY_PNG.as_slice(),
+        "the bytes must arrive whole"
+    );
+    assert!(
+        !source.exists(),
+        "the spool file must be removed once the request completes: {}",
+        source.display()
     );
 }
 

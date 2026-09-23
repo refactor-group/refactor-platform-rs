@@ -141,6 +141,10 @@ RECALL_AI_WEBHOOK_SECRET=whsec_<base64-encoded-secret>
 Images pasted into a coaching note are uploaded to object storage; the note itself stores only an
 image id and resolves the URL at render time. `OBJECT_STORE_BACKEND` picks the backend.
 
+Each upload is spooled through the system temp directory (`TMPDIR`, else `/tmp`) and streamed to
+storage from there, so the server's memory does not grow with image size. Keep that directory on
+disk: mounting it as `tmpfs` would put every in-flight upload back in RAM.
+
 **Local development needs no DigitalOcean Spaces account.** The default `local` backend writes to
 `OBJECT_STORE_LOCAL_PATH`, a gitignored directory under the repo, and the read endpoint streams the
 bytes back instead of redirecting to a presigned URL.

@@ -6,7 +6,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::coaching_session_image::{
-    self as CoachingSessionImageApi, ImageRejection, StoreImageParams,
+    self as CoachingSessionImageApi, ImageRejection, Spool, StoreImageParams, Upload,
 };
 use log::*;
 use service::config::ApiVersion;
@@ -22,7 +22,8 @@ use crate::{AppState, Error};
 
 /// Upload one image pasted into a coaching session's notes
 ///
-/// The bytes are sniffed server-side; the declared content type is never trusted.
+/// The bytes are sniffed server-side; the declared content type is never trusted. They are
+/// spooled to disk as they arrive, so an upload never holds the whole image in memory.
 #[utoipa::path(
     post,
     path = "/coaching_sessions/{coaching_session_id}/images",
@@ -54,15 +55,19 @@ pub async fn create(
         return Ok(storage_unavailable());
     };
 
-    let bytes = match file_bytes(multipart).await {
-        Ok(bytes) => bytes,
+    let upload = match spool_file_part(multipart).await {
+        Ok(upload) => upload,
         Err(response) => return Ok(*response),
     };
 
-    debug!("POST note image for session {}", session.id);
+    debug!(
+        "POST note image for session {} ({} bytes)",
+        session.id,
+        upload.len()
+    );
 
     let inspected = match CoachingSessionImageApi::inspect_image(
-        &bytes,
+        &upload.probe().await?,
         app_state.config.coaching_session_image_max_bytes(),
     ) {
         Ok(inspected) => inspected,
@@ -75,7 +80,7 @@ pub async fn create(
         StoreImageParams {
             coaching_session_id: session.id,
             uploaded_by_id: user.id,
-            bytes,
+            upload,
             inspected: &inspected,
         },
     )
@@ -95,6 +100,11 @@ pub async fn create(
 /// resurrect the image during the grace window. Filtering deleted rows out looks like an
 /// obvious improvement and would silently break undo; after the purge job runs the row is
 /// gone and this 404s on its own.
+///
+/// The 404 for a row that outlived its bytes is only produced on a backend that cannot
+/// presign. A presigning backend signs without touching the network, so a missing object
+/// surfaces as that store's own 404 at the end of the redirect rather than as ours. Both
+/// are a 404 to anything that follows redirects; only the origin differs.
 #[utoipa::path(
     get,
     path = "/coaching_session_images/{image_id}",
@@ -106,7 +116,7 @@ pub async fn create(
         (status = 302, description = "Redirect to a presigned URL for the image"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller is not a participant in the image's coaching session"),
-        (status = 404, description = "No such image"),
+        (status = 404, description = "No such image, or the local backend has no object for it"),
         (status = 503, description = "Object storage is not configured"),
     ),
     security(("cookie_auth" = []))
@@ -231,31 +241,42 @@ fn stream(stored: domain::gateway::object_storage::StoredObject) -> Result<Respo
         .into_response())
 }
 
-/// Bytes of the `file` part. `Err` carries the response to return: a multipart failure
-/// reports its own status (413 once the route's body limit is hit), while an absent or
-/// empty part is the caller sending us nothing to store.
+/// The `file` part, spooled to disk chunk by chunk as it streams in. `Err` carries the
+/// response to return: a multipart failure reports its own status (413 once the route's
+/// body limit is hit), while an absent or empty part is the caller sending nothing to store.
 ///
 /// The error is boxed because `Response` owns a body, headers and extensions, which puts
 /// it well over clippy's `result_large_err` threshold.
-async fn file_bytes(mut multipart: Multipart) -> Result<Vec<u8>, Box<Response>> {
-    while let Some(field) = multipart
+async fn spool_file_part(mut multipart: Multipart) -> Result<Upload, Box<Response>> {
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| Box::new(e.into_response()))?
     {
-        if field.name() == Some("file") {
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|e| Box::new(e.into_response()))?;
-
-            return (!bytes.is_empty())
-                .then(|| bytes.to_vec())
-                .ok_or_else(missing_file_part);
+        if field.name() != Some("file") {
+            continue;
         }
+
+        let mut spool = Spool::new().await.map_err(spool_failed)?;
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| Box::new(e.into_response()))?
+        {
+            spool.write(&chunk).await.map_err(spool_failed)?;
+        }
+        let upload = spool.finish().await.map_err(spool_failed)?;
+
+        return (!upload.is_empty())
+            .then_some(upload)
+            .ok_or_else(missing_file_part);
     }
 
     Err(missing_file_part())
+}
+
+fn spool_failed(error: domain::error::Error) -> Box<Response> {
+    Box::new(Error::from(error).into_response())
 }
 
 fn missing_file_part() -> Box<Response> {

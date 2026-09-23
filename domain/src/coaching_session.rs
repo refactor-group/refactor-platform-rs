@@ -4,6 +4,7 @@ use crate::coaching_relationships;
 use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
 };
+use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
 use crate::emails;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
@@ -420,6 +421,10 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
         tiptap.delete(document_name).await?;
     }
 
+    // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
+    // pointer to the bytes. Afterwards there is nothing left to find them by.
+    let image_keys = coaching_session_image::storage_keys_for_sessions(db, &[id]).await?;
+
     // Bump the SEQUENCE and delete in one transaction, and take the number from the DB
     // rather than from the model read above. An edit committing between that read and
     // this delete would otherwise claim the same next SEQUENCE as the cancellation, and a
@@ -431,6 +436,10 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
     let cancelled = coaching_session::increment_ical_sequence(&txn, id).await?;
     coaching_session::delete(&txn, id).await?;
     txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Best effort, and only after the rows are gone, for the same reason the Tiptap
+    // cleanup is: a storage failure must not undo a delete the database has committed.
+    coaching_session_image::destroy_objects(config, &image_keys).await;
 
     // Announce only once the delete has committed.
     emails::notify_session_cancelled(db, config, &cancelled).await;
@@ -573,8 +582,8 @@ mod tests {
     use super::*;
     use crate::test_support::{both_participants_are_members, recording_publisher};
     use crate::{
-        coaching_relationships, coaching_sessions, goals, meeting_provider::Provider,
-        oauth_connections, organizations,
+        coaching_relationships, coaching_session_images, coaching_sessions, goals,
+        meeting_provider::Provider, oauth_connections, organizations,
     };
     use mockito::Server;
     use sea_orm::{DatabaseBackend, MockDatabase};
@@ -1603,9 +1612,11 @@ mod tests {
             ..session.clone()
         };
 
-        // find_by_id, BEGIN, the SEQUENCE bump (UPDATE ... RETURNING), DELETE, COMMIT.
+        // find_by_id, the image-key read, BEGIN, the SEQUENCE bump
+        // (UPDATE ... RETURNING), DELETE, COMMIT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -1657,6 +1668,7 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -1690,6 +1702,74 @@ mod tests {
             .position(|q| q.contains("DELETE"))
             .unwrap_or_else(|| panic!("no DELETE: {sql:?}"));
         assert!(bump < del, "the bump must precede the delete: {sql:?}");
+        Ok(())
+    }
+
+    /// The image rows' FK cascades on the session delete, and `storage_key` is the only
+    /// pointer to the stored bytes. Reading the keys after the delete finds nothing, so
+    /// every object would be stranded in the bucket with no row and no way back.
+    #[tokio::test]
+    async fn delete_reads_the_image_storage_keys_before_deleting_the_session() -> Result<(), Error>
+    {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let _tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+            ..test_session(Id::new_v4(), None)
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+
+        let keys = sql
+            .iter()
+            .position(|q| q.contains("coaching_session_images"))
+            .unwrap_or_else(|| panic!("no read of the image storage keys: {sql:?}"));
+        let del = sql
+            .iter()
+            .position(|q| q.contains("DELETE"))
+            .unwrap_or_else(|| panic!("no DELETE: {sql:?}"));
+        assert!(
+            keys < del,
+            "the keys must be read before the cascade destroys them: {sql:?}"
+        );
         Ok(())
     }
 
