@@ -34,6 +34,7 @@ enum Purged {
     Restored,
 }
 
+/// The job that destroys images whose removal has outlived the grace period.
 pub struct Purge {
     store: Arc<dyn ObjectStore>,
     /// How long a removal survives before it is made real.

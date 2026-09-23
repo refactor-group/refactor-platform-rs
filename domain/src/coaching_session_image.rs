@@ -123,10 +123,13 @@ pub struct Upload {
 }
 
 impl Upload {
+    /// Bytes spooled to disk: the uploaded file's size, checked against the cap and stored as
+    /// the image's `byte_size`.
     pub fn len(&self) -> u64 {
         self.len
     }
 
+    /// Whether no bytes were spooled, which means the upload carried an empty file.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
