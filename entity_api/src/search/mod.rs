@@ -32,8 +32,10 @@ pub mod coaching_session;
 pub mod goal;
 mod snippet;
 pub mod topic;
+mod visibility;
 
 pub use snippet::hydrate_snippets;
+pub use visibility::{resolve_participant_relationship_ids, resolve_visible_relationship_ids};
 
 /// Discriminates hit variants for the `types` filter, cursor tie-breaking, and
 /// merge ordering. The derived `Ord` (declaration order, alphabetical by wire

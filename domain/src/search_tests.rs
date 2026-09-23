@@ -60,6 +60,7 @@ fn scope_for_an_org_admin_is_both_admin_and_member_of_that_org() {
 #[cfg(feature = "mock")]
 mod mock_tests {
     use super::*;
+    use crate::coaching_relationships;
     use sea_orm::{DatabaseBackend, MockDatabase};
 
     fn super_admin_scope() -> Scope {
