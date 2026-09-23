@@ -6,9 +6,9 @@ pub struct Migration;
 /// GIN expression indexes backing keyword search (`GET /search`, PR 1 of
 /// docs/implementation-plans/search-capability-backend.md).
 ///
-/// Each index expression must stay textually identical to the matching
-/// `TSVECTOR_EXPR` constant in `entity_api/src/search/`, or Postgres will stop
-/// using the index for that searcher's query. Plain `CREATE INDEX` (not
+/// Each index expression must stay semantically identical to the tsvector form
+/// of the matching `TEXT_EXPR` constant in `entity_api/src/search/`, or
+/// Postgres will stop using the index for that searcher's query. Plain `CREATE INDEX` (not
 /// CONCURRENTLY — migrations run in a transaction) is acceptable because every
 /// phase-1 table is small.
 const CREATE_INDEXES_SQL: &str = r#"

@@ -11,7 +11,7 @@ use sea_orm::{
 
 use super::{
     compile_query, cursor_condition, excerpt_title, AgreementHit, Core, FtsExpressions, Hit,
-    HitType, Request, Searcher,
+    HitType, Request,
 };
 use crate::error::Error;
 use entity::agreements::{Column, Entity, Relation};
@@ -34,10 +34,10 @@ struct Row {
     organization_id: Id,
 }
 
-pub struct AgreementSearcher;
+pub struct Searcher;
 
 #[async_trait]
-impl Searcher for AgreementSearcher {
+impl super::Searcher for Searcher {
     fn hit_type(&self) -> HitType {
         HitType::Agreement
     }

@@ -2,6 +2,8 @@
 //! resolution, bounded searcher fan-out, merge/rank/paginate, and post-merge
 //! hydration (display titles and snippets for exactly the returned page).
 
+use std::collections::HashMap;
+
 use futures::stream::{self, StreamExt};
 use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, QueryFilter, QuerySelect,
@@ -320,7 +322,7 @@ async fn hydrate_session_display_titles(
         .map_err(entity_api::error::Error::from)?;
     let composed = batch_load_display_titles(db, &sessions).await?;
 
-    let titles: std::collections::HashMap<Id, String> = sessions
+    let titles: HashMap<Id, String> = sessions
         .iter()
         .map(|s| {
             let title = composed

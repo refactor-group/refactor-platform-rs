@@ -12,7 +12,7 @@ use sea_orm::{
 
 use super::{
     compile_query, cursor_condition, excerpt_title, Core, FtsExpressions, Hit, HitType, Request,
-    Searcher, TopicHit,
+    TopicHit,
 };
 use crate::error::Error;
 use entity::coaching_session_topics::{Column, Entity, Relation};
@@ -38,10 +38,10 @@ struct Row {
     organization_id: Id,
 }
 
-pub struct TopicSearcher;
+pub struct Searcher;
 
 #[async_trait]
-impl Searcher for TopicSearcher {
+impl super::Searcher for Searcher {
     fn hit_type(&self) -> HitType {
         HitType::Topic
     }

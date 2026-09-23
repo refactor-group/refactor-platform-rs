@@ -9,8 +9,7 @@ use sea_orm::{
 };
 
 use super::{
-    compile_query, cursor_condition, Core, FtsExpressions, Hit, HitType, Request, Searcher,
-    SessionHit,
+    compile_query, cursor_condition, Core, FtsExpressions, Hit, HitType, Request, SessionHit,
 };
 use crate::error::Error;
 use entity::coaching_relationships;
@@ -32,10 +31,10 @@ struct Row {
     date: DateTime,
 }
 
-pub struct SessionSearcher;
+pub struct Searcher;
 
 #[async_trait]
-impl Searcher for SessionSearcher {
+impl super::Searcher for Searcher {
     fn hit_type(&self) -> HitType {
         HitType::CoachingSession
     }

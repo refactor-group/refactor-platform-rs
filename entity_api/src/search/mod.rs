@@ -8,6 +8,8 @@
 //! hits with `snippet: None` and placeholder display titles; the domain hydrates
 //! both for the returned page only.
 
+use std::cmp::Ordering;
+
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -297,11 +299,11 @@ pub trait Searcher: Send + Sync {
 /// The five phase-1 searchers, in merge (type-ascending) order.
 pub fn searchers() -> Vec<Box<dyn Searcher>> {
     vec![
-        Box::new(action::ActionSearcher),
-        Box::new(agreement::AgreementSearcher),
-        Box::new(coaching_session::SessionSearcher),
-        Box::new(goal::GoalSearcher),
-        Box::new(topic::TopicSearcher),
+        Box::new(action::Searcher),
+        Box::new(agreement::Searcher),
+        Box::new(coaching_session::Searcher),
+        Box::new(goal::Searcher),
+        Box::new(topic::Searcher),
     ]
 }
 
@@ -470,9 +472,9 @@ pub(crate) fn cursor_condition<C: ColumnTrait>(
 ) -> Condition {
     match my_type.cmp(&cursor.hit_type) {
         // This type sorts after the cursor's type: equal-score rows are still due.
-        std::cmp::Ordering::Greater => Expr::expr(score()).lte(cursor.score).into_condition(),
+        Ordering::Greater => Expr::expr(score()).lte(cursor.score).into_condition(),
         // Same type: break ties by id.
-        std::cmp::Ordering::Equal => Condition::any()
+        Ordering::Equal => Condition::any()
             .add(Expr::expr(score()).lt(cursor.score))
             .add(
                 Condition::all()
@@ -480,7 +482,7 @@ pub(crate) fn cursor_condition<C: ColumnTrait>(
                     .add(id_column.gt(cursor.id)),
             ),
         // This type sorts before the cursor's type: equal scores were already served.
-        std::cmp::Ordering::Less => Expr::expr(score()).lt(cursor.score).into_condition(),
+        Ordering::Less => Expr::expr(score()).lt(cursor.score).into_condition(),
     }
 }
 

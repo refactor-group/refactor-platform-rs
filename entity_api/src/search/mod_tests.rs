@@ -252,11 +252,7 @@ mod mock_tests {
     async fn the_topic_searcher_excludes_soft_deleted_topics() {
         let scope = scope();
         let filters = Filters::default();
-        let sql = sql_of(
-            &topic::TopicSearcher,
-            &request(&scope, None, &filters, None),
-        )
-        .await;
+        let sql = sql_of(&topic::Searcher, &request(&scope, None, &filters, None)).await;
         assert!(
             sql.contains(r#"\"deleted_at\" IS NULL"#),
             "missing soft-delete guard: {sql}"
@@ -278,13 +274,13 @@ mod mock_tests {
 
         // Sessions scope on the participant-narrowed set and never touch the
         // creator column (sessions have none).
-        let sql = sql_of(&coaching_session::SessionSearcher, &req).await;
+        let sql = sql_of(&coaching_session::Searcher, &req).await;
         assert!(sql.contains(&participant_rel.to_string()), "{sql}");
         assert!(!sql.contains(&visible_rel.to_string()), "{sql}");
         assert!(!sql.contains(r#"\"user_id\""#), "{sql}");
 
         // Content types keep the visible set and filter by the creator column.
-        let sql = sql_of(&action::ActionSearcher, &req).await;
+        let sql = sql_of(&action::Searcher, &req).await;
         assert!(sql.contains(&visible_rel.to_string()), "{sql}");
         assert!(!sql.contains(&participant_rel.to_string()), "{sql}");
         assert!(sql.contains(r#"\"user_id\" ="#), "{sql}");
@@ -306,7 +302,7 @@ mod mock_tests {
             },
             ..Filters::default()
         };
-        let sql = sql_of(&goal::GoalSearcher, &request(&scope, None, &filters, None)).await;
+        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, None)).await;
         assert!(sql.contains(r#"\"status\" ="#), "{sql}");
         assert!(sql.contains(r#"\"created_at\" >="#), "{sql}");
         assert!(sql.contains(r#"\"created_at\" <"#), "{sql}");
@@ -318,11 +314,7 @@ mod mock_tests {
             goal_filter: GoalFilter::Unlinked,
             ..Filters::default()
         };
-        let sql = sql_of(
-            &action::ActionSearcher,
-            &request(&scope, None, &filters, None),
-        )
-        .await;
+        let sql = sql_of(&action::Searcher, &request(&scope, None, &filters, None)).await;
         assert!(sql.contains(r#"\"coaching_session_id\" ="#), "{sql}");
         assert!(sql.contains(r#"\"goal_id\" IS NULL"#), "{sql}");
 
@@ -330,11 +322,7 @@ mod mock_tests {
             topic_status: Some(TopicStatus::Discussed),
             ..Filters::default()
         };
-        let sql = sql_of(
-            &topic::TopicSearcher,
-            &request(&scope, None, &filters, None),
-        )
-        .await;
+        let sql = sql_of(&topic::Searcher, &request(&scope, None, &filters, None)).await;
         assert!(sql.contains(r#"\"status\" ="#), "{sql}");
     }
 
@@ -350,31 +338,19 @@ mod mock_tests {
 
         // Goal sorts after Action: equal-score goal rows are still due (<=).
         let c = cursor(HitType::Action);
-        let sql = sql_of(
-            &goal::GoalSearcher,
-            &request(&scope, None, &filters, Some(&c)),
-        )
-        .await;
+        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, Some(&c))).await;
         assert!(sql.contains("<="), "{sql}");
         assert!(!sql.contains(r#"\"id\" >"#), "{sql}");
 
         // Same type: strict-less OR (equal AND id greater).
         let c = cursor(HitType::Goal);
-        let sql = sql_of(
-            &goal::GoalSearcher,
-            &request(&scope, None, &filters, Some(&c)),
-        )
-        .await;
+        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, Some(&c))).await;
         assert!(sql.contains(" OR "), "{sql}");
         assert!(sql.contains(r#"\"id\" >"#), "{sql}");
 
         // Goal sorts before Topic: equal scores were already served (<).
         let c = cursor(HitType::Topic);
-        let sql = sql_of(
-            &goal::GoalSearcher,
-            &request(&scope, None, &filters, Some(&c)),
-        )
-        .await;
+        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, Some(&c))).await;
         assert!(!sql.contains("<="), "{sql}");
         assert!(!sql.contains(r#"\"id\" >"#), "{sql}");
         assert!(sql.contains("< $"), "{sql}");

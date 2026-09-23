@@ -10,7 +10,7 @@ use sea_orm::{
 
 use super::{
     compile_query, cursor_condition, excerpt_title, Core, FtsExpressions, GoalHit, Hit, HitType,
-    Request, Searcher,
+    Request,
 };
 use crate::error::Error;
 use entity::coaching_relationships;
@@ -37,10 +37,10 @@ struct Row {
     coaching_relationship_id: Id,
 }
 
-pub struct GoalSearcher;
+pub struct Searcher;
 
 #[async_trait]
-impl Searcher for GoalSearcher {
+impl super::Searcher for Searcher {
     fn hit_type(&self) -> HitType {
         HitType::Goal
     }

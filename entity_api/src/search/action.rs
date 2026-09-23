@@ -11,7 +11,7 @@ use sea_orm::{
 
 use super::{
     compile_query, cursor_condition, excerpt_title, ActionHit, Core, FtsExpressions, GoalFilter,
-    Hit, HitType, Request, Searcher,
+    Hit, HitType, Request,
 };
 use crate::error::Error;
 use entity::actions::{Column, Entity, Relation};
@@ -38,10 +38,10 @@ struct Row {
     organization_id: Id,
 }
 
-pub struct ActionSearcher;
+pub struct Searcher;
 
 #[async_trait]
-impl Searcher for ActionSearcher {
+impl super::Searcher for Searcher {
     fn hit_type(&self) -> HitType {
         HitType::Action
     }
