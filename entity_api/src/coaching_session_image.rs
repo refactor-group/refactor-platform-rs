@@ -7,7 +7,7 @@ use sea_orm::{entity::prelude::*, ActiveValue::Set, QueryOrder, QuerySelect, Try
 /// Ceiling on one purge scan. Every row costs a network round trip, so an unbounded
 /// result set after an outage of the job would make a single tick run far past its own
 /// poll interval. Oldest first, and the next tick takes the remainder.
-const PURGE_SCAN_LIMIT: u64 = 500;
+pub const PURGE_SCAN_LIMIT: u64 = 500;
 
 /// Everything needed to record one stored image. Bundled so `create` stays at two
 /// arguments and reads as a single statement at the call site.

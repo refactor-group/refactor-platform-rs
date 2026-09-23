@@ -147,6 +147,10 @@ impl Job for Purge {
     }
 }
 
+#[cfg(test)]
+#[path = "coaching_session_image_purge_sqlite_tests.rs"]
+mod sqlite_tests;
+
 #[cfg(all(test, feature = "mock"))]
 mod tests {
     use std::path::Path;

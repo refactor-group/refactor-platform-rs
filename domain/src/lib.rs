@@ -61,5 +61,8 @@ pub mod webhook;
 #[cfg(all(test, feature = "mock"))]
 mod test_support;
 
+#[cfg(test)]
+mod sqlite_test_support;
+
 // Re-export events crate as the events module to maintain existing API
 pub use events;
