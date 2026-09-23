@@ -273,8 +273,12 @@ key in the bucket) while leaving the DB row, then:
 img coach $IMAGE | head -1
 ```
 
-**Pass:** a clean 404 or 500 with a JSON body. Not a panic, not a hung request. The frontend
-renders its "image isn't available" state from this.
+**Pass:** **404**, not 500. A row outliving its bytes is a routine condition — a half-finished
+purge, a bucket restored from an older snapshot — and a 500 would page someone for it. Not a
+panic, not a hung request. The frontend renders its "image isn't available" state from this.
+
+Check the log while you are here: it should carry the "Object store has no object at ..."
+warning and nothing at error level.
 
 ### Case 15: path traversal through the storage key
 

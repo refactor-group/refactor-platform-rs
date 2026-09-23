@@ -85,8 +85,12 @@ pub struct StoreImageParams<'a> {
 
 /// Object storage path for one note image. Session-prefixed so a future cleanup can drop
 /// a whole prefix, and so other asset kinds can sit under a sibling prefix.
-fn storage_key(coaching_session_id: Id, image_id: Id, extension: &str) -> String {
-    format!("coaching-sessions/{coaching_session_id}/images/{image_id}.{extension}")
+///
+/// `object_id` is generated per object and is deliberately **not** the row id: the row id
+/// travels in image URLs, and reusing it here would make every stored object's path
+/// guessable from one. The row's `storage_key` column is the only link between the two.
+fn storage_key(coaching_session_id: Id, object_id: Id, extension: &str) -> String {
+    format!("coaching-sessions/{coaching_session_id}/images/{object_id}.{extension}")
 }
 
 /// Stores the bytes and records the metadata row that points at them.
@@ -100,10 +104,10 @@ pub async fn create(
     store: &dyn ObjectStore,
     params: StoreImageParams<'_>,
 ) -> Result<Model, Error> {
-    let image_id = Id::new_v4();
+    let object_id = Id::new_v4();
     let key = storage_key(
         params.coaching_session_id,
-        image_id,
+        object_id,
         &params.inspected.extension,
     );
     let byte_size = params.bytes.len() as i64;

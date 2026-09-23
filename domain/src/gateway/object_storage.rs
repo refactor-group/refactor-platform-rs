@@ -16,7 +16,7 @@ use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use service::config::Config;
 use tokio::fs;
 
-use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 
 /// Served when a backend cannot tell us what an object actually is.
 const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
@@ -88,6 +88,17 @@ fn transport_error(message: String) -> Error {
     Error {
         source: None,
         error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+    }
+}
+
+/// The object is not there. A row can outlive its bytes — a failed upload, a purge that
+/// got halfway, a bucket restored from an older snapshot — and that is a 404, not a fault
+/// in this server. Mapping it to an internal error would page someone for a missing file.
+fn object_not_found(key: &str) -> Error {
+    warn!("Object store has no object at {key}");
+    Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound)),
     }
 }
 
@@ -198,9 +209,10 @@ impl ObjectStore for LocalObjectStore {
     async fn get(&self, key: &str) -> Result<StoredObject, Error> {
         let path = self.resolve(key)?;
 
-        let bytes = fs::read(&path)
-            .await
-            .map_err(|e| local_io_error("read the object", e))?;
+        let bytes = fs::read(&path).await.map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => object_not_found(key),
+            _ => local_io_error("read the object", e),
+        })?;
 
         let content_type = fs::read_to_string(Self::content_type_path(&path))
             .await
@@ -319,6 +331,9 @@ impl ObjectStore for SpacesObjectStore {
         let response = self.client.get(url).send().await?;
 
         let status = response.status();
+        if status.as_u16() == 404 {
+            return Err(object_not_found(key));
+        }
         if !status.is_success() {
             return Err(transport_error(format!(
                 "Spaces refused to serve {key} with status {status}"
@@ -436,6 +451,50 @@ mod tests {
         let stored = store.get(key).await.expect("get succeeds");
         assert_eq!(stored.bytes, vec![0x89, b'P', b'N', b'G']);
         assert_eq!(stored.content_type, "image/png");
+    }
+
+    /// A row can outlive its bytes, and the caller has to be able to tell that apart from
+    /// this server being broken. Without the `NotFound` arm in `get` this is an internal
+    /// error and the endpoint answers 500.
+    #[tokio::test]
+    async fn local_get_reports_a_missing_object_as_not_found() {
+        let root = TempRoot::new();
+        let store = LocalObjectStore::new(&root.path);
+
+        let Err(error) = store
+            .get("coaching-sessions/abc/images/never-written.png")
+            .await
+        else {
+            panic!("a missing object must be an error");
+        };
+
+        assert_eq!(
+            error.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound)),
+            "a missing object must map to 404, not 500"
+        );
+    }
+
+    /// The sibling of the test above: a real disk failure must stay a 500, or a broken
+    /// mount would quietly read as "no such image" to every caller.
+    #[tokio::test]
+    async fn local_get_reports_a_broken_path_as_an_internal_error() {
+        let root = TempRoot::new();
+        let store = LocalObjectStore::new(&root.path);
+        let key = "coaching-sessions/abc/images/dir-not-file.png";
+
+        // A directory where the object should be: readable metadata, unreadable as a file.
+        std::fs::create_dir_all(root.path.join(key)).expect("directory stands in for the object");
+
+        let Err(error) = store.get(key).await else {
+            panic!("reading a directory must be an error");
+        };
+
+        assert_ne!(
+            error.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound)),
+            "an I/O failure that is not absence must not be reported as absence"
+        );
     }
 
     #[test]

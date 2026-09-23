@@ -98,9 +98,13 @@ GET /coaching_session_images/{image_id}
 
 ## Storage key convention
 
-`coaching-sessions/{session_id}/images/{image_id}.{ext}` — session-prefixed so a future
+`coaching-sessions/{session_id}/images/{object_id}.{ext}` — session-prefixed so a future
 session-delete can drop a whole prefix, and so logos can sit under a sibling prefix in the same
 bucket.
+
+`{object_id}` is generated per object and is **not** the image row's id. The row id appears in
+image URLs; if it also named the object, one URL would reveal the storage path of the object
+behind it. The row's `storage_key` column is the only link between the two.
 
 ## Manual verification
 
