@@ -1,5 +1,5 @@
 //! One-per-request visibility resolution: the relationship id sets every
-//! searcher scopes on. Query construction lives here (entity layer); the
+//! searcher scopes on. Query construction lives here (entity_api layer); the
 //! domain orchestrator decides when to call these and what to do with an
 //! empty result.
 
