@@ -8,9 +8,11 @@ use axum_login::{
 };
 use domain::jobs::{coaching_session_image_purge, password_reset, session_reminder, Scheduler};
 use domain::user::Backend;
+use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
 
+use self::error::WebErrorKind;
 pub use self::error::{Error, Result};
 use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
@@ -19,6 +21,7 @@ use service::config::{ApiVersion, Config};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 use time::Duration;
 use tokio::net::TcpListener;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -73,18 +76,37 @@ impl AppState {
     }
 }
 
+/// Upper bound on connections held by the session store's own pool.
+const SESSION_POOL_MAX_CONNECTIONS: u32 = 5;
+
+/// Opens the pool backing the session store, separate from SeaORM's.
+///
+/// SeaORM 2 runs on SQLx 0.9, but the newest published `tower-sessions-sqlx-store`
+/// (0.15.0) takes a SQLx 0.8 `PgPool`, so the two cannot share a pool.
+///
+/// Replace with `db.get_postgres_connection_pool()` once a published
+/// `tower-sessions-sqlx-store` depends on SQLx 0.9 AND a published `axum-login`
+/// accepts its `tower-sessions` version (both already true on their `main`
+/// branches). Then delete this function and web's direct `sqlx` 0.8 dependency.
+async fn session_pool(config: &Config) -> Result<PgPool> {
+    PgPoolOptions::new()
+        .max_connections(SESSION_POOL_MAX_CONNECTIONS)
+        .acquire_timeout(StdDuration::from_secs(config.db_acquire_timeout_secs))
+        .connect(config.database_url())
+        .await
+        .map_err(|err| {
+            error!("Session store pool failed to connect: {err}");
+            Error::Web(WebErrorKind::Other)
+        })
+}
+
 pub async fn init_server(app_state: AppState) -> Result<()> {
     // Session layer
-    let session_store = PostgresStore::new(
-        app_state
-            .db_conn_ref()
-            .get_postgres_connection_pool()
-            .to_owned(),
-    )
-    .with_schema_name("refactor_platform") // FIXME: consolidate all schema strings into a config field with default option
-    .unwrap()
-    .with_table_name("authorized_sessions")
-    .unwrap();
+    let session_store = PostgresStore::new(session_pool(&app_state.config).await?)
+        .with_schema_name("refactor_platform") // FIXME: consolidate all schema strings into a config field with default option
+        .unwrap()
+        .with_table_name("authorized_sessions")
+        .unwrap();
 
     session_store.migrate().await.unwrap();
 
