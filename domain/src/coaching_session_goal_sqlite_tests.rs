@@ -90,7 +90,7 @@ async fn returning_many_when_every_row_conflicts() {
             .exec_with_returning(&db)
             .await
             .expect("a fully conflicting batch is not an error");
-        // SeaORM 1.1 reports a batch where every row conflicts as Ok with no rows.
+        // A batch where every row conflicts reports Ok with no rows.
         assert!(result.is_empty(), "nothing was written, got {result:?}");
 
         let rows = Entity::find().all(&db).await.expect("the table is read");
