@@ -186,7 +186,7 @@ pub async fn delete_by_id(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::test_support::{both_participants_are_members, recording_publisher};
+    use crate::test_utils::mock::{both_participants_are_members, recording_publisher};
     use crate::{coaching_relationships, coaching_sessions};
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 

@@ -26,7 +26,7 @@ documented error slugs.
 
 ```sh
 BASE=http://localhost:4000
-VER='x-version: 1.0.0-beta1'
+VER='x-version: 1.0.0'
 
 # Log in and keep a per-actor cookie jar. $1 = jar name, $2 = email, $3 = password.
 login() { curl -s -c "/tmp/$1.jar" -X POST "$BASE/login" \
@@ -198,7 +198,7 @@ From the frontend dev server, fetch the text representation in devtools:
 
 ```js
 const r = await fetch(`${API}/coaching_sessions/${s}/transcriptions/${t}`,
-  { credentials: 'include', headers: { accept: 'text/plain', 'x-version': '1.0.0-beta1' } });
+  { credentials: 'include', headers: { accept: 'text/plain', 'x-version': '1.0.0' } });
 r.headers.get('content-disposition');
 ```
 

@@ -44,7 +44,7 @@ BACKEND_SERVICE_PROTOCOL=http                # Protocol (usually http)
 BACKEND_SERVICE_PORT=4000                    # Derived service port
 BACKEND_SERVICE_HOST=localhost               # Hostname used by the service
 BACKEND_SERVICE_API_PATH="api"               # The URL path to proxy the backend API on (e.g. "api" would resolve to http://localhost/api/)
-BACKEND_API_VERSION=1.0.0-beta1              # API version to use between frontend and backend
+BACKEND_API_VERSION=1.0.0              # API version to use between frontend and backend
 RUST_ENV=development                         # development, staging, production
 
 # ==============================

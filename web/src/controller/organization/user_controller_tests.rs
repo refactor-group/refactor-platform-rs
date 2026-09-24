@@ -23,7 +23,7 @@ use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
 
-const API_VERSION: &str = "1.0.0-beta1";
+const API_VERSION: &str = "1.0.0";
 
 const NEW_USER_BODY: &str = r#"{
     "email": "new@example.com",
@@ -160,6 +160,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         service::AppState::new(Config::default(), &db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
+        None,
         None,
         None,
     );

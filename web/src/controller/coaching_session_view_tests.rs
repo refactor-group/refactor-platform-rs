@@ -84,6 +84,7 @@ fn app_state(db: &Arc<sea_orm::DatabaseConnection>) -> AppState {
         domain::events::EventPublisher::default(),
         None,
         None,
+        None,
     )
 }
 
@@ -167,7 +168,7 @@ async fn view_returns_200_for_participant() {
         .uri(format!("/coaching_sessions/{session_id}/view"))
         .method("POST")
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .body(Body::empty())
         .unwrap();
 
@@ -210,7 +211,7 @@ async fn view_returns_403_for_non_participant() {
         .uri(format!("/coaching_sessions/{session_id}/view"))
         .method("POST")
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .body(Body::empty())
         .unwrap();
 

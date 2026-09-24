@@ -177,7 +177,7 @@ mod tests {
     use tower_sessions::Expiry;
 
     const X_VERSION: &str = "x-version";
-    const API_VERSION: &str = "1.0.0-beta1";
+    const API_VERSION: &str = "1.0.0";
 
     fn test_user() -> users::Model {
         let now = Utc::now();
@@ -242,6 +242,7 @@ mod tests {
             service_state,
             Arc::new(sse::Manager::new()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );

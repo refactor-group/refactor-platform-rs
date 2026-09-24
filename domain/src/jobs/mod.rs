@@ -41,6 +41,7 @@ use tokio::time::MissedTickBehavior;
 
 use crate::error::Error;
 
+pub mod coaching_session_image_purge;
 pub mod password_reset;
 pub mod session_reminder;
 

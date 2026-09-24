@@ -213,6 +213,7 @@ mod tests {
             domain::events::EventPublisher::default(),
             None,
             None,
+            None,
         );
 
         // Set up session layer
@@ -297,6 +298,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -387,6 +389,7 @@ mod tests {
             domain::events::EventPublisher::default(),
             None,
             None,
+            None,
         );
 
         // Set up session layer
@@ -470,6 +473,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );

@@ -68,6 +68,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         domain::events::EventPublisher::default(),
         None,
         None,
+        None,
     );
 
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
@@ -110,7 +111,7 @@ async fn lookup(app: &Router, cookie: &str, email: &str) -> axum::response::Resp
     let request = Request::builder()
         .uri(format!("/users?email={email}"))
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .body(Body::empty())
         .unwrap();
     app.clone().oneshot(request).await.unwrap()

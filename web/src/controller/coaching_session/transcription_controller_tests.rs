@@ -165,6 +165,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         domain::events::EventPublisher::default(),
         None,
         None,
+        None,
     );
 
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
@@ -229,7 +230,7 @@ async fn get_transcript(
             "/coaching_sessions/{session_id}/transcriptions/{transcription_id}{query}"
         ))
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1");
+        .header("x-version", "1.0.0");
     let request = match accept {
         Some(accept) => request.header("accept", accept),
         None => request,

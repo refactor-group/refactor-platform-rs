@@ -190,7 +190,7 @@ where
 #[cfg(feature = "mock")]
 mod integration_tests {
     use super::*;
-    use crate::test_support::both_participants_are_members;
+    use crate::test_utils::mock::both_participants_are_members;
     use entity_api::coaching_sessions_goals;
     use entity_api::status::Status;
     use events::EventPublisher;
@@ -270,7 +270,7 @@ mod integration_tests {
     #[tokio::test]
     async fn create_succeeds_when_the_notify_lookup_fails() {
         let relationship_id = Id::new_v4();
-        let (publisher, recorded) = crate::test_support::recording_publisher();
+        let (publisher, recorded) = crate::test_utils::mock::recording_publisher();
 
         let new_goal = create_test_goal_with(
             Status::NotStarted,

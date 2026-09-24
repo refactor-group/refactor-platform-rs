@@ -303,6 +303,7 @@ mod tests {
             domain::events::EventPublisher::default(),
             None,
             None,
+            None,
         )
     }
 

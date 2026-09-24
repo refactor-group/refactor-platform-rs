@@ -6,7 +6,7 @@ use axum_login::{
     tower_sessions::{Expiry, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
-use domain::jobs::{password_reset, session_reminder, Scheduler};
+use domain::jobs::{coaching_session_image_purge, password_reset, session_reminder, Scheduler};
 use domain::user::Backend;
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
@@ -43,6 +43,8 @@ pub struct AppState {
     pub oauth_state_manager: meeting_auth::oauth::StateManager,
     pub recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
     pub transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
+    /// `None` when object storage is unconfigured, which the image endpoints report as 503.
+    pub object_store: Option<Arc<dyn domain::gateway::object_storage::ObjectStore>>,
 }
 
 impl AppState {
@@ -52,6 +54,7 @@ impl AppState {
         event_publisher: domain::events::EventPublisher,
         recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
         transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
+        object_store: Option<Arc<dyn domain::gateway::object_storage::ObjectStore>>,
     ) -> Self {
         Self {
             database_connection: service_state.database_connection,
@@ -61,6 +64,7 @@ impl AppState {
             oauth_state_manager: meeting_auth::oauth::StateManager::new(),
             recording_bot_provider,
             transcription_provider,
+            object_store,
         }
     }
 
@@ -106,6 +110,14 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         None => info!(
             "SESSION_REMINDER_EMAIL_TEMPLATE_ID not set — upcoming-session reminders disabled"
         ),
+    }
+    match coaching_session_image_purge::Purge::from_config(&app_state.config) {
+        Some(purge) => {
+            scheduler.spawn(purge);
+        }
+        None => {
+            info!("Object storage is not configured — coaching note image purging disabled")
+        }
     }
     let job_handles = scheduler.into_handles();
 
