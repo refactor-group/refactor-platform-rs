@@ -218,6 +218,10 @@ async fn publish_session_goal_deleted(
 }
 
 #[cfg(test)]
+#[path = "coaching_session_goal_sqlite_tests.rs"]
+mod sqlite_tests;
+
+#[cfg(test)]
 #[cfg(feature = "mock")]
 mod integration_tests {
     use super::*;

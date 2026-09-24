@@ -7,7 +7,9 @@ use std::future::Future;
 use std::time::Duration;
 
 use entity::coaching_session_images;
-use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Schema};
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, EntityTrait, Schema,
+};
 
 /// Ceiling on one SQLite test. Per-acquire timeouts still add up across many rows.
 const TEST_TIME_LIMIT: Duration = Duration::from_secs(5 * 60);
@@ -25,6 +27,13 @@ pub(crate) async fn within_time_limit<F: Future>(test: F) -> F::Output {
 
 /// A fresh in-memory database holding the coaching session images table.
 pub(crate) async fn database() -> DatabaseConnection {
+    let db = empty_database().await;
+    create_table(&db, coaching_session_images::Entity).await;
+    db
+}
+
+/// A fresh in-memory database with no tables.
+pub(crate) async fn empty_database() -> DatabaseConnection {
     let mut options = ConnectOptions::new("sqlite::memory:");
     // Every in-memory SQLite connection is its own database, so there must be exactly one.
     // A query that escapes an open transaction then waits for a second connection that never
@@ -40,7 +49,7 @@ pub(crate) async fn database() -> DatabaseConnection {
         .expect("in-memory SQLite opens");
 
     // Entities name the `refactor_platform` schema, which SQLite resolves as an attached
-    // database. Foreign keys are off: only the images table exists, not its parents.
+    // database. Foreign keys are off: only the tables under test exist, not their parents.
     for statement in [
         "ATTACH DATABASE ':memory:' AS refactor_platform",
         "PRAGMA foreign_keys = OFF",
@@ -50,15 +59,15 @@ pub(crate) async fn database() -> DatabaseConnection {
             .expect("the database is prepared");
     }
 
+    db
+}
+
+/// Creates `entity`'s table, without the indexes a migration would add.
+pub(crate) async fn create_table<E: EntityTrait>(db: &DatabaseConnection, entity: E) {
     // Built from the entity so the table tracks its columns. SeaORM marks every primary key
     // auto-increment, which SQLite only accepts on integers, so that one keyword goes.
-    let mut create = DbBackend::Sqlite.build(
-        &Schema::new(DbBackend::Sqlite).create_table_from_entity(coaching_session_images::Entity),
-    );
+    let mut create =
+        DbBackend::Sqlite.build(&Schema::new(DbBackend::Sqlite).create_table_from_entity(entity));
     create.sql = create.sql.replace(" AUTOINCREMENT", "");
-    db.execute(create)
-        .await
-        .expect("the images table is created");
-
-    db
+    db.execute(create).await.expect("the table is created");
 }
