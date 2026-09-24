@@ -108,3 +108,7 @@ pub async fn resolve_participant_relationship_ids(
         .await?;
     Ok(rows.into_iter().map(|r| r.id).collect())
 }
+
+#[cfg(all(test, feature = "mock"))]
+#[path = "visibility_mock_tests.rs"]
+mod mock_tests;
