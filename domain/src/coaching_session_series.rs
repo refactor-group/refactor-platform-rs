@@ -6,6 +6,7 @@
 //! typed [`SeriesRule`] struct, never with `serde_json::Value` directly.
 
 use crate::coaching_session;
+use crate::coaching_session_image;
 use crate::coaching_sessions;
 use crate::duration::Duration;
 use crate::emails;
@@ -208,6 +209,10 @@ pub async fn reschedule(
         .collect();
     let future_ids: Vec<Id> = future_sessions.iter().map(|s| s.id).collect();
 
+    // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
+    // pointer to the bytes.
+    let image_keys = coaching_session_image::storage_keys_for_sessions(db, &future_ids).await?;
+
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
 
     for id in &future_ids {
@@ -240,6 +245,7 @@ pub async fn reschedule(
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names_to_cleanup).await;
+    coaching_session_image::destroy_objects(config, &image_keys).await;
 
     // Best-effort, after commit. Fired here rather than from the caller because the
     // previous rule is only in scope inside this function.
@@ -282,6 +288,10 @@ pub async fn delete_with_future_sessions(
         .collect();
     let future_ids: Vec<Id> = future_sessions.iter().map(|s| s.id).collect();
 
+    // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
+    // pointer to the bytes.
+    let image_keys = coaching_session_image::storage_keys_for_sessions(db, &future_ids).await?;
+
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
 
     for id in &future_ids {
@@ -313,6 +323,7 @@ pub async fn delete_with_future_sessions(
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
+    coaching_session_image::destroy_objects(config, &image_keys).await;
 
     if let Some(series) = cancelled {
         emails::notify_recurring_sessions_cancelled(db, config, &series, &cancelled_sessions).await;
@@ -356,6 +367,7 @@ async fn cleanup_orphaned_docs(
 mod tests {
     use super::*;
     use crate::coaching_session::Frequency;
+    use crate::coaching_session_images;
     use chrono::NaiveDate;
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
@@ -596,6 +608,8 @@ mod tests {
             .append_query_results(vec![vec![existing_series.clone()]])
             // 2. find_future_sessions_by_series_id → 2 future rows
             .append_query_results(vec![future_sessions.clone()])
+            // 2b. storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
             // 3. BEGIN
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
@@ -868,6 +882,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             // find_future_sessions_by_series_id → 2 future rows
             .append_query_results(vec![future_sessions.clone()])
+            // storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
             // BEGIN
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
@@ -952,6 +968,8 @@ mod tests {
             .append_query_results(vec![vec![existing_series.clone()]])
             // The pre-lock snapshot still shows SEQUENCE 1.
             .append_query_results(vec![vec![session(1)]])
+            // storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -1034,6 +1052,8 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             // find_future_sessions_by_series_id → 1 future row (with a doc)
             .append_query_results(vec![vec![future_session.clone()]])
+            // storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
             // BEGIN
             .append_exec_results(vec![MockExecResult {
                 last_insert_id: 0,

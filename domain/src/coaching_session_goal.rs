@@ -222,7 +222,7 @@ async fn publish_session_goal_deleted(
 mod integration_tests {
     use super::*;
     use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
-    use crate::test_support::{both_participants_are_members, recording_publisher};
+    use crate::test_utils::mock::{both_participants_are_members, recording_publisher};
     use entity_api::coaching_relationships;
     use entity_api::coaching_sessions;
     use entity_api::status::Status;

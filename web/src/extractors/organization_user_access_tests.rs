@@ -94,6 +94,7 @@ mod organization_user_access_integration_tests {
             domain::events::EventPublisher::default(),
             None,
             None,
+            None,
         );
 
         let session_store = MemoryStore::default();

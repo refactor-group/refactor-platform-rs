@@ -15,6 +15,8 @@ entity_api = { path = "../entity_api" }
 events = { path = "../events" }
 hex = "0.4"
 icalendar = { version = "0.17", features = ["recurrence", "chrono-tz"] }
+imagesize = "0.15"
+infer = "0.22"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 meeting-ai = { path = "../meeting-ai" }
 meeting-auth = { path = "../meeting-auth" }
@@ -22,11 +24,14 @@ secrecy = { version = "0.8", features = ["serde"] }
 service = { path = "../service" }
 log = "0.4.22"
 rand = "0.8"
-reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.12", features = ["json", "rustls-tls", "stream"] }
+rusty-s3 = { version = "0.10", default-features = false, features = ["rustcrypto"] }
 sha2 = "0.10"
+tempfile = "3"
 serde_json = "1.0.128"
 serde = {version = "1.0.210", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 urlencoding = "2.1"
 utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
 uuid = { version = "1.0", features = ["v4"] }
@@ -38,6 +43,8 @@ features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
 
 [dev-dependencies]
 mockito = "1.6"
+# In-memory SQLite: executes the purge's real queries in-process, which the mock cannot.
+sea-orm = { version = "1.1.0", features = ["sqlx-sqlite", "sqlite-use-returning-for-3_35"] }
 # `test-util` (not part of `full`) provides the paused clock the job-scheduler tests
 # use to assert tick timing without sleeping in real time.
 tokio = { version = "1.0", features = ["full", "test-util"] }

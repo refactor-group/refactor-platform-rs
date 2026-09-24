@@ -162,6 +162,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         domain::events::EventPublisher::default(),
         None,
         None,
+        None,
     );
 
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
