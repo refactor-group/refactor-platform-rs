@@ -3,7 +3,7 @@ use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "user_role_changes")]
 pub struct Model {
@@ -24,7 +24,4 @@ pub struct Model {
 }
 
 // No relations: the table carries no foreign keys so audit rows outlive their subjects.
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
-
 impl ActiveModelBehavior for ActiveModel {}
