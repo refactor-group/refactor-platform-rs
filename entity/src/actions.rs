@@ -5,7 +5,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "actions")]
 pub struct Model {
@@ -27,60 +27,39 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::actions_users::Entity")]
-    ActionsUsers,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "ActionsUsers")]
+    pub actions_users: HasMany<super::actions_users::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CoachingSessionId",
-        to = "super::coaching_sessions::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingSessions",
+        from = "coaching_session_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "NoAction"
     )]
-    CoachingSessions,
+    pub coaching_session: BelongsTo<super::coaching_sessions::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::goals::Entity",
-        from = "Column::GoalId",
-        to = "super::goals::Column::Id",
+        belongs_to,
+        relation_enum = "Goals",
+        from = "goal_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "SetNull"
     )]
-    Goals,
+    pub goal: BelongsTo<Option<super::goals::Entity>>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::users::Entity",
-        from = "Column::UserId",
-        to = "super::users::Column::Id",
+        belongs_to,
+        relation_enum = "Users",
+        from = "user_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "NoAction"
     )]
-    Users,
-}
-
-impl Related<super::actions_users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::ActionsUsers.def()
-    }
-}
-
-impl Related<super::coaching_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessions.def()
-    }
-}
-
-impl Related<super::goals::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Goals.def()
-    }
-}
-
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Users.def()
-    }
+    pub user: BelongsTo<super::users::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

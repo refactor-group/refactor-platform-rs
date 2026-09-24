@@ -7,7 +7,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::coaching_relationships::Model)] // OpenAPI schema
 #[sea_orm(
@@ -36,60 +36,39 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::organizations::Entity",
-        from = "Column::OrganizationId",
-        to = "super::organizations::Column::Id",
+        belongs_to,
+        relation_enum = "Organizations",
+        from = "organization_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "NoAction"
     )]
-    Organizations,
+    pub organization: BelongsTo<super::organizations::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaches::Entity",
-        from = "Column::CoachId",
-        to = "super::coaches::Column::Id",
+        belongs_to,
+        relation_enum = "Coaches",
+        from = "coach_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "NoAction"
     )]
-    Coaches,
+    pub coach: BelongsTo<super::coaches::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coachees::Entity",
-        from = "Column::CoacheeId",
-        to = "super::coachees::Column::Id",
+        belongs_to,
+        relation_enum = "Coachees",
+        from = "coachee_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "NoAction"
     )]
-    Coachees,
-    #[sea_orm(has_many = "super::goals::Entity")]
-    Goals,
-}
-
-impl Related<super::organizations::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Organizations.def()
-    }
-}
-
-impl Related<super::coaches::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Coaches.def()
-    }
-}
-
-impl Related<super::coachees::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Coachees.def()
-    }
-}
-
-impl Related<super::goals::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Goals.def()
-    }
+    pub coachee: BelongsTo<super::coachees::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "Goals")]
+    pub goals: HasMany<super::goals::Entity>,
 }
 
 impl Model {

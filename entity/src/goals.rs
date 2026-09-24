@@ -6,7 +6,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::goals::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "goals")]
@@ -30,52 +30,36 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_relationships::Entity",
-        from = "Column::CoachingRelationshipId",
-        to = "super::coaching_relationships::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingRelationships",
+        from = "coaching_relationship_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]
-    CoachingRelationships,
+    pub coaching_relationship: BelongsTo<super::coaching_relationships::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CreatedInSessionId",
-        to = "super::coaching_sessions::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingSessions",
+        from = "created_in_session_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "SetNull"
     )]
-    CoachingSessions,
+    pub coaching_session: BelongsTo<Option<super::coaching_sessions::Entity>>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::users::Entity",
-        from = "Column::UserId",
-        to = "super::users::Column::Id",
+        belongs_to,
+        relation_enum = "Users",
+        from = "user_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "NoAction"
     )]
-    Users,
-}
-
-impl Related<super::coaching_relationships::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingRelationships.def()
-    }
-}
-
-impl Related<super::coaching_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessions.def()
-    }
-}
-
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Users.def()
-    }
+    pub user: BelongsTo<super::users::Entity>,
 }
 
 impl Model {
