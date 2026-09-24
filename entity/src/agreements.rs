@@ -12,7 +12,6 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[sea_orm(primary_key)]
     pub id: Id,
-    #[sea_orm(unique)]
     pub coaching_session_id: Id,
     pub body: Option<String>,
     #[serde(skip_deserializing)]

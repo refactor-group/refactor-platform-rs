@@ -18,7 +18,6 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: Id,
     #[serde(skip_deserializing)]
-    #[sea_orm(unique)]
     pub organization_id: Id,
     pub coach_id: Id,
     pub coachee_id: Id,
@@ -28,7 +27,6 @@ pub struct Model {
     // 1. Create a unique constraint at the database level.
     // 2. Add application logic (probably in entity_api) to make the check.
     // We'll need to add a migration for that eventually.
-    #[sea_orm(unique)]
     pub slug: String,
 
     #[serde(skip_deserializing)]
