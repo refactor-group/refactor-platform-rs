@@ -3,7 +3,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "transcript_segments")]
 pub struct Model {
@@ -21,24 +21,16 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::transcription::Entity",
-        from = "Column::TranscriptionId",
-        to = "super::transcription::Column::Id",
+        belongs_to,
+        relation_enum = "Transcriptions",
+        from = "transcription_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "Cascade"
     )]
-    Transcriptions,
-}
-
-impl Related<super::transcription::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Transcriptions.def()
-    }
+    pub transcription: BelongsTo<super::transcription::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

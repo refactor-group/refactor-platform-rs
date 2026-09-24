@@ -33,7 +33,7 @@ pub enum TranscriptionStatus {
     Failed,
 }
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
 #[schema(as = domain::transcription::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "transcriptions")]
@@ -62,38 +62,26 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)]
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CoachingSessionId",
-        to = "super::coaching_sessions::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingSessions",
+        from = "coaching_session_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "Cascade"
     )]
-    CoachingSessions,
+    pub coaching_session: BelongsTo<super::coaching_sessions::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::meeting_recording::Entity",
-        from = "Column::MeetingRecordingId",
-        to = "super::meeting_recording::Column::Id",
+        belongs_to,
+        relation_enum = "MeetingRecordings",
+        from = "meeting_recording_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "Cascade"
     )]
-    MeetingRecordings,
-}
-
-impl Related<super::coaching_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessions.def()
-    }
-}
-
-impl Related<super::meeting_recording::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::MeetingRecordings.def()
-    }
+    pub meeting_recording: BelongsTo<super::meeting_recording::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

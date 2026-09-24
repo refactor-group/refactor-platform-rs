@@ -6,7 +6,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::coaching_session_views::Model)]
 #[sea_orm(
@@ -24,38 +24,26 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::users::Entity",
-        from = "Column::UserId",
-        to = "super::users::Column::Id",
+        belongs_to,
+        relation_enum = "Users",
+        from = "user_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]
-    Users,
+    pub user: BelongsTo<super::users::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CoachingSessionId",
-        to = "super::coaching_sessions::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingSessions",
+        from = "coaching_session_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]
-    CoachingSessions,
-}
-
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Users.def()
-    }
-}
-
-impl Related<super::coaching_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessions.def()
-    }
+    pub coaching_session: BelongsTo<super::coaching_sessions::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
