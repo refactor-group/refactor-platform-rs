@@ -121,7 +121,7 @@ async fn create_request(app: &Router, cookie: &str, organization_id: Id) -> Stat
         ))
         .method("POST")
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap();
@@ -251,7 +251,7 @@ async fn read_request(
             "/organizations/{organization_id}/coaching_relationships/{relationship_id}"
         ))
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .body(Body::empty())
         .unwrap();
     app.clone().oneshot(request).await.unwrap().status()

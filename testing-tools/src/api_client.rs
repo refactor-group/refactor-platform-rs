@@ -95,7 +95,7 @@ impl ApiClient {
             .client
             .get(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .send()
             .await
             .context("Failed to get user organizations")?;
@@ -136,7 +136,7 @@ impl ApiClient {
             .client
             .get(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .send()
             .await
             .context("Failed to get coaching relationships")?;
@@ -179,7 +179,7 @@ impl ApiClient {
             .client
             .get(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .send()
             .await
             .context("Failed to get coaching sessions")?;
@@ -222,7 +222,7 @@ impl ApiClient {
             .client
             .post(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({
                 "coach_id": coach_id,
                 "coachee_id": coachee_id,
@@ -255,7 +255,7 @@ impl ApiClient {
             .client
             .post(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({
                 "coaching_relationship_id": relationship_id,
                 "date": "2024-01-01",
@@ -289,7 +289,7 @@ impl ApiClient {
             .client
             .post(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({
                 "coaching_session_id": coaching_session_id,
                 "body": title,
@@ -325,7 +325,7 @@ impl ApiClient {
             .client
             .put(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({
                 "coaching_session_id": coaching_session_id,
                 "body": title,
@@ -355,7 +355,7 @@ impl ApiClient {
             .client
             .delete(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .send()
             .await
             .context("Failed to delete action")?;
@@ -382,7 +382,7 @@ impl ApiClient {
             .client
             .post(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({ "coaching_session_id": coaching_session_id, "body": body }))
             .send()
             .await
@@ -413,7 +413,7 @@ impl ApiClient {
             .client
             .patch(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({ "title": title }))
             .send()
             .await
@@ -440,7 +440,7 @@ impl ApiClient {
             .client
             .put(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({ "coaching_session_id": coaching_session_id, "body": body }))
             .send()
             .await
@@ -461,7 +461,7 @@ impl ApiClient {
             .client
             .delete(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .send()
             .await
             .context("Failed to delete agreement")?;
@@ -489,7 +489,7 @@ impl ApiClient {
             .client
             .post(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({ "body": body }))
             .send()
             .await
@@ -519,7 +519,7 @@ impl ApiClient {
             .client
             .put(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({ "body": body }))
             .send()
             .await
@@ -550,7 +550,7 @@ impl ApiClient {
             .client
             .patch(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({ "priority": priority }))
             .send()
             .await
@@ -581,7 +581,7 @@ impl ApiClient {
             .client
             .patch(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .json(&json!({ "status": status }))
             .send()
             .await
@@ -611,7 +611,7 @@ impl ApiClient {
             .client
             .delete(&url)
             .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0-beta1")
+            .header("x-version", "1.0.0")
             .send()
             .await
             .context("Failed to delete topic")?;
