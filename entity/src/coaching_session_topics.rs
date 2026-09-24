@@ -22,6 +22,7 @@ pub struct TopicSnapshot {
     pub updated_at: DateTimeWithTimeZone,
 }
 
+#[sea_orm::compact_model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::coaching_session_topics::Model)]
 #[sea_orm(

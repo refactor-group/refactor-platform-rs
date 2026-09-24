@@ -14,6 +14,7 @@ fn default_timezone() -> String {
 }
 
 // TODO: We should find a way to centralize the users/coaches/coachees types
+#[sea_orm::compact_model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = domain::users::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "users")]

@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 /// Metadata for one image pasted into a coaching session's notes. Every column is
 /// server-derived — the client uploads bytes and nothing else — so the whole model
 /// skips deserialization.
+#[sea_orm::compact_model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::coaching_session_images::Model)]
 #[sea_orm(

@@ -3,6 +3,7 @@ use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[sea_orm::compact_model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "magic_link_tokens")]
 pub struct Model {

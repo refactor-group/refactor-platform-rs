@@ -33,6 +33,7 @@ pub enum TranscriptionStatus {
     Failed,
 }
 
+#[sea_orm::compact_model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
 #[schema(as = domain::transcription::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "transcriptions")]

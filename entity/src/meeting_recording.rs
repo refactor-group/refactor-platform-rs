@@ -43,6 +43,7 @@ pub enum MeetingRecordingStatus {
     Cancelled,
 }
 
+#[sea_orm::compact_model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "meeting_recordings")]
 pub struct Model {

@@ -6,6 +6,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+#[sea_orm::compact_model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = domain::user_roles::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "user_roles")]
