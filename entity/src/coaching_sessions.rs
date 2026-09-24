@@ -6,7 +6,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = domain::coaching_sessions::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "coaching_sessions")]
@@ -48,86 +48,44 @@ pub struct Model {
     /// gets neither the email nor the reminder.
     #[serde(skip_deserializing)]
     pub notice_given_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::actions::Entity")]
-    Actions,
-    #[sea_orm(has_many = "super::agreements::Entity")]
-    Agreements,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "Actions")]
+    pub actions: HasMany<super::actions::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "Agreements")]
+    pub agreements: HasMany<super::agreements::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_relationships::Entity",
-        from = "Column::CoachingRelationshipId",
-        to = "super::coaching_relationships::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingRelationships",
+        from = "coaching_relationship_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "NoAction"
     )]
-    CoachingRelationships,
+    pub coaching_relationship: BelongsTo<super::coaching_relationships::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_session_series::Entity",
-        from = "Column::CoachingSessionSeriesId",
-        to = "super::coaching_session_series::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingSessionSeries",
+        from = "coaching_session_series_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "SetNull"
     )]
-    CoachingSessionSeries,
-    #[sea_orm(has_many = "super::notes::Entity")]
-    Notes,
-    #[sea_orm(has_many = "super::coaching_session_topics::Entity")]
-    CoachingSessionTopics,
-    #[sea_orm(has_many = "super::goals::Entity")]
-    Goals,
-    #[sea_orm(has_many = "super::coaching_sessions_goals::Entity")]
-    CoachingSessionsGoals,
-}
-
-impl Related<super::actions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Actions.def()
-    }
-}
-
-impl Related<super::agreements::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Agreements.def()
-    }
-}
-
-impl Related<super::coaching_relationships::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingRelationships.def()
-    }
-}
-
-impl Related<super::coaching_session_series::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessionSeries.def()
-    }
-}
-
-impl Related<super::notes::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Notes.def()
-    }
-}
-
-impl Related<super::coaching_session_topics::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessionTopics.def()
-    }
-}
-
-impl Related<super::goals::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Goals.def()
-    }
-}
-
-impl Related<super::coaching_sessions_goals::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessionsGoals.def()
-    }
+    pub coaching_session_series: BelongsTo<Option<super::coaching_session_series::Entity>>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "Notes")]
+    pub notes: HasMany<super::notes::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "CoachingSessionTopics")]
+    pub coaching_session_topics: HasMany<super::coaching_session_topics::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "Goals")]
+    pub goals: HasMany<super::goals::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "CoachingSessionsGoals")]
+    pub coaching_sessions_goals: HasMany<super::coaching_sessions_goals::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

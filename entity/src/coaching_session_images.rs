@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 /// Metadata for one image pasted into a coaching session's notes. Every column is
 /// server-derived — the client uploads bytes and nothing else — so the whole model
 /// skips deserialization.
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::coaching_session_images::Model)]
 #[sea_orm(
@@ -42,38 +42,26 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     #[serde(skip_deserializing)]
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CoachingSessionId",
-        to = "super::coaching_sessions::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingSessions",
+        from = "coaching_session_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]
-    CoachingSessions,
+    pub coaching_session: BelongsTo<super::coaching_sessions::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::users::Entity",
-        from = "Column::UploadedById",
-        to = "super::users::Column::Id",
+        belongs_to,
+        relation_enum = "Users",
+        from = "uploaded_by_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]
-    Users,
-}
-
-impl Related<super::coaching_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessions.def()
-    }
-}
-
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Users.def()
-    }
+    pub uploaded_by: BelongsTo<super::users::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
