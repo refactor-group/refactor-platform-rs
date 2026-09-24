@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 #[sea_orm(schema_name = "refactor_platform", table_name = "transcript_segments")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub transcription_id: Id,
     pub speaker_label: String,

@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 #[schema(as = domain::user_roles::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "user_roles")]
 pub struct Model {
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     #[serde(skip_deserializing)]
     pub id: Id,
     pub role: Role,

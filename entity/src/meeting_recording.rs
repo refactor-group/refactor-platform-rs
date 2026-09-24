@@ -48,7 +48,7 @@ pub enum MeetingRecordingStatus {
 #[sea_orm(schema_name = "refactor_platform", table_name = "meeting_recordings")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub coaching_session_id: Id,
     pub bot_id: String,

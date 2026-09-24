@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[sea_orm(schema_name = "refactor_platform", table_name = "magic_link_tokens")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub user_id: Id,
     #[serde(skip_serializing)]

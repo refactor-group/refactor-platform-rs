@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 )]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     /// SHA-256 hex digest of the normalized email (lowercased, trimmed).
     /// Opaque key — no FK to `users`, because attempts are recorded for

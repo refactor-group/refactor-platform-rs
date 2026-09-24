@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 #[sea_orm(schema_name = "refactor_platform", table_name = "oauth_connections")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub user_id: Id,
     pub provider: Provider,

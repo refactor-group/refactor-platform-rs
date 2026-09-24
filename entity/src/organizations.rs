@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 #[sea_orm(schema_name = "refactor_platform", table_name = "organizations")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     #[sea_orm(unique)]
     pub name: String,

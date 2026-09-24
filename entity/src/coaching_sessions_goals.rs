@@ -13,7 +13,7 @@ use utoipa::ToSchema;
     table_name = "coaching_sessions_goals"
 )]
 pub struct Model {
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     #[serde(skip_deserializing)]
     pub id: Id,
     pub coaching_session_id: Id,

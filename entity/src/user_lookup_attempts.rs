@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[sea_orm(schema_name = "refactor_platform", table_name = "user_lookup_attempts")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     /// The user who performed the lookup. No FK to `users`: rows are
     /// rate-limiter state, not a relation.
