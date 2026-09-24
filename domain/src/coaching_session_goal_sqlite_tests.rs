@@ -5,16 +5,15 @@ use std::collections::BTreeSet;
 
 use chrono::Utc;
 use entity::coaching_sessions_goals::{ActiveModel, Column, Entity};
-use entity::Id;
+use entity::{coaching_sessions, goals, status, Id};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Set};
 
-use crate::test_utils::sqlite::{create_table, empty_database, within_time_limit};
+use crate::test_utils::sqlite::{self, seed_coaching_session, within_time_limit};
 
-/// A database holding the session-goal links table and its production unique index.
+/// The synced schema plus the session-goal links table's production unique index.
 async fn database() -> DatabaseConnection {
-    let db = empty_database().await;
-    create_table(&db, Entity).await;
+    let db = sqlite::database().await;
     // Mirrors migration/src/m20260309_000000_goal_relationship_scoping.rs.
     db.execute_unprepared(
         "CREATE UNIQUE INDEX refactor_platform.coaching_sessions_goals_session_goal_unique \
@@ -32,6 +31,34 @@ fn conflict() -> OnConflict {
         .to_owned()
 }
 
+/// Inserts a goal in the relationship of `coaching_session_id` and returns its id.
+async fn seed_goal(db: &DatabaseConnection, coaching_session_id: Id, user_id: Id) -> Id {
+    let session = coaching_sessions::Entity::find_by_id(coaching_session_id)
+        .one(db)
+        .await
+        .expect("the session is read")
+        .expect("the session exists");
+    let now = Utc::now();
+    goals::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_relationship_id: Set(session.coaching_relationship_id),
+        created_in_session_id: Set(None),
+        user_id: Set(user_id),
+        title: Set(None),
+        body: Set(None),
+        status: Set(status::Status::InProgress),
+        status_changed_at: Set(None),
+        completed_at: Set(None),
+        target_date: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the goal is seeded")
+    .id
+}
+
 fn link(coaching_session_id: Id, goal_id: Id) -> ActiveModel {
     let now = Utc::now();
     ActiveModel {
@@ -47,7 +74,12 @@ fn link(coaching_session_id: Id, goal_id: Id) -> ActiveModel {
 async fn returning_many_yields_only_the_rows_written() {
     within_time_limit(async {
         let db = database().await;
-        let (s, g1, g2, g3) = (Id::new_v4(), Id::new_v4(), Id::new_v4(), Id::new_v4());
+        let (s, user) = seed_coaching_session(&db).await;
+        let (g1, g2, g3) = (
+            seed_goal(&db, s, user).await,
+            seed_goal(&db, s, user).await,
+            seed_goal(&db, s, user).await,
+        );
 
         let first = Entity::insert_many([link(s, g1), link(s, g2)])
             .on_conflict(conflict())
@@ -77,7 +109,8 @@ async fn returning_many_yields_only_the_rows_written() {
 async fn returning_many_when_every_row_conflicts() {
     within_time_limit(async {
         let db = database().await;
-        let (s, g1) = (Id::new_v4(), Id::new_v4());
+        let (s, user) = seed_coaching_session(&db).await;
+        let g1 = seed_goal(&db, s, user).await;
 
         Entity::insert_many([link(s, g1)])
             .on_conflict(conflict())

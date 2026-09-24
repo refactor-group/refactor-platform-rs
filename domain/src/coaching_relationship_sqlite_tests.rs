@@ -9,12 +9,11 @@ use entity::Id;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, Set};
 
-use crate::test_utils::sqlite::{create_table, empty_database, within_time_limit};
+use crate::test_utils::sqlite::{self, seed_organization, seed_user, within_time_limit};
 
-/// A database holding the relationships table and its production unique index.
+/// The synced schema plus the relationships table's production unique index.
 async fn database() -> DatabaseConnection {
-    let db = empty_database().await;
-    create_table(&db, Entity).await;
+    let db = sqlite::database().await;
     // Mirrors migration/src/base_refactor_platform_rs.sql.
     db.execute_unprepared(
         "CREATE UNIQUE INDEX refactor_platform.coaching_relationships_coach_coachee_org \
@@ -55,12 +54,11 @@ fn relationship(
 async fn a_conflicting_insert_writes_nothing_and_reports_record_not_found() {
     within_time_limit(async {
         let db = database().await;
-        let (a, b, c, e, o) = (
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        let (c, e, o) = (
+            seed_user(&db).await,
+            seed_user(&db).await,
+            seed_organization(&db).await,
         );
 
         let first = Entity::insert(relationship(a, c, e, o, "first"))
@@ -91,13 +89,12 @@ async fn a_conflicting_insert_writes_nothing_and_reports_record_not_found() {
 async fn an_insert_outside_the_conflict_target_is_written() {
     within_time_limit(async {
         let db = database().await;
-        let (a, other, c, e, other_coachee, o) = (
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
-            Id::new_v4(),
+        let (a, other) = (Id::new_v4(), Id::new_v4());
+        let (c, e, other_coachee, o) = (
+            seed_user(&db).await,
+            seed_user(&db).await,
+            seed_user(&db).await,
+            seed_organization(&db).await,
         );
 
         Entity::insert(relationship(a, c, e, o, "first"))
