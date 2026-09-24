@@ -49,7 +49,7 @@ pub struct Model {
         on_update = "NoAction",
         on_delete = "SetNull"
     )]
-    pub coaching_session: BelongsTo<Option<super::coaching_sessions::Entity>>,
+    pub created_in_session: BelongsTo<Option<super::coaching_sessions::Entity>>,
     #[serde(skip)]
     #[sea_orm(
         belongs_to,

@@ -46,7 +46,7 @@ pub struct Model {
         on_update = "NoAction",
         on_delete = "Restrict"
     )]
-    pub user: BelongsTo<super::users::Entity>,
+    pub created_by_user: BelongsTo<super::users::Entity>,
     #[serde(skip)]
     #[sea_orm(has_many, relation_enum = "CoachingSessions")]
     pub coaching_sessions: HasMany<super::coaching_sessions::Entity>,
