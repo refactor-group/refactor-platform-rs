@@ -3,7 +3,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-#[sea_orm::compact_model]
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = entity::users::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "users")]
@@ -26,18 +26,9 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(
-        has_many = "super::coaching_relationships::Entity",
-        from = "Column::Id",
-        to = "super::coaching_relationships::Column::CoachId",
-        on_update = "NoAction",
-        on_delete = "NoAction"
-    )]
-    CoachingRelationships,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "CoachingRelationships")]
+    pub coaching_relationships: HasMany<super::coaching_relationships::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
