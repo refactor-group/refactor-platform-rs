@@ -32,36 +32,26 @@ pub async fn resolve_visible_relationship_ids(
         return Ok(match (coaching_relationship_id, organization_id) {
             // Intersect-only: a bogus id yields an empty result, never an error.
             (Some(rel_id), None) => Some(vec![rel_id]),
-            // Both filters intersect: keep the relationship only if it belongs
-            // to the requested organization.
-            (Some(rel_id), Some(org_id)) => Some(
-                coaching_relationships::Entity::find()
-                    .select_only()
-                    .column(coaching_relationships::Column::Id)
-                    .column(coaching_relationships::Column::OrganizationId)
-                    .filter(coaching_relationships::Column::Id.eq(rel_id))
-                    .filter(coaching_relationships::Column::OrganizationId.eq(org_id))
-                    .into_model::<RelationshipRow>()
-                    .all(db)
-                    .await?
-                    .into_iter()
-                    .map(|r| r.id)
-                    .collect(),
-            ),
-            (None, Some(org_id)) => Some(
-                coaching_relationships::Entity::find()
-                    .select_only()
-                    .column(coaching_relationships::Column::Id)
-                    .column(coaching_relationships::Column::OrganizationId)
-                    .filter(coaching_relationships::Column::OrganizationId.eq(org_id))
-                    .into_model::<RelationshipRow>()
-                    .all(db)
-                    .await?
-                    .into_iter()
-                    .map(|r| r.id)
-                    .collect(),
-            ),
             (None, None) => None,
+            // Any org filter hits the DB once; a present relationship filter
+            // intersects — the relationship is kept only if it belongs to the
+            // requested organization.
+            (rel_id, Some(org_id)) => Some(
+                coaching_relationships::Entity::find()
+                    .select_only()
+                    .column(coaching_relationships::Column::Id)
+                    .column(coaching_relationships::Column::OrganizationId)
+                    .filter(coaching_relationships::Column::OrganizationId.eq(org_id))
+                    .apply_if(rel_id, |q, rel| {
+                        q.filter(coaching_relationships::Column::Id.eq(rel))
+                    })
+                    .into_model::<RelationshipRow>()
+                    .all(db)
+                    .await?
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect(),
+            ),
         });
     }
 
