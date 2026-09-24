@@ -69,5 +69,5 @@ pub(crate) async fn create_table<E: EntityTrait>(db: &DatabaseConnection, entity
     let mut create =
         DbBackend::Sqlite.build(&Schema::new(DbBackend::Sqlite).create_table_from_entity(entity));
     create.sql = create.sql.replace(" AUTOINCREMENT", "");
-    db.execute(create).await.expect("the table is created");
+    db.execute_raw(create).await.expect("the table is created");
 }

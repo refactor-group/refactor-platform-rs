@@ -51,7 +51,7 @@ async fn returning_many_yields_only_the_rows_written() {
 
         let first = Entity::insert_many([link(s, g1), link(s, g2)])
             .on_conflict(conflict())
-            .exec_with_returning_many(&db)
+            .exec_with_returning(&db)
             .await
             .expect("both links are written");
         assert_eq!(first.len(), 2);
@@ -60,7 +60,7 @@ async fn returning_many_yields_only_the_rows_written() {
 
         let second = Entity::insert_many([link(s, g2), link(s, g3)])
             .on_conflict(conflict())
-            .exec_with_returning_many(&db)
+            .exec_with_returning(&db)
             .await
             .expect("the new link is written");
         assert_eq!(second.len(), 1, "only the non-conflicting row comes back");
@@ -81,13 +81,13 @@ async fn returning_many_when_every_row_conflicts() {
 
         Entity::insert_many([link(s, g1)])
             .on_conflict(conflict())
-            .exec_with_returning_many(&db)
+            .exec_with_returning(&db)
             .await
             .expect("the link is written");
 
         let result = Entity::insert_many([link(s, g1)])
             .on_conflict(conflict())
-            .exec_with_returning_many(&db)
+            .exec_with_returning(&db)
             .await
             .expect("a fully conflicting batch is not an error");
         // SeaORM 1.1 reports a batch where every row conflicts as Ok with no rows.

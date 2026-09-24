@@ -34,17 +34,17 @@ async fn insert_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
         RETURNING id
     "#;
     let user_row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             user_sql,
             vec![
-                Value::String(Some(Box::new("admin@refactorcoach.com".to_owned()))),
-                Value::String(Some(Box::new("Admin".to_owned()))),
-                Value::String(Some(Box::new("Admin".to_owned()))),
-                Value::String(Some(Box::new("Admin".to_owned()))),
-                Value::String(Some(Box::new(password_hash))),
-                Value::ChronoDateTimeUtc(Some(Box::new(now))),
-                Value::ChronoDateTimeUtc(Some(Box::new(now))),
+                Value::String(Some("admin@refactorcoach.com".to_owned())),
+                Value::String(Some("Admin".to_owned())),
+                Value::String(Some("Admin".to_owned())),
+                Value::String(Some("Admin".to_owned())),
+                Value::String(Some(password_hash)),
+                Value::ChronoDateTimeUtc(Some(now)),
+                Value::ChronoDateTimeUtc(Some(now)),
             ],
         ))
         .await
@@ -59,14 +59,14 @@ async fn insert_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
         RETURNING id
     "#;
     let org_row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             org_sql,
             vec![
-                Value::String(Some(Box::new("Refactor Group".to_owned()))),
-                Value::String(Some(Box::new("refactor-group".to_owned()))),
-                Value::ChronoDateTimeUtc(Some(Box::new(now))),
-                Value::ChronoDateTimeUtc(Some(Box::new(now))),
+                Value::String(Some("Refactor Group".to_owned())),
+                Value::String(Some("refactor-group".to_owned())),
+                Value::ChronoDateTimeUtc(Some(now)),
+                Value::ChronoDateTimeUtc(Some(now)),
             ],
         ))
         .await
@@ -79,14 +79,14 @@ async fn insert_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
             organization_id, user_id, created_at, updated_at
         ) VALUES ($1, $2, $3, $4)
     "#;
-    db.execute(Statement::from_sql_and_values(
+    db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
         org_user_sql,
         vec![
-            Value::Uuid(Some(Box::new(org_id))),
-            Value::Uuid(Some(Box::new(admin_user_id))),
-            Value::ChronoDateTimeUtc(Some(Box::new(now))),
-            Value::ChronoDateTimeUtc(Some(Box::new(now))),
+            Value::Uuid(Some(org_id)),
+            Value::Uuid(Some(admin_user_id)),
+            Value::ChronoDateTimeUtc(Some(now)),
+            Value::ChronoDateTimeUtc(Some(now)),
         ],
     ))
     .await
@@ -104,12 +104,10 @@ async fn delete_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
         WHERE user_id IN (SELECT id FROM users WHERE email = $1)
     "#;
     let _ = db
-        .execute(Statement::from_sql_and_values(
+        .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             delete_org_users_sql,
-            vec![Value::String(Some(Box::new(
-                "admin@refactorcoach.com".to_owned(),
-            )))],
+            vec![Value::String(Some("admin@refactorcoach.com".to_owned()))],
         ))
         .await;
 
@@ -117,12 +115,10 @@ async fn delete_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
     let delete_user_sql = r#"
         DELETE FROM users WHERE email = $1
     "#;
-    db.execute(Statement::from_sql_and_values(
+    db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
         delete_user_sql,
-        vec![Value::String(Some(Box::new(
-            "admin@refactorcoach.com".to_owned(),
-        )))],
+        vec![Value::String(Some("admin@refactorcoach.com".to_owned()))],
     ))
     .await?;
 
@@ -130,10 +126,10 @@ async fn delete_initial_admin_user_and_org(manager: &SchemaManager<'_>) -> Resul
     let delete_org_sql = r#"
         DELETE FROM organizations WHERE name = $1
     "#;
-    db.execute(Statement::from_sql_and_values(
+    db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
         delete_org_sql,
-        vec![Value::String(Some(Box::new("Refactor Group".to_owned())))],
+        vec![Value::String(Some("Refactor Group".to_owned()))],
     ))
     .await?;
 

@@ -60,23 +60,17 @@ impl IntoQueryFilterMap for IndexParams {
     fn into_query_filter_map(self) -> QueryFilterMap {
         let mut query_filter_map = QueryFilterMap::new();
 
-        query_filter_map.insert(
-            "user_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.user_id)))),
-        );
+        query_filter_map.insert("user_id".to_string(), Some(Value::Uuid(Some(self.user_id))));
 
         if let Some(coaching_relationship_id) = self.coaching_relationship_id {
             query_filter_map.insert(
                 "coaching_relationship_id".to_string(),
-                Some(Value::Uuid(Some(Box::new(coaching_relationship_id)))),
+                Some(Value::Uuid(Some(coaching_relationship_id))),
             );
         }
 
         if let Some(status) = self.status {
-            query_filter_map.insert(
-                "status".to_string(),
-                Some(Value::String(Some(Box::new(status)))),
-            );
+            query_filter_map.insert("status".to_string(), Some(Value::String(Some(status))));
         }
 
         query_filter_map

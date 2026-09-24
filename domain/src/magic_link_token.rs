@@ -143,7 +143,7 @@ pub async fn complete_setup(
 
     params.insert(
         "password".to_string(),
-        Some(Value::String(Some(Box::new(generate_hash(password))))),
+        Some(Value::String(Some(generate_hash(password)))),
     );
 
     let txn = db.begin().await.map_err(|e| Error {
@@ -239,16 +239,13 @@ mod tests {
             let mut map = UpdateMap::new();
             map.insert(
                 "password".into(),
-                Some(Value::String(Some(Box::new(password.into())))),
+                Some(Value::String(Some(password.into()))),
             );
             map.insert(
                 "confirm_password".into(),
-                Some(Value::String(Some(Box::new(confirm.into())))),
+                Some(Value::String(Some(confirm.into()))),
             );
-            map.insert(
-                "token".into(),
-                Some(Value::String(Some(Box::new(token.into())))),
-            );
+            map.insert("token".into(), Some(Value::String(Some(token.into()))));
             TestParams(map)
         }
 

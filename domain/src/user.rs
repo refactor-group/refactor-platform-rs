@@ -116,7 +116,7 @@ pub async fn update_password(
     // generate new password hash and insert it back into params overwriting the raw password
     params.insert(
         "password".to_string(),
-        Some(Value::String(Some(Box::new(generate_hash(password))))),
+        Some(Value::String(Some(generate_hash(password)))),
     );
 
     let active_model = existing_user.into_active_model();

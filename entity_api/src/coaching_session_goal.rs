@@ -339,7 +339,7 @@ pub async fn link_in_progress_goals_to_session(
 
     let inserted = Entity::insert_many(rows)
         .on_conflict(on_conflict)
-        .exec_with_returning_many(db)
+        .exec_with_returning(db)
         .await?;
 
     Ok(inserted.into_iter().map(|link| link.goal_id).collect())

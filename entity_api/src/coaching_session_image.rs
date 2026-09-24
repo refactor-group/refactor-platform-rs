@@ -85,7 +85,7 @@ pub async fn soft_delete(db: &impl ConnectionTrait, id: Id) -> Result<Model, Err
     Entity::update_many()
         .col_expr(
             Column::DeletedAt,
-            Func::coalesce([Expr::col(Column::DeletedAt).into(), Expr::value(now)]).into(),
+            Func::coalesce([Expr::col(Column::DeletedAt), Expr::value(now)]).into(),
         )
         .col_expr(Column::UpdatedAt, Expr::value(now))
         .filter(Column::Id.eq(id))

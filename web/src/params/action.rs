@@ -31,11 +31,11 @@ impl IntoQueryFilterMap for IndexParams {
         let mut query_filter_map = QueryFilterMap::new();
         query_filter_map.insert(
             "coaching_session_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.coaching_session_id)))),
+            Some(Value::Uuid(Some(self.coaching_session_id))),
         );
         query_filter_map.insert(
             "goal_id".to_string(),
-            self.goal_id.map(|id| Value::Uuid(Some(Box::new(id)))),
+            self.goal_id.map(|id| Value::Uuid(Some(id))),
         );
 
         query_filter_map

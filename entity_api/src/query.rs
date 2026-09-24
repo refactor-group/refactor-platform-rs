@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// use entity_api::query::QueryFilterMap;
 ///
 /// let mut query_filter_map = QueryFilterMap::new();
-/// query_filter_map.insert("coaching_session_id".to_string(), Some(Value::String(Some(Box::new("a_coaching_session_id".to_string())))));
+/// query_filter_map.insert("coaching_session_id".to_string(), Some(Value::String(Some("a_coaching_session_id".to_string()))));
 /// let filter_value = query_filter_map.get("coaching_session_id");
 /// ```
 pub struct QueryFilterMap {
@@ -76,7 +76,7 @@ impl Default for QueryFilterMap {
 ///         let mut query_filter_map = QueryFilterMap::new();
 ///         query_filter_map.insert(
 ///             "coaching_session_id".to_string(),
-///             Some(sea_orm::Value::String(Some(Box::new(self.coaching_session_id)))),
+///             Some(sea_orm::Value::String(Some(self.coaching_session_id))),
 ///         );
 ///         query_filter_map
 ///     }
@@ -172,7 +172,7 @@ where
 /// #         let mut map = QueryFilterMap::new();
 /// #         map.insert(
 /// #             "coaching_session_id".to_string(),
-/// #             Some(Value::String(Some(Box::new(self.coaching_session_id)))),
+/// #             Some(Value::String(Some(self.coaching_session_id))),
 /// #         );
 /// #         map
 /// #     }
@@ -205,7 +205,7 @@ where
 /// #         let mut map = QueryFilterMap::new();
 /// #         map.insert(
 /// #             "coaching_session_id".to_string(),
-/// #             Some(Value::String(Some(Box::new(self.coaching_session_id)))),
+/// #             Some(Value::String(Some(self.coaching_session_id))),
 /// #         );
 /// #         map
 /// #     }

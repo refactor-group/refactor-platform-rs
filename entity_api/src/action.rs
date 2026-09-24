@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, JoinType, Order, QueryOrder, QuerySelect, TryIntoModel,
+    DatabaseConnection, ExprTrait, JoinType, Order, QueryOrder, QuerySelect, TryIntoModel,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

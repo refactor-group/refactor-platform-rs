@@ -29,7 +29,7 @@ impl MigrationTrait for Migration {
         // Deleting the extra rows here would silently change someone's effective
         // privileges, so name them and let the operator resolve each by hand.
         let duplicates = conn
-            .query_all(Statement::from_string(backend, DUPLICATE_PAIRS_SQL))
+            .query_all_raw(Statement::from_string(backend, DUPLICATE_PAIRS_SQL))
             .await?
             .into_iter()
             .map(|row| {

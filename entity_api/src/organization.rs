@@ -6,8 +6,8 @@ use entity::{
     user_roles, Id,
 };
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Set, ConnectionTrait, IntoActiveModel, JoinType, QuerySelect,
-    SqlErr, TransactionTrait, TryIntoModel,
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, ExprTrait, IntoActiveModel, JoinType,
+    QuerySelect, SqlErr, TransactionSession, TransactionTrait, TryIntoModel,
 };
 use slugify::slugify;
 use std::collections::HashMap;

@@ -3,7 +3,9 @@ pub use entity::coaching_session_series::Model;
 use entity::coaching_session_series::{ActiveModel, Column, Entity};
 use entity::Id;
 use log::debug;
-use sea_orm::{entity::prelude::*, ActiveValue::Set, ConnectionTrait, QueryOrder, TryIntoModel};
+use sea_orm::{
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, ExprTrait, QueryOrder, TryIntoModel,
+};
 
 /// Inserts a new coaching_session_series row. The `id`, `created_at`, and
 /// `updated_at` fields on `model` are ignored — the DB assigns them.
