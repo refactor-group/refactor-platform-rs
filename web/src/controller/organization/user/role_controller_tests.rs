@@ -164,7 +164,7 @@ async fn role_request(
         ))
         .method(method)
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .header("content-type", "application/json")
         .body(body)
         .unwrap();

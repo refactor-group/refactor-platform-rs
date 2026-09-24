@@ -50,7 +50,7 @@ redeploy destroys them. Do not make it configurable.
 
 ```sh
 BASE=http://localhost:4000
-VER='x-version: 1.0.0-beta1'
+VER='x-version: 1.0.0'
 
 # Log in and keep a per-actor cookie jar. $1 = jar name, $2 = email, $3 = password.
 login() { curl -s -c "/tmp/$1.jar" -X POST "$BASE/login" \

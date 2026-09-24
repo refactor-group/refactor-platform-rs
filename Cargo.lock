@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "entity"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "axum-login",
  "chrono",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "entity_api"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "async-trait",
  "axum-login",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "events"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "async-trait",
  "serde",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "migration"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "async-std",
  "chrono",
@@ -3591,7 +3591,7 @@ dependencies = [
 
 [[package]]
 name = "refactor_platform_rs"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "clap",
  "domain",
@@ -4303,7 +4303,7 @@ dependencies = [
 
 [[package]]
 name = "service"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "clap",
  "dotenvy",
@@ -4713,7 +4713,7 @@ dependencies = [
 
 [[package]]
 name = "sse"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -5726,7 +5726,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 dependencies = [
  "anyhow",
  "async-stream",

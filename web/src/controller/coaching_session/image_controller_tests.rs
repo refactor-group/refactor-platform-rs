@@ -316,7 +316,7 @@ async fn upload_response(
         .uri(format!("/coaching_sessions/{session_id}/images"))
         .method("POST")
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .header(
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -723,7 +723,7 @@ async fn signal(
     let request = Request::builder()
         .uri(format!("/coaching_session_images/{image_id}{suffix}"))
         .method(method)
-        .header("x-version", "1.0.0-beta1");
+        .header("x-version", "1.0.0");
     let request = match cookie {
         Some(cookie) => request.header("cookie", cookie),
         None => request,
