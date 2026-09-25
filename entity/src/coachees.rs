@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
-#[schema(as = entity::users::Model)] // OpenAPI schema
+#[schema(as = entity::coachees::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "users")]
 pub struct Model {
     #[serde(skip_deserializing)]

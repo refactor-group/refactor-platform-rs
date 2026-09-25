@@ -36,10 +36,11 @@ mod authz_tests;
     path = "/organizations/{organization_id}/coaching_relationships",
     params(
         ApiVersion,
+        ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
     request_body = domain::coaching_relationships::Model,
     responses(
-        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = [domain::coaching_relationships::Model]),
+        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "Organization not found"),
@@ -86,10 +87,10 @@ pub async fn create(
     params(
         ApiVersion,
         ("organization_id" = Uuid, Path, description = "Organization id to retrieve the CoachingRelationship under"),
-        ("relationship_id" = inline(String), Path, description = "CoachingRelationship id to retrieve")
+        ("relationship_id" = Uuid, Path, description = "CoachingRelationship id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = domain::coaching_relationships::Model),
+        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "CoachingRelationship not found"),
         (status = 405, description = "Method not allowed"),
@@ -126,7 +127,7 @@ pub async fn read(
         ("organization_id" = Uuid, Path, description = "Organization id to retrieve CoachingRelationships")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all CoachingRelationships", body = [domain::coaching_relationships::Model]),
+        (status = 200, description = "Successfully retrieved all CoachingRelationships", body = [domain::coaching_relationship::CoachingRelationshipWithUserNames]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")

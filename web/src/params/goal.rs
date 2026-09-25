@@ -9,6 +9,7 @@ use domain::{goals, status::Status, Id, IntoQueryFilterMap, QueryFilterMap, Quer
 /// Sortable fields for goals
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "title")]
+#[schema(as = params::goal::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "title")]
     Title,

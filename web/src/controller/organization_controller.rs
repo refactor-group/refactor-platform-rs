@@ -60,7 +60,7 @@ pub async fn index(
     path = "/organizations/{id}",
     params(
         ApiVersion,
-        ("id" = inline(String), Path, description = "Organization id to retrieve")
+        ("id" = Uuid, Path, description = "Organization id to retrieve")
     ),
     responses(
         (status = 200, description = "Successfully retrieved a certain Organization by its id", body = domain::organizations::Model),
@@ -94,7 +94,7 @@ pub async fn read(
     ),
     request_body = domain::organizations::Model,
     responses(
-        (status = 200, description = "Successfully created a new Organization", body = [domain::organizations::Model]),
+        (status = 200, description = "Successfully created a new Organization", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -128,7 +128,7 @@ pub async fn create(
     path = "/organizations/{id}",
     params(
         ApiVersion,
-        ("id" = i32, Path, description = "Organization id to update")
+        ("id" = Uuid, Path, description = "Organization id to update")
     ),
     request_body = domain::organizations::Model,
     responses(
@@ -169,7 +169,7 @@ pub async fn update(
     path = "/organizations/{id}",
     params(
         ApiVersion,
-        ("id" = i32, Path, description = "Organization id to delete")
+        ("id" = Uuid, Path, description = "Organization id to delete")
     ),
     responses(
         (status = 200, description = "Successfully deleted a certain Organization by its id", body = serde_json::Value),
@@ -200,7 +200,7 @@ pub async fn delete(
 #[utoipa::path(
     post,
     path = "/organizations/{id}/archive",
-    params(ApiVersion, ("id" = inline(String), Path, description = "Organization id to archive")),
+    params(ApiVersion, ("id" = Uuid, Path, description = "Organization id to archive")),
     responses(
         (status = 200, description = "Organization archived", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
@@ -230,7 +230,7 @@ pub async fn archive(
 #[utoipa::path(
     post,
     path = "/organizations/{id}/unarchive",
-    params(ApiVersion, ("id" = inline(String), Path, description = "Organization id to unarchive")),
+    params(ApiVersion, ("id" = Uuid, Path, description = "Organization id to unarchive")),
     responses(
         (status = 200, description = "Organization unarchived", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),

@@ -66,7 +66,7 @@ pub async fn create(
     path = "/agreements/{id}",
     params(
         ApiVersion,
-        ("id" = inline(String), Path, description = "Agreement id to retrieve")
+        ("id" = Uuid, Path, description = "Agreement id to retrieve")
     ),
     responses(
         (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = domain::agreements::Model),
@@ -180,7 +180,7 @@ pub async fn index(
     path = "/agreements/{id}",
     params(
         ApiVersion,
-        ("id" = i32, Path, description = "Agreement id to delete")
+        ("id" = Uuid, Path, description = "Agreement id to delete")
     ),
     responses(
         (status = 200, description = "Successfully deleted a certain Agreement by its id", body = serde_json::Value),

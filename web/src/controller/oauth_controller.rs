@@ -56,6 +56,7 @@ impl From<oauth_connections::Model> for ConnectionResponse {
     get,
     path = "/oauth/{provider}/authorize",
     params(
+        ("provider" = Provider, Path, description = "OAuth provider (e.g. google)"),
         ("user_id" = Uuid, Query, description = "User ID to associate with Google account"),
     ),
     responses(

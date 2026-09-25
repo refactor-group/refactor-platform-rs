@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(as = entity::coaching_sessions_goals::Model)]
 #[sea_orm(
     schema_name = "refactor_platform",
     table_name = "coaching_sessions_goals"

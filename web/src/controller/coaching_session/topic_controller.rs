@@ -21,6 +21,7 @@ use service::config::ApiVersion;
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = coaching_session::topic_controller::CreateParams)]
 pub struct CreateParams {
     pub body: String,
     /// Optional initial priority. Omit for new topics; null until the coachee triages.
@@ -28,6 +29,7 @@ pub struct CreateParams {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = coaching_session::topic_controller::UpdateParams)]
 pub struct UpdateParams {
     pub body: String,
 }

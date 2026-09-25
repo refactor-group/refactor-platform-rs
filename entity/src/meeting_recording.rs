@@ -45,6 +45,7 @@ pub enum MeetingRecordingStatus {
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
+#[schema(as = entity::meeting_recording::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "meeting_recordings")]
 pub struct Model {
     #[serde(skip_deserializing)]

@@ -5,6 +5,7 @@ use utoipa::ToSchema;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
+#[schema(as = entity::transcript_segment::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "transcript_segments")]
 pub struct Model {
     #[serde(skip_deserializing)]

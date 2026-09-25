@@ -10,6 +10,7 @@ use domain::{coaching_session::Recurrence, Id};
 /// defaulting cascade and the resolved value is then persisted on the
 /// stored rule.
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = params::coaching_session_series::CreateParams)]
 pub(crate) struct CreateParams {
     pub(crate) coaching_relationship_id: Id,
     pub(crate) start_at: NaiveDateTime,

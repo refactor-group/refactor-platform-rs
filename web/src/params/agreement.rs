@@ -9,6 +9,7 @@ use domain::{agreements, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 /// Sortable fields for agreements
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "body")]
+#[schema(as = params::agreement::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "body")]
     Body,

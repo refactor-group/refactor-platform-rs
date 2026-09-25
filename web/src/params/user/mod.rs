@@ -51,6 +51,7 @@ pub struct CreateMemberParams {
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(as = params::user::UpdateParams)]
 pub struct UpdateParams {
     pub email: Option<String>,
     pub first_name: Option<String>,

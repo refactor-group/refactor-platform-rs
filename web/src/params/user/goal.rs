@@ -11,6 +11,7 @@ use domain::{goals, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 /// Maps query parameter values (e.g., `?sort_by=title`) to database columns.
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "title")]
+#[schema(as = params::user::goal::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "title")]
     Title,

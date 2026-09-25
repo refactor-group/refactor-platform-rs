@@ -15,6 +15,7 @@ use domain::{
 /// Sortable fields for coaching sessions
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "date")]
+#[schema(as = params::coaching_session::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "date")]
     Date,
@@ -53,6 +54,7 @@ impl IntoQueryFilterMap for IndexParams {
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(as = params::coaching_session::UpdateParams)]
 pub(crate) struct UpdateParams {
     pub(crate) date: NaiveDateTime,
     /// Session duration in minutes (1..=480). Validated in entity_api via
@@ -138,6 +140,7 @@ impl IntoUpdateMap for TitleUpdateParams {
 /// triggers the BE defaulting cascade — see
 /// `entity_api::coaching_session::resolve_duration`).
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = params::coaching_session::CreateParams)]
 pub(crate) struct CreateParams {
     pub(crate) coaching_relationship_id: Id,
     pub(crate) date: NaiveDateTime,

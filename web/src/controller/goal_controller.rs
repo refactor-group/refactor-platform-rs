@@ -92,7 +92,7 @@ pub async fn create(
     path = "/goals/{id}",
     params(
         ApiVersion,
-        ("id" = inline(String), Path, description = "Goal id to retrieve")
+        ("id" = Uuid, Path, description = "Goal id to retrieve")
     ),
     responses(
         (status = 200, description = "Successfully retrieved a specific Goal by its id", body = domain::goals::Model),

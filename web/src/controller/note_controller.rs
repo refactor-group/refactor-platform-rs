@@ -125,7 +125,7 @@ pub async fn index(
     path = "/notes/{id}",
     params(
         ApiVersion,
-        ("id" = inline(String), Path, description = "Note id to retrieve")
+        ("id" = Uuid, Path, description = "Note id to retrieve")
     ),
     responses(
         (status = 200, description = "Successfully retrieved a certain Note by its id", body = domain::notes::Model),

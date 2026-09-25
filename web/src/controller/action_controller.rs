@@ -97,7 +97,7 @@ pub async fn create(
     path = "/actions/{id}",
     params(
         ApiVersion,
-        ("id" = inline(String), Path, description = "Action id to retrieve")
+        ("id" = Uuid, Path, description = "Action id to retrieve")
     ),
     responses(
         (status = 200, description = "Successfully retrieved a specific Action by its id", body = domain::action::ActionWithAssignees),
@@ -310,7 +310,7 @@ pub async fn index(
     path = "/actions/{id}",
     params(
         ApiVersion,
-        ("id" = i32, Path, description = "Action id to delete")
+        ("id" = Uuid, Path, description = "Action id to delete")
     ),
     responses(
         (status = 200, description = "Successfully deleted a certain Action by its id", body = serde_json::Value),

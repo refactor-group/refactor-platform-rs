@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(as = entity::actions_users::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "actions_users")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]

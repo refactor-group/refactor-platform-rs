@@ -142,7 +142,7 @@ pub(crate) struct CountsResponse {
         ("from_date" = chrono::NaiveDate, Query, description = "Start of the range (inclusive)"),
         ("to_date" = chrono::NaiveDate, Query, description = "End of the range (inclusive at calendar-day precision)"),
         ("group_by" = crate::params::user::coaching_session::GroupByParam, Query, description = "Aggregation grouping. v1 accepts only 'month'."),
-        ("tz" = inline(String), Query, description = "IANA timezone identifier (e.g. 'America/Los_Angeles'). Invalid value → 400 invalid_timezone."),
+        ("tz" = String, Query, description = "IANA timezone identifier (e.g. 'America/Los_Angeles'). Invalid value → 400 invalid_timezone."),
         ("coaching_relationship_id" = Option<Uuid>, Query, description = "Narrow to a single coaching relationship."),
         ("organization_id" = Option<Uuid>, Query, description = "Narrow to relationships in this organization. Omitted = unscoped.")
     ),

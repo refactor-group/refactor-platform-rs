@@ -9,6 +9,7 @@ use domain::{actions, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 /// Sortable fields for actions
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "due_by")]
+#[schema(as = params::action::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "due_by")]
     DueBy,
