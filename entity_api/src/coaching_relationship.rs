@@ -90,7 +90,10 @@ pub async fn create(
     .await?;
 
     if let Some(existing) = existing_coaching_relationship {
-        debug!("Reusing existing coaching relationship: {existing:?}");
+        debug!(
+            "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
+            existing.id, existing.coach_id, existing.coachee_id
+        );
         return Ok(with_user_names(existing, &coach, &coachee));
     }
 
@@ -121,7 +124,10 @@ pub async fn create(
                 source: None,
                 error_kind: EntityApiErrorKind::RecordNotFound,
             })?;
-            debug!("Lost the create race, reusing the winning relationship: {winner:?}");
+            debug!(
+                "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
+                winner.coach_id, winner.coachee_id, winner.id
+            );
             Ok(with_user_names(winner, &coach, &coachee))
         }
     }
