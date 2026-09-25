@@ -62,7 +62,9 @@ jobs:
           # merged-only follow-ups (main-arm64 rebuild, PR image delete, PR
           # comment update). The dispatched run has event_name=workflow_dispatch
           # and no pull_request payload, so this input is the only signal.
+          # No checkout in this job, so gh cannot infer the repo from git.
           gh workflow run cleanup-pr-preview.yml \
+            --repo "$REPO" \
             --ref main \
             --field pr_number="$PR_NUMBER" \
             --field is_merged="$IS_MERGED"
