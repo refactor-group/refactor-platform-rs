@@ -34,7 +34,7 @@ For full setup instructions — including meeting transcription credentials (enc
     ```
 
     ```shell
-    cargo install sea-orm-cli
+    cargo install sea-orm-cli@2.0.3 --locked
     ```
 
 3. Run the script with default settings:
@@ -287,8 +287,15 @@ DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-o
 Note that to generate a new Entity using the CLI you must ignore all other tables using the `--ignore-tables` option. You must add the option for _each_ table you are ignoring.
 
 ```bash
- DATABASE_URL=postgres://refactor:password@localhost:5432/refactor sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
+ DATABASE_URL=postgres://refactor:password@localhost:5432/refactor sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --entity-format dense --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
 ```
+
+Generated code is a starting point. Edit it to match our conventions (see `entity/src/coaching_sessions.rs` and `entity/src/coaching_session_images.rs`):
+
+- A UUID primary key uses `#[sea_orm(primary_key, auto_increment = false)]`.
+- Every relation field gets `#[serde(skip)]` and `relation_enum = "<Variant>"`.
+- A `belongs_to` field is named for its FK column minus `_id`, with `on_update`/`on_delete` matching the migration.
+- Register the entity in `domain/src/test_utils/sqlite.rs::database()` (see `docs/test-plans/sqlite_integration_testing.md`).
 
 ---
 

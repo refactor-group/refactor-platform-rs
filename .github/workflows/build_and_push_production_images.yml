@@ -32,7 +32,7 @@ jobs:
           shared-key: ${{ runner.os }}-cargo-${{ github.sha }}  # Caches Rust build artifacts
 
       - name: Install sea-orm-cli
-        run: cargo install sea-orm-cli  # If needed for migrations / seeds
+        run: cargo install sea-orm-cli@2.0.3 --locked  # If needed for migrations / seeds
 
       - name: Run tests
         run: cargo test --release
