@@ -106,28 +106,10 @@ pub async fn create(
         updated_at: Set(now.into()),
         ..Default::default()
     };
-    // DO NOTHING rather than letting the unique index raise: a constraint violation
-    // aborts the caller's transaction, which would poison the membership insert that
-    // `attach_to_organization` wraps around this and leave the recovery read unable
-    // to run at all.
-    let conflict = OnConflict::columns([
-        coaching_relationships::Column::CoachId,
-        coaching_relationships::Column::CoacheeId,
-        coaching_relationships::Column::OrganizationId,
-    ])
-    .do_nothing()
-    .to_owned();
 
-    match Entity::insert(coaching_relationship_active_model)
-        .on_conflict(conflict)
-        .exec_with_returning(db)
-        .await
-    {
-        Ok(inserted) => Ok(with_user_names(inserted, &coach, &coachee)),
-        // DO NOTHING wrote no row, so RETURNING yielded none and SeaORM reports the
-        // miss as RecordNotFound. Only a conflict can produce that here, since this
-        // statement inserts exactly one row.
-        Err(DbErr::RecordNotFound(_)) => {
+    match insert_unless_exists(db, coaching_relationship_active_model).await? {
+        Some(inserted) => Ok(with_user_names(inserted, &coach, &coachee)),
+        None => {
             let winner = find_for_pair(
                 db,
                 organization_id,
@@ -142,7 +124,37 @@ pub async fn create(
             debug!("Lost the create race, reusing the winning relationship: {winner:?}");
             Ok(with_user_names(winner, &coach, &coachee))
         }
-        Err(err) => Err(err.into()),
+    }
+}
+
+/// Inserts `relationship`, returning `None` when its coach, coachee and organization already exist.
+pub async fn insert_unless_exists(
+    db: &impl ConnectionTrait,
+    relationship: ActiveModel,
+) -> Result<Option<Model>, DbErr> {
+    // DO NOTHING rather than letting the unique index raise: a constraint violation
+    // aborts the caller's transaction, which would poison the membership insert that
+    // `attach_to_organization` wraps around this and leave the recovery read unable
+    // to run at all.
+    let conflict = OnConflict::columns([
+        coaching_relationships::Column::CoachId,
+        coaching_relationships::Column::CoacheeId,
+        coaching_relationships::Column::OrganizationId,
+    ])
+    .do_nothing()
+    .to_owned();
+
+    match Entity::insert(relationship)
+        .on_conflict(conflict)
+        .exec_with_returning(db)
+        .await
+    {
+        Ok(inserted) => Ok(Some(inserted)),
+        // DO NOTHING wrote no row, so RETURNING yielded none and SeaORM reports the
+        // miss as RecordNotFound. Only a conflict can produce that here, since this
+        // statement inserts exactly one row.
+        Err(DbErr::RecordNotFound(_)) => Ok(None),
+        Err(err) => Err(err),
     }
 }
 

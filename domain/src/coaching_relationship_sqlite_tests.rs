@@ -1,13 +1,13 @@
-//! The ON CONFLICT DO NOTHING insert that creating a coaching relationship relies on,
-//! run against a real SQL engine so a conflict's outcome is what SeaORM truly reports.
+//! Exercises the production ON CONFLICT DO NOTHING insert behind creating a coaching
+//! relationship against a real SQL engine, so a conflict's outcome is what SeaORM reports.
 
 use std::collections::BTreeSet;
 
 use chrono::Utc;
-use entity::coaching_relationships::{ActiveModel, Column, Entity};
+use entity::coaching_relationships::{ActiveModel, Entity};
 use entity::Id;
-use sea_orm::sea_query::OnConflict;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, Set};
+use entity_api::coaching_relationship::insert_unless_exists;
+use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, Set};
 
 use crate::test_utils::sqlite::{self, seed_organization, seed_user, within_time_limit};
 
@@ -22,13 +22,6 @@ async fn database() -> DatabaseConnection {
     .await
     .expect("the unique index is created");
     db
-}
-
-/// The clause `entity_api::coaching_relationship::create` builds.
-fn conflict() -> OnConflict {
-    OnConflict::columns([Column::CoachId, Column::CoacheeId, Column::OrganizationId])
-        .do_nothing()
-        .to_owned()
 }
 
 fn relationship(
@@ -51,7 +44,7 @@ fn relationship(
 }
 
 #[tokio::test]
-async fn a_conflicting_insert_writes_nothing_and_reports_record_not_found() {
+async fn a_conflicting_insert_writes_nothing_and_reports_none() {
     within_time_limit(async {
         let db = database().await;
         let (a, b) = (Id::new_v4(), Id::new_v4());
@@ -61,20 +54,16 @@ async fn a_conflicting_insert_writes_nothing_and_reports_record_not_found() {
             seed_organization(&db).await,
         );
 
-        let first = Entity::insert(relationship(a, c, e, o, "first"))
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
+        let first = insert_unless_exists(&db, relationship(a, c, e, o, "first"))
             .await
+            .expect("the first insert succeeds")
             .expect("the first insert is written");
         assert_eq!(first.id, a);
 
-        let result = Entity::insert(relationship(b, c, e, o, "second"))
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
-            .await;
+        let result = insert_unless_exists(&db, relationship(b, c, e, o, "second")).await;
         assert!(
-            matches!(result, Err(DbErr::RecordNotFound(_))),
-            "a conflict reports RecordNotFound, got {result:?}"
+            matches!(result, Ok(None)),
+            "a conflict reports Ok(None), got {result:?}"
         );
 
         let rows = Entity::find().all(&db).await.expect("the table is read");
@@ -97,15 +86,13 @@ async fn an_insert_outside_the_conflict_target_is_written() {
             seed_organization(&db).await,
         );
 
-        Entity::insert(relationship(a, c, e, o, "first"))
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
+        insert_unless_exists(&db, relationship(a, c, e, o, "first"))
             .await
+            .expect("the first insert succeeds")
             .expect("the first insert is written");
-        Entity::insert(relationship(other, c, other_coachee, o, "second"))
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
+        insert_unless_exists(&db, relationship(other, c, other_coachee, o, "second"))
             .await
+            .expect("the second insert succeeds")
             .expect("a different coachee is written");
 
         let rows = Entity::find().all(&db).await.expect("the table is read");

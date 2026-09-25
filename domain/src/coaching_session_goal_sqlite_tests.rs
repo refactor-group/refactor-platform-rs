@@ -1,12 +1,12 @@
-//! The ON CONFLICT DO NOTHING bulk insert that links in-progress goals to a session,
-//! run against a real SQL engine so the returned rows are what SeaORM truly reports.
+//! Exercises the production ON CONFLICT DO NOTHING bulk insert that links goals to a
+//! session against a real SQL engine, so the returned rows are what SeaORM reports.
 
 use std::collections::BTreeSet;
 
 use chrono::Utc;
-use entity::coaching_sessions_goals::{ActiveModel, Column, Entity};
+use entity::coaching_sessions_goals::{ActiveModel, Entity};
 use entity::{coaching_sessions, goals, status, Id};
-use sea_orm::sea_query::OnConflict;
+use entity_api::coaching_session_goal::insert_links_skipping_existing;
 use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Set};
 
 use crate::test_utils::sqlite::{self, seed_coaching_session, within_time_limit};
@@ -22,13 +22,6 @@ async fn database() -> DatabaseConnection {
     .await
     .expect("the unique index is created");
     db
-}
-
-/// The clause `entity_api::coaching_session_goal::link_in_progress_goals_to_session` builds.
-fn conflict() -> OnConflict {
-    OnConflict::columns([Column::CoachingSessionId, Column::GoalId])
-        .do_nothing()
-        .to_owned()
 }
 
 /// Inserts a goal in the relationship of `coaching_session_id` and returns its id.
@@ -81,18 +74,14 @@ async fn returning_many_yields_only_the_rows_written() {
             seed_goal(&db, s, user).await,
         );
 
-        let first = Entity::insert_many([link(s, g1), link(s, g2)])
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
+        let first = insert_links_skipping_existing(&db, vec![link(s, g1), link(s, g2)])
             .await
             .expect("both links are written");
         assert_eq!(first.len(), 2);
         let goals: BTreeSet<Id> = first.into_iter().map(|row| row.goal_id).collect();
         assert_eq!(goals, BTreeSet::from([g1, g2]));
 
-        let second = Entity::insert_many([link(s, g2), link(s, g3)])
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
+        let second = insert_links_skipping_existing(&db, vec![link(s, g2), link(s, g3)])
             .await
             .expect("the new link is written");
         assert_eq!(second.len(), 1, "only the non-conflicting row comes back");
@@ -112,15 +101,11 @@ async fn returning_many_when_every_row_conflicts() {
         let (s, user) = seed_coaching_session(&db).await;
         let g1 = seed_goal(&db, s, user).await;
 
-        Entity::insert_many([link(s, g1)])
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
+        insert_links_skipping_existing(&db, vec![link(s, g1)])
             .await
             .expect("the link is written");
 
-        let result = Entity::insert_many([link(s, g1)])
-            .on_conflict(conflict())
-            .exec_with_returning(&db)
+        let result = insert_links_skipping_existing(&db, vec![link(s, g1)])
             .await
             .expect("a fully conflicting batch is not an error");
         // A batch where every row conflicts reports Ok with no rows.
