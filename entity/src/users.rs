@@ -6,6 +6,7 @@ use crate::Id;
 use axum_login::AuthUser;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use utoipa::ToSchema;
 
 fn default_timezone() -> String {
@@ -13,12 +14,13 @@ fn default_timezone() -> String {
 }
 
 // TODO: We should find a way to centralize the users/coaches/coachees types
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = domain::users::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "users")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     #[sea_orm(unique)]
     pub email: String,
@@ -38,10 +40,6 @@ pub struct Model {
     /// `NOT NULL DEFAULT 60` so it's optional on the wire (not an invalid `0`).
     #[serde(default = "crate::duration::Duration::default_minutes")]
     pub default_coaching_session_duration_minutes: i16,
-    #[sea_orm(default = "user")]
-    // This is a legacy field and will be removed in favor of roles
-    #[serde(skip_deserializing)]
-    pub role: Role,
     /// Associated user roles (populated via find_with_related)
     /// This field is ignored by SeaORM for database operations.
     #[sea_orm(ignore)]
@@ -58,31 +56,54 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::user_roles::Entity")]
-    UserRoles,
-}
-
-impl Related<super::organizations::Entity> for Entity {
-    fn to() -> RelationDef {
-        super::user_roles::Relation::Organizations.def()
-    }
-
-    fn via() -> Option<RelationDef> {
-        Some(super::user_roles::Relation::Users.def().rev())
-    }
-}
-
-impl Related<super::user_roles::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::UserRoles.def()
-    }
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "UserRoles")]
+    pub user_roles: HasMany<super::user_roles::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, via = "user_roles::Users")]
+    pub organizations: HasMany<super::organizations::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
+
+impl Model {
+    /// How this user is named to other humans: their chosen display name, else first and
+    /// last, else their email. Distinct from the bare `first_name` + `last_name` pairing
+    /// used where a formal name is wanted regardless of what the user chose to be called.
+    ///
+    /// Profile updates accept blank names, so every field here is treated as absent when
+    /// it is blank and the email backstops a user who cleared all of them.
+    pub fn preferred_name(&self) -> Cow<'_, str> {
+        let display = self
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if !display.is_empty() {
+            return Cow::Borrowed(display);
+        }
+
+        let full = format!("{} {}", self.first_name.trim(), self.last_name.trim());
+        match full.trim() {
+            "" => Cow::Borrowed(&self.email),
+            full => Cow::Owned(full.to_owned()),
+        }
+    }
+
+    /// The shortest name that still identifies this user, for places with only one line
+    /// to spend. Falls through the same blank-tolerant chain as [`Self::preferred_name`].
+    pub fn short_name(&self) -> &str {
+        [
+            self.first_name.as_str(),
+            self.display_name.as_deref().unwrap_or_default(),
+            self.last_name.as_str(),
+        ]
+        .into_iter()
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .unwrap_or(&self.email)
+    }
+}
 
 impl AuthUser for Model {
     type Id = crate::Id;
@@ -117,12 +138,60 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".into(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            role: Role::default(),
             roles: vec![],
             invite_status: None,
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),
         }
+    }
+
+    #[test]
+    fn preferred_name_uses_display_name_when_set() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.preferred_name(), "Jim H.");
+    }
+
+    #[test]
+    fn preferred_name_falls_back_to_first_and_last() {
+        let user = test_user(Uuid::new_v4(), None);
+        assert_eq!(user.preferred_name(), "Test User");
+    }
+
+    #[test]
+    fn preferred_name_ignores_a_blank_display_name() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("   ".into());
+        assert_eq!(user.preferred_name(), "Test User");
+    }
+
+    #[test]
+    fn preferred_name_falls_back_to_email_when_every_name_is_blank() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.first_name = "".into();
+        user.last_name = "".into();
+        assert_eq!(user.preferred_name(), "test@example.com");
+    }
+
+    #[test]
+    fn short_name_prefers_the_first_name() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.short_name(), "Test");
+    }
+
+    #[test]
+    fn short_name_falls_through_blank_fields() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.first_name = "".into();
+        assert_eq!(user.short_name(), "User");
+
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.short_name(), "Jim H.");
+
+        user.display_name = None;
+        user.last_name = " ".into();
+        assert_eq!(user.short_name(), "test@example.com");
     }
 
     #[test]

@@ -44,6 +44,8 @@ services:
       POSTGRES_SSL_ROOT_CERT: ${POSTGRES_SSL_ROOT_CERT}
       DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-public}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?${POSTGRES_OPTIONS}
+      # Sizes the reminder backfill's suppression window to match the running job
+      SESSION_REMINDER_LEAD_HOURS: ${SESSION_REMINDER_LEAD_HOURS}
       PLATFORM: ${PLATFORM}
       BACKEND_IMAGE_NAME: ${BACKEND_IMAGE_NAME}
     restart: "no" # run once, then exit
@@ -117,6 +119,9 @@ services:
       RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID: ${RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID}
       SESSION_CANCELLED_EMAIL_TEMPLATE_ID: ${SESSION_CANCELLED_EMAIL_TEMPLATE_ID}
       RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID: ${RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID}
+      SESSION_REMINDER_EMAIL_TEMPLATE_ID: ${SESSION_REMINDER_EMAIL_TEMPLATE_ID}
+      SESSION_REMINDER_LEAD_HOURS: ${SESSION_REMINDER_LEAD_HOURS}
+      SESSION_REMINDER_POLL_MINUTES: ${SESSION_REMINDER_POLL_MINUTES}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
       SESSION_SCHEDULED_EMAIL_URL_PATH: ${SESSION_SCHEDULED_EMAIL_URL_PATH}
       ACTION_ASSIGNED_EMAIL_URL_PATH: ${ACTION_ASSIGNED_EMAIL_URL_PATH}
@@ -134,6 +139,19 @@ services:
       RECALL_AI_API_KEY: ${RECALL_AI_API_KEY}
       RECALL_AI_REGION: ${RECALL_AI_REGION}
       RECALL_AI_WEBHOOK_SECRET: ${RECALL_AI_WEBHOOK_SECRET}
+      # Coaching note image storage. Production runs the "spaces" backend; the
+      # credentials are injected at deploy time and are never in a committed file.
+      OBJECT_STORE_BACKEND: ${OBJECT_STORE_BACKEND}
+      OBJECT_STORE_LOCAL_PATH: ${OBJECT_STORE_LOCAL_PATH}
+      SPACES_ENDPOINT: ${SPACES_ENDPOINT}
+      SPACES_REGION: ${SPACES_REGION}
+      SPACES_BUCKET: ${SPACES_BUCKET}
+      SPACES_ACCESS_KEY_ID: ${SPACES_ACCESS_KEY_ID}
+      SPACES_SECRET_ACCESS_KEY: ${SPACES_SECRET_ACCESS_KEY}
+      COACHING_SESSION_IMAGE_MAX_BYTES: ${COACHING_SESSION_IMAGE_MAX_BYTES}
+      COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS: ${COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS}
+      COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS: ${COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS}
+      COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES: ${COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES}
     depends_on:
       - migrator
     volumes:
@@ -141,6 +159,42 @@ services:
       - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
     networks:
       - backend_network
+    restart: unless-stopped
+
+  docs-collab:
+    image: ${DOCS_COLLAB_IMAGE_NAME}
+    build:
+      context: .
+      dockerfile: docs-collab-server/Dockerfile
+    platform: ${PLATFORM}
+    container_name: docs-collab
+    environment:
+      # Collab's OWN managed Postgres (not the shared app DB). The secret value
+      # must embed ?sslmode=verify-full&sslrootcert=/app/root.crt.
+      DATABASE_URL: ${DOCS_COLLAB_DATABASE_URL}
+      DATABASE_SCHEMA: ${POSTGRES_SCHEMA:-refactor_platform}
+      JWT_SIGNING_KEY: ${TIPTAP_JWT_SIGNING_KEY}
+      MANAGEMENT_AUTH_KEY: ${TIPTAP_AUTH_KEY}
+      BIND_ADDR: 0.0.0.0:1234
+      PERSIST_DEBOUNCE_MS: ${DOCS_COLLAB_PERSIST_DEBOUNCE_MS:-500}
+      IDLE_EVICT_SECS: ${DOCS_COLLAB_IDLE_EVICT_SECS:-300}
+      DB_MAX_CONNECTIONS: ${DOCS_COLLAB_DB_MAX_CONNECTIONS:-4}
+      DB_MIN_CONNECTIONS: ${DOCS_COLLAB_DB_MIN_CONNECTIONS:-1}
+      RUST_LOG: ${DOCS_COLLAB_RUST_LOG:-info}
+    depends_on:
+      - migrator
+    volumes:
+      # Collab lives on the same managed cluster as the app, so it shares the CA.
+      - ${POSTGRES_SSL_ROOT_CERT}:/app/root.crt:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:1234/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend_network
+    restart: unless-stopped
 
   nextjs-app:
     image: ${FRONTEND_IMAGE_NAME}
@@ -156,8 +210,9 @@ services:
       NEXT_PUBLIC_BACKEND_SERVICE_HOST: ${BACKEND_SERVICE_HOST}
       NEXT_PUBLIC_BACKEND_SERVICE_PORT: ${BACKEND_SERVICE_PORT:-443}
       NEXT_PUBLIC_BACKEND_SERVICE_API_PATH: ${BACKEND_SERVICE_API_PATH:-api}
-      NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION:-1.0.0-beta1}
+      NEXT_PUBLIC_BACKEND_API_VERSION: ${BACKEND_API_VERSION:-1.0.0}
       NEXT_PUBLIC_TIPTAP_APP_ID: ${TIPTAP_APP_ID}
+      NEXT_PUBLIC_DOCS_COLLAB_URL: ${DOCS_COLLAB_URL}
       FRONTEND_SERVICE_INTERFACE: ${FRONTEND_SERVICE_INTERFACE}
       FRONTEND_SERVICE_PORT: ${FRONTEND_SERVICE_PORT:-3000}
       FRONTEND_IMAGE_NAME: ${FRONTEND_IMAGE_NAME}
@@ -166,6 +221,7 @@ services:
       - rust-app
     networks:
       - backend_network
+    restart: unless-stopped
 
 networks:
   backend_network:

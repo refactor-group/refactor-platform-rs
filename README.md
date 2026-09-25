@@ -34,7 +34,7 @@ For full setup instructions — including meeting transcription credentials (enc
     ```
 
     ```shell
-    cargo install sea-orm-cli
+    cargo install sea-orm-cli@2.0.3 --locked
     ```
 
 3. Run the script with default settings:
@@ -63,7 +63,18 @@ Please note that the script assumes that the password for the new PostgreSQL use
 
 ## Starting the Backend
 
-To run the backend directly outside of a container:
+The quickest way to run the full local backend (the app server plus the
+collaborative-notes server, `docs-collab-server`) is the launcher script, which
+reads your `.env` and starts both:
+
+```bash
+scripts/run_backend.sh              # both binaries
+scripts/run_backend.sh --app-only   # app server only
+scripts/run_backend.sh --collab-only
+```
+
+See `docs/setup.md` for the collab server's one-time setup. To run the app
+server directly outside of a container:
 
 The first example will start the backend with log level DEBUG and attempt to connect to a Postgres DB server on the same machine with user `refactor` and password `password` on port `5432` and selecting the database named `refactor_platform`.
 
@@ -99,6 +110,9 @@ The platform uses Resend for transactional emails. To configure email functional
    - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
    - `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID`: The template ID for added-to-organization notification emails
    - `ADDED_TO_ORGANIZATION_EMAIL_URL_PATH`: URL path for the link in added-to-organization emails (default: `/dashboard`)
+   - `SESSION_REMINDER_EMAIL_TEMPLATE_ID`: The template ID for the reminder sent to a coachee ahead of an upcoming session. Leaving it unset disables the reminder job entirely.
+   - `SESSION_REMINDER_LEAD_HOURS`: How far ahead of a session its reminder goes out (default: `24`)
+   - `SESSION_REMINDER_POLL_MINUTES`: How often the reminder sweep looks for sessions that have come due (default: `15`)
    - `FRONTEND_BASE_URL`: Base URL used to construct links in email notifications (e.g. `https://myrefactor.com`)
 
 2. **Command Line Arguments** (for direct execution):
@@ -273,8 +287,15 @@ DATABASE_URL=postgres://refactor:password@localhost:5432/refactor_platform sea-o
 Note that to generate a new Entity using the CLI you must ignore all other tables using the `--ignore-tables` option. You must add the option for _each_ table you are ignoring.
 
 ```bash
- DATABASE_URL=postgres://refactor:password@localhost:5432/refactor sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
+ DATABASE_URL=postgres://refactor:password@localhost:5432/refactor sea-orm-cli generate entity  -s refactor_platform -o entity/src -v --entity-format dense --with-serde both --serde-skip-deserializing-primary-key --ignore-tables {table to ignore} --ignore-tables {other table to ignore}
 ```
+
+Generated code is a starting point. Edit it to match our conventions (see `entity/src/coaching_sessions.rs` and `entity/src/coaching_session_images.rs`):
+
+- A UUID primary key uses `#[sea_orm(primary_key, auto_increment = false)]`.
+- Every relation field gets `#[serde(skip)]` and `relation_enum = "<Variant>"`.
+- A `belongs_to` field is named for its FK column minus `_id`, with `on_update`/`on_delete` matching the migration.
+- Register the entity in `domain/src/test_utils/sqlite.rs::database()` (see `docs/test-plans/sqlite_integration_testing.md`).
 
 ---
 

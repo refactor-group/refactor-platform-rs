@@ -218,11 +218,15 @@ async fn publish_session_goal_deleted(
 }
 
 #[cfg(test)]
+#[path = "coaching_session_goal_sqlite_tests.rs"]
+mod sqlite_tests;
+
+#[cfg(test)]
 #[cfg(feature = "mock")]
 mod integration_tests {
     use super::*;
     use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
-    use crate::test_support::{both_participants_are_members, recording_publisher};
+    use crate::test_utils::mock::{both_participants_are_members, recording_publisher};
     use entity_api::coaching_relationships;
     use entity_api::coaching_sessions;
     use entity_api::status::Status;
@@ -276,6 +280,7 @@ mod integration_tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         }
     }
 

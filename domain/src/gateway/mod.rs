@@ -1,6 +1,8 @@
+pub(crate) mod auth;
 pub mod google_meet;
 pub(crate) mod ical;
 pub mod oauth;
+pub mod object_storage;
 pub mod recall_ai;
 pub(crate) mod resend;
 pub(crate) mod tiptap;

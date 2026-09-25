@@ -5,17 +5,19 @@
 //! consistent interface for working with query filters within the domain layer, while encapsulating
 //! the underlying implementation details remain in the `entity_api` crate.
 pub use entity_api::{
+    actor::Actor,
     mutate::{IntoUpdateMap, UpdateMap},
     query::{FilterOnly, IntoQueryFilterMap, QueryFilterMap},
 };
 
 // Re-exports from `entity` crate via `entity_api`
 pub use entity_api::{
-    actions, agreements, coachees, coaches, coaching_relationships, coaching_session_topics,
-    coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit,
-    duration, goals, jwts, magic_link_tokens, meeting_provider, notes, oauth_connections,
-    organizations, password_reset_attempts, pipeline_provider, query::QuerySort, status,
-    token_purpose, topic_priority, topic_status, user_roles, users, Id,
+    actions, agreements, coachees, coaches, coaching_relationships, coaching_session_images,
+    coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
+    cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens, meeting_provider, notes,
+    oauth_connections, organizations, password_reset_attempts, pipeline_provider, query::QuerySort,
+    status, token_purpose, topic_priority, topic_status, user_lookup_attempts, user_role_changes,
+    user_roles, users, Id,
 };
 
 pub mod action;
@@ -24,14 +26,17 @@ pub mod coaching_relationship;
 pub mod coaching_session;
 pub(crate) mod coaching_session_goal;
 mod coaching_session_hydration;
+pub mod coaching_session_image;
 pub mod coaching_session_series;
 pub mod coaching_session_topic;
 pub mod coaching_session_view;
+pub mod collab_import;
 pub mod cost;
 pub mod emails;
 pub mod error;
 pub mod goal;
 pub mod goal_progress;
+pub mod jobs;
 pub mod jwt;
 pub mod magic_link_token;
 pub mod meeting_recording;
@@ -43,16 +48,18 @@ pub mod organization;
 pub mod password_policy;
 pub mod password_reset;
 pub mod tiptap_metrics;
+pub mod transcript_export;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user;
+pub mod user_lookup;
 pub mod user_role;
 
 pub mod gateway;
 pub mod webhook;
 
-#[cfg(all(test, feature = "mock"))]
-mod test_support;
+#[cfg(test)]
+mod test_utils;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;

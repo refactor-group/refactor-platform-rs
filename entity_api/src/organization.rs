@@ -6,8 +6,8 @@ use entity::{
     user_roles, Id,
 };
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Set, ConnectionTrait, IntoActiveModel, JoinType, QuerySelect,
-    SqlErr, TransactionTrait, TryIntoModel,
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, ExprTrait, IntoActiveModel, JoinType,
+    QuerySelect, SqlErr, TransactionSession, TransactionTrait, TryIntoModel,
 };
 use slugify::slugify;
 use std::collections::HashMap;
@@ -321,9 +321,6 @@ async fn by_user(query: Select<Organizations>, user_id: Id) -> Select<Organizati
 }
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;

@@ -1,4 +1,5 @@
-use super::{AttachRoleParams, CreateMemberParams};
+use super::{AttachRoleParams, CreateMemberParams, UpdateRoleParams};
+use domain::users::Role;
 use domain::Id;
 
 /// A misspelled key must not be silently dropped, leaving the caller to think
@@ -15,6 +16,36 @@ fn attach_role_params_rejects_an_unknown_field() {
         error.to_string().contains("unknown field"),
         "the caller must be told which key was rejected: {error}"
     );
+}
+
+/// This endpoint changes a role and nothing else. Without `deny_unknown_fields` a
+/// client sending `coach_id` gets a 200 and can reasonably believe a coach was
+/// assigned, which is the failure `create` already has.
+#[test]
+fn update_role_params_rejects_an_unknown_field() {
+    let coach_id = Id::new_v4();
+    let body = format!(r#"{{"role": "Admin", "coach_id": "{coach_id}"}}"#);
+
+    let error = serde_json::from_str::<UpdateRoleParams>(&body)
+        .expect_err("coach_id must be refused, not ignored");
+
+    assert!(
+        error.to_string().contains("unknown field"),
+        "the caller must be told which key was rejected: {error}"
+    );
+}
+
+/// The role is PascalCase on the wire and lowercase in Postgres. Reading the
+/// column or a migration suggests lowercase, so the wrong case is easy to send and
+/// the resulting 422 is easy to misread as a logic bug.
+#[test]
+fn update_role_params_reads_the_pascal_case_wire_form() {
+    let params: UpdateRoleParams =
+        serde_json::from_str(r#"{"role": "Admin"}"#).expect("PascalCase is the wire form");
+    assert_eq!(params.role, Role::Admin);
+
+    serde_json::from_str::<UpdateRoleParams>(r#"{"role": "admin"}"#)
+        .expect_err("the lowercase database form is not the wire form");
 }
 
 /// `flatten` puts `coach_id` beside the user fields rather than nesting it, and

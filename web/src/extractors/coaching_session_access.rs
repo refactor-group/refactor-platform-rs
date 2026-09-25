@@ -134,7 +134,6 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
             roles: vec![],
             invite_status: None,
             created_at: now.into(),
@@ -181,6 +180,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -206,6 +206,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -295,6 +296,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -322,6 +324,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -407,6 +410,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -421,6 +425,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -488,6 +493,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -579,6 +585,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
@@ -593,6 +600,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -683,6 +691,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -710,6 +719,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -793,6 +803,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -820,6 +831,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );

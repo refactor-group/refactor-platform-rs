@@ -4,20 +4,22 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, Qu
 
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
-    coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
-    cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens, meeting_provider, notes,
-    oauth_connections, organizations, password_reset_attempts, pipeline_provider, status,
-    token_purpose, topic_priority, topic_status, user_invite_status, user_roles, users,
-    users::Role, Id,
+    coaching_session_images, coaching_session_topics, coaching_session_views, coaching_sessions,
+    coaching_sessions_goals, cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens,
+    meeting_provider, notes, oauth_connections, organizations, password_reset_attempts,
+    pipeline_provider, status, token_purpose, topic_priority, topic_status, user_invite_status,
+    user_lookup_attempts, user_role_changes, user_roles, users, users::Role, Id,
 };
 
 pub mod action;
 pub mod actions_user;
+pub mod actor;
 pub mod agreement;
 pub mod coaching_relationship;
 pub mod coaching_session;
 pub mod coaching_session_display_title;
 pub mod coaching_session_goal;
+pub mod coaching_session_image;
 pub mod coaching_session_series;
 pub mod coaching_session_topic;
 pub mod coaching_session_view;
@@ -38,7 +40,9 @@ pub mod tiptap_metrics;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user;
+pub mod user_lookup_attempt;
 pub mod user_role;
+pub mod user_role_change;
 
 pub(crate) fn uuid_parse_str(uuid_str: &str) -> Result<Id, error::Error> {
     Id::parse_str(uuid_str).map_err(|_| error::Error {
@@ -223,7 +227,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
-    coaching_relationships::ActiveModel {
+    let jim_other_coaching_relationship = coaching_relationships::ActiveModel {
         coach_id: Set(jim_hodapp.id.clone().unwrap()),
         coachee_id: Set(other_user.id.clone().unwrap()),
         organization_id: Set(acme_corp.id.clone().unwrap()),
@@ -384,6 +388,65 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .await
     .unwrap();
 
+    // Jim coaches Other User (Acme): one past and one upcoming 1-off.
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(jim_other_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local().checked_sub_days(Days::new(3)).unwrap()),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(jim_other_coaching_relationship.id.clone().unwrap()),
+        date: Set(now.naive_local().checked_add_days(Days::new(5)).unwrap()),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    // Recurring series (sessions linked via coaching_session_series_id).
+    // Jim -> Caleb (Refactor Group): weekly for 4 weeks.
+    seed_recurring_series(
+        db,
+        jim_caleb_coaching_relationship.id.clone().unwrap(),
+        jim_hodapp.id.clone().unwrap(),
+        now.naive_local().checked_add_days(Days::new(1)).unwrap(),
+        "weekly",
+        4,
+    )
+    .await;
+
+    // Caleb -> Dinah (Acme): bi-weekly for 3 occurrences (~6 weeks).
+    seed_recurring_series(
+        db,
+        caleb_dinah_coaching_relationship.id.clone().unwrap(),
+        caleb_bourg.id.clone().unwrap(),
+        now.naive_local().checked_add_days(Days::new(2)).unwrap(),
+        "biweekly",
+        3,
+    )
+    .await;
+
+    // jim@refactorgroup.com -> james.hodapp (Refactor Group): weekly for 4 weeks.
+    seed_recurring_series(
+        db,
+        jimrg_james_coaching_relationship.id.clone().unwrap(),
+        jim_refactor_group.id.clone().unwrap(),
+        now.naive_local().checked_add_days(Days::new(3)).unwrap(),
+        "weekly",
+        4,
+    )
+    .await;
+
     // Jim (james.hodapp): User in Refactor Group and Acme Corp
     user_roles::ActiveModel {
         role: Set(Role::User),
@@ -474,10 +537,67 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .unwrap();
 }
 
+/// Seed one recurring series: create the `coaching_session_series` row (with a
+/// rule matching what the API would persist), then materialize its
+/// weekly/bi-weekly sessions via the entity_api helper so each links back to the
+/// series. `frequency` is "weekly" or "biweekly"; duration follows the coach's
+/// default so the rule and the materialized rows agree.
+async fn seed_recurring_series(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+    coach_id: Id,
+    start: chrono::NaiveDateTime,
+    frequency: &str,
+    count: u32,
+) {
+    let now = Utc::now();
+    let duration = coaching_session::resolve_duration(db, coach_id, None)
+        .await
+        .unwrap();
+    let step_days: u64 = if frequency == "biweekly" { 14 } else { 7 };
+
+    let rule = serde_json::json!({
+        "start_at": start,
+        "recurrence": { "frequency": frequency, "interval": 1, "count": count },
+        "duration_minutes": duration.minutes(),
+    });
+
+    let series = coaching_session_series::create(
+        db,
+        coaching_session_series::Model {
+            id: Id::default(),
+            coaching_relationship_id: relationship_id,
+            rule,
+            created_by_user_id: coach_id,
+            ical_sequence: 0,
+            created_at: now.into(),
+            updated_at: now.into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let dates: Vec<chrono::NaiveDateTime> = (0..count)
+        .map(|i| {
+            start
+                .checked_add_days(Days::new(step_days * u64::from(i)))
+                .unwrap()
+        })
+        .collect();
+
+    coaching_session::bulk_create_recurring(
+        db,
+        relationship_id,
+        coach_id,
+        series.id,
+        dates,
+        Some(duration),
+    )
+    .await
+    .unwrap();
+}
+
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;

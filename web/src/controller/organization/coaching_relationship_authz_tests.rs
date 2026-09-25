@@ -29,7 +29,6 @@ fn requester() -> users::Model {
         github_profile_url: None,
         timezone: "UTC".to_string(),
         default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(),
-        role: users::Role::User,
         roles: vec![],
         invite_status: None,
         created_at: now.into(),
@@ -70,6 +69,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         service::AppState::new(Config::default(), &db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
+        None,
         None,
         None,
     );
@@ -121,7 +121,7 @@ async fn create_request(app: &Router, cookie: &str, organization_id: Id) -> Stat
         ))
         .method("POST")
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap();
@@ -251,7 +251,7 @@ async fn read_request(
             "/organizations/{organization_id}/coaching_relationships/{relationship_id}"
         ))
         .header("cookie", cookie)
-        .header("x-version", "1.0.0-beta1")
+        .header("x-version", "1.0.0")
         .body(Body::empty())
         .unwrap();
     app.clone().oneshot(request).await.unwrap().status()
@@ -262,6 +262,7 @@ fn build_read_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         service::AppState::new(Config::default(), &db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
+        None,
         None,
         None,
     );

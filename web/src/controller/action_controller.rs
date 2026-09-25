@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::action::ActionWithAssignees;
+use domain::status::Status;
 use domain::{action as ActionApi, actions::Model, emails as EmailsApi, users, Id};
 use log::*;
 use sea_orm::DatabaseConnection;
@@ -248,7 +249,7 @@ pub async fn update_status(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         id,
-        status.as_str().into(),
+        Status::try_from(status.as_str()).unwrap_or_default(),
     )
     .await?;
 

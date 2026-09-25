@@ -120,7 +120,6 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
             roles: vec![],
             invite_status: None,
             created_at: Utc::now().into(),
@@ -133,8 +132,14 @@ mod tests {
         let service_state = service::AppState::new(config, &db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
-        let app_state =
-            crate::AppState::new(service_state, sse_manager, event_publisher, None, None);
+        let app_state = crate::AppState::new(
+            service_state,
+            sse_manager,
+            event_publisher,
+            None,
+            None,
+            None,
+        );
 
         let session_store = MemoryStore::default();
         let session_layer = SessionManagerLayer::new(session_store)

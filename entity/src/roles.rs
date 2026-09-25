@@ -11,8 +11,8 @@ use utoipa::ToSchema;
     Deserialize,
     Default,
     Serialize,
-    DeriveActiveEnum,
     ToSchema,
+    DeriveActiveEnum,
 )]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "role")]
 pub enum Role {

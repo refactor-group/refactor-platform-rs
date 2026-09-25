@@ -11,6 +11,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use domain::goal as GoalApi;
 use domain::goal_progress as GoalProgressApi;
+use domain::status::Status;
 use domain::{goals::Model, Id};
 use serde_json::json;
 use service::config::ApiVersion;
@@ -187,7 +188,7 @@ pub async fn update_status(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         id,
-        status.as_str().into(),
+        Status::try_from(status.as_str()).unwrap_or_default(),
     )
     .await?;
 

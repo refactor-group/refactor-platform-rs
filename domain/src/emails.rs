@@ -5,7 +5,8 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_session, coaching_session_series,
+    actions, coaching_relationship, coaching_relationships, coaching_session,
+    coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
     error::Error,
@@ -145,6 +146,20 @@ impl EmailNotification for RecurringSessionsCancelled {
     }
     fn notification_name() -> &'static str {
         "series cancelled"
+    }
+}
+
+/// Reuses the scheduled email's URL path: the reminder links to the same session page.
+struct SessionReminder;
+impl EmailNotification for SessionReminder {
+    fn template_id(config: &Config) -> Option<String> {
+        config.session_reminder_email_template_id()
+    }
+    fn notification_name() -> &'static str {
+        "session reminder"
+    }
+    fn url_path_template(config: &Config) -> Option<String> {
+        Some(config.session_scheduled_email_url_path().to_owned())
     }
 }
 
@@ -475,6 +490,24 @@ fn format_previous_recurrence_summary(previous: &str, current: &str) -> String {
 /// model is which: both are the same type, so bare references read ambiguously.
 pub struct PreviousSeries<'a>(pub &'a coaching_session_series::Model);
 
+/// The sessions a series reschedule deleted to make way for the ones it materialized.
+/// A newtype for the same reason as [`PreviousSeries`]: both slices are the same type.
+pub struct ReplacedSessions<'a>(pub &'a [coaching_sessions::Model]);
+
+/// The sessions one series email concerns: those it covers, and those a reschedule
+/// replaced to produce them. `replaced` is empty for a freshly scheduled series.
+struct SeriesSessions<'a> {
+    current: &'a [coaching_sessions::Model],
+    replaced: &'a [coaching_sessions::Model],
+}
+
+/// Every `.ics` one series email carries: the series invite or cancellation itself, plus
+/// a `CANCEL` for each standalone event a legacy member left on a calendar.
+struct SeriesIcs {
+    body: String,
+    orphan_cancels: Vec<String>,
+}
+
 /// True when an edit changes something the invite carries, so the calendar needs a fresh
 /// `.ics` under the next `SEQUENCE`.
 ///
@@ -494,6 +527,13 @@ pub fn affects_invite(old: &coaching_sessions::Model, new: &coaching_sessions::M
         || old.duration_minutes != new.duration_minutes
         || old.meeting_url != new.meeting_url
         || old.title != new.title
+}
+
+/// True when an edit moved the session in time, so the participants earn a "has been
+/// rescheduled" notification. Every field here is also in [`affects_invite`], so a send
+/// always rides on an edit that already bumped `SEQUENCE`.
+pub fn affects_schedule(old: &coaching_sessions::Model, new: &coaching_sessions::Model) -> bool {
+    old.date != new.date || old.duration_minutes != new.duration_minutes
 }
 
 /// The two people on a coaching session, carried as one named value rather than as an
@@ -557,9 +597,9 @@ fn ics_uid(id: Id) -> String {
     format!("{id}@{UID_DOMAIN}")
 }
 
-/// The event title as it appears on a calendar.
-fn session_summary(organization: &organizations::Model) -> String {
-    format!("Coaching Session: {}", organization.name)
+/// The event title as it appears on a calendar: coachee first, then coach.
+fn session_summary(coach: &users::Model, coachee: &users::Model) -> String {
+    format!("{} / {}", coachee.short_name(), coach.short_name())
 }
 
 /// The platform organizes every invite: calendar clients only apply updates when the
@@ -571,10 +611,7 @@ fn platform_organizer() -> ical::Participant<'static> {
 /// A user as a calendar participant. The mapping lives here rather than on
 /// `ical::Participant` so the builder stays free of entity types.
 fn participant(user: &users::Model) -> ical::Participant<'_> {
-    let name = user
-        .display_name
-        .clone()
-        .unwrap_or_else(|| format!("{} {}", user.first_name, user.last_name));
+    let name = user.preferred_name();
     ical::Participant::new(&name, &user.email)
 }
 
@@ -658,7 +695,7 @@ async fn send_session_email_to_recipient(
     to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    ics_body: Option<&str>,
+    ics_body: &str,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     let recipient = to.user;
@@ -684,7 +721,7 @@ async fn send_session_email_to_recipient(
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
         .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
-        .add_optional_ics_attachment(ics_body, &ical::Method::Request);
+        .add_ics_attachment(ics_body, &ical::Method::Request);
 
     // The reschedule template declares both keys, so they ship together or not at all.
     let email_request = match reschedule {
@@ -711,7 +748,6 @@ fn build_session_invite_ics(
     coach: &users::Model,
     coachee: &users::Model,
     session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
@@ -721,7 +757,7 @@ fn build_session_invite_ics(
         sequence: session.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -745,7 +781,6 @@ fn build_occurrence_reschedule_ics(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
@@ -755,7 +790,7 @@ fn build_occurrence_reschedule_ics(
         sequence: session.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -776,6 +811,16 @@ fn build_occurrence_reschedule_ics(
 /// differ only by template (via `N`) and the `session_or_series` template variable.
 /// A reschedule passes an already-bumped `session`, so the `.ics` carries the next
 /// `SEQUENCE` under a stable `UID`.
+/// Which participants a session email actually reached.
+///
+/// The two sends fail independently, and only the coachee's bears on the reminder, so a
+/// single "it worked" would record notice for someone who was never told.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Delivered {
+    pub coachee: bool,
+    pub coach: bool,
+}
+
 async fn send_single_session_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
@@ -784,7 +829,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     reschedule: Option<&RescheduleVars>,
-) -> Result<(), Error> {
+) -> Result<Delivered, Error> {
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
         N::notification_name(),
@@ -824,6 +869,8 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
+        coach_name: &coach.preferred_name(),
+        organization_name: &organization.name,
         topics: &topics,
         goal_titles: &goal_titles,
         open_actions: &open_actions,
@@ -831,9 +878,8 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     });
 
     let dtstamp = chrono::Utc::now().naive_utc();
-    // A session inside a series is addressed as an override of its occurrence. One that
-    // predates `ical_recurrence_id` has no such address, so it goes out without an
-    // attachment rather than not going out at all.
+    // A session inside a series is addressed as an override of its occurrence; one that
+    // predates `ical_recurrence_id` goes out self-contained under its own `UID`.
     let ics_body = build_session_ics(
         session,
         description,
@@ -843,17 +889,15 @@ async fn send_single_session_invite_email<N: EmailNotification>(
                 coachee,
                 session,
                 series_id,
-                organization,
                 description,
                 dtstamp,
             )
         },
-        |description| {
-            build_session_invite_ics(coach, coachee, session, organization, description, dtstamp)
-        },
+        |description| build_session_invite_ics(coach, coachee, session, description, dtstamp),
     )?;
 
     // Email to coachee: "Your coach, ... has a session with you"
+    let mut delivered = Delivered::default();
     if let Err(e) = send_session_email_to_recipient(
         &email_config,
         &Recipient {
@@ -863,7 +907,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         },
         session,
         organization,
-        ics_body.as_deref(),
+        &ics_body,
         reschedule,
     )
     .await
@@ -873,6 +917,8 @@ async fn send_single_session_invite_email<N: EmailNotification>(
             N::notification_name(),
             coachee.email
         );
+    } else {
+        delivered.coachee = true;
     }
 
     // Email to coach: "Your coachee, ... has a session with you"
@@ -885,7 +931,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         },
         session,
         organization,
-        ics_body.as_deref(),
+        &ics_body,
         reschedule,
     )
     .await
@@ -895,9 +941,11 @@ async fn send_single_session_invite_email<N: EmailNotification>(
             N::notification_name(),
             coach.email
         );
+    } else {
+        delivered.coach = true;
     }
 
-    Ok(())
+    Ok(delivered)
 }
 
 /// Send session-scheduled notification emails to both coach and coachee.
@@ -919,6 +967,7 @@ async fn send_session_scheduled_email(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 /// Send session-rescheduled notification emails to both coach and coachee. `session`
@@ -933,7 +982,7 @@ async fn send_session_rescheduled_email(
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     previous_start: NaiveDateTime,
-) -> Result<(), Error> {
+) -> Result<Delivered, Error> {
     send_single_session_invite_email::<SessionRescheduled>(
         db,
         config,
@@ -1036,8 +1085,8 @@ pub async fn notify_session_scheduled(
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_scheduled_email(db, config, &coach, &coachee, session, &org).await
@@ -1052,11 +1101,15 @@ pub async fn notify_session_scheduled(
     }
 }
 
-/// The invite for one session, or `None` when its occurrence cannot be addressed.
+/// The invite for one session.
 ///
-/// A session inside a series is addressed as an override of its occurrence; a standalone
-/// one by its own `UID`. A series member materialized before `ical_recurrence_id` existed
-/// has neither, so it goes out with no attachment rather than not going out at all.
+/// A session inside a series is addressed as an override of its occurrence, under the
+/// series `UID` plus a `RECURRENCE-ID` naming which one. A series member materialized
+/// before `ical_recurrence_id` existed has no occurrence to override: its series was never
+/// published to any calendar, so from a client's point of view it is simply an event that
+/// has not been sent yet. It goes out self-contained under its own `UID`, on the same path
+/// a standalone session takes. Addressing it that way rather than through the series `UID`
+/// is what keeps it from acting on the wrong instance.
 ///
 /// `description` is passed through to whichever builder runs, so it moves exactly once.
 fn build_session_ics(
@@ -1064,31 +1117,14 @@ fn build_session_ics(
     description: String,
     build_occurrence: impl FnOnce(Id, String) -> Result<String, Error>,
     build_standalone: impl FnOnce(String) -> Result<String, Error>,
-) -> Result<Option<String>, Error> {
+) -> Result<String, Error> {
     match (
         session.coaching_session_series_id,
         session.ical_recurrence_id,
     ) {
-        (Some(series_id), Some(_)) => build_occurrence(series_id, description).map(Some),
-        (Some(_), None) => {
-            warn_unaddressable(session);
-            Ok(None)
-        }
-        (None, _) => build_standalone(description).map(Some),
+        (Some(series_id), Some(_)) => build_occurrence(series_id, description),
+        _ => build_standalone(description),
     }
-}
-
-/// A series member that predates `ical_recurrence_id` has no valid `RECURRENCE-ID`, so no
-/// invite can address its occurrence. The email still goes out; only the attachment is
-/// withheld. These sessions were materialized before invites existed, so no calendar holds
-/// an event for them and a `CANCEL` or update naming the series `UID` would act on the
-/// wrong instance.
-fn warn_unaddressable(session: &coaching_sessions::Model) {
-    warn!(
-        "Sending email without an invite for session {}: series member predates \
-         ical_recurrence_id, so its occurrence cannot be addressed",
-        session.id
-    );
 }
 
 /// Orchestrate sending session-rescheduled emails (best-effort).
@@ -1098,17 +1134,22 @@ fn warn_unaddressable(session: &coaching_sessions::Model) {
 /// coach and coachee so their calendar event updates in place. `previous_start` is the
 /// pre-update start, shown alongside the new one. Errors are logged internally and never
 /// block or fail the calling operation.
+/// Returns whether the coachee was actually told.
+///
+/// Best-effort in that a failure does not fail the edit, but the caller needs the answer:
+/// the reminder rule treats an announced time as notice given, and recording notice for
+/// an email that never arrived would leave the coachee with neither.
 pub async fn notify_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
-) {
-    let result: Result<(), Error> = async {
+) -> bool {
+    let result: Result<Delivered, Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
@@ -1116,12 +1157,140 @@ pub async fn notify_session_rescheduled(
     }
     .await;
 
-    if let Err(e) = result {
-        warn!(
-            "Failed to send session rescheduled emails for session {}: {e:?}",
-            session.id
-        );
+    match result {
+        // The coachee's, not the coach's: they are who the reminder would go to, and the
+        // two sends fail independently.
+        Ok(delivered) => delivered.coachee,
+        Err(e) => {
+            warn!(
+                "Failed to send session rescheduled emails for session {}: {e:?}",
+                session.id
+            );
+            false
+        }
     }
+}
+
+/// Send the upcoming-session reminder to the coachee.
+///
+/// Unlike the other `notify_*` entry points this returns `Result` rather than swallowing
+/// failures. Its caller is the reminder sweep, not a controller: the sweep has already
+/// claimed the session row and needs the outcome to decide whether to hand that claim
+/// back for a later retry. Logging and discarding the error here would silently drop the
+/// reminder instead.
+///
+/// The coach is not a recipient — they already hold the invite from the scheduled send,
+/// and the copy is written from the coachee's side ("your coach, ...").
+///
+/// No `.ics` rides along: the calendar event was delivered when the session was
+/// scheduled, and re-sending the same `UID`/`SEQUENCE` pair is a no-op for a calendar
+/// client at best and a duplicate event at worst.
+/// Whether a reminder attempt actually mailed anyone.
+///
+/// A skip is not a failure: the recipient is no longer entitled to the session's details,
+/// so there is nothing to retry and nothing to report as broken.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReminderOutcome {
+    Sent,
+    RecipientNoLongerAMember,
+}
+
+pub async fn send_session_reminder(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) -> Result<ReminderOutcome, Error> {
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+
+    let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+    let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
+    let organization = organization::find_by_id(db, relationship.organization_id).await?;
+
+    info!(
+        "Initiating session reminder email for session {} (coachee: {})",
+        session.id, coachee.id
+    );
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(config).await?;
+
+    // Deliberately the last statement before the send, and re-checked rather than trusted
+    // from the claim: a tick claims a whole batch up front and delivers one at a time, so
+    // a claim can be minutes old by the time its turn arrives. Anything awaited between
+    // this answer and the request widens the window a revocation can slip through, so
+    // keep the loads above it. The gap that remains, between this answer and Resend
+    // accepting the request, is inherent rather than unfinished: no transaction spans an
+    // outbound call, and holding a lock across one would trade a rare stale email for
+    // pool exhaustion.
+    if !recipient_still_notified(db, &relationship, coachee.id).await? {
+        return Ok(ReminderOutcome::RecipientNoLongerAMember);
+    }
+
+    send_session_reminder_email(&email_config, &coachee, &coach, session, &organization).await?;
+
+    Ok(ReminderOutcome::Sent)
+}
+
+/// Whether this recipient is still in the relationship's notify set.
+///
+/// The notify set is the same rule the relationship's other notifications use, so a
+/// reminder cannot outlive someone's access to the notes and actions they would otherwise
+/// hear about.
+async fn recipient_still_notified(
+    db: &DatabaseConnection,
+    relationship: &coaching_relationships::Model,
+    recipient_id: Id,
+) -> Result<bool, Error> {
+    Ok(
+        entity_api::coaching_relationship::notify_member_ids(db, relationship)
+            .await?
+            .contains(&recipient_id),
+    )
+}
+
+/// Build and send the reminder to one coachee.
+async fn send_session_reminder_email(
+    email_config: &ResolvedEmailConfig,
+    coachee: &users::Model,
+    coach: &users::Model,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<(), Error> {
+    let (session_date, session_time) = format_session_date_time(session.date, &coachee.timezone);
+    let session_duration =
+        crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
+    let coach_full_name = format!("{} {}", coach.first_name, coach.last_name);
+
+    let email_request = SendEmailRequestBuilder::new()
+        .from(FROM_ADDRESS)
+        .to_with_name(
+            &coachee.email,
+            format!("{} {}", coachee.first_name, coachee.last_name),
+        )
+        .template_id(&email_config.template_id)
+        .add_variable("first_name", coachee.first_name.as_str())
+        .add_variable("coach_first_name", coach.first_name.as_str())
+        .add_variable("coach_full_name", coach_full_name.as_str())
+        .add_variable("organization_name", organization.name.as_str())
+        .add_variable("session_date", session_date.as_str())
+        .add_variable("session_time", session_time.as_str())
+        .add_variable(
+            "session_when",
+            format_session_when(session.date, &coachee.timezone),
+        )
+        .add_variable("session_duration", session_duration.as_str())
+        .add_variable(
+            "session_url",
+            email_config.build_session_url(&session.id)?.as_str(),
+        )
+        // Both omitted rather than blanked when unset, so the template's
+        // `fallback_value` fires instead of rendering an empty line.
+        .add_optional_variable("session_title", session.title.as_deref())
+        .add_optional_variable("meeting_url", session.meeting_url.as_deref())
+        .build()
+        .await?;
+
+    email_config.client.send_email(email_request).await
 }
 
 /// Build the single-session cancellation `.ics` body. Pure: `dtstamp` is injected so the
@@ -1131,19 +1300,21 @@ fn build_session_cancel_ics(
     coach: &users::Model,
     coachee: &users::Model,
     session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
+    sequence: i32,
 ) -> Result<String, Error> {
     let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(session.id),
-        // Already bumped by the caller inside the delete transaction, so the cancellation
-        // outranks any edit that committed alongside it.
-        sequence: session.ical_sequence,
+        // Passed in rather than read off the row. The usual delete bumps it inside the
+        // transaction, but a series-level delete removes the row without one and bumps in
+        // memory instead. Either way the cancellation has to outrank the invite it
+        // supersedes, or a client drops it as a duplicate.
+        sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1166,7 +1337,6 @@ fn build_occurrence_cancel_ics(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
-    organization: &organizations::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
@@ -1178,7 +1348,7 @@ fn build_occurrence_cancel_ics(
         sequence: session.ical_sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1200,7 +1370,7 @@ async fn send_session_cancelled_email_to_recipient(
     to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    ics_body: Option<&str>,
+    ics_body: &str,
 ) -> Result<(), Error> {
     let recipient = to.user;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
@@ -1219,7 +1389,7 @@ async fn send_session_cancelled_email_to_recipient(
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
-        .add_optional_ics_attachment(ics_body, &ical::Method::Cancel)
+        .add_ics_attachment(ics_body, &ical::Method::Cancel)
         .build()
         .await?;
 
@@ -1248,18 +1418,17 @@ async fn send_session_cancelled_email(
         session,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         |series_id, description| {
-            build_occurrence_cancel_ics(
+            build_occurrence_cancel_ics(coach, coachee, session, series_id, description, dtstamp)
+        },
+        |description| {
+            build_session_cancel_ics(
                 coach,
                 coachee,
                 session,
-                series_id,
-                organization,
                 description,
                 dtstamp,
+                session.ical_sequence,
             )
-        },
-        |description| {
-            build_session_cancel_ics(coach, coachee, session, organization, description, dtstamp)
         },
     )?;
 
@@ -1272,7 +1441,7 @@ async fn send_session_cancelled_email(
         },
         session,
         organization,
-        ics_body.as_deref(),
+        &ics_body,
     )
     .await
     {
@@ -1291,7 +1460,7 @@ async fn send_session_cancelled_email(
         },
         session,
         organization,
-        ics_body.as_deref(),
+        &ics_body,
     )
     .await
     {
@@ -1320,8 +1489,8 @@ pub async fn notify_session_cancelled(
     let result: Result<(), Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_session_cancelled_email(config, &coach, &coachee, session, &org).await
@@ -1344,7 +1513,7 @@ async fn send_recurring_series_email_to_recipient(
     to: &Recipient<'_>,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
-    ics_body: &str,
+    ics: &SeriesIcs,
     recurrence_summary: &str,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
@@ -1380,7 +1549,10 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("session_url", session_url.as_str())
         .add_variable("recurrence_summary", recurrence_summary)
         .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
-        .add_ics_attachment(ics_body, &ical::Method::Request);
+        .add_ics_attachment(&ics.body, &ical::Method::Request);
+
+    // Clears whatever a legacy member left on calendars, alongside the new series event.
+    let builder = attach_orphan_cancels(builder, &ics.orphan_cancels);
 
     // The reschedule template declares these keys, so they ship together or not at all.
     let email_request = match reschedule {
@@ -1412,7 +1584,6 @@ fn build_series_invite_ics(
     coach: &users::Model,
     coachee: &users::Model,
     first_session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     series: &coaching_session_series::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
@@ -1424,7 +1595,7 @@ fn build_series_invite_ics(
         sequence: series.ical_sequence,
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1449,11 +1620,15 @@ async fn send_series_invite_email<N: EmailNotification>(
     config: &Config,
     series: &coaching_session_series::Model,
     participants: &Participants<'_>,
-    sessions: &[coaching_sessions::Model],
+    sessions: &SeriesSessions<'_>,
     organization: &organizations::Model,
     reschedule: Option<&RescheduleVars>,
 ) -> Result<(), Error> {
     let Participants { coach, coachee } = *participants;
+    let SeriesSessions {
+        current: sessions,
+        replaced,
+    } = *sessions;
     info!(
         "Initiating {} emails for {} sessions (coach: {}, coachee: {})",
         N::notification_name(),
@@ -1485,21 +1660,21 @@ async fn send_series_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
+        coach_name: &coach.preferred_name(),
+        organization_name: &organization.name,
         topics: &[],
         goal_titles: &first_goal_titles,
         open_actions: &[],
         anchor_tz,
     });
 
-    let ics_body = build_series_invite_ics(
-        coach,
-        coachee,
-        first,
-        organization,
-        series,
-        description,
-        chrono::Utc::now().naive_utc(),
-    )?;
+    let dtstamp = chrono::Utc::now().naive_utc();
+    let ics = SeriesIcs {
+        body: build_series_invite_ics(coach, coachee, first, series, description, dtstamp)?,
+        // The replaced rows are gone from the database, but any standalone events they put
+        // on calendars outlive them and are addressed by nothing the new series carries.
+        orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
+    };
 
     // Timezone-independent, so it is computed once rather than per recipient.
     let current_rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
@@ -1514,7 +1689,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         },
         sessions,
         organization,
-        &ics_body,
+        &ics,
         &recurrence_summary,
         reschedule,
     )
@@ -1536,7 +1711,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         },
         sessions,
         organization,
-        &ics_body,
+        &ics,
         &recurrence_summary,
         reschedule,
     )
@@ -1567,7 +1742,10 @@ async fn send_recurring_sessions_scheduled_email(
         config,
         series,
         &Participants { coach, coachee },
-        sessions,
+        &SeriesSessions {
+            current: sessions,
+            replaced: &[],
+        },
         organization,
         None,
     )
@@ -1585,7 +1763,7 @@ async fn send_recurring_sessions_rescheduled_email(
     series: &coaching_session_series::Model,
     previous_series: &coaching_session_series::Model,
     participants: &Participants<'_>,
-    sessions: &[coaching_sessions::Model],
+    sessions: &SeriesSessions<'_>,
     organization: &organizations::Model,
 ) -> Result<(), Error> {
     let previous_rule: SeriesRule = serde_json::from_value(previous_series.rule.clone())?;
@@ -1626,8 +1804,8 @@ pub async fn notify_recurring_sessions_scheduled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_scheduled_email(
@@ -1652,24 +1830,32 @@ pub async fn notify_recurring_sessions_scheduled(
 /// then re-sends the series invite to both coach and coachee so their recurring calendar
 /// event updates in place. A reschedule can legitimately leave no future sessions, in
 /// which case there is nothing to invite anyone to. `previous_series` is the pre-update
-/// model: its rule carries the start the recipients last saw. Errors are logged
-/// internally and never block or fail the calling operation.
+/// model: its rule carries the start the recipients last saw. `replaced` is the set the
+/// reschedule deleted, needed only so any standalone calendar event a legacy member left
+/// behind can be cancelled alongside the new invite. Errors are logged internally and
+/// never block or fail the calling operation.
 pub async fn notify_recurring_sessions_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     series: &coaching_session_series::Model,
     previous_series: PreviousSeries<'_>,
     sessions: &[coaching_sessions::Model],
+    replaced: ReplacedSessions<'_>,
 ) {
-    if sessions.is_empty() {
+    // No future sessions means no series invite to send, but the replaced rows are gone
+    // either way and any standalone event they left is addressed by nothing else. Cancel
+    // those on their own rather than returning and stranding them, which is the exact
+    // failure this cleanup exists to prevent.
+    let Some(first) = sessions.first() else {
+        cancel_orphaned_standalones(db, config, replaced.0).await;
         return;
-    }
+    };
 
     let result: Result<(), Error> = async {
-        let relationship_id = sessions[0].coaching_relationship_id;
+        let relationship_id = first.coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_rescheduled_email(
@@ -1681,7 +1867,10 @@ pub async fn notify_recurring_sessions_rescheduled(
                 coach: &coach,
                 coachee: &coachee,
             },
-            sessions,
+            &SeriesSessions {
+                current: sessions,
+                replaced: replaced.0,
+            },
             &org,
         )
         .await
@@ -1703,7 +1892,6 @@ fn build_series_cancel_ics(
     coach: &users::Model,
     coachee: &users::Model,
     first_session: &coaching_sessions::Model,
-    organization: &organizations::Model,
     series: &coaching_session_series::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
@@ -1717,7 +1905,7 @@ fn build_series_cancel_ics(
         sequence: series.ical_sequence,
         method: ical::Method::Cancel,
         status: ical::EventStatus::Cancelled,
-        summary: session_summary(organization),
+        summary: session_summary(coach, coachee),
         description,
         anchor_tz,
         dtstamp,
@@ -1732,6 +1920,100 @@ fn build_series_cancel_ics(
     ical::build(&invite)
 }
 
+/// True when a series member was last invited under its own `UID` rather than as an
+/// occurrence of its series.
+///
+/// `ical_sequence > 0` with no `ical_recurrence_id` is that history: the row predates
+/// `ical_recurrence_id`, so every invite for it went out self-contained, and the bump says
+/// at least one was built and sent. Nothing else addresses the event such an invite
+/// creates, so a series-level operation that deletes the row has to cancel it by name or
+/// it strands on calendars at a time the meeting is no longer at.
+///
+/// The counter is a proxy, not proof: it advances when the edit commits, while the send
+/// that follows is best-effort. A failed send therefore leaves a row that looks invited
+/// and no event anywhere. Erring that way is deliberate, because a `CANCEL` for a `UID`
+/// no calendar holds is a silent no-op, whereas the opposite mistake strands a real event
+/// permanently.
+fn is_orphaned_standalone(session: &coaching_sessions::Model) -> bool {
+    session.coaching_session_series_id.is_some()
+        && session.ical_recurrence_id.is_none()
+        && session.ical_sequence > 0
+}
+
+/// The `SEQUENCE` a cancellation for `session` must carry to outrank the invite that
+/// placed its event.
+///
+/// Bumped in memory rather than in the database because the row is being deleted by the
+/// same operation, so nothing will ever read it back.
+fn orphan_cancel_sequence(session: &coaching_sessions::Model) -> i32 {
+    session.ical_sequence.saturating_add(1)
+}
+
+/// Build the `CANCEL` that clears the standalone event a legacy member left behind, for
+/// every session in `sessions` that has one. Sessions with nothing on a calendar are
+/// skipped, so the usual series carries no extra attachments at all.
+fn build_orphan_cancels(
+    participants: &Participants<'_>,
+    sessions: &[coaching_sessions::Model],
+    dtstamp: chrono::NaiveDateTime,
+) -> Vec<String> {
+    sessions
+        .iter()
+        .filter(|session| is_orphaned_standalone(session))
+        .filter_map(|session| {
+            // One unbuildable cancellation must not cost the series email it rides on.
+            build_session_cancel_ics(
+                participants.coach,
+                participants.coachee,
+                session,
+                SESSION_CANCELLED_DESCRIPTION.to_string(),
+                dtstamp,
+                orphan_cancel_sequence(session),
+            )
+            .inspect_err(|e| {
+                warn!(
+                    "Could not build the standalone cancellation for session {}, so its \
+                     calendar event will linger: {e:?}",
+                    session.id
+                )
+            })
+            .ok()
+        })
+        .collect()
+}
+
+/// Cancel the standalone events left by legacy members of `sessions`, each on its own
+/// session-cancelled email.
+///
+/// The fallback for when a series-level operation has no series email to attach them to.
+/// A reschedule that leaves no future occurrences still deletes the rows it replaced, and
+/// "your session was cancelled" is what actually happened to each of them. Best-effort per
+/// session, so one failure does not cost the rest.
+async fn cancel_orphaned_standalones(
+    db: &DatabaseConnection,
+    config: &Config,
+    sessions: &[coaching_sessions::Model],
+) {
+    for session in sessions.iter().filter(|s| is_orphaned_standalone(s)) {
+        let cancelled = coaching_sessions::Model {
+            ical_sequence: orphan_cancel_sequence(session),
+            ..session.clone()
+        };
+        notify_session_cancelled(db, config, &cancelled).await;
+    }
+}
+
+/// Attach a cancellation for every standalone event a legacy member left behind, to a
+/// builder that already carries the series' own `.ics`.
+fn attach_orphan_cancels(
+    builder: SendEmailRequestBuilder,
+    orphan_cancels: &[String],
+) -> SendEmailRequestBuilder {
+    orphan_cancels.iter().fold(builder, |builder, cancel| {
+        builder.add_ics_attachment(cancel, &ical::Method::Cancel)
+    })
+}
+
 /// Send a series cancellation notification email to a single recipient. Carries fewer
 /// variables than the invite sends: no `session_url`, no duration, no first-session time.
 async fn send_recurring_sessions_cancelled_email_to_recipient(
@@ -1741,14 +2023,14 @@ async fn send_recurring_sessions_cancelled_email_to_recipient(
     other_user_role: &str,
     sessions: &[coaching_sessions::Model],
     organization: &organizations::Model,
-    ics_body: &str,
+    ics: &SeriesIcs,
 ) -> Result<(), Error> {
     let (first, last) = series_bounds(sessions)?;
 
     let (first_session_date, _) = format_session_date_time(first.date, &recipient.timezone);
     let (last_session_date, _) = format_session_date_time(last.date, &recipient.timezone);
 
-    let email_request = SendEmailRequestBuilder::new()
+    let builder = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
         .to_with_name(
             &recipient.email,
@@ -1763,7 +2045,11 @@ async fn send_recurring_sessions_cancelled_email_to_recipient(
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
         .add_variable("last_session_date", last_session_date.as_str())
-        .add_ics_attachment(ics_body, &ical::Method::Cancel)
+        .add_ics_attachment(&ics.body, &ical::Method::Cancel);
+
+    // Clears whatever a legacy member left on calendars, which the series `CANCEL` cannot
+    // reach: it names the series `UID`, and these events were never filed under it.
+    let email_request = attach_orphan_cancels(builder, &ics.orphan_cancels)
         .build()
         .await?;
 
@@ -1791,15 +2077,20 @@ async fn send_recurring_sessions_cancelled_email(
 
     let (first, _) = series_bounds(sessions)?;
 
-    let ics_body = build_series_cancel_ics(
-        coach,
-        coachee,
-        first,
-        organization,
-        series,
-        SERIES_CANCELLED_DESCRIPTION.to_string(),
-        chrono::Utc::now().naive_utc(),
-    )?;
+    let dtstamp = chrono::Utc::now().naive_utc();
+    let ics = SeriesIcs {
+        body: build_series_cancel_ics(
+            coach,
+            coachee,
+            first,
+            series,
+            SERIES_CANCELLED_DESCRIPTION.to_string(),
+            dtstamp,
+        )?,
+        // `sessions` is the set the delete removed, so any legacy member's standalone
+        // event is in here and would otherwise survive the cancellation.
+        orphan_cancels: build_orphan_cancels(&Participants { coach, coachee }, sessions, dtstamp),
+    };
 
     if let Err(e) = send_recurring_sessions_cancelled_email_to_recipient(
         &email_config,
@@ -1808,7 +2099,7 @@ async fn send_recurring_sessions_cancelled_email(
         "coach",
         sessions,
         organization,
-        &ics_body,
+        &ics,
     )
     .await
     {
@@ -1825,7 +2116,7 @@ async fn send_recurring_sessions_cancelled_email(
         "coachee",
         sessions,
         organization,
-        &ics_body,
+        &ics,
     )
     .await
     {
@@ -1857,8 +2148,8 @@ pub async fn notify_recurring_sessions_cancelled(
     let result: Result<(), Error> = async {
         let relationship_id = sessions[0].coaching_relationship_id;
         let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id(db, relationship.coachee_id).await?;
+        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
         send_recurring_sessions_cancelled_email(config, series, &coach, &coachee, sessions, &org)

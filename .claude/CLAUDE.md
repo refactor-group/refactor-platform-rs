@@ -125,6 +125,6 @@ Both the deploy workflow (`ci-deploy-pr-preview.yml`) and the cleanup workflow (
 The reusable workflow resolves secrets in this order:
 1. Secrets passed from the **caller repo** (via `secrets: inherit`)
 2. Secrets from the backend repo's **pr-preview environment**
-3. Hardcoded **fallback defaults** in the workflow (e.g., `|| '1.0.0-beta1'`)
+3. Hardcoded **fallback defaults** in the workflow (e.g., `|| '1.0.0'`)
 
 **Warning**: A stale secret at level 1 overrides levels 2-3. Always check caller repo secrets when debugging.

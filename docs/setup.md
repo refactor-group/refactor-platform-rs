@@ -10,7 +10,7 @@ This guide covers setting up the Refactor platform for local development and pro
 
 - Rust toolchain (`rustup` + stable)
 - PostgreSQL 14+ (see [README.md](../README.md) for DB setup)
-- `cargo`, `sea-orm-cli`
+- `cargo`, `sea-orm-cli` 2.0.3 (matches `sea-orm-migration`)
 - [ngrok](https://ngrok.com/) or similar tunnel (for Recall.ai webhooks)
 
 ### 1. Core Application
@@ -136,7 +136,55 @@ RECALL_AI_REGION=us-east-1          # or eu-west-2
 RECALL_AI_WEBHOOK_SECRET=whsec_<base64-encoded-secret>
 ```
 
-### 5. Full `.env` Snippet
+### 5. Coaching Note Images (Object Storage)
+
+Images pasted into a coaching note are uploaded to object storage; the note itself stores only an
+image id and resolves the URL at render time. `OBJECT_STORE_BACKEND` picks the backend.
+
+Each upload is spooled through the system temp directory (`TMPDIR`, else `/tmp`) and streamed to
+storage from there, so the server's memory does not grow with image size. Keep that directory on
+disk: mounting it as `tmpfs` would put every in-flight upload back in RAM.
+
+**Local development needs no DigitalOcean Spaces account.** The default `local` backend writes to
+`OBJECT_STORE_LOCAL_PATH`, a gitignored directory under the repo, and the read endpoint streams the
+bytes back instead of redirecting to a presigned URL.
+
+```env
+OBJECT_STORE_BACKEND=local
+OBJECT_STORE_LOCAL_PATH=./.local-object-store
+COACHING_SESSION_IMAGE_MAX_BYTES=10485760          # 10 MB upload cap
+COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=900     # lifetime of a presigned image GET URL
+COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS=168      # how long a removed image survives undo
+COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES=60       # how often the purge job sweeps
+```
+
+#### Using DigitalOcean Spaces
+
+Only needed to exercise the production path, and required in PR previews and production.
+
+1. Create a Space at [cloud.digitalocean.com/spaces](https://cloud.digitalocean.com/spaces) and note
+   its region (e.g. `nyc3`) and name.
+2. Under **Settings → Spaces Keys**, generate an access key pair. The secret is shown once — store it
+   in your secrets manager.
+3. Set `OBJECT_STORE_BACKEND=spaces` plus the variables below. The regional endpoint must match
+   `SPACES_REGION`.
+
+```env
+OBJECT_STORE_BACKEND=spaces
+SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
+SPACES_REGION=nyc3
+SPACES_BUCKET=<space-name>
+SPACES_ACCESS_KEY_ID=<access-key-id>
+SPACES_SECRET_ACCESS_KEY=<secret-access-key>
+```
+
+If the backend is `spaces` but any of these is missing, the app still boots — it logs a warning and
+the image endpoints return 503 rather than failing startup.
+
+To verify the whole pipeline end to end, follow
+[docs/test-plans/coaching_session_images_manual_testing.md](test-plans/coaching_session_images_manual_testing.md).
+
+### 6. Full `.env` Snippet
 
 ```env
 # ==============================
@@ -158,12 +206,56 @@ OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 RECALL_AI_API_KEY=<recall-api-key>
 RECALL_AI_REGION=us-east-1
 RECALL_AI_WEBHOOK_SECRET=whsec_<signing-secret>
+
+# ==============================
+#   Coaching note images
+# ==============================
+OBJECT_STORE_BACKEND=local
+OBJECT_STORE_LOCAL_PATH=./.local-object-store
+COACHING_SESSION_IMAGE_MAX_BYTES=10485760
+COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=900
+COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS=168
+COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES=60
+
+# ==============================
+#   Collaborative notes (docs-collab-server)
+# ==============================
+TIPTAP_URL=http://localhost:1234
+TIPTAP_AUTH_KEY=<any shared secret; the launcher passes it to both servers>
+TIPTAP_JWT_SIGNING_KEY=<any shared secret; the launcher passes it to both servers>
 ```
 
-### 6. Development Flow
+### 7. Collaborative Notes Server (docs-collab-server)
+
+Coaching-session notes sync through the self-hosted `docs-collab-server`, not TipTap Cloud. The frontend has no Cloud fallback: if its collab URL is set but nothing is listening, the editor opens local-only with **no error**, and notes silently never sync. So the server has to be running whenever you work on notes.
+
+`scripts/run_backend.sh` builds and starts it alongside the app server, deriving everything from `.env`:
+
+- `JWT_SIGNING_KEY` and `MANAGEMENT_AUTH_KEY` come from `TIPTAP_JWT_SIGNING_KEY` and `TIPTAP_AUTH_KEY`, so they match the app by construction.
+- It uses its own local database, `refactor_collab`, built from the `POSTGRES_*` values and created on first run. This mirrors production and PR preview, and means notes survive `scripts/rebuild_db.sh`. Override with `COLLAB_DATABASE_URL` if you want it elsewhere.
+- It binds `127.0.0.1:1234` (override with `COLLAB_BIND_ADDR`). If you change the bind address or port, the app-facing URL follows it (`http://localhost:<port>`, or set `COLLAB_URL` explicitly), and the frontend's `NEXT_PUBLIC_DOCS_COLLAB_URL` must be changed to match by hand; nothing validates that side.
+- It exits with the status of the first binary that dies, so a startup failure such as a port already in use is reported as a failure, not a clean exit.
+
+One-time `.env` change so the app talks to the local server instead of Cloud:
+
+```env
+TIPTAP_URL=http://localhost:1234
+```
+
+The script warns at startup if this is still pointing at Cloud. On the frontend side, `.env.local` needs `NEXT_PUBLIC_DOCS_COLLAB_URL="ws://localhost:1234"`.
+
+Sanity check once it's up:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:1234/health   # 200
+```
+
+If notes open but never sync or show presence, check that the collab server is running before anything else.
+
+### 8. Development Flow
 
 1. Generate and set `ENCRYPTION_KEY`.
-2. Start the backend: `cargo run`.
+2. Start the backend: `scripts/run_backend.sh` (app server plus collab server).
 3. Start an ngrok tunnel: `ngrok http 4000`.
 4. Register the ngrok URL as the Recall.ai webhook endpoint (see above).
 5. In the frontend, connect Google Meet via the settings page — this triggers the OAuth flow to `GOOGLE_REDIRECT_URI`.
@@ -230,6 +322,18 @@ OAUTH_SUCCESS_REDIRECT_URI=https://myrefactor.com/settings
 RECALL_AI_API_KEY=<production-api-key>
 RECALL_AI_REGION=us-east-1
 RECALL_AI_WEBHOOK_SECRET=whsec_<production-signing-secret>
+
+# Coaching note images (see "Coaching Note Images" under Development Setup)
+OBJECT_STORE_BACKEND=spaces
+SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
+SPACES_REGION=nyc3
+SPACES_BUCKET=<space-name>
+SPACES_ACCESS_KEY_ID=<access-key-id from secrets manager>
+SPACES_SECRET_ACCESS_KEY=<secret-access-key from secrets manager>
+COACHING_SESSION_IMAGE_MAX_BYTES=10485760
+COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=900
+COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS=168
+COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES=60
 ```
 
 ### 5. Deployment

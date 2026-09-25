@@ -74,6 +74,8 @@ pub struct OpenAction {
 pub struct DescriptionParts<'a> {
     pub session_url: String,
     pub title: Option<&'a str>,
+    pub coach_name: &'a str,
+    pub organization_name: &'a str,
     pub topics: &'a [String],
     pub goal_titles: &'a [String],
     pub open_actions: &'a [OpenAction],
@@ -275,7 +277,12 @@ pub fn compose_description(parts: &DescriptionParts) -> String {
         sections.push(title.to_string());
     }
 
-    sections.push(format!("View this session: {}", parts.session_url));
+    sections.push(format!(
+        "Coach: {}\nOrganization: {}",
+        parts.coach_name, parts.organization_name
+    ));
+
+    sections.push(format!("Join this session: {}", parts.session_url));
 
     if !parts.topics.is_empty() {
         let mut block = String::from("Topics to discuss:");

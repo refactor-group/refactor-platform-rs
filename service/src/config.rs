@@ -7,11 +7,12 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 use utoipa::IntoParams;
 
 type APiVersionList = [&'static str; 1];
 
-const DEFAULT_API_VERSION: &str = "1.0.0-beta1";
+const DEFAULT_API_VERSION: &str = "1.0.0";
 // Expand this array to include all valid API versions. Versions that have been
 // completely removed should be removed from this list - they're no longer valid.
 const API_VERSIONS: APiVersionList = [DEFAULT_API_VERSION];
@@ -39,10 +40,33 @@ const DEFAULT_PASSWORD_RESET_EMAIL_URL_PATH: &str = "/reset-password/{token}";
 /// Default URL path for added-to-organization email links.
 const DEFAULT_ADDED_TO_ORGANIZATION_EMAIL_URL_PATH: &str = "/dashboard";
 
+/// Default lead time, in hours, between a reminder email and the session it announces.
+const DEFAULT_SESSION_REMINDER_LEAD_HOURS: u64 = 24;
+
+/// Default interval, in minutes, between reminder-sweep ticks. Divides the lead time
+/// finely enough that a reminder lands well inside its hour, without polling hot.
+const DEFAULT_SESSION_REMINDER_POLL_MINUTES: u64 = 15;
+
 /// Default expiry duration for password reset tokens (30 minutes in seconds).
 /// Shorter than the setup-token default because the user is actively at their
 /// keyboard when requesting reset.
 const DEFAULT_PASSWORD_RESET_TOKEN_EXPIRY_SECONDS: u64 = 1800;
+
+/// Default cap on a coaching note image upload (10 MiB).
+const DEFAULT_COACHING_SESSION_IMAGE_MAX_BYTES: u64 = 10485760;
+
+/// Default grace period, in hours, between a note image's removal and its destruction
+/// (7 days). Long enough that an undo days later still finds the bytes.
+const DEFAULT_COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS: u64 = 168;
+
+/// Default interval, in minutes, between purge ticks. Maintenance measured in days
+/// gains nothing from polling harder than hourly.
+const DEFAULT_COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES: u64 = 60;
+
+/// Default lifetime of a presigned note-image GET URL (15 minutes). Must stay longer
+/// than the `Cache-Control` max-age the read endpoint sets, or a cached 302 outlives
+/// the URL it points at.
+const DEFAULT_COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS: u64 = 900;
 
 /// All config field names registered with Clap, used for value source tracking.
 /// This is the single source of truth for field key names across the Config type.
@@ -80,6 +104,9 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "password_reset_token_expiry_seconds",
     "added_to_organization_email_template_id",
     "added_to_organization_email_url_path",
+    "session_reminder_email_template_id",
+    "session_reminder_lead_hours",
+    "session_reminder_poll_minutes",
     "interface",
     "port",
     "log_level_filter",
@@ -94,13 +121,24 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "recall_ai_api_key",
     "recall_ai_region",
     "recall_ai_webhook_secret",
+    "object_store_backend",
+    "object_store_local_path",
+    "spaces_endpoint",
+    "spaces_region",
+    "spaces_bucket",
+    "spaces_access_key_id",
+    "spaces_secret_access_key",
+    "coaching_session_image_max_bytes",
+    "coaching_session_image_presign_ttl_seconds",
+    "coaching_session_image_grace_period_hours",
+    "coaching_session_image_purge_poll_minutes",
 ];
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Header)]
 pub struct ApiVersion {
     /// The version of the API to use for a request.
-    #[param(rename = "x-version", style = Simple, required, example = "1.0.0-beta1", value_type = String)]
+    #[param(rename = "x-version", style = Simple, required, example = "1.0.0", value_type = String)]
     pub version: Version,
 }
 
@@ -336,6 +374,16 @@ pub struct Config {
     /// Use `{organization_id}` as a placeholder for the organization ID.
     #[arg(long, env, default_value = DEFAULT_ADDED_TO_ORGANIZATION_EMAIL_URL_PATH)]
     added_to_organization_email_url_path: String,
+    /// The Resend template ID for upcoming-session reminder emails.
+    /// Leaving this unset disables the reminder job entirely.
+    #[arg(long, env)]
+    session_reminder_email_template_id: Option<String>,
+    /// How far ahead of a session its reminder email goes out, in hours.
+    #[arg(long, env, default_value_t = DEFAULT_SESSION_REMINDER_LEAD_HOURS)]
+    session_reminder_lead_hours: u64,
+    /// How often the reminder sweep looks for sessions that have come due, in minutes.
+    #[arg(long, env, default_value_t = DEFAULT_SESSION_REMINDER_POLL_MINUTES)]
+    session_reminder_poll_minutes: u64,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -446,6 +494,50 @@ pub struct Config {
     #[arg(long, env)]
     recall_ai_webhook_secret: Option<String>,
 
+    /// Object storage backend: "local" (filesystem) or "spaces" (DigitalOcean Spaces)
+    #[arg(long, env, default_value = "local")]
+    object_store_backend: String,
+
+    /// Filesystem root used by the "local" object storage backend
+    #[arg(long, env, default_value = "./.local-object-store")]
+    object_store_local_path: String,
+
+    /// DigitalOcean Spaces endpoint URL (e.g. https://nyc3.digitaloceanspaces.com)
+    #[arg(long, env)]
+    spaces_endpoint: Option<String>,
+
+    /// DigitalOcean Spaces region
+    #[arg(long, env, default_value = "nyc3")]
+    spaces_region: String,
+
+    /// DigitalOcean Spaces bucket name
+    #[arg(long, env)]
+    spaces_bucket: Option<String>,
+
+    /// DigitalOcean Spaces access key id
+    #[arg(long, env)]
+    spaces_access_key_id: Option<String>,
+
+    /// DigitalOcean Spaces secret access key
+    #[arg(long, env)]
+    spaces_secret_access_key: Option<String>,
+
+    /// Maximum accepted size, in bytes, of an image pasted into a coaching note
+    #[arg(long, env, default_value_t = DEFAULT_COACHING_SESSION_IMAGE_MAX_BYTES)]
+    coaching_session_image_max_bytes: u64,
+
+    /// Lifetime, in seconds, of a presigned GET URL issued for a note image
+    #[arg(long, env, default_value_t = DEFAULT_COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS)]
+    coaching_session_image_presign_ttl_seconds: u64,
+
+    /// How long a note image removed from a note survives before it is purged, in hours
+    #[arg(long, env, default_value_t = DEFAULT_COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS)]
+    coaching_session_image_grace_period_hours: u64,
+
+    /// How often the note-image purge job looks for expired removals, in minutes
+    #[arg(long, env, default_value_t = DEFAULT_COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES)]
+    coaching_session_image_purge_poll_minutes: u64,
+
     /// Tracks whether each config field was explicitly set or uses its default.
     /// Populated during construction; not a CLI argument.
     #[arg(skip)]
@@ -480,6 +572,7 @@ impl Config {
 
         config.capture_value_sources(&matches);
         Self::warn_untracked_fields(&matches);
+        Self::warn_on_shared_template_ids(&matches);
 
         config
     }
@@ -559,6 +652,48 @@ impl Config {
                 }
             })
             .collect()
+    }
+
+    /// Email template ids configured for more than one notification.
+    ///
+    /// Nearly always a slug pasted into the wrong variable, which surfaces otherwise as a
+    /// delivery failure hours later. Derived from `CONFIG_FIELD_KEYS`, so a new template
+    /// needs no change here.
+    fn shared_template_ids(matches: &clap::ArgMatches) -> Vec<(String, Vec<String>)> {
+        CONFIG_FIELD_KEYS
+            .iter()
+            .filter(|field| field.ends_with("_email_template_id"))
+            .filter_map(|field| {
+                matches
+                    .try_get_one::<String>(field)
+                    .ok()
+                    .flatten()
+                    .map(|id| (id.clone(), field.to_uppercase()))
+            })
+            .fold(
+                std::collections::BTreeMap::<String, Vec<String>>::new(),
+                |mut by_id, (id, name)| {
+                    by_id.entry(id).or_default().push(name);
+                    by_id
+                },
+            )
+            .into_iter()
+            .filter(|(_, names)| names.len() > 1)
+            .collect()
+    }
+
+    /// Reports shared template ids without gating on them: reusing one is legal.
+    fn warn_on_shared_template_ids(matches: &clap::ArgMatches) {
+        Self::shared_template_ids(matches)
+            .into_iter()
+            .for_each(|(id, names)| {
+                warn!(
+                    "Email template id \"{id}\" is configured for {}. Each notification \
+                     sends its own variables, so a template will reject any payload built \
+                     for a different one.",
+                    names.join(" and ")
+                )
+            });
     }
 
     /// Warns about any Clap args not listed in CONFIG_FIELD_KEYS so developers
@@ -673,6 +808,39 @@ impl Config {
         self.debug_field(
             "added_to_organization_email_url_path",
             &self.added_to_organization_email_url_path,
+        );
+        self.debug_field(
+            "session_reminder_email_template_id",
+            &self.session_reminder_email_template_id,
+        );
+        self.debug_field(
+            "session_reminder_lead_hours",
+            &self.session_reminder_lead_hours,
+        );
+        self.debug_field(
+            "session_reminder_poll_minutes",
+            &self.session_reminder_poll_minutes,
+        );
+        self.debug_field("object_store_backend", &self.object_store_backend);
+        self.debug_field("object_store_local_path", &self.object_store_local_path);
+        self.debug_field("spaces_endpoint", &self.spaces_endpoint);
+        self.debug_field("spaces_region", &self.spaces_region);
+        self.debug_field("spaces_bucket", &self.spaces_bucket);
+        self.debug_field(
+            "coaching_session_image_max_bytes",
+            &self.coaching_session_image_max_bytes,
+        );
+        self.debug_field(
+            "coaching_session_image_presign_ttl_seconds",
+            &self.coaching_session_image_presign_ttl_seconds,
+        );
+        self.debug_field(
+            "coaching_session_image_grace_period_hours",
+            &self.coaching_session_image_grace_period_hours,
+        );
+        self.debug_field(
+            "coaching_session_image_purge_poll_minutes",
+            &self.coaching_session_image_purge_poll_minutes,
         );
     }
 
@@ -840,6 +1008,34 @@ impl Config {
         }
     }
 
+    /// Returns the Resend template ID for upcoming-session reminder emails, if configured.
+    ///
+    /// `None` disables the reminder sweep: with no template there is nothing to send,
+    /// and a job that wakes only to log a config error every few minutes is noise.
+    pub fn session_reminder_email_template_id(&self) -> Option<String> {
+        self.session_reminder_email_template_id.clone()
+    }
+
+    /// Returns how far ahead of a session its reminder is sent.
+    ///
+    /// Clamped to at least one hour: a lead shorter than the poll interval would let
+    /// sessions slip past the window between two ticks and never be reminded.
+    pub fn session_reminder_lead(&self) -> Duration {
+        Duration::from_secs(
+            self.session_reminder_lead_hours
+                .max(1)
+                .saturating_mul(60 * 60),
+        )
+    }
+
+    /// Returns how often the reminder sweep runs.
+    ///
+    /// Clamped to at least one minute so a misconfigured `0` cannot spin the job into
+    /// a tight loop against the database.
+    pub fn session_reminder_poll_interval(&self) -> Duration {
+        Duration::from_secs(self.session_reminder_poll_minutes.max(1).saturating_mul(60))
+    }
+
     pub fn runtime_env(&self) -> RustEnv {
         self.runtime_env.clone()
     }
@@ -916,6 +1112,76 @@ impl Config {
     pub fn recall_ai_webhook_secret(&self) -> Option<String> {
         self.recall_ai_webhook_secret.clone()
     }
+
+    // Object storage accessors
+
+    /// Returns which object storage backend to build: "local" or "spaces".
+    pub fn object_store_backend(&self) -> &str {
+        &self.object_store_backend
+    }
+
+    /// Returns the filesystem root of the "local" object storage backend.
+    pub fn object_store_local_path(&self) -> &str {
+        &self.object_store_local_path
+    }
+
+    /// Returns the DigitalOcean Spaces endpoint URL, if configured.
+    pub fn spaces_endpoint(&self) -> Option<String> {
+        self.spaces_endpoint.clone()
+    }
+
+    /// Returns the DigitalOcean Spaces region.
+    pub fn spaces_region(&self) -> &str {
+        &self.spaces_region
+    }
+
+    /// Returns the DigitalOcean Spaces bucket name, if configured.
+    pub fn spaces_bucket(&self) -> Option<String> {
+        self.spaces_bucket.clone()
+    }
+
+    /// Returns the DigitalOcean Spaces access key id, if configured.
+    pub fn spaces_access_key_id(&self) -> Option<String> {
+        self.spaces_access_key_id.clone()
+    }
+
+    /// Returns the DigitalOcean Spaces secret access key, if configured.
+    pub fn spaces_secret_access_key(&self) -> Option<String> {
+        self.spaces_secret_access_key.clone()
+    }
+
+    /// Returns the maximum accepted size, in bytes, of a coaching note image.
+    pub fn coaching_session_image_max_bytes(&self) -> u64 {
+        self.coaching_session_image_max_bytes
+    }
+
+    /// Returns the lifetime, in seconds, of a presigned note-image GET URL.
+    pub fn coaching_session_image_presign_ttl_seconds(&self) -> u64 {
+        self.coaching_session_image_presign_ttl_seconds
+    }
+
+    /// Returns how long a removed note image survives before the purge job destroys it.
+    ///
+    /// Deliberately unclamped: zero means "purge on the next tick", which is how the
+    /// manual test plan forces a purge without waiting out a week.
+    pub fn coaching_session_image_grace_period(&self) -> Duration {
+        Duration::from_secs(
+            self.coaching_session_image_grace_period_hours
+                .saturating_mul(60 * 60),
+        )
+    }
+
+    /// Returns how often the note-image purge job runs.
+    ///
+    /// Clamped to at least one minute so a misconfigured `0` cannot spin the job into
+    /// a tight loop against the database.
+    pub fn coaching_session_image_purge_poll_interval(&self) -> Duration {
+        Duration::from_secs(
+            self.coaching_session_image_purge_poll_minutes
+                .max(1)
+                .saturating_mul(60),
+        )
+    }
 }
 
 impl ApiVersion {
@@ -966,6 +1232,58 @@ impl fmt::Display for ApiVersion {
 
 #[cfg(test)]
 mod tests {
+    /// The failure this catches: a reminder configured with the scheduled template's id
+    /// still sends, and Resend rejects it for a variable only the scheduled template
+    /// declares. Nothing before the send can tell the two slugs apart.
+    #[test]
+    fn shared_template_ids_reports_a_slug_pasted_into_the_wrong_variable() {
+        let matches = Config::command()
+            .try_get_matches_from([
+                "refactor-platform-rs",
+                "--session-scheduled-email-template-id=new-coaching-session-scheduled",
+                "--session-reminder-email-template-id=new-coaching-session-scheduled",
+            ])
+            .expect("args parse");
+
+        let shared = Config::shared_template_ids(&matches);
+
+        assert_eq!(
+            shared.len(),
+            1,
+            "one collision, reported once, got: {shared:?}"
+        );
+        assert_eq!(shared[0].0, "new-coaching-session-scheduled");
+        // Uppercased back to the environment variables an operator edits.
+        assert_eq!(
+            shared[0].1,
+            vec![
+                "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
+                "SESSION_REMINDER_EMAIL_TEMPLATE_ID"
+            ],
+            "both variables must be named, since either could be the wrong one"
+        );
+    }
+
+    /// Distinct ids must stay quiet, and unset ones must not collide with each other.
+    /// Treating `None` as a value would report every unconfigured template on a stack
+    /// that only uses a few.
+    #[test]
+    fn shared_template_ids_is_empty_when_ids_differ_or_are_unset() {
+        let matches = Config::command()
+            .try_get_matches_from([
+                "refactor-platform-rs",
+                "--session-scheduled-email-template-id=new-coaching-session-scheduled",
+                "--session-reminder-email-template-id=upcoming-coaching-session-reminder",
+            ])
+            .expect("args parse");
+
+        assert!(
+            Config::shared_template_ids(&matches).is_empty(),
+            "distinct ids are not a collision, and the unset ones must be ignored: {:?}",
+            Config::shared_template_ids(&matches)
+        );
+    }
+
     use super::*;
     use serial_test::serial;
     use std::fs;

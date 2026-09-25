@@ -1,6 +1,6 @@
 [package]
 name = "web"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -13,7 +13,8 @@ meeting-auth = { path = "../meeting-auth" }
 secrecy = "0.8"
 sse = { path = "../sse" }
 
-axum = "0.7.7"
+axum = { version = "0.7.7", features = ["multipart"] }
+axum-extra = { version = "0.9", features = ["query"] }
 axum-login = "0.16.0"
 chrono = { version = "0.4.38", features = ["serde"] }
 chrono-tz = "0.10"
@@ -21,9 +22,12 @@ log = "0.4.22"
 tower-http = { version = "0.6.1", features = ["fs", "cors"] }
 serde_json = "1.0.128"
 serde = { version = "1.0.210", features = ["derive"] }
-sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
+# SQLx 0.8 only for the session store's pool; see `session_pool` in src/lib.rs.
+# `tls-native-tls` is required: prod connects with sslmode=verify-full.
+sqlx = { version = "0.8.2", features = ["postgres", "runtime-tokio", "time", "tls-native-tls"] }
 tokio = { version = "1.44.2", features = ["full"] }
 tower = "0.5.1"
+urlencoding = "2.1"
 tower_governor = "0.4"
 governor = "0.6"
 tower-sessions = { version = "0.13.0" }
@@ -36,11 +40,10 @@ async-stream = "0.3"
 futures = "0.3.31"
 
 [dependencies.sea-orm]
-version = "1.1.0" # sea-orm version
+version = "2.0.3" # sea-orm version
 features = [
     "debug-print",
     "runtime-tokio-native-tls",
-    "sea-orm-internal",
     "sqlx-postgres",
     "with-uuid",
 ]

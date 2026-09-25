@@ -37,7 +37,6 @@ fn create_test_user() -> users::Model {
         github_profile_url: None,
         timezone: "UTC".to_string(),
         default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(),
-        role: users::Role::User,
         roles: vec![],
         invite_status: None,
         created_at: now.into(),
@@ -77,6 +76,7 @@ fn test_session(session_id: Id, relationship_id: Id) -> coaching_sessions::Model
         meeting_url: None,
         provider: None,
         hydrated_at: None,
+        notice_given_at: chrono::Utc::now().into(),
         created_at: now.into(),
         updated_at: now.into(),
     }
@@ -163,6 +163,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         service::AppState::new(Config::default(), &db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
+        None,
         None,
         None,
     );

@@ -317,7 +317,7 @@ pub async fn complete_password_reset(
 
     params.insert(
         "password".to_string(),
-        Some(Value::String(Some(Box::new(generate_hash(password))))),
+        Some(Value::String(Some(generate_hash(password)))),
     );
 
     let txn = db.begin().await.map_err(|e| Error {
@@ -620,7 +620,6 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".into(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            role: Default::default(),
             roles: vec![],
             invite_status: None,
             created_at: Utc::now().into(),
@@ -893,17 +892,14 @@ mod tests {
     async fn complete_password_reset_rejects_empty_password() {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
         let mut params = entity_api::mutate::UpdateMap::new();
-        params.insert(
-            "password".into(),
-            Some(Value::String(Some(Box::new("".into())))),
-        );
+        params.insert("password".into(), Some(Value::String(Some("".into()))));
         params.insert(
             "confirm_password".into(),
-            Some(Value::String(Some(Box::new("".into())))),
+            Some(Value::String(Some("".into()))),
         );
         params.insert(
             "token".into(),
-            Some(Value::String(Some(Box::new("any_token".into())))),
+            Some(Value::String(Some("any_token".into()))),
         );
 
         struct P(entity_api::mutate::UpdateMap);
@@ -936,15 +932,15 @@ mod tests {
         // 8 chars — passes confirm-match but fails min-length policy.
         params.insert(
             "password".into(),
-            Some(Value::String(Some(Box::new("short123".into())))),
+            Some(Value::String(Some("short123".into()))),
         );
         params.insert(
             "confirm_password".into(),
-            Some(Value::String(Some(Box::new("short123".into())))),
+            Some(Value::String(Some("short123".into()))),
         );
         params.insert(
             "token".into(),
-            Some(Value::String(Some(Box::new("any_token".into())))),
+            Some(Value::String(Some("any_token".into()))),
         );
 
         struct P(entity_api::mutate::UpdateMap);

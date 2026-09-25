@@ -34,7 +34,7 @@ fn normalize_update_map_clears_whitespace_title() {
     let mut map = UpdateMap::new();
     map.insert(
         "title".to_string(),
-        Some(Value::String(Some(Box::new("   ".to_string())))),
+        Some(Value::String(Some("   ".to_string()))),
     );
     normalize_title_in_update_map(&mut map);
     assert!(matches!(map.get_value("title"), Some(Value::String(None))));
@@ -45,7 +45,7 @@ fn normalize_update_map_trims_non_empty_title() {
     let mut map = UpdateMap::new();
     map.insert(
         "title".to_string(),
-        Some(Value::String(Some(Box::new(" x ".to_string())))),
+        Some(Value::String(Some(" x ".to_string()))),
     );
     normalize_title_in_update_map(&mut map);
     match map.get_value("title") {
@@ -103,7 +103,7 @@ fn validate_update_map_passes_short_and_absent_and_clear() {
     assert!(validate_title_length_in_update_map(&map).is_ok());
     map.insert(
         "title".to_string(),
-        Some(Value::String(Some(Box::new("ok".to_string())))),
+        Some(Value::String(Some("ok".to_string()))),
     );
     assert!(validate_title_length_in_update_map(&map).is_ok());
 }
@@ -113,7 +113,7 @@ fn validate_update_map_rejects_over_cap() {
     let mut map = UpdateMap::new();
     map.insert(
         "title".to_string(),
-        Some(Value::String(Some(Box::new("x".repeat(MAX_TITLE_LEN + 1))))),
+        Some(Value::String(Some("x".repeat(MAX_TITLE_LEN + 1)))),
     );
     assert!(matches!(
         validate_title_length_in_update_map(&map)

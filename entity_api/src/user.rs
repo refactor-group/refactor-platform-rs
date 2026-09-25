@@ -1,3 +1,4 @@
+use super::actor::Actor;
 use super::error::{EntityApiErrorKind, Error};
 use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
@@ -10,7 +11,8 @@ use password_auth;
 use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func},
-    Condition, ConnectionTrait, DatabaseConnection, QuerySelect, Set, SqlErr, TransactionTrait,
+    Condition, ConnectionTrait, DatabaseConnection, DatabaseTransaction, ExprTrait, QuerySelect,
+    Set, SqlErr, TransactionTrait,
 };
 
 /// Postgres index backing the global uniqueness of `users.email`.
@@ -69,7 +71,8 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
 }
 
 pub async fn create_by_organization(
-    db: &impl TransactionTrait,
+    db: &impl TransactionTrait<Transaction = DatabaseTransaction>,
+    actor: Actor,
     organization_id: Id,
     user_model: Model,
 ) -> Result<Model, Error> {
@@ -84,18 +87,10 @@ pub async fn create_by_organization(
     }
 
     let mut user = create(&txn, user_model).await?;
-    let now = Utc::now();
 
-    let default_user_role = user_roles::ActiveModel {
-        user_id: Set(user.id),
-        organization_id: Set(Some(organization_id)),
-        role: Set(roles::Role::User),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    };
-
-    let role = default_user_role.insert(&txn).await?;
+    // Audits the grant as a side effect, so no separate record call is needed.
+    let role =
+        crate::user_role::create(&txn, actor, user.id, organization_id, roles::Role::User).await?;
 
     user.roles = vec![role];
 
@@ -164,6 +159,18 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
             error_kind: EntityApiErrorKind::RecordNotFound,
         }),
     }
+}
+
+/// `find_by_id` without hydrating roles.
+///
+/// The join costs a row per role and is wasted on callers that only need the person:
+/// their name, email, and timezone. Returning an empty `roles` is safe for those and
+/// wrong for anyone making an authorization decision, so reach for `find_by_id` there.
+pub async fn find_by_id_without_roles(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
 }
 
 /// `find_by_id` holding an exclusive lock on the row until the transaction ends.
@@ -366,9 +373,6 @@ impl AuthnBackend for Backend {
 pub type AuthSession = axum_login::AuthSession<Backend>;
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod test {
     use super::*;
@@ -386,7 +390,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
                 [user_email.into()]
             )]
         );
@@ -405,7 +409,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
                 [user_id.into()]
             )]
         );
@@ -424,7 +428,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
                 []
             )]
         );
@@ -438,6 +442,7 @@ mod test {
         let user_id = Id::new_v4();
         let organization_id = Id::new_v4();
         let user_role_id = Id::new_v4();
+        let actor_user_id = Id::new_v4();
 
         let user_model = entity::users::Model {
             id: user_id,
@@ -452,7 +457,6 @@ mod test {
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: entity::users::Role::User,
             roles: vec![],
             invite_status: None,
         };
@@ -470,9 +474,21 @@ mod test {
             .append_query_results([[test_org(organization_id, false)]])
             .append_query_results([[user_model.clone()]])
             .append_query_results([[user_role_model.clone()]])
+            .append_query_results([[test_role_change(
+                actor_user_id,
+                user_id,
+                organization_id,
+                entity::roles::Role::User,
+            )]])
             .into_connection();
 
-        let user = create_by_organization(&db, organization_id, user_model.clone()).await?;
+        let user = create_by_organization(
+            &db,
+            Actor::new(actor_user_id),
+            organization_id,
+            user_model.clone(),
+        )
+        .await?;
 
         assert_eq!(user.id, user_model.id);
         assert_eq!(user.email, user_model.email);
@@ -504,7 +520,6 @@ mod test {
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: entity::users::Role::User,
             roles: vec![],
             invite_status: None,
         };
@@ -514,10 +529,30 @@ mod test {
             .append_query_errors([sea_orm::DbErr::Custom("Duplicate email".to_string())])
             .into_connection();
 
-        let result = create_by_organization(&db, organization_id, user_model).await;
+        let result =
+            create_by_organization(&db, Actor::new(Id::new_v4()), organization_id, user_model)
+                .await;
         assert!(result.is_err());
 
         Ok(())
+    }
+
+    /// The audit row `create_by_organization` writes alongside the default role.
+    fn test_role_change(
+        actor_user_id: Id,
+        target_user_id: Id,
+        organization_id: Id,
+        new_role: entity::roles::Role,
+    ) -> entity::user_role_changes::Model {
+        entity::user_role_changes::Model {
+            id: Id::new_v4(),
+            actor_user_id: Some(actor_user_id),
+            target_user_id,
+            organization_id: Some(organization_id),
+            previous_role: None,
+            new_role: Some(new_role),
+            changed_at: chrono::Utc::now().into(),
+        }
     }
 
     fn test_org(id: Id, archived: bool) -> entity::organizations::Model {
@@ -552,7 +587,6 @@ mod test {
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: entity::users::Role::User,
             roles: vec![],
             invite_status: None,
         };
@@ -563,7 +597,9 @@ mod test {
             .append_query_results([[test_org(organization_id, true)]])
             .into_connection();
 
-        let result = create_by_organization(&db, organization_id, user_model).await;
+        let result =
+            create_by_organization(&db, Actor::new(Id::new_v4()), organization_id, user_model)
+                .await;
 
         let err = result.expect_err("expected archived-org rejection");
         assert!(matches!(
@@ -727,7 +763,6 @@ mod test {
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: entity::users::Role::User,
             roles: vec![],
             invite_status: None,
         };

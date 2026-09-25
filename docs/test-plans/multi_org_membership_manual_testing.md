@@ -84,12 +84,19 @@ Log in as that user, not as SuperAdmin.
 | Step | Expected |
 |---|---|
 | Add a member of Org1 into Org2 via *Add existing member* | succeeds, same as Scenario A |
-| Look up the email of a user who belongs only to an organization this admin does **not** administer | **"No user found with that email."** |
+| Look up the email of a user who belongs only to an organization this admin does **not** administer, **and who was never a member of one they do** | **"No user found with that email."** |
 | Look up a completely nonexistent email address | the identical message |
 
 Those last two responses being **indistinguishable is deliberate**. It is
 anti-enumeration behavior: an org admin must not be able to probe whether an
 arbitrary email has an account. Do not report it as a bug.
+
+> [!IMPORTANT]
+> The "never a member of one they do" clause is load-bearing. A **former** member
+> of an organization this admin administers **is** found, by design. That is
+> [Scenario G](#8-scenario-g-re-adding-a-former-member), and it is the one case
+> where this guarantee is deliberately narrower than it reads here. Test it with
+> someone who has no history in the admin's organizations at all.
 
 Then log in as a **plain member** (not an admin) of an organization:
 
@@ -132,8 +139,8 @@ distinct.
 | Action | Target | Expected |
 |---|---|---|
 | **Remove from organization** | a member of two organizations, **with no sessions in this one** | removed from this organization only; account intact; still in the other organization; coaching relationships **in the other organization survive** |
-| **Remove from organization** | a member **with at least one past or future session in this organization** | refused with a **409** `user_has_coaching_history` naming the relationship and session counts |
-| **Remove from organization** | a **coach who has coachees** in this organization | refused with the same 409 once any of those relationships carries a session |
+| **Remove from organization** | a member **with at least one past or future session in this organization** | **succeeds.** Their sessions, notes and actions survive; removal revokes their access to them rather than destroying them |
+| **Remove from organization** | a **coach who has coachees** in this organization | succeeds. Coach and coachee are treated identically; reassigning the coachees afterwards is the intended flow |
 | **Delete** | a member of two organizations | refused with a **409** and a message telling you to remove them from the organization instead |
 | **Remove from organization** | the organization's only remaining Admin | refused with a clear last-admin message |
 | Either action | yourself | not offered / refused |
@@ -143,9 +150,16 @@ its coaching relationships explicitly. "Remove" must not cascade.
 
 **The session cases must be exercised against a real database.** `coaching_sessions`
 references `coaching_relationships` with NO ACTION while goals and session series
-cascade, so a mock-backed test cannot reach either behavior. Before the guard
-existed this path returned a 503. Use an account that has actually had a session
-scheduled, not a freshly created one.
+cascade, so a mock-backed test cannot reach either behavior. Use an account that
+has actually had a session scheduled, not a freshly created one.
+
+> [!NOTE]
+> The two session rows above previously expected a **409 `user_has_coaching_history`**.
+> That error variant was deleted with rs#377 and can no longer be emitted; removal
+> now succeeds for a member with history, and revokes their access instead. Verify
+> revocation with an API client, not the UI: the organization disappearing from the
+> switcher was already true before rs#377, while access remained wide open. See
+> `remove_org_member_revokes_access_manual_testing.md`.
 
 ## 6. Scenario E: regression checks on pre-existing flows
 
@@ -191,7 +205,96 @@ config warning before treating it as a defect:
 docker compose logs backend | grep -i 'added_to_organization'
 ```
 
-## 8. Sign-off checklist
+## 8. Scenario G: re-adding a former member
+
+Removing a member used to be a one-way door for the admin who did it. This
+scenario is the recovery path, and it must be run **as an org admin, never as a
+SuperAdmin**, because a SuperAdmin could always do this and testing as one proves nothing.
+
+Setup: log in as an admin of exactly one organization (Org1). Pick a member of
+Org1 who is **not** a member of any other organization you administer.
+
+| # | Step | Expected |
+|---|---|---|
+| G1 | Remove that member from Org1 | succeeds |
+| G2 | Search their email in *Add existing member* | **found.** Before this change it returned "No user found with that email." |
+| G3 | Add them back to Org1 | succeeds |
+| G4 | Confirm their role and coaching relationships | membership restored; the surviving coaching relationship is reused, not duplicated |
+
+**G2 is the whole scenario.** If it reports no user found, the fix is not working,
+and the failure looks exactly like the bug it replaces.
+
+### What must still be refused
+
+Run these as the same org admin. Each proves the reach did not widen too far.
+
+| # | Step | Expected |
+|---|---|---|
+| G5 | Search the email of a user who has never been in any organization you administer | **"No user found with that email."** |
+| G6 | Search a completely nonexistent email | the identical message |
+| G7 | Search a user who was removed from an organization you do **not** administer | **"No user found with that email."** |
+| G7b | Immediately repeat G7 **as a SuperAdmin** | **found.** The control. |
+
+G7 is the security case. Being a former member *somewhere* must not surface
+someone; only former membership in **your** organization does. If G7 finds them,
+the reach has become a platform-wide email oracle and that is a defect worth
+stopping the release for.
+
+> [!NOTE]
+> **G7 needs setup, and a seeded database will not have it.** The audit table
+> only carries history for organizations that have actually seen a removal. If no
+> removal has ever happened outside the organizations you administer, G7 passes
+> vacuously and proves nothing. Create the history first, as a SuperAdmin:
+>
+> ```sh
+> # as root, remove a member from an organization the G-actor does NOT administer
+> curl -s -X DELETE -b /tmp/root.jar -H "$VER" \
+>   "$BASE/organizations/$OTHER_ORG/users/$SOMEONE/role"
+> ```
+>
+> Then confirm the row landed before running G7:
+>
+> ```sql
+> SELECT o.name, previous_role, new_role
+> FROM refactor_platform.user_role_changes urc
+> JOIN refactor_platform.organizations o ON o.id = urc.organization_id
+> WHERE urc.target_user_id = '<someone>';
+> ```
+>
+> **G7b is not optional.** A zero result is equally consistent with correct
+> scoping, a typo'd email, a missing fixture, or a lookup broken for everyone.
+> Only a SuperAdmin finding the same email in the same breath makes the zero mean
+> what G7 claims it means. Restore the membership afterwards.
+
+### Known limitation, not a defect
+
+**Removals that predate 2026-08-16 are invisible to this.** The recovery reads the
+`user_role_changes` audit table, which did not exist before then, and the
+`user_roles` rows it would have described are already deleted, so the history
+cannot be reconstructed. A member removed before that date still needs a
+SuperAdmin to re-add them, and G2 will report no user found for them.
+
+Check before filing a bug:
+
+```sql
+SELECT changed_at, previous_role, new_role
+FROM refactor_platform.user_role_changes
+WHERE target_user_id = '<user>' ORDER BY changed_at;
+```
+
+No rows means this scenario cannot apply to that user.
+
+### Rate limiting
+
+The lookup is throttled per requester, 30 attempts per hour.
+
+| # | Step | Expected |
+|---|---|---|
+| G8 | Search 31 times in quick succession as one admin | the 31st returns **429** `user_lookup_rate_limited` |
+| G9 | Search once as a **different** admin immediately after | succeeds; the limit is per requester, not global |
+| G10 | Confirm a request refused with 403 records nothing | a non-admin hitting the endpoint must not consume anyone's allowance |
+
+## 9. Sign-off checklist
 
 - [ ] A: user added to a second organization **and still in the first**
 - [ ] A: coaching relationship saves in the new organization
@@ -200,5 +303,8 @@ docker compose logs backend | grep -i 'added_to_organization'
 - [ ] B: plain member sees no *Add existing member* tab
 - [ ] C: raw `roles` JSON leaks no other organization's UUID, both directions
 - [ ] D: remove keeps the account and other memberships; delete 409s; last-admin refused
+- [ ] G: an org admin can re-add a member they removed, and the search finds them
+- [ ] G: a user with no history in the admin's organizations stays invisible (G5, G7)
+- [ ] G: the lookup throttles at 30/hour per requester, not globally
 - [ ] E: create, resend invite, and single-org delete all still work for an admin, all 403 for a member
 - [ ] F: email arrives with the right organization name and role wording

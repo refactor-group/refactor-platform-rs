@@ -33,6 +33,7 @@ mod m20260515_000000_add_duration_minutes_to_coaching_sessions;
 mod m20260515_000001_add_default_coaching_session_duration_minutes_to_users;
 mod m20260529_000000_rename_provider_to_meeting_provider;
 mod m20260529_000001_add_cost_tables;
+mod m20260604_000000_create_collab_documents;
 mod m20260607_000000_add_title_to_coaching_sessions;
 mod m20260607_000001_create_coaching_session_topics;
 mod m20260607_000002_add_topic_priority_status;
@@ -46,6 +47,12 @@ mod m20260701_000000_user_roles_org_fk_restrict;
 mod m20260806_000000_user_roles_one_role_per_org;
 mod m20260807_000000_users_lower_email_index;
 mod m20260812_000000_add_ical_sequence;
+mod m20260815_000000_drop_users_role_column;
+mod m20260816_000000_add_user_role_changes;
+mod m20260818_000000_add_user_lookup_attempts;
+mod m20260818_000000_create_coaching_session_reminders;
+mod m20260820_000000_add_notice_given_at_to_coaching_sessions;
+mod m20260922_000000_create_coaching_session_images;
 
 pub struct Migrator;
 
@@ -88,6 +95,7 @@ impl MigratorTrait for Migrator {
             ),
             Box::new(m20260529_000000_rename_provider_to_meeting_provider::Migration),
             Box::new(m20260529_000001_add_cost_tables::Migration),
+            Box::new(m20260604_000000_create_collab_documents::Migration),
             Box::new(m20260607_000000_add_title_to_coaching_sessions::Migration),
             Box::new(m20260607_000001_create_coaching_session_topics::Migration),
             Box::new(m20260607_000002_add_topic_priority_status::Migration),
@@ -101,6 +109,12 @@ impl MigratorTrait for Migrator {
             Box::new(m20260806_000000_user_roles_one_role_per_org::Migration),
             Box::new(m20260807_000000_users_lower_email_index::Migration),
             Box::new(m20260812_000000_add_ical_sequence::Migration),
+            Box::new(m20260815_000000_drop_users_role_column::Migration),
+            Box::new(m20260816_000000_add_user_role_changes::Migration),
+            Box::new(m20260818_000000_add_user_lookup_attempts::Migration),
+            Box::new(m20260818_000000_create_coaching_session_reminders::Migration),
+            Box::new(m20260820_000000_add_notice_given_at_to_coaching_sessions::Migration),
+            Box::new(m20260922_000000_create_coaching_session_images::Migration),
         ]
     }
 }

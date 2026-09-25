@@ -1,8 +1,10 @@
-use super::error::Error;
 use entity::transcript_segment::{ActiveModel, Column, Entity, Model, Relation};
+use entity::transcription::Column as TranscriptionColumn;
 use entity::Id;
 use log::debug;
 use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, Order, QueryOrder, QuerySelect};
+
+use super::error::Error;
 
 /// Inserts multiple transcript segments in a single operation
 pub async fn create_batch(
@@ -12,11 +14,11 @@ pub async fn create_batch(
     debug!("Inserting {} transcript segments", segments.len());
 
     Ok(Entity::insert_many(segments)
-        .exec_with_returning_many(db)
+        .exec_with_returning(db)
         .await?)
 }
 
-/// Returns segments for a transcription scoped to a coaching session, ordered by start time.
+/// Returns segments for a transcription scoped to a coaching session, ordered by start time then id.
 ///
 /// Uses an INNER JOIN on `transcriptions` so that segments are only returned when the
 /// transcription exists **and** belongs to `coaching_session_id`. An empty vec means
@@ -26,18 +28,17 @@ pub async fn find_by_transcription_and_session(
     transcription_id: Id,
     coaching_session_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    use entity::transcription::Column as TranscriptionColumn;
-
     Ok(Entity::find()
         .join(JoinType::InnerJoin, Relation::Transcriptions.def())
         .filter(Column::TranscriptionId.eq(transcription_id))
         .filter(TranscriptionColumn::CoachingSessionId.eq(coaching_session_id))
         .order_by(Column::StartMs, Order::Asc)
+        .order_by(Column::Id, Order::Asc)
         .all(db)
         .await?)
 }
 
-/// Returns all segments for a transcription ordered by start time
+/// Returns all segments for a transcription ordered by start time then id.
 pub async fn find_by_transcription(
     db: &DatabaseConnection,
     transcription_id: Id,
@@ -45,6 +46,7 @@ pub async fn find_by_transcription(
     Ok(Entity::find()
         .filter(Column::TranscriptionId.eq(transcription_id))
         .order_by(Column::StartMs, Order::Asc)
+        .order_by(Column::Id, Order::Asc)
         .all(db)
         .await?)
 }

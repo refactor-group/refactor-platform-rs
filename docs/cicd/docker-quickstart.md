@@ -44,7 +44,7 @@ BACKEND_SERVICE_PROTOCOL=http                # Protocol (usually http)
 BACKEND_SERVICE_PORT=4000                    # Derived service port
 BACKEND_SERVICE_HOST=localhost               # Hostname used by the service
 BACKEND_SERVICE_API_PATH="api"               # The URL path to proxy the backend API on (e.g. "api" would resolve to http://localhost/api/)
-BACKEND_API_VERSION=1.0.0-beta1              # API version to use between frontend and backend
+BACKEND_API_VERSION=1.0.0              # API version to use between frontend and backend
 RUST_ENV=development                         # development, staging, production
 
 # ==============================
@@ -66,6 +66,9 @@ RESEND_API_KEY=""                            # Resend API key for sending emails
 WELCOME_EMAIL_TEMPLATE_ID=""                 # Template ID for welcome emails
 ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID=""   # Template ID for added-to-organization emails
 ADDED_TO_ORGANIZATION_EMAIL_URL_PATH=""      # Link path in those emails (default: /dashboard)
+SESSION_REMINDER_EMAIL_TEMPLATE_ID=""        # Template ID for the 24h upcoming-session reminder; unset disables it
+SESSION_REMINDER_LEAD_HOURS=""               # Reminder lead time in hours (default: 24)
+SESSION_REMINDER_POLL_MINUTES=""             # Reminder sweep cadence in minutes (default: 15)
 
 # ==============================
 #   TipTap Service Configuration

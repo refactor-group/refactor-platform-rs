@@ -10,6 +10,11 @@ on:
         required: false # Not required to run the workflow
         default: false # Disabled by default
         type: boolean # Simple checkbox in the UI
+      deploy_docs_collab:
+        description: "Also (re)deploy docs-collab-server. Restarts it, dropping live editing sessions. Leave false for app-only deploys."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read # Minimal permissions required for this workflow
@@ -94,11 +99,24 @@ jobs:
           # Database connection string
           DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ vars.POSTGRES_HOST }}:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}?${{ vars.POSTGRES_OPTIONS }}
 
+          # -------- docs-collab dedicated database
+          # Full connection string for the collab server's own database on the
+          # shared managed cluster (NOT the app database). MUST include
+          # ?sslmode=verify-full&sslrootcert=/app/root.crt in the value.
+          # The CA cert path is shared with the app (POSTGRES_SSL_ROOT_CERT).
+          DOCS_COLLAB_DATABASE_URL=${{ secrets.DOCS_COLLAB_DATABASE_URL }}
+          # Collab server sqlx pool sizing. Shares the same per-cluster
+          # connection ceiling as the app pool below, so budget them together.
+          # Compose falls back to 4 / 1 when these are unset or empty.
+          DOCS_COLLAB_DB_MAX_CONNECTIONS=${{ vars.DOCS_COLLAB_DB_MAX_CONNECTIONS }}
+          DOCS_COLLAB_DB_MIN_CONNECTIONS=${{ vars.DOCS_COLLAB_DB_MIN_CONNECTIONS }}
+
           # -------- Database Pool Config
           # Pool sizing must stay below the managed Postgres max connections
           # ceiling (22 on the 1 GB DO tier) to leave headroom for migrator,
           # doadmin, and platform agents. Clap defaults in service/src/config.rs
           # apply if any of these are left unset in the GitHub environment.
+          # DB_MAX_CONNECTIONS is the app's total, split between the main pool and the session store pool.
           DB_MAX_CONNECTIONS=${{ vars.DB_MAX_CONNECTIONS }}
           DB_MIN_CONNECTIONS=${{ vars.DB_MIN_CONNECTIONS }}
           DB_CONNECT_TIMEOUT_SECS=${{ vars.DB_CONNECT_TIMEOUT_SECS }}
@@ -109,6 +127,8 @@ jobs:
           # -------- Backend Config
           # Docker image for backend
           BACKEND_IMAGE_NAME=${{ vars.BACKEND_IMAGE_NAME }}
+          # Docker image for docs-collab-server
+          DOCS_COLLAB_IMAGE_NAME=${{ vars.DOCS_COLLAB_IMAGE_NAME }}
           # Container name for backend
           BACKEND_CONTAINER_NAME=${{ vars.BACKEND_CONTAINER_NAME }}
           # We are not building locally so setting to empty string to quiet warning
@@ -160,9 +180,16 @@ jobs:
           RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID=${{ vars.RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID }}
           SESSION_CANCELLED_EMAIL_TEMPLATE_ID=${{ vars.SESSION_CANCELLED_EMAIL_TEMPLATE_ID }}
           RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID=${{ vars.RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID }}
+          # Template ID for the 24-hour upcoming-session reminder. Unset disables the job.
+          SESSION_REMINDER_EMAIL_TEMPLATE_ID=${{ vars.SESSION_REMINDER_EMAIL_TEMPLATE_ID }}
+          # Reminder lead time and sweep cadence; blank falls back to the in-code defaults (24h / 15min)
+          SESSION_REMINDER_LEAD_HOURS=${{ vars.SESSION_REMINDER_LEAD_HOURS }}
+          SESSION_REMINDER_POLL_MINUTES=${{ vars.SESSION_REMINDER_POLL_MINUTES }}
           RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
           # Base URL of the frontend app, used to construct links in emails
           FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL }}
+          # Public URL of the docs-collab-server, used by the frontend collaborative editor
+          DOCS_COLLAB_URL=${{ vars.DOCS_COLLAB_URL }}
 
           # -------- Frontend Config
           # Docker image for frontend
@@ -203,6 +230,28 @@ jobs:
           RECALL_AI_REGION=${{ vars.RECALL_AI_REGION }}
           # Recall.ai webhook signing secret (Svix whsec_... format)
           RECALL_AI_WEBHOOK_SECRET=${{ secrets.RECALL_AI_WEBHOOK_SECRET }}
+
+          # -------- Coaching Note Image Storage Config
+          # Hardcoded intentionally: an empty value is stripped before parsing and
+          # would fall back to the "local" default, silently writing note images
+          # into the container filesystem where a redeploy destroys them.
+          OBJECT_STORE_BACKEND=spaces
+          # DigitalOcean Spaces regional endpoint, must match SPACES_REGION
+          SPACES_ENDPOINT=${{ vars.SPACES_ENDPOINT }}
+          # DigitalOcean Spaces region (e.g. nyc3)
+          SPACES_REGION=${{ vars.SPACES_REGION }}
+          # DigitalOcean Spaces bucket (Space) name
+          SPACES_BUCKET=${{ vars.SPACES_BUCKET }}
+          # Spaces access key pair; missing credentials disable image endpoints (503)
+          SPACES_ACCESS_KEY_ID=${{ secrets.SPACES_ACCESS_KEY_ID }}
+          SPACES_SECRET_ACCESS_KEY=${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          # Upload cap, presigned GET lifetime, and the removal grace period the purge
+          # job sweeps on; blank falls back to the in-code defaults
+          # (10 MB / 900s / 168h / 60min)
+          COACHING_SESSION_IMAGE_MAX_BYTES=${{ vars.COACHING_SESSION_IMAGE_MAX_BYTES }}
+          COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS=${{ vars.COACHING_SESSION_IMAGE_PRESIGN_TTL_SECONDS }}
+          COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS=${{ vars.COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS }}
+          COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES=${{ vars.COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES }}
 
           # -------- Nginx Reverse Proxy Config
           SSL_DHPARAMS_PATH=${{ vars.SSL_DHPARAMS_PATH }}
@@ -483,6 +532,12 @@ jobs:
               # Announce image pull
               docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
               # Pull frontend image
+            fi
+            if [ "${{ inputs.deploy_docs_collab }}" = "true" ] && [ -n "${{ vars.DOCS_COLLAB_IMAGE_NAME }}" ]; then
+              echo "INFO: Pulling docs-collab image: ${{ vars.DOCS_COLLAB_IMAGE_NAME }}"
+              docker pull ${{ vars.DOCS_COLLAB_IMAGE_NAME }}
+            else
+              echo "INFO: Skipping docs-collab image pull (deploy_docs_collab=false); leaving any running collab server untouched."
             fi
 
             echo "INFO: 🔍 Validating config..."

@@ -101,6 +101,32 @@ pub async fn find_user(id: Id) -> User {
 }
 ```
 
+### Functional Style
+
+**Prefer Rust's functional/combinator style over procedural code**, as long as it stays readable. Reach for `map`/`and_then`/`ok_or`/`filter`/iterator chains, `let-else`, and `matches!` instead of imperative loops and throwaway `mut` accumulators.
+
+- **The test:** does the chain read like a logical sentence? If so, keep it.
+- **The limit:** if a combinator chain becomes hard to reason about, break it up. Readability for a human developer wins over cleverness.
+- Avoid needless `mut` and intermediate bindings where an iterator or combinator expresses the intent more directly.
+
+```rust
+// ❌ Procedural - mut accumulator, manual loop, early break
+let mut matched = None;
+for entry in &claim.allowed {
+    if doc_name.starts_with(entry.trim_end_matches('*')) {
+        matched = Some(entry.clone());
+        break;
+    }
+}
+
+// ✅ Functional - reads like a sentence
+let matched = claim
+    .allowed
+    .iter()
+    .find(|e| doc_name.starts_with(e.trim_end_matches('*')))
+    .cloned();
+```
+
 ### Error Variant Reuse
 
 **CRITICAL:** Before adding a new error variant, check whether an existing generic variant can carry the information you need. Adding resource-specific or feature-specific error variants (e.g., `ActiveGoalLimitReached`, `MaxSessionsExceeded`, `DuplicateSlugDetected`) causes enum proliferation and forces changes at every layer in the error chain.
@@ -290,7 +316,7 @@ let response = reqwest::get(url).await?;
 let client = reqwest::Client::builder().timeout(...).build()?;
 ```
 
-**Why:** Cargo features are unioned across the workspace. Several deps pull in reqwest with default features, which enables `default-tls` (native-tls/OpenSSL). When both backends are compiled in, `Client::new()` / `reqwest::get(...)` default to native-tls, which reads CA roots from the runtime container's system trust store. The production runtime image (`debian:bullseye-slim`) intentionally ships **without** `ca-certificates` — keeping it out minimizes attack surface and acts as a tripwire that fails loudly when this rule is violated. Rustls bundles its trust roots via `webpki-roots` and works regardless of the system store, so `.use_rustls_tls()` is the only safe choice. **Do not "fix" a TLS failure by installing `ca-certificates` in the runtime image** — fix the offending reqwest call to use rustls.
+**Why:** Cargo features are unioned across the workspace. Several deps pull in reqwest with default features, which enables `default-tls` (native-tls/OpenSSL). When both backends are compiled in, `Client::new()` / `reqwest::get(...)` default to native-tls, which reads CA roots from the runtime container's system trust store. The production runtime image (`debian:bookworm-slim`) intentionally ships **without** `ca-certificates` — keeping it out minimizes attack surface and acts as a tripwire that fails loudly when this rule is violated. Rustls bundles its trust roots via `webpki-roots` and works regardless of the system store, so `.use_rustls_tls()` is the only safe choice. **Do not "fix" a TLS failure by installing `ca-certificates` in the runtime image** — fix the offending reqwest call to use rustls.
 
 **Pre-signed download URLs:** Do not reuse a client whose `default_headers` includes `Authorization` for downloads from pre-signed URLs (e.g. S3, Recall.ai transcript downloads). Build a second header-less rustls client and store it alongside the authenticated one. See `domain::gateway::recall_ai::Provider::{client, download_client}` for the pattern.
 
@@ -414,6 +440,10 @@ pub use crate::coaching_session_goal::{
 use domain::coaching_session_goal as CoachingSessionGoalApi;
 ```
 
+## Comments
+
+**Keep comments compact but useful to a human developer.** One short line each; explain the *why* when it is non-obvious, and skip the obvious. Compact does not mean zero. Code should be self-documenting through clear naming and structure; reserve comments for intent and rationale a reader cannot recover from the code itself.
+
 ## Documentation
 
 - Add doc comments (`///`) for public APIs
@@ -438,6 +468,8 @@ When reviewing or writing code, ensure:
 
 - [ ] Imports are organized (std, external, internal)
 - [ ] Naming follows Rust conventions
+- [ ] Functional/combinator style preferred over procedural loops where it reads clearly
+- [ ] Comments are compact but useful (explain *why*, one short line, not absent)
 - [ ] Error handling uses `Result` and `?` operator appropriately
 - [ ] No `.unwrap()` or `.expect()` in production code paths
 - [ ] Errors propagate through layers (`entity_api` -> `domain` -> `web`) without skipping

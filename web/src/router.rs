@@ -5,6 +5,7 @@ use crate::{
     params, protect, AppState,
 };
 use axum::{
+    extract::DefaultBodyLimit,
     middleware::{from_fn, from_fn_with_state},
     routing::{delete, get, patch, post, put},
     Router,
@@ -64,6 +65,10 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
+            coaching_session::image_controller::create,
+            coaching_session::image_controller::read,
+            coaching_session::image_controller::delete,
+            coaching_session::image_controller::restore,
             coaching_session::topic_controller::index,
             coaching_session::topic_controller::create,
             coaching_session::topic_controller::update,
@@ -72,6 +77,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::set_rating,
             coaching_session::topic_controller::set_status,
             coaching_session::topic_controller::undo,
+            coaching_session::transcription_controller::read_latest,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
@@ -103,8 +109,10 @@ use utoipa_rapidoc::RapiDoc;
             organization::user_controller::create,
             organization::user_controller::resend_invite,
             organization::user_controller::delete,
-            organization::user_controller::attach_role,
-            organization::user_controller::remove_role,
+            organization::user::role_controller::attach_role,
+            organization::user::role_controller::read_role,
+            organization::user::role_controller::update_role,
+            organization::user::role_controller::remove_role,
             goal_controller::create,
             goal_controller::update,
             goal_controller::index,
@@ -161,6 +169,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::goal::SortField,
                 crate::params::sort::SortOrder,
                 crate::params::user::AttachRoleParams,
+                crate::params::user::UpdateRoleParams,
                 crate::params::user::CompleteSetupParams,
                 crate::params::user::CreateMemberParams,
                 crate::params::user::LookupParams,
@@ -175,6 +184,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
                 domain::coaching_session::SessionWithDisplayTitle,
+                domain::coaching_session_images::Model,
                 domain::coaching_session_topics::Model,
                 domain::coaching_session_view::MarkViewed,
                 domain::coaching_sessions::Model,
@@ -185,8 +195,14 @@ use utoipa_rapidoc::RapiDoc;
                 domain::organizations::Model,
                 domain::meeting_provider::Provider,
                 domain::status::Status,
+                domain::transcript_export::Speaker,
+                domain::transcript_export::SpeakerRole,
+                domain::transcription::Model,
+                domain::transcription::WithSpeakers,
                 domain::user::Credentials,
                 domain::user_role::UserLookupResult,
+                domain::user_roles::Model,
+                domain::users::Role,
                 domain::users::Model,
                 params::coaching_session::UpdateParams,
                 params::user::UpdateParams,
@@ -198,7 +214,7 @@ use utoipa_rapidoc::RapiDoc;
             (name = "refactor_platform", description = "Refactor Coaching & Mentorship API")
         )
     )]
-struct ApiDoc;
+pub(crate) struct ApiDoc;
 
 #[cfg(test)]
 #[path = "router_tests.rs"]
@@ -235,6 +251,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(goal_routes(app_state.clone()))
         .merge(coaching_session_goal_routes(app_state.clone()))
         .merge(coaching_session_meeting_recording_routes(app_state.clone()))
+        .merge(coaching_session_image_routes(app_state.clone()))
         .merge(coaching_session_topic_routes(app_state.clone()))
         .merge(coaching_session_transcription_routes(app_state.clone()))
         .merge(coaching_session_transcription_segment_routes(
@@ -510,8 +527,10 @@ fn organization_user_routes(app_state: AppState) -> Router {
         )
         .route(
             "/organizations/:organization_id/users/:user_id/role",
-            post(organization::user_controller::attach_role)
-                .delete(organization::user_controller::remove_role),
+            get(organization::user::role_controller::read_role)
+                .post(organization::user::role_controller::attach_role)
+                .put(organization::user::role_controller::update_role)
+                .delete(organization::user::role_controller::remove_role),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -864,10 +883,48 @@ fn coaching_session_topic_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+/// Multipart framing (boundaries, part headers, filenames) rides along with the bytes, so
+/// the transport limit sits a little above the image cap the handler enforces.
+const MULTIPART_FRAMING_SLACK_BYTES: u64 = 64 * 1024;
+
+fn coaching_session_image_routes(app_state: AppState) -> Router {
+    // Raised on this route alone: axum's 2 MB default would 413 an ordinary phone photo
+    // with an error the handler never sees, and every other endpoint wants the default.
+    let body_limit = usize::try_from(
+        app_state
+            .config
+            .coaching_session_image_max_bytes()
+            .saturating_add(MULTIPART_FRAMING_SLACK_BYTES),
+    )
+    .unwrap_or(usize::MAX);
+
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/images",
+            post(coaching_session::image_controller::create)
+                .layer(DefaultBodyLimit::max(body_limit)),
+        )
+        .route(
+            "/coaching_session_images/:image_id",
+            get(coaching_session::image_controller::read)
+                .delete(coaching_session::image_controller::delete),
+        )
+        .route(
+            "/coaching_session_images/:image_id/restore",
+            post(coaching_session::image_controller::restore),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
 fn coaching_session_transcription_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
             "/coaching_sessions/:coaching_session_id/transcriptions",
+            get(coaching_session::transcription_controller::read_latest),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id",
             get(coaching_session::transcription_controller::read),
         )
         .route_layer(from_fn(require_auth))

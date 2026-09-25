@@ -31,7 +31,7 @@ impl IntoQueryFilterMap for IndexParams {
         let mut query_filter_map = QueryFilterMap::new();
         query_filter_map.insert(
             "coaching_relationship_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.coaching_relationship_id)))),
+            Some(Value::Uuid(Some(self.coaching_relationship_id))),
         );
 
         if let Some(status) = self.status {
@@ -39,7 +39,7 @@ impl IntoQueryFilterMap for IndexParams {
             // produces a valid `WHERE status = '...'` against the PG enum column.
             query_filter_map.insert(
                 "status".to_string(),
-                Some(Value::String(Some(Box::new(status.to_value())))),
+                Some(Value::String(Some(status.to_value()))),
             );
         }
 

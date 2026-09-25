@@ -15,7 +15,7 @@ impl MigrationTrait for Migration {
             WHERE email = 'admin@refactorcoach.com'
         "#;
 
-        db.execute(sea_orm::Statement::from_sql_and_values(
+        db.execute_raw(sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Postgres,
             sql,
             vec![],
@@ -35,7 +35,7 @@ impl MigrationTrait for Migration {
             WHERE email = 'admin@refactorcoach.com'
         "#;
 
-        db.execute(sea_orm::Statement::from_sql_and_values(
+        db.execute_raw(sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Postgres,
             sql,
             vec![],

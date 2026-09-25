@@ -2,7 +2,7 @@ use super::*;
 use crate::coaching_relationships;
 use crate::coaching_sessions;
 use crate::events::DomainEvent;
-use crate::test_support::{both_participants_are_members, recording_publisher};
+use crate::test_utils::mock::{both_participants_are_members, recording_publisher};
 use entity::coaching_session_topics::TopicSnapshot;
 use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase};
@@ -45,6 +45,7 @@ fn session_with_relationship(
         created_at: now,
         updated_at: now,
         hydrated_at: None,
+        notice_given_at: chrono::Utc::now().into(),
     };
     let relationship = coaching_relationships::Model {
         id: relationship_id,
@@ -80,6 +81,7 @@ fn coaching_session(
         created_at: now,
         updated_at: now,
         hydrated_at: None,
+        notice_given_at: chrono::Utc::now().into(),
     }
 }
 

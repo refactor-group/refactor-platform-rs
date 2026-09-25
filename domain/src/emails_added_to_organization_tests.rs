@@ -17,7 +17,6 @@ fn test_user(first_name: &str, last_name: &str, email: &str) -> users::Model {
         github_profile_url: None,
         timezone: "UTC".to_string(),
         default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-        role: Role::User,
         roles: vec![],
         invite_status: None,
         created_at: chrono::Utc::now().fixed_offset(),

@@ -1,6 +1,6 @@
 [package]
 name = "sse"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 edition = "2021"
 
 [dependencies]
@@ -15,9 +15,6 @@ async-trait = "0.1.83"
 
 # Concurrency
 dashmap = "6.1"
-
-# Database
-sea-orm = { version = "1.1.0", features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"] }
 
 # Serialization
 serde = { version = "1.0.210", features = ["derive"] }

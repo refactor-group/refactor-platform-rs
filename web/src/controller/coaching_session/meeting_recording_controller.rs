@@ -177,7 +177,7 @@ mod tests {
     use tower_sessions::Expiry;
 
     const X_VERSION: &str = "x-version";
-    const API_VERSION: &str = "1.0.0-beta1";
+    const API_VERSION: &str = "1.0.0";
 
     fn test_user() -> users::Model {
         let now = Utc::now();
@@ -193,7 +193,6 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
             roles: vec![],
             invite_status: None,
             created_at: now.into(),
@@ -243,6 +242,7 @@ mod tests {
             service_state,
             Arc::new(sse::Manager::new()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -310,6 +310,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -372,6 +373,7 @@ mod tests {
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };

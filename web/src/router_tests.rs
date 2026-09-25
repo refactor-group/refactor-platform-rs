@@ -1,8 +1,155 @@
 use super::ApiDoc;
 use regex::Regex;
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use utoipa::OpenApi;
+
+const ROLE_PATH: &str = "/organizations/{organization_id}/users/{user_id}/role";
+const TRANSCRIPT_PATH: &str =
+    "/coaching_sessions/{coaching_session_id}/transcriptions/{transcription_id}";
+
+fn spec() -> Value {
+    serde_json::to_value(ApiDoc::openapi()).expect("the derived spec must serialize")
+}
+
+/// Every `$ref` reachable from `value`, as bare schema names.
+fn schema_refs(value: &Value, found: &mut Vec<String>) {
+    match value {
+        Value::Object(members) => {
+            members
+                .iter()
+                .for_each(|(key, member)| match (key.as_str(), member.as_str()) {
+                    ("$ref", Some(reference)) => found.push(
+                        reference
+                            .trim_start_matches("#/components/schemas/")
+                            .to_string(),
+                    ),
+                    _ => schema_refs(member, found),
+                })
+        }
+        Value::Array(items) => items.iter().for_each(|item| schema_refs(item, found)),
+        _ => {}
+    }
+}
+
+/// A handler absent from `paths(...)` is silently missing from the served spec and
+/// produces no compile error, so the registration is worth pinning.
+#[test]
+fn the_role_path_serves_all_four_operations() {
+    let spec = spec();
+    let operations = spec["paths"][ROLE_PATH]
+        .as_object()
+        .expect("the role path must be in the served spec");
+
+    ["get", "post", "put", "delete"]
+        .iter()
+        .for_each(|method| assert!(operations.contains_key(*method), "missing {method}"));
+}
+
+/// `Role` is the one that matters here. It is the field these endpoints exist to
+/// convey, and an unresolvable reference leaves a consumer unable to see that the
+/// permitted values are `User`, `Admin` and `SuperAdmin`. Deriving `ToSchema` is not
+/// enough on its own; utoipa serves only what is registered.
+#[test]
+fn the_schemas_the_role_endpoints_publish_are_defined() {
+    let spec = spec();
+    let schemas = spec["components"]["schemas"]
+        .as_object()
+        .expect("the spec must define schemas");
+
+    let missing: Vec<&str> = ["UpdateRoleParams", "domain.user_roles.Model", "Role"]
+        .into_iter()
+        .filter(|name| !schemas.contains_key(*name))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "the role endpoints publish schemas the spec does not define: {missing:?}"
+    );
+}
+
+/// Guards the test above against becoming vacuous: it checks that `Role` is defined,
+/// which is only worth checking while something still points at it.
+#[test]
+fn the_membership_schema_references_the_role_enum() {
+    let mut referenced = Vec::new();
+    schema_refs(
+        &spec()["components"]["schemas"]["domain.user_roles.Model"],
+        &mut referenced,
+    );
+
+    assert!(
+        referenced.iter().any(|name| name == "Role"),
+        "the membership must reference the Role enum: {referenced:?}"
+    );
+}
+
+/// The transcript download is the one operation whose two representations are only
+/// visible in the spec: a consumer cannot discover the `text/plain` file or the
+/// `speaker` values from the route alone.
+#[test]
+fn the_transcript_download_operation_is_served_with_its_schemas() {
+    let spec = spec();
+    let operation = &spec["paths"][TRANSCRIPT_PATH]["get"];
+    assert!(
+        operation.is_object(),
+        "the transcript path must serve a get"
+    );
+
+    let content = &operation["responses"]["200"]["content"];
+    ["application/json", "text/plain"].iter().for_each(|media| {
+        assert!(
+            content.get(*media).is_some(),
+            "the 200 must offer {media}: {content}"
+        );
+    });
+
+    let speaker = operation["parameters"]
+        .as_array()
+        .expect("the operation must declare parameters")
+        .iter()
+        .find(|parameter| parameter["name"] == "speaker")
+        .expect("the speaker query parameter must be declared");
+
+    let mut speaker_refs = Vec::new();
+    schema_refs(speaker, &mut speaker_refs);
+    assert_eq!(speaker_refs, ["SpeakerRole"]);
+
+    let schemas = spec["components"]["schemas"]
+        .as_object()
+        .expect("the spec must define schemas");
+
+    assert_eq!(
+        schemas["SpeakerRole"]["enum"],
+        serde_json::json!(["coach", "coachee"])
+    );
+    ["Speaker", "domain.transcription.WithSpeakers"]
+        .iter()
+        .for_each(|name| assert!(schemas.contains_key(*name), "missing schema {name}"));
+
+    // Sweep the operation and the three schemas it publishes: an unresolvable ref
+    // leaves a consumer unable to render the download at all.
+    let mut referenced = Vec::new();
+    schema_refs(operation, &mut referenced);
+    [
+        "SpeakerRole",
+        "Speaker",
+        "domain.transcription.WithSpeakers",
+    ]
+    .iter()
+    .for_each(|name| schema_refs(&schemas[*name], &mut referenced));
+
+    let dangling: Vec<&String> = referenced
+        .iter()
+        .filter(|name| !schemas.contains_key(name.as_str()))
+        .collect();
+
+    assert!(
+        dangling.is_empty(),
+        "the transcript download references schemas the spec does not define: {dangling:?}"
+    );
+}
 
 /// Every `$ref` in the spec must point at a schema that is actually defined.
 /// utoipa 4 silently emitted refs to unregistered types; this guards the regression.
