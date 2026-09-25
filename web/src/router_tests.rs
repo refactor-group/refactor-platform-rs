@@ -234,22 +234,21 @@ fn schema_names_are_unique_across_the_workspace() {
     let derives_schema = Regex::new(r"derive\([^)]*\bToSchema\b").expect("valid regex");
     let schema_as = Regex::new(r"#\[schema\(as = ([\w:]+)").expect("valid regex");
 
-    let mut names: Vec<(String, String)> =
-        sources_under(&["entity/src", "domain/src", "service/src", "web/src"])
-            .iter()
-            .flat_map(|file| {
-                let src = fs::read_to_string(file).expect("source readable");
-                item.captures_iter(&src)
-                    .filter(|caps| derives_schema.is_match(&caps[1]))
-                    .map(|caps| {
-                        let name = schema_as
-                            .captures(&caps[1])
-                            .map_or_else(|| caps[2].to_string(), |c| c[1].to_string());
-                        (name, file.display().to_string())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+    let mut names: Vec<(String, String)> = sources_under(&crate_source_dirs())
+        .iter()
+        .flat_map(|file| {
+            let src = fs::read_to_string(file).expect("source readable");
+            item.captures_iter(&src)
+                .filter(|caps| derives_schema.is_match(&caps[1]))
+                .map(|caps| {
+                    let name = schema_as
+                        .captures(&caps[1])
+                        .map_or_else(|| caps[2].to_string(), |c| c[1].to_string());
+                    (name, file.display().to_string())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
     names.sort();
 
     let collisions: Vec<String> = names
@@ -363,8 +362,26 @@ fn parameter_list(src: &str, open: usize) -> &str {
     &src[open + 1..close]
 }
 
+/// The `src` directory of every crate in the workspace, so new crates are scanned too.
+fn crate_source_dirs() -> Vec<String> {
+    let mut dirs: Vec<String> = fs::read_dir(workspace_root())
+        .expect("workspace readable")
+        .flatten()
+        .filter(|entry| entry.path().join("src").is_dir())
+        .map(|entry| format!("{}/src", entry.file_name().to_string_lossy()))
+        .collect();
+    dirs.push("src".to_string());
+    dirs
+}
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("web lives in the workspace")
+}
+
 /// Every `.rs` file under the given workspace-relative directories.
-fn sources_under(dirs: &[&str]) -> Vec<PathBuf> {
+fn sources_under<S: AsRef<str>>(dirs: &[S]) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).expect("source dir readable").flatten() {
             let path = entry.path();
@@ -375,11 +392,8 @@ fn sources_under(dirs: &[&str]) -> Vec<PathBuf> {
             }
         }
     }
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("web lives in the workspace");
     let mut out = Vec::new();
     dirs.iter()
-        .for_each(|dir| walk(&workspace.join(dir), &mut out));
+        .for_each(|dir| walk(&workspace_root().join(dir.as_ref()), &mut out));
     out
 }
