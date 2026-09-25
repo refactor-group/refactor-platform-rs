@@ -29,7 +29,7 @@ use crate::{AppState, Error};
     path = "/coaching_sessions/{coaching_session_id}/images",
     params(
         ApiVersion,
-        ("coaching_session_id" = domain::Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     request_body(content = String, description = "multipart/form-data with a `file` part", content_type = "multipart/form-data"),
     responses(
@@ -109,7 +109,7 @@ pub async fn create(
     get,
     path = "/coaching_session_images/{image_id}",
     params(
-        ("image_id" = domain::Id, Path, description = "Note image id"),
+        ("image_id" = Uuid, Path, description = "Note image id"),
     ),
     responses(
         (status = 200, description = "The image bytes, when the storage backend cannot presign"),
@@ -165,7 +165,7 @@ pub async fn read(
     path = "/coaching_session_images/{image_id}",
     params(
         ApiVersion,
-        ("image_id" = domain::Id, Path, description = "Note image id"),
+        ("image_id" = Uuid, Path, description = "Note image id"),
     ),
     responses(
         (status = 200, description = "Image marked deleted", body = domain::coaching_session_images::Model),
@@ -195,7 +195,7 @@ pub async fn delete(
     path = "/coaching_session_images/{image_id}/restore",
     params(
         ApiVersion,
-        ("image_id" = domain::Id, Path, description = "Note image id"),
+        ("image_id" = Uuid, Path, description = "Note image id"),
     ),
     responses(
         (status = 200, description = "Image restored", body = domain::coaching_session_images::Model),

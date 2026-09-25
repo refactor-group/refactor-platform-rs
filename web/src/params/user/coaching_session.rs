@@ -14,7 +14,7 @@ use domain::{coaching_sessions, Id, QuerySort};
 /// comma-separated values: `?include=relationship,organization,goal,agreements`
 ///
 /// Maps to `entity_api::coaching_session::IncludeOptions` for database queries.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum IncludeParam {
     /// Include coaching relationship (coach/coachee info)

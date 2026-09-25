@@ -15,7 +15,7 @@ axum-login = "0.16.0"
 async-trait = "0.1.83"
 password-auth = "1.0.0"
 slugify = "0.1.0"
-utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
 
 [dependencies.sea-orm]
 version = "2.0.3"                                                       # sea-orm version
@@ -26,3 +26,6 @@ tokio = { version = "1.44", features = ["full"] }
 
 [features]
 mock = ["sea-orm/mock"]
+
+[build-dependencies]
+utoipa-config = "0.1"

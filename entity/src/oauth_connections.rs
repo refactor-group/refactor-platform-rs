@@ -6,6 +6,7 @@ use utoipa::ToSchema;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(as = entity::oauth_connections::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "oauth_connections")]
 pub struct Model {
     #[serde(skip_deserializing)]

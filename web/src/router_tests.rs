@@ -1,5 +1,8 @@
 use super::ApiDoc;
+use regex::Regex;
 use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
 use utoipa::OpenApi;
 
 const ROLE_PATH: &str = "/organizations/{organization_id}/users/{user_id}/role";
@@ -44,11 +47,6 @@ fn the_role_path_serves_all_four_operations() {
         .for_each(|method| assert!(operations.contains_key(*method), "missing {method}"));
 }
 
-/// Named explicitly rather than swept recursively. A sweep of the role path also
-/// picks up `Id`, `Version` and `DateTimeWithTimeZone`, which dangle for every
-/// endpoint in the spec and are tracked separately; requiring this change to fix
-/// them would be scope it does not own.
-///
 /// `Role` is the one that matters here. It is the field these endpoints exist to
 /// convey, and an unresolvable reference leaves a consumer unable to see that the
 /// permitted values are `User`, `Admin` and `SuperAdmin`. Deriving `ToSchema` is not
@@ -144,7 +142,6 @@ fn the_transcript_download_operation_is_served_with_its_schemas() {
 
     let dangling: Vec<&String> = referenced
         .iter()
-        .filter(|name| !["Id", "Version", "DateTimeWithTimeZone"].contains(&name.as_str()))
         .filter(|name| !schemas.contains_key(name.as_str()))
         .collect();
 
@@ -152,4 +149,251 @@ fn the_transcript_download_operation_is_served_with_its_schemas() {
         dangling.is_empty(),
         "the transcript download references schemas the spec does not define: {dangling:?}"
     );
+}
+
+/// Every `$ref` in the spec must point at a schema that is actually defined.
+/// utoipa 4 silently emitted refs to unregistered types; this guards the regression.
+#[test]
+fn openapi_spec_has_no_dangling_refs() {
+    let spec = ApiDoc::openapi().to_pretty_json().expect("spec serializes");
+    let defined: Vec<String> = serde_json::from_str::<serde_json::Value>(&spec)
+        .expect("spec parses")["components"]["schemas"]
+        .as_object()
+        .expect("schemas object")
+        .keys()
+        .cloned()
+        .collect();
+
+    let dangling: Vec<&str> = spec
+        .match_indices("#/components/schemas/")
+        .map(|(i, m)| {
+            let rest = &spec[i + m.len()..];
+            &rest[..rest.find('"').unwrap_or(0)]
+        })
+        .filter(|name| !defined.iter().any(|d| d == name))
+        .collect();
+
+    assert!(dangling.is_empty(), "dangling $refs: {dangling:?}");
+}
+
+/// A declared `request_body` must correspond to a handler that actually extracts one,
+/// and a handler that extracts one must declare it. Drift here publishes a request
+/// contract that the endpoint neither accepts nor requires.
+#[test]
+fn request_body_annotations_match_handler_signatures() {
+    let declares_body = Regex::new(r"request_body\s*[=(]").expect("valid regex");
+
+    let problems: Vec<String> = sources_under(&["web/src/controller"])
+        .iter()
+        .flat_map(|file| {
+            let src = fs::read_to_string(file).expect("controller source readable");
+            annotated_handlers(&src)
+                .into_iter()
+                .filter_map(|handler| {
+                    let Some((name, sig)) = handler.signature else {
+                        return Some(format!(
+                            "{}: a #[utoipa::path] annotation has no handler after it",
+                            file.display()
+                        ));
+                    };
+                    let declared = declares_body.is_match(handler.annotation);
+                    let extracts = ["Json(", "Form(", "Multipart"]
+                        .iter()
+                        .any(|extractor| sig.contains(extractor));
+                    match (declared, extracts) {
+                        (true, false) => Some(format!(
+                            "{}::{name} declares a request_body but extracts no body",
+                            file.display()
+                        )),
+                        (false, true) => Some(format!(
+                            "{}::{name} extracts a body but declares no request_body",
+                            file.display()
+                        )),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    assert!(
+        problems.is_empty(),
+        "request_body drift:\n{}",
+        problems.join("\n")
+    );
+}
+
+/// utoipa keys `components/schemas` by the type's bare name unless `#[schema(as = ...)]`
+/// overrides it, so two types sharing a name silently publish one schema for both.
+#[test]
+fn schema_names_are_unique_across_the_workspace() {
+    let item = Regex::new(
+        r"((?:\s*(?:#\[(?:[^\[\]]|\[(?:[^\[\]]|\[[^\[\]]*\])*\])*\]|//[^\n]*))*)\s*pub(?:\([a-z]+\))? (?:struct|enum) (\w+)",
+    )
+    .expect("valid regex");
+    let derives_schema = Regex::new(r"derive\([^)]*\bToSchema\b").expect("valid regex");
+    let schema_as = Regex::new(r"#\[schema\(as = ([\w:]+)").expect("valid regex");
+
+    let mut names: Vec<(String, String)> = sources_under(&crate_source_dirs())
+        .iter()
+        .flat_map(|file| {
+            let src = fs::read_to_string(file).expect("source readable");
+            item.captures_iter(&src)
+                .filter(|caps| derives_schema.is_match(&caps[1]))
+                .map(|caps| {
+                    let name = schema_as
+                        .captures(&caps[1])
+                        .map_or_else(|| caps[2].to_string(), |c| c[1].to_string());
+                    (name, file.display().to_string())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    names.sort();
+
+    let collisions: Vec<String> = names
+        .windows(2)
+        .filter(|pair| pair[0].0 == pair[1].0)
+        .map(|pair| format!("{} in {} and {}", pair[0].0, pair[0].1, pair[1].1))
+        .collect();
+
+    assert!(
+        collisions.is_empty(),
+        "schema names shared by more than one type:\n{}",
+        collisions.join("\n")
+    );
+}
+
+/// Every `{param}` in a path template must be declared on each of its operations.
+#[test]
+fn every_path_template_parameter_is_declared() {
+    let template = Regex::new(r"\{(\w+)\}").expect("valid regex");
+    let spec = spec();
+
+    let undeclared: Vec<String> = spec["paths"]
+        .as_object()
+        .expect("paths object")
+        .iter()
+        .flat_map(|(path, operations)| {
+            let wanted: Vec<&str> = template
+                .captures_iter(path)
+                .map(|c| c.get(1).expect("group 1").as_str())
+                .collect();
+            operations
+                .as_object()
+                .expect("operations object")
+                .iter()
+                .flat_map(move |(method, operation)| {
+                    let declared: Vec<&str> = operation["parameters"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|p| p["in"] == "path")
+                        .filter_map(|p| p["name"].as_str())
+                        .collect();
+                    wanted
+                        .clone()
+                        .into_iter()
+                        .filter(move |name| !declared.contains(name))
+                        .map(move |name| format!("{method} {path}: {{{name}}}"))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    assert!(
+        undeclared.is_empty(),
+        "undeclared path parameters:\n{}",
+        undeclared.join("\n")
+    );
+}
+
+/// One `#[utoipa::path]` annotation and the handler that follows it, if any.
+struct AnnotatedHandler<'a> {
+    annotation: &'a str,
+    signature: Option<(&'a str, &'a str)>,
+}
+
+/// Pairs each annotation with the next `async fn`, provided no other annotation opens first.
+fn annotated_handlers(src: &str) -> Vec<AnnotatedHandler<'_>> {
+    let starts: Vec<usize> = src
+        .match_indices("#[utoipa::path(")
+        .map(|(i, _)| i)
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(n, &start)| {
+            let end = starts.get(n + 1).copied().unwrap_or(src.len());
+            let Some(fn_at) = src[start..end].find("async fn ").map(|i| start + i) else {
+                return AnnotatedHandler {
+                    annotation: &src[start..end],
+                    signature: None,
+                };
+            };
+            let name_start = fn_at + "async fn ".len();
+            let open = name_start
+                + src[name_start..]
+                    .find('(')
+                    .expect("fn has a parameter list");
+            AnnotatedHandler {
+                annotation: &src[start..fn_at],
+                signature: Some((&src[name_start..open], parameter_list(src, open))),
+            }
+        })
+        .collect()
+}
+
+/// The text between the `(` at `open` and its matching `)`.
+fn parameter_list(src: &str, open: usize) -> &str {
+    let close = src[open..]
+        .char_indices()
+        .scan(0i32, |depth, (i, c)| {
+            *depth += match c {
+                '(' => 1,
+                ')' => -1,
+                _ => 0,
+            };
+            Some((i, *depth))
+        })
+        .find(|&(_, depth)| depth == 0)
+        .map(|(i, _)| open + i)
+        .expect("balanced parameter list");
+    &src[open + 1..close]
+}
+
+/// The `src` directory of every crate in the workspace, so new crates are scanned too.
+fn crate_source_dirs() -> Vec<String> {
+    let mut dirs: Vec<String> = fs::read_dir(workspace_root())
+        .expect("workspace readable")
+        .flatten()
+        .filter(|entry| entry.path().join("src").is_dir())
+        .map(|entry| format!("{}/src", entry.file_name().to_string_lossy()))
+        .collect();
+    dirs.push("src".to_string());
+    dirs
+}
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("web lives in the workspace")
+}
+
+/// Every `.rs` file under the given workspace-relative directories.
+fn sources_under<S: AsRef<str>>(dirs: &[S]) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("source dir readable").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    dirs.iter()
+        .for_each(|dir| walk(&workspace_root().join(dir.as_ref()), &mut out));
+    out
 }

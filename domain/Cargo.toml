@@ -33,7 +33,7 @@ serde = {version = "1.0.210", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 urlencoding = "2.1"
-utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
 uuid = { version = "1.0", features = ["v4"] }
 vtimezones-rs = "0.3"
 
@@ -54,3 +54,6 @@ mock = ["entity_api/mock"]
 
 
 
+
+[build-dependencies]
+utoipa-config = "0.1"

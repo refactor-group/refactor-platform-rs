@@ -18,10 +18,10 @@ use service::config::ApiVersion;
     path = "/jwt/generate_collab_token",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Query, description = "Coaching session id to generate token for")
+        ("coaching_session_id" = Uuid, Query, description = "Coaching session id to generate token for")
     ),
     responses(
-        (status = 200, description = "Successfully generated a collaboration token", body = Jwt),  
+        (status = 200, description = "Successfully generated a collaboration token", body = domain::jwts::Jwt),  
         (status = 500, description = "Internal Server Error"),
         (status = 503, description = "Service temporarily unavailable")
     ),

@@ -38,8 +38,8 @@ use crate::{controller::ApiResponse, AppState, Error};
     path = "/organizations/{organization_id}/users/{user_id}/role",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization"),
-        ("user_id" = Id, Path, description = "The ID of the user to attach"),
+        ("organization_id" = Uuid, Path, description = "The ID of the organization"),
+        ("user_id" = Uuid, Path, description = "The ID of the user to attach"),
     ),
     request_body = AttachRoleParams,
     responses(
@@ -124,8 +124,8 @@ pub(crate) async fn attach_role(
     path = "/organizations/{organization_id}/users/{user_id}/role",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization"),
-        ("user_id" = Id, Path, description = "The ID of the user whose role to read"),
+        ("organization_id" = Uuid, Path, description = "The ID of the organization"),
+        ("user_id" = Uuid, Path, description = "The ID of the user whose role to read"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved the user's role", body = domain::user_roles::Model),
@@ -159,8 +159,8 @@ pub(crate) async fn read_role(
     path = "/organizations/{organization_id}/users/{user_id}/role",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization"),
-        ("user_id" = Id, Path, description = "The ID of the user whose role to change"),
+        ("organization_id" = Uuid, Path, description = "The ID of the organization"),
+        ("user_id" = Uuid, Path, description = "The ID of the user whose role to change"),
     ),
     request_body = UpdateRoleParams,
     responses(
@@ -235,8 +235,8 @@ pub(crate) async fn update_role(
     path = "/organizations/{organization_id}/users/{user_id}/role",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization"),
-        ("user_id" = Id, Path, description = "The ID of the user to remove"),
+        ("organization_id" = Uuid, Path, description = "The ID of the organization"),
+        ("user_id" = Uuid, Path, description = "The ID of the user to remove"),
     ),
     responses(
         (status = 204, description = "User removed from the organization"),
