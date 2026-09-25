@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Row};
+use sqlx::{AssertSqlSafe, PgPool, Row};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -133,7 +133,8 @@ impl PostgresStorage {
 /// or `pg_class` unique index; the lost-race SQLSTATEs (`23505`, `42P06`,
 /// `42P07`) mean the object now exists, which is exactly what we want.
 async fn run_bootstrap_ddl(pool: &PgPool, sql: &str) -> Result<(), StorageError> {
-    match sqlx::query(sql).execute(pool).await {
+    // Safe: the only interpolated value is the schema, checked by `validate_schema_ident`.
+    match sqlx::query(AssertSqlSafe(sql)).execute(pool).await {
         Ok(_) => Ok(()),
         Err(e) if is_concurrent_bootstrap_race(&e) => Ok(()),
         Err(e) => Err(StorageError::Backend(e.to_string())),
@@ -166,7 +167,7 @@ impl Storage for PostgresStorage {
             "SELECT state FROM {}.collab_documents WHERE name = $1",
             self.schema
         );
-        sqlx::query(&sql)
+        sqlx::query(AssertSqlSafe(sql))
             .bind(name)
             .fetch_optional(&self.pool)
             .await
@@ -184,7 +185,7 @@ impl Storage for PostgresStorage {
              ON CONFLICT (name) DO UPDATE SET state = EXCLUDED.state, updated_at = now()",
             self.schema
         );
-        sqlx::query(&sql)
+        sqlx::query(AssertSqlSafe(sql))
             .bind(name)
             .bind(state)
             .execute(&self.pool)
@@ -198,7 +199,7 @@ impl Storage for PostgresStorage {
             "DELETE FROM {}.collab_documents WHERE name = $1",
             self.schema
         );
-        sqlx::query(&sql)
+        sqlx::query(AssertSqlSafe(sql))
             .bind(name)
             .execute(&self.pool)
             .await
