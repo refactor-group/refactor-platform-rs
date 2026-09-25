@@ -18,6 +18,7 @@ use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use sea_orm::DatabaseConnection;
 use service::config::{ApiVersion, Config};
+use service::SESSION_POOL_MAX_CONNECTIONS;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -76,10 +77,9 @@ impl AppState {
     }
 }
 
-/// Upper bound on connections held by the session store's own pool.
-const SESSION_POOL_MAX_CONNECTIONS: u32 = 5;
-
 /// Opens the pool backing the session store, separate from SeaORM's.
+///
+/// Its connections come out of `db_max_connections`; see `service::init_database`.
 ///
 /// SeaORM 2 runs on SQLx 0.9, but the newest published `tower-sessions-sqlx-store`
 /// (0.15.0) takes a SQLx 0.8 `PgPool`, so the two cannot share a pool.
