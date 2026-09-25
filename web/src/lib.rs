@@ -92,6 +92,8 @@ async fn session_pool(config: &Config) -> Result<PgPool> {
     PgPoolOptions::new()
         .max_connections(SESSION_POOL_MAX_CONNECTIONS)
         .acquire_timeout(StdDuration::from_secs(config.db_acquire_timeout_secs))
+        .idle_timeout(StdDuration::from_secs(config.db_idle_timeout_secs))
+        .max_lifetime(StdDuration::from_secs(config.db_max_lifetime_secs))
         .connect(config.database_url())
         .await
         .map_err(|err| {
