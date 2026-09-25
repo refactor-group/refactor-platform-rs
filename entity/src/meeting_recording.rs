@@ -43,11 +43,12 @@ pub enum MeetingRecordingStatus {
     Cancelled,
 }
 
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "meeting_recordings")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub coaching_session_id: Id,
     pub bot_id: String,
@@ -68,24 +69,16 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)]
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_sessions::Entity",
-        from = "Column::CoachingSessionId",
-        to = "super::coaching_sessions::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingSessions",
+        from = "coaching_session_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "Cascade"
     )]
-    CoachingSessions,
-}
-
-impl Related<super::coaching_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessions.def()
-    }
+    pub coaching_session: BelongsTo<super::coaching_sessions::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

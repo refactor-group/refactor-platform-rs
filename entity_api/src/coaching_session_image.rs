@@ -85,7 +85,7 @@ pub async fn soft_delete(db: &impl ConnectionTrait, id: Id) -> Result<Model, Err
     Entity::update_many()
         .col_expr(
             Column::DeletedAt,
-            Func::coalesce([Expr::col(Column::DeletedAt).into(), Expr::value(now)]).into(),
+            Func::coalesce([Expr::col(Column::DeletedAt), Expr::value(now)]).into(),
         )
         .col_expr(Column::UpdatedAt, Expr::value(now))
         .filter(Column::Id.eq(id))
@@ -199,9 +199,6 @@ pub async fn delete_by_id(db: &impl ConnectionTrait, id: Id) -> Result<(), Error
 }
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;

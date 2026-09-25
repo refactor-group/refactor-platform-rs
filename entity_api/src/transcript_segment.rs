@@ -14,7 +14,7 @@ pub async fn create_batch(
     debug!("Inserting {} transcript segments", segments.len());
 
     Ok(Entity::insert_many(segments)
-        .exec_with_returning_many(db)
+        .exec_with_returning(db)
         .await?)
 }
 

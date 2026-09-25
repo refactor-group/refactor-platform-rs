@@ -209,13 +209,11 @@ async fn create_in_organization_audits_the_default_role_inside_the_transaction()
         .as_ref()
         .map(|values| values.0.clone())
         .unwrap_or_default();
-    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
-    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(new_user.id)))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(actor_user_id))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(new_user.id))));
     // A first grant of the default role: no previous role.
     assert!(values.contains(&sea_orm::Value::String(None)));
-    assert!(values.contains(&sea_orm::Value::String(Some(Box::new(
-        Role::User.to_string()
-    )))));
+    assert!(values.contains(&sea_orm::Value::String(Some(Role::User.to_string()))));
 
     Ok(())
 }

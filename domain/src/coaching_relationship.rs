@@ -73,3 +73,7 @@ pub async fn find_by_organization_for_user_with_user_names(
 
     Ok(coaching_relationships)
 }
+
+#[cfg(test)]
+#[path = "coaching_relationship_sqlite_tests.rs"]
+mod sqlite_tests;

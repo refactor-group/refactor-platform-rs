@@ -18,7 +18,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::error::{DomainErrorKind, ExternalErrorKind};
 use crate::gateway::object_storage::{LocalObjectStore, StoredObject};
-use crate::test_utils::sqlite::{database, within_time_limit};
+use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
 use crate::Id;
 
 const GRACE: chrono::Duration = chrono::Duration::days(7);
@@ -71,6 +71,8 @@ impl ObjectStore for TestStore {
 /// The job, the store it deletes from, and the directory that store writes to.
 struct World {
     db: Arc<DatabaseConnection>,
+    /// The session every image belongs to, and its uploader.
+    session: (Id, Id),
     store: Arc<TestStore>,
     job: Purge,
     _root: TempDir,
@@ -84,8 +86,12 @@ impl World {
             refuse_delete_of: Mutex::new(None),
         });
 
+        let db = database().await;
+        let session = seed_coaching_session(&db).await;
+
         Self {
-            db: Arc::new(database().await),
+            db: Arc::new(db),
+            session,
             job: Purge {
                 store: Arc::clone(&store) as Arc<dyn ObjectStore>,
                 grace: GRACE,
@@ -121,8 +127,8 @@ impl World {
         let now = Utc::now();
         ActiveModel {
             id: Set(id),
-            coaching_session_id: Set(Id::new_v4()),
-            uploaded_by_id: Set(Id::new_v4()),
+            coaching_session_id: Set(self.session.0),
+            uploaded_by_id: Set(self.session.1),
             storage_key: Set(key),
             mime_type: Set("image/png".to_string()),
             byte_size: Set(0),

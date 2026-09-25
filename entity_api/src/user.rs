@@ -11,7 +11,8 @@ use password_auth;
 use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func},
-    Condition, ConnectionTrait, DatabaseConnection, QuerySelect, Set, SqlErr, TransactionTrait,
+    Condition, ConnectionTrait, DatabaseConnection, DatabaseTransaction, ExprTrait, QuerySelect,
+    Set, SqlErr, TransactionTrait,
 };
 
 /// Postgres index backing the global uniqueness of `users.email`.
@@ -70,7 +71,7 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
 }
 
 pub async fn create_by_organization(
-    db: &impl TransactionTrait,
+    db: &impl TransactionTrait<Transaction = DatabaseTransaction>,
     actor: Actor,
     organization_id: Id,
     user_model: Model,
@@ -372,9 +373,6 @@ impl AuthnBackend for Backend {
 pub type AuthSession = axum_login::AuthSession<Backend>;
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod test {
     use super::*;

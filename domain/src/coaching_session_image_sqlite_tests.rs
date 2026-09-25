@@ -8,17 +8,18 @@ use entity::coaching_session_images::ActiveModel;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use super::*;
-use crate::test_utils::sqlite::{database, within_time_limit};
+use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
 
-/// Records an image in `coaching_session_id`, removed when `removed` is set.
-async fn image(db: &DatabaseConnection, coaching_session_id: Id, removed: bool) -> Model {
+/// Records an image in `session` (its id and uploader), removed when `removed` is set.
+async fn image(db: &DatabaseConnection, session: (Id, Id), removed: bool) -> Model {
+    let (coaching_session_id, uploaded_by_id) = session;
     let id = Id::new_v4();
     let now = Utc::now();
 
     ActiveModel {
         id: Set(id),
         coaching_session_id: Set(coaching_session_id),
-        uploaded_by_id: Set(Id::new_v4()),
+        uploaded_by_id: Set(uploaded_by_id),
         storage_key: Set(format!(
             "coaching-sessions/{coaching_session_id}/images/{id}.png"
         )),
@@ -40,7 +41,11 @@ async fn image(db: &DatabaseConnection, coaching_session_id: Id, removed: bool) 
 async fn storage_keys_come_only_from_the_named_sessions() -> Result<(), Error> {
     within_time_limit(async {
         let db = database().await;
-        let (deleted_a, deleted_b, kept) = (Id::new_v4(), Id::new_v4(), Id::new_v4());
+        let (deleted_a, deleted_b, kept) = (
+            seed_coaching_session(&db).await,
+            seed_coaching_session(&db).await,
+            seed_coaching_session(&db).await,
+        );
 
         let mut expected = BTreeSet::new();
         for session in [deleted_a, deleted_b] {
@@ -50,7 +55,7 @@ async fn storage_keys_come_only_from_the_named_sessions() -> Result<(), Error> {
         }
         let untouched = image(&db, kept, false).await;
 
-        let keys: BTreeSet<String> = storage_keys_for_sessions(&db, &[deleted_a, deleted_b])
+        let keys: BTreeSet<String> = storage_keys_for_sessions(&db, &[deleted_a.0, deleted_b.0])
             .await?
             .into_iter()
             .collect();

@@ -10,7 +10,7 @@ This guide covers setting up the Refactor platform for local development and pro
 
 - Rust toolchain (`rustup` + stable)
 - PostgreSQL 14+ (see [README.md](../README.md) for DB setup)
-- `cargo`, `sea-orm-cli`
+- `cargo`, `sea-orm-cli` 2.0.3 (matches `sea-orm-migration`)
 - [ngrok](https://ngrok.com/) or similar tunnel (for Recall.ai webhooks)
 
 ### 1. Core Application

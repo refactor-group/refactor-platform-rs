@@ -11,7 +11,7 @@ items, which `domain/tests/` could not.
 | Module | Compiled when | Provides | For |
 |---|---|---|---|
 | `mock` | the `mock` feature is on | `recording_publisher`, `both_participants_are_members` | mock database tests (the default) |
-| `sqlite` | always, in tests | `database`, `within_time_limit` | SQLite tier tests |
+| `sqlite` | always, in tests | `database`, `within_time_limit`, `seed_user`, `seed_organization`, `seed_coaching_session` | SQLite tier tests |
 
 ## Which kind of test
 

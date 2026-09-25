@@ -675,7 +675,7 @@ mod tests {
         let mut map = mutate::UpdateMap::new();
         map.insert(
             "date".into(),
-            Some(sea_orm::Value::ChronoDateTime(Some(Box::new(date)))),
+            Some(sea_orm::Value::ChronoDateTime(Some(date))),
         );
         map
     }
@@ -954,7 +954,7 @@ mod tests {
         let mut map = mutate::UpdateMap::new();
         map.insert(
             column.into(),
-            Some(sea_orm::Value::String(Some(Box::new(value.into())))),
+            Some(sea_orm::Value::String(Some(value.into()))),
         );
         map
     }

@@ -21,7 +21,7 @@ pub async fn lock_requester(
         "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
         [requester_user_id.to_string().into()],
     );
-    txn.execute(statement).await?;
+    txn.execute_raw(statement).await?;
     Ok(())
 }
 

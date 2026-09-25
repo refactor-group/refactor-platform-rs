@@ -75,13 +75,13 @@ async fn record_inserts_a_grant_row() {
     );
 
     let values = bound_values(&statement);
-    assert!(values.contains(&Value::Uuid(Some(Box::new(actor)))));
-    assert!(values.contains(&Value::Uuid(Some(Box::new(target)))));
-    assert!(values.contains(&Value::Uuid(Some(Box::new(organization)))));
+    assert!(values.contains(&Value::Uuid(Some(actor))));
+    assert!(values.contains(&Value::Uuid(Some(target))));
+    assert!(values.contains(&Value::Uuid(Some(organization))));
     // A first grant has no previous role, and the new role binds as the enum's
     // string value rather than as free text.
     assert!(values.contains(&Value::String(None)));
-    assert!(values.contains(&Value::String(Some(Box::new("admin".to_string())))));
+    assert!(values.contains(&Value::String(Some("admin".to_string()))));
 }
 
 #[tokio::test]
@@ -112,7 +112,7 @@ async fn record_inserts_a_removal_row_with_no_new_role() {
     .expect("record should insert");
 
     let values = bound_values(&only_statement(db));
-    assert!(values.contains(&Value::String(Some(Box::new("user".to_string())))));
+    assert!(values.contains(&Value::String(Some("user".to_string()))));
     assert!(values.contains(&Value::String(None)));
     // The both-null row is rejected by a database CHECK constraint, which the mock
     // backend cannot enforce. Covered by manual verification instead.
@@ -214,7 +214,7 @@ async fn was_member_is_false_for_a_requester_who_administers_nothing() -> Result
         statements[0].sql
     );
     assert!(
-        bound_values(&statements[0]).contains(&Value::String(Some(Box::new("admin".to_string())))),
+        bound_values(&statements[0]).contains(&Value::String(Some("admin".to_string()))),
         "and must restrict the requester to Admin: {:?}",
         bound_values(&statements[0])
     );

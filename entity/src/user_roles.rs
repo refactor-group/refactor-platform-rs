@@ -6,11 +6,12 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = domain::user_roles::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "user_roles")]
 pub struct Model {
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     #[serde(skip_deserializing)]
     pub id: Id,
     pub role: Role,
@@ -18,38 +19,26 @@ pub struct Model {
     pub user_id: Uuid,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::organizations::Entity",
-        from = "Column::OrganizationId",
-        to = "super::organizations::Column::Id",
+        belongs_to,
+        relation_enum = "Organizations",
+        from = "organization_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]
-    Organizations,
+    pub organization: BelongsTo<Option<super::organizations::Entity>>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::users::Entity",
-        from = "Column::UserId",
-        to = "super::users::Column::Id",
+        belongs_to,
+        relation_enum = "Users",
+        from = "user_id",
+        to = "id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]
-    Users,
-}
-
-impl Related<super::organizations::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Organizations.def()
-    }
-}
-
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Users.def()
-    }
+    pub user: BelongsTo<super::users::Entity>,
 }
 
 #[async_trait::async_trait]

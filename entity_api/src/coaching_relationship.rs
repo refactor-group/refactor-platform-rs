@@ -90,7 +90,10 @@ pub async fn create(
     .await?;
 
     if let Some(existing) = existing_coaching_relationship {
-        debug!("Reusing existing coaching relationship: {existing:?}");
+        debug!(
+            "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
+            existing.id, existing.coach_id, existing.coachee_id
+        );
         return Ok(with_user_names(existing, &coach, &coachee));
     }
 
@@ -106,6 +109,35 @@ pub async fn create(
         updated_at: Set(now.into()),
         ..Default::default()
     };
+
+    match insert_unless_exists(db, coaching_relationship_active_model).await? {
+        Some(inserted) => Ok(with_user_names(inserted, &coach, &coachee)),
+        None => {
+            let winner = find_for_pair(
+                db,
+                organization_id,
+                coaching_relationship_model.coach_id,
+                coaching_relationship_model.coachee_id,
+            )
+            .await?
+            .ok_or_else(|| Error {
+                source: None,
+                error_kind: EntityApiErrorKind::RecordNotFound,
+            })?;
+            debug!(
+                "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
+                winner.coach_id, winner.coachee_id, winner.id
+            );
+            Ok(with_user_names(winner, &coach, &coachee))
+        }
+    }
+}
+
+/// Inserts `relationship`, returning `None` when its coach, coachee and organization already exist.
+pub async fn insert_unless_exists(
+    db: &impl ConnectionTrait,
+    relationship: ActiveModel,
+) -> Result<Option<Model>, DbErr> {
     // DO NOTHING rather than letting the unique index raise: a constraint violation
     // aborts the caller's transaction, which would poison the membership insert that
     // `attach_to_organization` wraps around this and leave the recovery read unable
@@ -118,31 +150,17 @@ pub async fn create(
     .do_nothing()
     .to_owned();
 
-    match Entity::insert(coaching_relationship_active_model)
+    match Entity::insert(relationship)
         .on_conflict(conflict)
         .exec_with_returning(db)
         .await
     {
-        Ok(inserted) => Ok(with_user_names(inserted, &coach, &coachee)),
+        Ok(inserted) => Ok(Some(inserted)),
         // DO NOTHING wrote no row, so RETURNING yielded none and SeaORM reports the
         // miss as RecordNotFound. Only a conflict can produce that here, since this
         // statement inserts exactly one row.
-        Err(DbErr::RecordNotFound(_)) => {
-            let winner = find_for_pair(
-                db,
-                organization_id,
-                coaching_relationship_model.coach_id,
-                coaching_relationship_model.coachee_id,
-            )
-            .await?
-            .ok_or_else(|| Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })?;
-            debug!("Lost the create race, reusing the winning relationship: {winner:?}");
-            Ok(with_user_names(winner, &coach, &coachee))
-        }
-        Err(err) => Err(err.into()),
+        Err(DbErr::RecordNotFound(_)) => Ok(None),
+        Err(err) => Err(err),
     }
 }
 
@@ -546,9 +564,6 @@ impl Serialize for CoachingRelationshipWithUserNames {
 }
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;

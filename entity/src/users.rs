@@ -14,12 +14,13 @@ fn default_timezone() -> String {
 }
 
 // TODO: We should find a way to centralize the users/coaches/coachees types
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = domain::users::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "users")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     #[sea_orm(unique)]
     pub email: String,
@@ -55,28 +56,12 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::user_roles::Entity")]
-    UserRoles,
-}
-
-impl Related<super::organizations::Entity> for Entity {
-    fn to() -> RelationDef {
-        super::user_roles::Relation::Organizations.def()
-    }
-
-    fn via() -> Option<RelationDef> {
-        Some(super::user_roles::Relation::Users.def().rev())
-    }
-}
-
-impl Related<super::user_roles::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::UserRoles.def()
-    }
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "UserRoles")]
+    pub user_roles: HasMany<super::user_roles::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, via = "user_roles::Users")]
+    pub organizations: HasMany<super::organizations::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
