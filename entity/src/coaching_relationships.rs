@@ -4,7 +4,7 @@ use crate::roles::Role;
 use crate::users;
 use crate::Id;
 use sea_orm::entity::prelude::*;
-use sea_orm::Condition;
+use sea_orm::{Condition, ExprTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 

@@ -4,8 +4,8 @@
 //! empty result.
 
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, QueryFilter, QuerySelect,
-    QueryTrait,
+    ColumnTrait, DatabaseConnection, EntityTrait, ExprTrait, FromQueryResult, QueryFilter,
+    QuerySelect, QueryTrait,
 };
 
 use crate::error::Error;

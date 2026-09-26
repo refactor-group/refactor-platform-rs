@@ -15,7 +15,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use sea_orm::entity::prelude::{DateTime, DateTimeWithTimeZone};
 use sea_orm::sea_query::{Condition, Expr, IntoCondition, SimpleExpr};
-use sea_orm::{ColumnTrait, DatabaseConnection, Value};
+use sea_orm::{ColumnTrait, DatabaseConnection, ExprTrait, Value};
 use serde::Serialize;
 use utoipa::ToSchema;
 
