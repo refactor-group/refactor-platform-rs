@@ -13,8 +13,8 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*, sea_query::Expr, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
-    DatabaseConnection, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect, QueryTrait,
-    Select, Set, Statement, TryIntoModel, Value,
+    DatabaseConnection, ExprTrait, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect,
+    QueryTrait, Select, Set, Statement, TryIntoModel, Value,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -108,7 +108,7 @@ pub fn normalize_title(title: Option<String>) -> Option<String> {
 pub fn normalize_title_in_update_map(update_map: &mut UpdateMap) {
     if let Some(Value::String(Some(s))) = update_map.get_value("title") {
         let trimmed = s.trim();
-        let value = (!trimmed.is_empty()).then(|| Box::new(trimmed.to_string()));
+        let value = (!trimmed.is_empty()).then(|| trimmed.to_string());
         update_map.insert("title".to_string(), Some(Value::String(value)));
     }
 }
@@ -204,7 +204,7 @@ pub async fn bulk_create_recurring(
         .collect();
 
     Ok(Entity::insert_many(active_models)
-        .exec_with_returning_many(db)
+        .exec_with_returning(db)
         .await?)
 }
 
@@ -415,7 +415,7 @@ pub async fn confirm_reminder_claim(
         )
         .col_expr(
             coaching_session_reminders::Column::UpdatedAt,
-            Expr::current_timestamp().into(),
+            Expr::current_timestamp(),
         )
         .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
         .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
@@ -527,7 +527,7 @@ pub async fn acquire_advisory_lock(
     session_id: Id,
 ) -> Result<(), Error> {
     let key = advisory_lock_key(session_id);
-    txn.execute(Statement::from_sql_and_values(
+    txn.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Postgres,
         "SELECT pg_advisory_xact_lock($1)",
         [key.into()],
@@ -1304,9 +1304,6 @@ mod normalize_tests;
 mod org_scope_tests;
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;

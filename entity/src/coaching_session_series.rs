@@ -3,6 +3,7 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(as = domain::coaching_session_series::Model)]
 #[sea_orm(
@@ -11,7 +12,7 @@ use utoipa::ToSchema;
 )]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub coaching_relationship_id: Id,
     #[sea_orm(column_type = "JsonBinary")]
@@ -26,46 +27,29 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)]
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::coaching_relationships::Entity",
-        from = "Column::CoachingRelationshipId",
-        to = "super::coaching_relationships::Column::Id",
+        belongs_to,
+        relation_enum = "CoachingRelationships",
+        from = "coaching_relationship_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "Cascade"
     )]
-    CoachingRelationships,
+    pub coaching_relationship: BelongsTo<super::coaching_relationships::Entity>,
+    #[serde(skip)]
     #[sea_orm(
-        belongs_to = "super::users::Entity",
-        from = "Column::CreatedByUserId",
-        to = "super::users::Column::Id",
+        belongs_to,
+        relation_enum = "Users",
+        from = "created_by_user_id",
+        to = "id",
         on_update = "NoAction",
         on_delete = "Restrict"
     )]
-    Users,
-    #[sea_orm(has_many = "super::coaching_sessions::Entity")]
-    CoachingSessions,
-}
-
-impl Related<super::coaching_relationships::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingRelationships.def()
-    }
-}
-
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Users.def()
-    }
-}
-
-impl Related<super::coaching_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingSessions.def()
-    }
+    pub created_by_user: BelongsTo<super::users::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "CoachingSessions")]
+    pub coaching_sessions: HasMany<super::coaching_sessions::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

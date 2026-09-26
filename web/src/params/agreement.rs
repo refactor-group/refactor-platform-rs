@@ -9,6 +9,7 @@ use domain::{agreements, Id, IntoQueryFilterMap, QueryFilterMap, QuerySort};
 /// Sortable fields for agreements
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "body")]
+#[schema(as = params::agreement::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "body")]
     Body,
@@ -30,7 +31,7 @@ impl IntoQueryFilterMap for IndexParams {
         let mut query_filter_map = QueryFilterMap::new();
         query_filter_map.insert(
             "coaching_session_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.coaching_session_id)))),
+            Some(Value::Uuid(Some(self.coaching_session_id))),
         );
 
         query_filter_map

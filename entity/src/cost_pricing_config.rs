@@ -7,11 +7,13 @@ use sea_orm::prelude::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
+#[schema(as = entity::cost_pricing_config::Model)]
 #[sea_orm(schema_name = "refactor_platform", table_name = "cost_pricing_config")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub provider: pipeline_provider::Provider,
     pub metric: cost_metric::Metric,
@@ -55,8 +57,5 @@ impl Model {
         }
     }
 }
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}

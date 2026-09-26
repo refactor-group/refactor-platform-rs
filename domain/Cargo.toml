@@ -33,18 +33,18 @@ serde = {version = "1.0.210", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 urlencoding = "2.1"
-utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
 uuid = { version = "1.0", features = ["v4"] }
 vtimezones-rs = "0.3"
 
 [dependencies.sea-orm]
-version = "1.1.0"                                                       # sea-orm version
+version = "2.0.3"                                                       # sea-orm version
 features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
 
 [dev-dependencies]
 mockito = "1.6"
 # In-memory SQLite: executes the purge's real queries in-process, which the mock cannot.
-sea-orm = { version = "1.1.0", features = ["sqlx-sqlite", "sqlite-use-returning-for-3_35"] }
+sea-orm = { version = "2.0.3", features = ["sqlx-sqlite", "schema-sync"] }
 # `test-util` (not part of `full`) provides the paused clock the job-scheduler tests
 # use to assert tick timing without sleeping in real time.
 tokio = { version = "1.0", features = ["full", "test-util"] }
@@ -54,3 +54,6 @@ mock = ["entity_api/mock"]
 
 
 
+
+[build-dependencies]
+utoipa-config = "0.1"

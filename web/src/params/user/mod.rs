@@ -51,6 +51,7 @@ pub struct CreateMemberParams {
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(as = params::user::UpdateParams)]
 pub struct UpdateParams {
     pub email: Option<String>,
     pub first_name: Option<String>,
@@ -68,40 +69,34 @@ impl IntoUpdateMap for UpdateParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
         if let Some(email) = self.email {
-            update_map.insert(
-                "email".to_string(),
-                Some(Value::String(Some(Box::new(email)))),
-            );
+            update_map.insert("email".to_string(), Some(Value::String(Some(email))));
         }
         if let Some(first_name) = self.first_name {
             update_map.insert(
                 "first_name".to_string(),
-                Some(Value::String(Some(Box::new(first_name)))),
+                Some(Value::String(Some(first_name))),
             );
         }
         if let Some(last_name) = self.last_name {
             update_map.insert(
                 "last_name".to_string(),
-                Some(Value::String(Some(Box::new(last_name)))),
+                Some(Value::String(Some(last_name))),
             );
         }
         if let Some(display_name) = self.display_name {
             update_map.insert(
                 "display_name".to_string(),
-                Some(Value::String(Some(Box::new(display_name)))),
+                Some(Value::String(Some(display_name))),
             );
         }
         if let Some(github_profile_url) = self.github_profile_url {
             update_map.insert(
                 "github_profile_url".to_string(),
-                Some(Value::String(Some(Box::new(github_profile_url)))),
+                Some(Value::String(Some(github_profile_url))),
             );
         }
         if let Some(timezone) = self.timezone {
-            update_map.insert(
-                "timezone".to_string(),
-                Some(Value::String(Some(Box::new(timezone)))),
-            );
+            update_map.insert("timezone".to_string(), Some(Value::String(Some(timezone))));
         }
         if let Some(default_duration) = self.default_coaching_session_duration_minutes {
             update_map.insert(
@@ -125,15 +120,15 @@ impl IntoUpdateMap for UpdatePasswordParams {
         let mut update_map = UpdateMap::new();
         update_map.insert(
             "password".to_string(),
-            Some(Value::String(Some(Box::new(self.new_password)))),
+            Some(Value::String(Some(self.new_password))),
         );
         update_map.insert(
             "confirm_password".to_string(),
-            Some(Value::String(Some(Box::new(self.confirm_password)))),
+            Some(Value::String(Some(self.confirm_password))),
         );
         update_map.insert(
             "current_password".to_string(),
-            Some(Value::String(Some(Box::new(self.current_password)))),
+            Some(Value::String(Some(self.current_password))),
         );
         update_map
     }
@@ -149,17 +144,14 @@ pub(crate) struct CompleteSetupParams {
 impl IntoUpdateMap for CompleteSetupParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
-        update_map.insert(
-            "token".to_string(),
-            Some(Value::String(Some(Box::new(self.token)))),
-        );
+        update_map.insert("token".to_string(), Some(Value::String(Some(self.token))));
         update_map.insert(
             "password".to_string(),
-            Some(Value::String(Some(Box::new(self.password)))),
+            Some(Value::String(Some(self.password))),
         );
         update_map.insert(
             "confirm_password".to_string(),
-            Some(Value::String(Some(Box::new(self.confirm_password)))),
+            Some(Value::String(Some(self.confirm_password))),
         );
         update_map
     }
@@ -180,17 +172,14 @@ pub(crate) struct PasswordResetCompleteParams {
 impl IntoUpdateMap for PasswordResetCompleteParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
-        update_map.insert(
-            "token".to_string(),
-            Some(Value::String(Some(Box::new(self.token)))),
-        );
+        update_map.insert("token".to_string(), Some(Value::String(Some(self.token))));
         update_map.insert(
             "password".to_string(),
-            Some(Value::String(Some(Box::new(self.password)))),
+            Some(Value::String(Some(self.password))),
         );
         update_map.insert(
             "confirm_password".to_string(),
-            Some(Value::String(Some(Box::new(self.confirm_password)))),
+            Some(Value::String(Some(self.confirm_password))),
         );
         update_map
     }

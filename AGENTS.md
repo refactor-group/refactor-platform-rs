@@ -11,7 +11,7 @@ Claude Code additionally reads `.claude/CLAUDE.md`, which layers on Claude-Code-
 - `cargo run -- <flags>` — run the backend directly; see `docs/setup.md` for required env vars/flags (Tiptap collab, Resend email, meeting-recording credentials)
 
 ### Tests
-- The mock-gated suite (SeaORM `MockDatabase`-backed tests) needs its own invocation: `cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"`. **Never** run `cargo test --workspace --features mock`: enabling `sea-orm/mock` workspace-wide drops `DatabaseConnection: Clone`, which breaks the main binary build.
+- The mock-gated suite (SeaORM `MockDatabase`-backed tests) needs its own invocation: `cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"`. The gating is historical (SeaORM 1.1's `mock` feature removed `DatabaseConnection: Clone`; 2.x does not) and its removal is tracked in #426.
 - **SQLite tier**: default to the mock suite. When correctness depends on which rows a query selects or what a write leaves in the table, the mock cannot see it; add a `sqlite_tests` module (in-memory SQLite, runs in plain `cargo test`) after reading `docs/test-plans/sqlite_integration_testing.md`.
 - Single test: `cargo test -p <crate> <test_name>` (add the `--features` flag above if the test lives behind `#[cfg(feature = "mock")]`)
 - `cargo test --release` — the slower path CI runs before production image builds

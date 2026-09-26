@@ -519,7 +519,7 @@ async fn update_role_audits_the_previous_and_the_new_role() -> Result<(), Error>
         (Some("user".to_string()), Some("admin".to_string())),
         "the audit row must record User becoming Admin, in that direction"
     );
-    assert!(values.contains(&Value::Uuid(Some(Box::new(actor.id())))));
+    assert!(values.contains(&Value::Uuid(Some(actor.id()))));
 
     Ok(())
 }

@@ -26,7 +26,7 @@ pub struct StartRecordingParams {
     path = "/coaching_sessions/{coaching_session_id}/meeting_recording",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Recording status retrieved"),
@@ -58,7 +58,7 @@ pub async fn read(
     path = "/coaching_sessions/{coaching_session_id}/meeting_recording",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     request_body = StartRecordingParams,
     responses(
@@ -124,7 +124,7 @@ pub async fn create(
     path = "/coaching_sessions/{coaching_session_id}/meeting_recording",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Recording bot stopped"),

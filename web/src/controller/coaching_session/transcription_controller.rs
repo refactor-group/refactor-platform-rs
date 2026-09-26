@@ -42,7 +42,7 @@ enum Representation {
     path = "/coaching_sessions/{coaching_session_id}/transcriptions",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Transcription metadata retrieved"),
@@ -78,14 +78,14 @@ pub async fn read_latest(
     path = "/coaching_sessions/{coaching_session_id}/transcriptions/{transcription_id}",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("transcription_id" = Id, Path, description = "Transcription id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("transcription_id" = Uuid, Path, description = "Transcription id"),
         ("speaker" = Option<Vec<SpeakerRole>>, Query, explode, description = "Limit the plain-text transcript to these participants. Repeat the parameter for both. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
     ),
     responses(
         (status = 200, description = "JSON metadata with resolved speakers, or the plain-text transcript file when `Accept: text/plain`", content(
-            ("application/json" = domain::transcription::WithSpeakers),
-            ("text/plain" = String, example = json!("Coaching session transcript\nDate: 2026-09-21\nSpeakers: Jim Hodapp, Caleb Bourg\n\n[0:00] Jim Hodapp: Good morning.\n"))
+            (domain::transcription::WithSpeakers = "application/json"),
+            (String = "text/plain", example = json!("Coaching session transcript\nDate: 2026-09-21\nSpeakers: Jim Hodapp, Caleb Bourg\n\n[0:00] Jim Hodapp: Good morning.\n"))
         )),
         (status = 400, description = "`invalid_speaker`: speaker is not `coach` or `coachee`"),
         (status = 401, description = "Unauthorized"),

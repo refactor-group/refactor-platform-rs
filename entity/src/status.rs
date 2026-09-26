@@ -40,19 +40,6 @@ impl Status {
     }
 }
 
-impl From<&str> for Status {
-    fn from(value: &str) -> Self {
-        match value {
-            "not_started" => Self::NotStarted,
-            "in_progress" => Self::InProgress,
-            "completed" => Self::Completed,
-            "on_hold" => Self::OnHold,
-            "wont_do" => Self::WontDo,
-            _ => Self::InProgress,
-        }
-    }
-}
-
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

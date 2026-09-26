@@ -33,7 +33,7 @@ pub async fn lock_email_hash(txn: &impl ConnectionTrait, email_hash: &str) -> Re
         "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
         [email_hash.into()],
     );
-    txn.execute(stmt).await?;
+    txn.execute_raw(stmt).await?;
     Ok(())
 }
 

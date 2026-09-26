@@ -32,3 +32,6 @@ nginx/logs/
 # Agent working docs (per-phase handoffs, scratch plans) are not version-controlled.
 .agents/
 docs/implementation-plans/handoffs/
+
+# Lavish Editor review artifacts
+.lavish/

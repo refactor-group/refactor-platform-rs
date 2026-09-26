@@ -24,6 +24,7 @@ pub(crate) enum Scope {
 /// Filter for actions by assignee status.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 #[schema(example = "all")]
+#[schema(as = params::user::action::AssigneeFilter)]
 pub(crate) enum AssigneeFilter {
     /// Return all actions regardless of assignee status (default)
     #[serde(rename = "all")]
@@ -42,6 +43,7 @@ pub(crate) enum AssigneeFilter {
 /// Maps query parameter values (e.g., `?sort_by=due_by`) to database columns.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[schema(example = "due_by")]
+#[schema(as = params::user::action::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "due_by")]
     DueBy,

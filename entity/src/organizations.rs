@@ -5,12 +5,13 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = entity::organizations::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "organizations")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     #[sea_orm(unique)]
     pub name: String,
@@ -29,61 +30,21 @@ pub struct Model {
     pub archived_at: Option<DateTimeWithTimeZone>,
     #[serde(skip_deserializing)]
     pub archived_by: Option<Id>,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::coaching_relationships::Entity")]
-    CoachingRelationships,
-
-    #[sea_orm(has_many = "super::user_roles::Entity")]
-    UserRoles,
-}
-
-impl Related<super::coaching_relationships::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::CoachingRelationships.def()
-    }
-}
-
-impl Related<super::coaches::Entity> for Entity {
-    fn to() -> RelationDef {
-        super::coaching_relationships::Relation::Coaches.def()
-    }
-
-    fn via() -> Option<RelationDef> {
-        Some(
-            super::coaching_relationships::Relation::Organizations
-                .def()
-                .rev(),
-        )
-    }
-}
-
-impl Related<super::coachees::Entity> for Entity {
-    fn to() -> RelationDef {
-        super::coaching_relationships::Relation::Coachees.def()
-    }
-
-    fn via() -> Option<RelationDef> {
-        Some(
-            super::coaching_relationships::Relation::Organizations
-                .def()
-                .rev(),
-        )
-    }
-}
-
-// Through relationship for users by way of user_roles
-// organizations -> user_roles -> users
-impl Related<super::users::Entity> for Entity {
-    fn to() -> RelationDef {
-        super::user_roles::Relation::Users.def()
-    }
-
-    fn via() -> Option<RelationDef> {
-        Some(super::user_roles::Relation::Organizations.def().rev())
-    }
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "CoachingRelationships")]
+    pub coaching_relationships: HasMany<super::coaching_relationships::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "UserRoles")]
+    pub user_roles: HasMany<super::user_roles::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, via = "coaching_relationships::Organizations")]
+    pub coaches: HasMany<super::coaches::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, via = "coaching_relationships::Organizations")]
+    pub coachees: HasMany<super::coachees::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, via = "user_roles::Organizations")]
+    pub users: HasMany<super::users::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

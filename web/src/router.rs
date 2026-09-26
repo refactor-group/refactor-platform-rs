@@ -32,7 +32,11 @@ use utoipa_rapidoc::RapiDoc;
 #[derive(OpenApi)]
 #[openapi(
         info(
-            title = "Refactor Platform API"
+            title = "Refactor Platform API",
+            license(
+                name = "GNU General Public License v3.0",
+                url = "https://www.gnu.org/licenses/gpl-3.0.en.html"
+            )
         ),
         paths(
             action_controller::create,
@@ -212,11 +216,11 @@ use utoipa_rapidoc::RapiDoc;
     )]
 pub(crate) struct ApiDoc;
 
-struct SecurityAddon;
-
 #[cfg(test)]
 #[path = "router_tests.rs"]
 mod tests;
+
+struct SecurityAddon;
 
 // Defines our cookie session based authentication requirement for gaining access to our
 // API endpoints for OpenAPI.

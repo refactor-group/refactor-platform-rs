@@ -333,16 +333,24 @@ pub async fn link_in_progress_goals_to_session(
         })
         .collect();
 
+    let inserted = insert_links_skipping_existing(db, rows).await?;
+
+    Ok(inserted.into_iter().map(|link| link.goal_id).collect())
+}
+
+/// Bulk-inserts `rows`, skipping any session-goal pair already linked; returns only the rows written.
+pub async fn insert_links_skipping_existing(
+    db: &impl ConnectionTrait,
+    rows: Vec<ActiveModel>,
+) -> Result<Vec<Model>, DbErr> {
     let on_conflict = OnConflict::columns([Column::CoachingSessionId, Column::GoalId])
         .do_nothing()
         .to_owned();
 
-    let inserted = Entity::insert_many(rows)
+    Entity::insert_many(rows)
         .on_conflict(on_conflict)
-        .exec_with_returning_many(db)
-        .await?;
-
-    Ok(inserted.into_iter().map(|link| link.goal_id).collect())
+        .exec_with_returning(db)
+        .await
 }
 
 /// Finds all goal models for multiple coaching sessions at once, grouped by session ID.

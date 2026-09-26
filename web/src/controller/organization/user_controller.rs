@@ -21,7 +21,7 @@ use log::*;
     path = "/organizations/{organization_id}/users",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization to retrieve users for")
+        ("organization_id" = Uuid, Path, description = "The ID of the organization to retrieve users for")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Users", body = [domain::users::Model]),
@@ -55,7 +55,7 @@ pub async fn index(
     path = "/organizations/{organization_id}/users",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization"),
+        ("organization_id" = Uuid, Path, description = "The ID of the organization"),
     ),
     request_body = CreateMemberParams,
     responses(
@@ -117,8 +117,8 @@ pub(crate) async fn create(
     path = "/organizations/{organization_id}/users/{user_id}/resend-invite",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization"),
-        ("user_id" = Id, Path, description = "The ID of the user to resend the invite to"),
+        ("organization_id" = Uuid, Path, description = "The ID of the organization"),
+        ("user_id" = Uuid, Path, description = "The ID of the user to resend the invite to"),
     ),
     responses(
         (status = 200, description = "Invite resent successfully", body = domain::users::Model),
@@ -164,8 +164,8 @@ pub(crate) async fn resend_invite(
     path = "/organizations/{organization_id}/users/{user_id}",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "The ID of the organization"),
-        ("user_id" = Id, Path, description = "The ID of the user to delete")
+        ("organization_id" = Uuid, Path, description = "The ID of the organization"),
+        ("user_id" = Uuid, Path, description = "The ID of the user to delete")
     ),
     responses(
         (status = 200, description = "User deleted successfully"),

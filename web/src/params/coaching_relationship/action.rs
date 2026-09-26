@@ -9,6 +9,7 @@ use domain::{action, actions, status::Status, Id, QuerySort};
 /// Filter for actions by assignee status.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 #[schema(example = "all")]
+#[schema(as = params::coaching_relationship::action::AssigneeFilter)]
 pub(crate) enum AssigneeFilter {
     /// Return all actions regardless of assignee status (default)
     #[serde(rename = "all")]
@@ -28,7 +29,7 @@ pub(crate) enum AssigneeFilter {
 /// Deserialized from the `assignee` query parameter:
 /// - `"coach"` / `"coachee"` (case-insensitive) → role-based filter
 /// - A valid UUID string → specific user filter
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ToSchema)]
 pub(crate) enum AssigneeScope {
     Coach,
     Coachee,
@@ -64,6 +65,7 @@ impl From<AssigneeScope> for action::AssigneeScope {
 /// Sortable fields for coaching relationship actions endpoints.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[schema(example = "due_by")]
+#[schema(as = params::coaching_relationship::action::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "due_by")]
     DueBy,

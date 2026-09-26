@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies.sea-orm]
-version = "1.1.0" # sea-orm version
+version = "2.0.3" # sea-orm version
 features = [
     "debug-print",
     "runtime-tokio-native-tls",
@@ -21,11 +21,13 @@ log = "0.4.22"
 simplelog = { version = "0.12.2", features = ["paris"] }
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
-sqlx = { version = "0.8.2", features = ["time", "runtime-tokio"] }
 tokio = { version = "1.44", features = ["full"] }
 tower = "0.5.1"
-utoipa = { version = "4.2.0", features = ["axum_extras", "uuid"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
 semver = { version = "1.0.23", features = ["serde"] }
 
 [dev-dependencies]
 serial_test = "3"
+
+[build-dependencies]
+utoipa-config = "0.1"

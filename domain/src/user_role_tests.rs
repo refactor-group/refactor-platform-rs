@@ -287,8 +287,8 @@ async fn attach_to_organization_audits_the_grant_inside_the_transaction() -> Res
         .expect("the grant must commit");
     assert!(index < commit, "the audit row must precede the commit");
 
-    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
-    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(user_id)))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(actor_user_id))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(user_id))));
     // A first grant leaves previous_role null. Asserted per column: as a set, this
     // is indistinguishable from a removal of Admin.
     assert_eq!(
@@ -1216,8 +1216,8 @@ async fn update_role_in_organization_audits_the_transition_inside_the_transactio
         "the audit row must follow the update and precede the commit"
     );
 
-    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(actor_user_id)))));
-    assert!(values.contains(&sea_orm::Value::Uuid(Some(Box::new(user_id)))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(actor_user_id))));
+    assert!(values.contains(&sea_orm::Value::Uuid(Some(user_id))));
     // Read per column, not as a set: a transposition leaves both roles present and
     // would record this promotion as a demotion.
     assert_eq!(

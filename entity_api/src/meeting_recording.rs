@@ -562,7 +562,7 @@ mod tests {
             Some(stmt) => {
                 let idx = bind_index_for_column(&stmt.sql, "ended_at");
                 match &stmt.values.as_ref().unwrap().0[idx] {
-                    Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
+                    Value::ChronoDateTimeWithTimeZone(opt) => *opt,
                     other => panic!("bind for ended_at not a timestamp: {other:?}"),
                 }
             }
@@ -611,7 +611,7 @@ mod tests {
             .expect("no UPDATE in log");
         let idx = bind_index_for_column(&stmt.sql, "ended_at");
         let bound = match &stmt.values.as_ref().unwrap().0[idx] {
-            Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
+            Value::ChronoDateTimeWithTimeZone(opt) => *opt,
             other => panic!("bind for ended_at not a timestamp: {other:?}"),
         };
         assert_eq!(

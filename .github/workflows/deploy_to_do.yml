@@ -116,6 +116,7 @@ jobs:
           # ceiling (22 on the 1 GB DO tier) to leave headroom for migrator,
           # doadmin, and platform agents. Clap defaults in service/src/config.rs
           # apply if any of these are left unset in the GitHub environment.
+          # DB_MAX_CONNECTIONS is the app's total, split between the main pool and the session store pool.
           DB_MAX_CONNECTIONS=${{ vars.DB_MAX_CONNECTIONS }}
           DB_MIN_CONNECTIONS=${{ vars.DB_MIN_CONNECTIONS }}
           DB_CONNECT_TIMEOUT_SECS=${{ vars.DB_CONNECT_TIMEOUT_SECS }}

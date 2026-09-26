@@ -85,7 +85,7 @@ impl UpdateMap {
                 error_kind: EntityApiErrorKind::Other("Key not found".to_string()),
             })
             .and_then(|v| match v {
-                Some(Value::String(Some(boxed_str))) => Ok((*boxed_str).clone()),
+                Some(Value::String(Some(s))) => Ok(s),
                 _ => Err(Error {
                     source: None,
                     error_kind: EntityApiErrorKind::Other("Value is not a string".to_string()),
@@ -104,7 +104,7 @@ impl UpdateMap {
                 error_kind: EntityApiErrorKind::Other("Key not found".to_string()),
             })
             .and_then(|v| match v {
-                Value::String(Some(boxed_str)) => Ok(&**boxed_str),
+                Value::String(Some(s)) => Ok(s),
                 _ => Err(Error {
                     source: None,
                     error_kind: EntityApiErrorKind::Other("Value is not a string".to_string()),

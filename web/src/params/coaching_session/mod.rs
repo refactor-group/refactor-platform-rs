@@ -15,6 +15,7 @@ use domain::{
 /// Sortable fields for coaching sessions
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "date")]
+#[schema(as = params::coaching_session::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "date")]
     Date,
@@ -38,21 +39,22 @@ impl IntoQueryFilterMap for IndexParams {
         let mut query_filter_map = QueryFilterMap::new();
         query_filter_map.insert(
             "coaching_relationship_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.coaching_relationship_id)))),
+            Some(Value::Uuid(Some(self.coaching_relationship_id))),
         );
         query_filter_map.insert(
             "from_date".to_string(),
-            Some(Value::ChronoDate(Some(Box::new(self.from_date)))),
+            Some(Value::ChronoDate(Some(self.from_date))),
         );
         query_filter_map.insert(
             "to_date".to_string(),
-            Some(Value::ChronoDate(Some(Box::new(self.to_date)))),
+            Some(Value::ChronoDate(Some(self.to_date))),
         );
         query_filter_map
     }
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(as = params::coaching_session::UpdateParams)]
 pub(crate) struct UpdateParams {
     pub(crate) date: NaiveDateTime,
     /// Session duration in minutes (1..=480). Validated in entity_api via
@@ -81,10 +83,7 @@ where
 /// null clears it to NULL, an absent field leaves the column untouched.
 fn insert_title_update(update_map: &mut UpdateMap, title: Option<Option<String>>) {
     if let Some(title) = title {
-        update_map.insert(
-            "title".to_string(),
-            Some(Value::String(title.map(Box::new))),
-        );
+        update_map.insert("title".to_string(), Some(Value::String(title)));
     }
 }
 
@@ -93,7 +92,7 @@ impl IntoUpdateMap for UpdateParams {
         let mut update_map = UpdateMap::new();
         update_map.insert(
             "date".to_string(),
-            Some(Value::ChronoDateTime(Some(Box::new(self.date)))),
+            Some(Value::ChronoDateTime(Some(self.date))),
         );
         if let Some(duration_minutes) = self.duration_minutes {
             update_map.insert(
@@ -104,13 +103,13 @@ impl IntoUpdateMap for UpdateParams {
         if let Some(meeting_url) = self.meeting_url {
             update_map.insert(
                 "meeting_url".to_string(),
-                Some(Value::String(Some(Box::new(meeting_url)))),
+                Some(Value::String(Some(meeting_url))),
             );
         }
         if let Some(provider) = self.provider {
             update_map.insert(
                 "provider".to_string(),
-                Some(Value::String(Some(Box::new(provider.to_value())))),
+                Some(Value::String(Some(provider.to_value()))),
             );
         }
         insert_title_update(&mut update_map, self.title);
@@ -141,6 +140,7 @@ impl IntoUpdateMap for TitleUpdateParams {
 /// triggers the BE defaulting cascade — see
 /// `entity_api::coaching_session::resolve_duration`).
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = params::coaching_session::CreateParams)]
 pub(crate) struct CreateParams {
     pub(crate) coaching_relationship_id: Id,
     pub(crate) date: NaiveDateTime,

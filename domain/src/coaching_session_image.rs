@@ -347,6 +347,10 @@ pub async fn destroy_objects(config: &Config, storage_keys: &[String]) {
 mod sqlite_tests;
 
 #[cfg(test)]
+#[path = "coaching_session_image_cascade_sqlite_tests.rs"]
+mod cascade_sqlite_tests;
+
+#[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
     use std::io::Cursor;

@@ -91,7 +91,7 @@ async fn upsert_document(db: &DatabaseConnection, name: &str, state: Vec<u8>) ->
          ON CONFLICT (name) DO UPDATE SET state = EXCLUDED.state, updated_at = now()",
         [name.into(), state.into()],
     );
-    db.execute(stmt)
+    db.execute_raw(stmt)
         .await
         .map_err(entity_api::error::Error::from)?;
     Ok(())
