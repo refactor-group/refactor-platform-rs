@@ -16,7 +16,7 @@ use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
     coaching_session_series_controller, goal_controller, jwt_controller, magic_link_controller,
     note_controller, oauth_controller, organization, organization_controller,
-    password_reset_controller, tiptap_metrics_controller, user, user_controller,
+    password_reset_controller, search_controller, tiptap_metrics_controller, user, user_controller,
     user_session_controller, webhook_controller,
 };
 use crate::sse;
@@ -140,6 +140,7 @@ use utoipa_rapidoc::RapiDoc;
             user::coaching_session_controller::index,
             user::coaching_session_controller::counts,
             user::goal_controller::index,
+            search_controller::index,
             jwt_controller::generate_collab_token,
             tiptap_metrics_controller::platform_totals,
             tiptap_metrics_controller::per_org_metrics,
@@ -167,6 +168,8 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::coaching_session_series::CreateParams,
                 crate::params::coaching_session_series::RescheduleParams,
                 crate::params::goal::SortField,
+                crate::params::search::Mode,
+                crate::params::search::GoalFilterParam,
                 crate::params::sort::SortOrder,
                 crate::params::user::AttachRoleParams,
                 crate::params::user::UpdateRoleParams,
@@ -194,11 +197,21 @@ use utoipa_rapidoc::RapiDoc;
                 domain::notes::Model,
                 domain::organizations::Model,
                 domain::meeting_provider::Provider,
+                domain::search::Results,
+                domain::search::Hit,
+                domain::search::Core,
+                domain::search::SessionHit,
+                domain::search::GoalHit,
+                domain::search::ActionHit,
+                domain::search::AgreementHit,
+                domain::search::TopicHit,
                 domain::status::Status,
                 domain::transcript_export::Speaker,
                 domain::transcript_export::SpeakerRole,
                 domain::transcription::Model,
                 domain::transcription::WithSpeakers,
+                domain::topic_status::Status,
+                domain::topic_priority::Priority,
                 domain::user::Credentials,
                 domain::user_role::UserLookupResult,
                 domain::user_roles::Model,
@@ -272,6 +285,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
         .merge(coaching_session_series_routes(app_state.clone()))
+        .merge(search_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         .merge(tiptap_metrics_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
@@ -709,6 +723,16 @@ fn password_reset_routes(app_state: AppState) -> Router {
             post(password_reset_controller::complete),
         )
         .layer(PerIpThrottle::new(ThrottlePolicy::AUTH_ENDPOINT).into_layer())
+        .with_state(app_state)
+}
+
+fn search_routes(app_state: AppState) -> Router {
+    // Per-IP throttle sized for search-as-you-type; see
+    // `ThrottlePolicy::SEARCH_ENDPOINT` and `docs/architecture/throttling.md`.
+    Router::new()
+        .route("/search", get(search_controller::index))
+        .route_layer(from_fn(require_auth))
+        .layer(PerIpThrottle::new(ThrottlePolicy::SEARCH_ENDPOINT).into_layer())
         .with_state(app_state)
 }
 

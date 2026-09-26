@@ -4,6 +4,7 @@ use crate::roles::Role;
 use crate::users;
 use crate::Id;
 use sea_orm::entity::prelude::*;
+use sea_orm::{Condition, ExprTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -91,6 +92,45 @@ impl Model {
                     || (role.role == Role::SuperAdmin && role.organization_id.is_none())
             })
     }
+}
+
+/// A caller's visibility scope, derived once per request from their preloaded
+/// roles (see `domain::search::scope_for`). Input to [`visible_to`], the
+/// corpus-wide query form of [`Model::grants_access_to`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    pub user_id: Id,
+    /// SuperAdmin role with `organization_id` NULL — sees everything.
+    pub is_super_admin: bool,
+    /// Organizations where the caller holds the `Admin` role.
+    pub admin_org_ids: Vec<Id>,
+    /// Every organization the caller holds any role in.
+    pub member_org_ids: Vec<Id>,
+}
+
+/// The query form of [`Model::grants_access_to`]: a `Condition` selecting every
+/// coaching relationship the caller may access, evaluated corpus-wide.
+///
+/// Tier 1 mirrors `grants_access_to` exactly — participant (coach or coachee)
+/// AND current member of the relationship's organization. Tier 2 adds every
+/// relationship in orgs where the caller is an Admin. Super admins skip this
+/// condition entirely (callers must not apply it when `scope.is_super_admin`).
+///
+/// Kept beside `grants_access_to` deliberately: these are the two expressions
+/// of one rule, and a DB-backed equivalence test pins them together. Change one,
+/// mirror the other.
+pub fn visible_to(scope: &Scope) -> Condition {
+    Condition::any()
+        .add(
+            Condition::all()
+                .add(
+                    Column::CoachId
+                        .eq(scope.user_id)
+                        .or(Column::CoacheeId.eq(scope.user_id)),
+                )
+                .add(Column::OrganizationId.is_in(scope.member_org_ids.iter().copied())),
+        )
+        .add(Column::OrganizationId.is_in(scope.admin_org_ids.iter().copied()))
 }
 
 impl ActiveModelBehavior for ActiveModel {}

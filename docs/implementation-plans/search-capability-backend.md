@@ -339,7 +339,7 @@ Nine unit structs implement the trait; the domain fans out over the full set and
 
 ## Migrations
 
-Phase 1 — `migration/src/m20260825_000000_add_search_fts_indexes.rs`, via `execute_unprepared`:
+Phase 1 — `migration/src/m20260922_000000_add_search_fts_indexes.rs`, via `execute_unprepared`:
 
 ```sql
 CREATE INDEX idx_coaching_sessions_title_fts ON refactor_platform.coaching_sessions

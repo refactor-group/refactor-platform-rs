@@ -36,6 +36,14 @@ pub enum WebErrorKind {
     /// Caller supplied a `speaker` query value outside the `coach` | `coachee` enum.
     /// Payload carries the raw query string for debuggability.
     InvalidSpeaker(String),
+    /// Boundary-validation 400 with a stable discriminator the FE can branch
+    /// on — the generalization of what `InvalidTimezone` hard-codes. `error`
+    /// is the machine-readable discriminator (e.g. `query_too_short`),
+    /// `message` the human-readable detail.
+    InvalidParam {
+        error: &'static str,
+        message: String,
+    },
     Conflict,
     /// Caller is authenticated but not permitted to act on this resource.
     Forbidden,
@@ -395,6 +403,17 @@ impl Error {
                     "status_code": 400,
                     "error": "invalid_speaker",
                     "message": format!("'{value}' is not a valid speaker. Expected one of: coach, coachee."),
+                });
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
+            WebErrorKind::InvalidParam { error, message } => {
+                warn!(
+                    "WebErrorKind::InvalidParam: Responding with 400 Bad Request. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 400,
+                    "error": error,
+                    "message": message,
                 });
                 (StatusCode::BAD_REQUEST, Json(body)).into_response()
             }
