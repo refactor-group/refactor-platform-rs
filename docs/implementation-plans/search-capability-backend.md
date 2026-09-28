@@ -21,7 +21,7 @@ This plan defines the search API contract, the authorization model, and a phased
 
 | Type | Text searched | Who can search it |
 |---|---|---|
-| Coaching sessions | `title` | Participants; org admins (their orgs); super admins |
+| Coaching sessions | `title` | Participants; super admins |
 | Notes | projected plain text, from PR 5 (see [Notes](#notes-tiptap-content)) | Same |
 | Transcripts | `transcript_segments.text` | Same |
 | Goals | `title`, `body` | Same |
@@ -31,10 +31,10 @@ This plan defines the search API contract, the authorization model, and a phased
 | Members (users) | name fields, email | Org admins (their orgs) and super admins only |
 | Organizations | `name`, `slug` (active only) | Super admins only |
 
-**Visibility tiers** — search must never return anything the caller cannot already see:
+**Visibility tiers** — search must never return anything the caller cannot already **open**:
 
 1. **Regular user**: only entities reachable through coaching relationships they participate in *and* whose organization they are currently a member of — the exact rule in `coaching_relationships::Model::grants_access_to` (`entity/src/coaching_relationships.rs`). A user removed from an org loses access to history they took part in.
-2. **Organization admin**: tier 1 plus every relationship in the org(s) where they hold the `Admin` role.
+2. **Organization admin**: tier 1 only. The `Admin` role adds **no** relationship visibility: direct access (`grants_access_to`) requires participation, so an admin tier would surface hits the caller gets a 403 opening. Search mirrors direct access and fails closed (decided; the alternative — widening `grants_access_to` to org admins — is a product-level authorization expansion that can be revisited separately). Admins keep the members search below, which matches their real direct access.
 3. **Super admin** (global role, `organization_id IS NULL`): everything.
 
 **Filters**: `created_at`/`updated_at` date ranges (timezone-aware), by user, by organization, by coaching session, by status, by entity type, and by goal linkage for actions (linked to a particular goal, linked to any goal, or linked to none).
@@ -243,19 +243,17 @@ pub struct Scope {
 }
 ```
 
-Relationship-anchored searchers all scope on the same set — the relationships visible to the caller — and that set is constant for the whole request and small: a handful of ids for a regular user, an org's worth for an org admin (bounded either way; Postgres hashes large `= ANY` arrays). So the domain resolves it **once per request** instead of embedding the scoping join in every searcher's SQL. One query, rendered from `coaching_relationships::visible_to(scope)` - the query-form twin of `grants_access_to` (participation **and** current org membership) plus the admin tier:
+Relationship-anchored searchers all scope on the same set — the relationships visible to the caller — and that set is constant for the whole request and small: a handful of ids per user (bounded; Postgres hashes large `= ANY` arrays). So the domain resolves it **once per request** instead of embedding the scoping join in every searcher's SQL. One query, rendered from `coaching_relationships::visible_to(scope)` - the query-form twin of `grants_access_to` (participation **and** current org membership):
 
 ```sql
 -- executed once per request, in domain::search, before searcher fan-out
 SELECT cr.id
 FROM refactor_platform.coaching_relationships cr
 WHERE
-  -- tier 1: participant AND currently a member of the relationship's org
-  ((cr.coach_id = $user_id OR cr.coachee_id = $user_id)
-     AND cr.organization_id = ANY($member_org_ids))
-  -- tier 2: org admin sees every relationship in their org(s)
-  OR cr.organization_id = ANY($admin_org_ids)
-  -- tier 3 (super admin): the query is skipped entirely — no filter
+  -- participant AND currently a member of the relationship's org
+  (cr.coach_id = $user_id OR cr.coachee_id = $user_id)
+  AND cr.organization_id = ANY($member_org_ids)
+  -- super admin: the query is skipped entirely — no filter
 ```
 
 The result is `visible_relationship_ids: Option<Vec<Id>>` (`None` = super admin, unrestricted), handed to every searcher as an array bind, so each searcher's scope predicate is an indexed membership test rather than a join through `coaching_relationships`. Roles are preloaded on `AuthenticatedUser` but relationships are not, so resolving the set costs one cheap indexed query per request — one instead of seven.
@@ -339,7 +337,7 @@ Nine unit structs implement the trait; the domain fans out over the full set and
 
 ## Migrations
 
-Phase 1 — `migration/src/m20260825_000000_add_search_fts_indexes.rs`, via `execute_unprepared`:
+Phase 1 — `migration/src/m20260922_000000_add_search_fts_indexes.rs`, via `execute_unprepared`:
 
 ```sql
 CREATE INDEX idx_coaching_sessions_title_fts ON refactor_platform.coaching_sessions
@@ -426,7 +424,7 @@ Both are committed phases, not options.
 ## Testing strategy
 
 - **entity (scoping)**: the `grants_access_to` ⇄ `visible_to` equivalence test described in [Duplication and drift](#duplication-and-drift) — the guard against the two expressions of the participant rule drifting apart.
-- **entity_api (per searcher)**: DB-backed integration tests — FTS semantics (stemming, quoted phrases, negation), scope isolation (participant cannot see other relationships; removed-from-org user sees nothing; org admin sees the whole org and nothing outside it; super admin sees all), soft-delete/archive exclusion, timezone edge cases (reuse the `SessionQueryOptions` test style).
+- **entity_api (per searcher)**: DB-backed integration tests — FTS semantics (stemming, quoted phrases, negation), scope isolation (participant cannot see other relationships; removed-from-org user sees nothing; org admin sees only relationships they participate in; super admin sees all), soft-delete/archive exclusion, timezone edge cases (reuse the `SessionQueryOptions` test style).
 - **domain**: unit tests for `Scope` derivation from role fixtures, merge/rank/clamp/cursor determinism with fixed rank inputs (including equal-score groups split across a page boundary — exactly-once delivery in both directions of the tie-breakers), and the title fallback chain — including a session with no title, no topics, and no goals yielding exactly `Coaching session — YYYY-MM-DD`.
 - **web**: controller tests pinning the `ApiResponse` envelope, the structured error shapes (`invalid_timezone`, 400s), the silent type-drop behavior (regular user requesting `types=users,organizations` gets 200 with those types absent), and clamping.
 - **testing-tools**: a "searchable corpus" scenario builder in `scenarios.rs` (org + relationship + session + goal/action/agreement/topic/note/transcript segments seeded with known phrases), reused across PRs 1–5.

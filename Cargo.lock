@@ -1253,6 +1253,7 @@ dependencies = [
  "entity",
  "entity_api",
  "events",
+ "futures",
  "hex",
  "icalendar",
  "imagesize",
@@ -1346,6 +1347,7 @@ version = "1.0.0-beta4"
 dependencies = [
  "async-trait",
  "axum-login",
+ "base64",
  "chrono",
  "entity",
  "log",
