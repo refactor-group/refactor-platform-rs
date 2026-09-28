@@ -38,7 +38,7 @@ even if the full record is never returned.
 | *Casey* | coach in **Acme**, relationship **R1** with Robin | the regular-user searcher |
 | *Robin* | coachee in R1; also a plain member of **Globex** | multi-org regular user; later the removal subject |
 | *Jordan* + *Morgan* | coach/coachee of relationship **R2** in Acme (no overlap with Casey) | the leak target inside the same org |
-| *Alex* | **Admin** of Acme only; participates in no relationship | the org-admin tier |
+| *Alex* | **Admin** of Acme only; participates in no relationship | proves the `Admin` role grants **no** relationship visibility |
 | *Sam* | global **SuperAdmin** | the unrestricted tier |
 | *Pat* | coach of relationship **G1** in Globex | the cross-org leak target |
 
@@ -240,7 +240,7 @@ Logged in as Casey. `GET /search?q=kumquat`.
 | Every hit | has `type`, `id`, `score`, `title` (never empty), `created_at`, `organization_id` |
 | Hit ordering | non-increasing `score` |
 | Snippets | plain text with literal `<mark>…</mark>` markers around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
-| Session-anchored hits | carry `coaching_session_id`, `coaching_relationship_id`, `session_display_title` (non-empty even where the session's `title` column is NULL) |
+| Session-anchored hits | carry `coaching_session_id` and `coaching_relationship_id`; action and agreement hits also carry `session_display_title` (non-empty even where the session's `title` column is NULL); topic hits do not |
 | The bare session's action hit | `session_display_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
 
 ## 3. Scenario B: keyword semantics (feature requirements)
@@ -280,7 +280,7 @@ plus one `kumquat` action **linked to the R1 goal** and one **unlinked**
 | `tz=Not/AZone` | 400 with `"error": "invalid_timezone"` |
 | `user_id=<Robin>` | only R1 content Robin authored (notes/goals/actions/agreements/topics) or participates in (sessions/transcripts) |
 | `coaching_relationship_id=<R1>` | identical to the unfiltered search — Casey's scope is exactly R1, so this only proves the filter doesn't drop in-scope content; the discriminating narrowing check runs as Alex in F, and the foreign-id probe as Casey in D |
-| `coaching_session_id=<R1 session>` | only content of that session plus the session itself |
+| `coaching_session_id=<R1 session>` | session-anchored types narrowed to that session's content, plus the session itself; goal hits are unaffected (goals are relationship-anchored — the filter is ignored for them, like `goal_id` for non-linkable types) |
 | `organization_id=<Acme>` | unchanged (Casey's scope is already Acme-only) |
 | `q=kumquat&types=actions&goal_id=<R1 goal>` | only the linked action; the unlinked one absent; each hit's `goal_id` equals the filter |
 | `q=kumquat&types=actions&goal_filter=unlinked` | only the unlinked action (`goal_id` null on every hit) |
@@ -323,17 +323,22 @@ participant only in R1).
 | Deleted topic | Casey: `q=kumquat&types=topics` | only the **live** topic; the soft-deleted one absent |
 | Archived org (PR 3+) | Sam: `q=Initech&types=organizations` | zero hits (`archived_at IS NULL` filter) |
 
-## 7. Scenario F: org-admin tier
+## 7. Scenario F: org admins get no relationship visibility
 
-Logged in as **Alex** (Acme admin, participant in nothing).
+Logged in as **Alex** (Acme admin, participant in nothing). Search mirrors
+direct access (`grants_access_to`): the `Admin` role grants no relationship
+visibility, so search never surfaces a session Alex would get a 403 opening.
 
 | Probe | Expected |
 |---|---|
-| `q=kumquat` | full R1 hit set — admin sees relationships they're not part of |
-| `q=tamarind` | full R2 hit set |
-| `q=kumquat&coaching_relationship_id=<R1>` | full R1 hit set; `q=tamarind&coaching_relationship_id=<R1>` → zero hits — Alex sees both R1 and R2, so this is the discriminating narrowing check for the relationship filter (Scenario C's version is degenerate) |
-| `q=yuzu` | **zero hits** — Alex administers Acme, not Globex |
+| `q=kumquat` | **zero hits** — admin of the org, but not a participant of R1 |
+| `q=tamarind` | **zero hits** — same for R2 |
+| `q=yuzu` | **zero hits** — not even a member of Globex |
 | `q=kumquat&types=organizations` | zero hits, silently dropped — organizations remain super-admin-only |
+
+Every empty result is an ordinary 200, indistinguishable from a no-match
+search. (Members search, PR 3+, is the membership-based exception — Scenario J
+still expects Alex to find Acme members.)
 
 ## 8. Scenario G: removal revokes search access
 
@@ -361,6 +366,7 @@ Logged in as **Sam**.
 | Probe | Expected |
 |---|---|
 | `q=kumquat`, `q=tamarind`, `q=yuzu` | all return their full hit sets |
+| `q=kumquat&coaching_relationship_id=<R1>` | full R1 hit set; `q=tamarind&coaching_relationship_id=<R1>` → zero hits — Sam sees every relationship, so this is the discriminating narrowing check for the relationship filter (Scenario C's version is degenerate) |
 | `q=<org name>&types=organizations` (PR 3+) | active organizations only |
 | Sanity | Sam's hits for `q=kumquat` are a superset of Casey's, and each individual hit is identical in shape/fields to what a participant sees |
 
@@ -374,7 +380,7 @@ different speakers, and `tamarind` in an R2 transcript.
 | Casey: `q=kumquat&types=transcripts` | grouped hits: at most **3 segments per transcription**, each with `transcription_id`, `start_ms`, `end_ms`, `speaker_label` |
 | Deep link | opening the session at `start_ms` lands playback at the matched utterance |
 | Casey: `q=tamarind&types=transcripts` | zero hits — transcripts are the richest corpus and the most damaging leak |
-| Alex | sees both relationships' transcript hits; Globex transcripts never |
+| Alex: `q=kumquat&types=transcripts` | zero hits — the Admin role grants no relationship visibility (Scenario F) |
 
 ## 11. Scenario J: members search (PR 3+)
 
@@ -474,11 +480,13 @@ a hit on another relationship's note content is a leak like any other.
 | Hybrid latency ≈ semantic + keyword latencies summed | the hybrid arms run sequentially — the keyword retrieval should fire in parallel with the embedding call (see the latency-budget bullet in the implementation plan) |
 | As-you-type feels dead — zero hits until a word is fully typed | final-token prefix matching missing, or the server trims the query before inspecting the raw tail for the trailing-whitespace opt-out |
 
-## 16. Results — PR 1 (scenarios A–H), 2026-09-24
+## 16. Results — PR 1 (scenarios A–H), 2026-09-28
 
-Run against the local backend on `feat/search-keyword-core` with the 1.2 + 1.3
-fixtures (48 visible `kumquat` rows for R1 participants, including the volume
-and tie groups).
+Full re-run against the local backend on `feat/search-keyword-core` after the
+org-admin visibility change (search now mirrors `grants_access_to`; the admin
+tier is gone), with freshly reseeded 1.2 + 1.3 fixtures (48 visible `kumquat`
+rows for R1 participants, including the volume and tie groups). Supersedes the
+2026-09-24 pass, which recorded the pre-decision Scenario F behavior.
 
 | Scenario | Result | Notes |
 |---|---|---|
@@ -487,9 +495,9 @@ and tie groups).
 | C — filters | PASS | all 12 rows, incl. tz date window, contradictory-params 400, foreign `goal_id` → empty 200 |
 | D — regular-user leaks | PASS | every probe an ordinary empty 200; no snippet leaks; Robin's multi-org rows correct |
 | E — soft-delete | PASS | soft-deleted topic absent from `types=topics` (archived-org row is PR 3+) |
-| F — org-admin tier | PASS | Alex sees R1+R2, never Globex; discriminating relationship-filter check; `types=organizations` silently dropped |
-| G — removal revokes | PASS | role delete → 0 hits for Robin (plain 200), data intact for Casey, access restored on re-add |
-| H — super-admin tier | PASS | Sam sees all three sentinels; hit shape identical to a participant's |
+| F — org admins get no relationship visibility | PASS | Alex: zero hits for `kumquat`, `tamarind`, `yuzu`, and `types=organizations` — every response an ordinary empty 200 |
+| G — removal revokes | PASS | role delete → 0 hits for Robin (plain 200), data intact for Casey, access restored on re-add; Alex (org admin) can still perform the removal — the change touched search visibility only |
+| H — super-admin tier | PASS | Sam sees all three sentinels; hit shape identical to a participant's; discriminating relationship-filter narrowing (moved here from F) passes |
 | Throttle | PASS | 15 rapid requests: 11×200 then 429s (burst 10 + refill) |
 
 **Deviation (Scenario B, `or` row):** `q=kumquat or tamarind` returns **0

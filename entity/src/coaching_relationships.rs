@@ -102,7 +102,8 @@ pub struct Scope {
     pub user_id: Id,
     /// SuperAdmin role with `organization_id` NULL — sees everything.
     pub is_super_admin: bool,
-    /// Organizations where the caller holds the `Admin` role.
+    /// Organizations where the caller holds the `Admin` role. Reserved for
+    /// membership-based searchers.
     pub admin_org_ids: Vec<Id>,
     /// Every organization the caller holds any role in.
     pub member_org_ids: Vec<Id>,
@@ -111,26 +112,21 @@ pub struct Scope {
 /// The query form of [`Model::grants_access_to`]: a `Condition` selecting every
 /// coaching relationship the caller may access, evaluated corpus-wide.
 ///
-/// Tier 1 mirrors `grants_access_to` exactly — participant (coach or coachee)
-/// AND current member of the relationship's organization. Tier 2 adds every
-/// relationship in orgs where the caller is an Admin. Super admins skip this
-/// condition entirely (callers must not apply it when `scope.is_super_admin`).
+/// Mirrors `grants_access_to` exactly — participant (coach or coachee) AND
+/// current member of the relationship's organization. Super admins skip this condition
+/// entirely (callers must not apply it when `scope.is_super_admin`).
 ///
 /// Kept beside `grants_access_to` deliberately: these are the two expressions
 /// of one rule, and a DB-backed equivalence test pins them together. Change one,
 /// mirror the other.
 pub fn visible_to(scope: &Scope) -> Condition {
-    Condition::any()
+    Condition::all()
         .add(
-            Condition::all()
-                .add(
-                    Column::CoachId
-                        .eq(scope.user_id)
-                        .or(Column::CoacheeId.eq(scope.user_id)),
-                )
-                .add(Column::OrganizationId.is_in(scope.member_org_ids.iter().copied())),
+            Column::CoachId
+                .eq(scope.user_id)
+                .or(Column::CoacheeId.eq(scope.user_id)),
         )
-        .add(Column::OrganizationId.is_in(scope.admin_org_ids.iter().copied()))
+        .add(Column::OrganizationId.is_in(scope.member_org_ids.iter().copied()))
 }
 
 impl ActiveModelBehavior for ActiveModel {}
