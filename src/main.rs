@@ -179,12 +179,14 @@ mod all_tests {
                         info!(
                             "<b>All {:?} tests completed successfully.\\r\\n",
                             crate_name
-                        )
+                        );
                     }
-                    false => error!(
-                        "<b>{:?} tests completed with errors ({})</b>\\r\\n",
-                        crate_name, output.status
-                    ),
+                    false => {
+                        error!(
+                            "<b>{:?} tests completed with errors ({})</b>\\r\\n",
+                            crate_name, output.status
+                        );
+                    }
                 }
 
                 info!("{}", String::from_utf8_lossy(output.stdout.as_slice()));
