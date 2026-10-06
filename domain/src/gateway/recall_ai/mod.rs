@@ -1,5 +1,7 @@
 //! Recall.ai API client for recording bot management and async transcription.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use log::*;
@@ -188,11 +190,56 @@ fn recall_transcript_status(status_str: Option<&str>) -> transcription_types::St
 /// Maximum silence gap (seconds) between same-speaker words before starting a new segment.
 const SEGMENT_GAP_SECS: f64 = 1.5;
 
+/// Stable per-transcription key: Recall id, else the name, else a shared "unknown" bucket.
+fn participant_key(participant: &Participant) -> String {
+    participant
+        .id
+        .map(|id| id.to_string())
+        .or_else(|| {
+            participant
+                .name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| format!("name:{n}"))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Recall's stable cross-meeting Zoom id; Meet exposes none.
+fn account_id(participant: &Participant) -> Option<String> {
+    participant
+        .extra_data
+        .as_ref()?
+        .get("zoom")?
+        .get("conf_user_id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// One provider-agnostic participant per distinct key, in first-appearance order.
+fn participants_of(entries: &[ParticipantEntry]) -> Vec<transcription_types::Participant> {
+    let mut seen = HashSet::new();
+    entries
+        .iter()
+        .map(|entry| &entry.participant)
+        .filter(|p| seen.insert(participant_key(p)))
+        .map(|p| transcription_types::Participant {
+            provider_id: participant_key(p),
+            display_name: p.name.clone().filter(|n| !n.trim().is_empty()),
+            is_host: p.is_host,
+            platform: p.platform.clone(),
+            account_id: account_id(p),
+            extra_data: p.extra_data.clone(),
+        })
+        .collect()
+}
+
 /// Coalesces Recall.ai participant word entries into meeting-ai `Segment` objects.
 ///
-/// Words are sorted chronologically, then grouped by speaker with a gap threshold.
+/// Words are sorted chronologically, then grouped by participant with a gap threshold.
 fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::Segment> {
     struct WordEntry {
+        key: String,
         speaker: String,
         text: String,
         start_s: f64,
@@ -201,6 +248,7 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
 
     let mut all_words: Vec<WordEntry> = Vec::new();
     for entry in &entries {
+        let key = participant_key(&entry.participant);
         let speaker = entry
             .participant
             .name
@@ -214,6 +262,7 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
             let start_s = word.start_timestamp.relative.unwrap_or(0.0);
             let end_s = word.end_timestamp.relative.unwrap_or(start_s);
             all_words.push(WordEntry {
+                key: key.clone(),
                 speaker: speaker.clone(),
                 text: word.text.clone(),
                 start_s,
@@ -230,13 +279,14 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
 
     let mut segments: Vec<transcription_types::Segment> = Vec::new();
     if let Some(first) = all_words.first() {
+        let mut seg_key = first.key.clone();
         let mut seg_speaker = first.speaker.clone();
         let mut seg_words: Vec<String> = vec![first.text.clone()];
         let mut seg_start = first.start_s;
         let mut seg_end = first.end_s;
 
         for word in all_words.iter().skip(1) {
-            let same_speaker = word.speaker == seg_speaker;
+            let same_speaker = word.key == seg_key;
             let small_gap = word.start_s - seg_end < SEGMENT_GAP_SECS;
 
             if same_speaker && small_gap {
@@ -246,11 +296,13 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
                 segments.push(transcription_types::Segment {
                     text: seg_words.join(" "),
                     speaker: seg_speaker.clone(),
+                    participant_id: Some(seg_key.clone()),
                     start_ms: (seg_start * 1000.0) as i64,
                     end_ms: (seg_end * 1000.0) as i64,
                     confidence: 0.0,
                     words: vec![],
                 });
+                seg_key = word.key.clone();
                 seg_speaker = word.speaker.clone();
                 seg_words = vec![word.text.clone()];
                 seg_start = word.start_s;
@@ -260,6 +312,7 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
         segments.push(transcription_types::Segment {
             text: seg_words.join(" "),
             speaker: seg_speaker,
+            participant_id: Some(seg_key),
             start_ms: (seg_start * 1000.0) as i64,
             end_ms: (seg_end * 1000.0) as i64,
             confidence: 0.0,
@@ -788,6 +841,7 @@ impl transcription_trait::Provider for Provider {
             text: None,
             words: vec![],
             segments: vec![],
+            participants: vec![],
             chapters: vec![],
             sentiment_analysis: vec![],
             confidence: None,
@@ -809,14 +863,14 @@ impl transcription_trait::Provider for Provider {
 
         let status = recall_transcript_status(metadata.status_str());
 
-        let segments = if let Some(url) = metadata.download_url() {
+        let (participants, segments) = if let Some(url) = metadata.download_url() {
             let entries = self
                 .download_transcript(url)
                 .await
                 .map_err(to_meeting_ai_err)?;
-            coalesce_entries(entries)
+            (participants_of(&entries), coalesce_entries(entries))
         } else {
-            vec![]
+            (vec![], vec![])
         };
 
         Ok(transcription_types::Transcription {
@@ -825,6 +879,7 @@ impl transcription_trait::Provider for Provider {
             text: None,
             words: vec![],
             segments,
+            participants,
             chapters: vec![],
             sentiment_analysis: vec![],
             confidence: None,
@@ -848,6 +903,10 @@ impl transcription_trait::Provider for Provider {
         "recall_ai"
     }
 }
+
+#[cfg(test)]
+#[path = "participants_tests.rs"]
+mod participants_tests;
 
 #[cfg(test)]
 mod tests {
