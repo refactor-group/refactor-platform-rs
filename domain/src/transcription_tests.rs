@@ -93,6 +93,7 @@ fn segment(transcription_id: Id, label: &str, text: &str, start_ms: i32) -> Segm
     Segment {
         id: Id::new_v4(),
         transcription_id,
+        participant_id: None,
         speaker_label: label.to_owned(),
         text: text.to_owned(),
         start_ms,

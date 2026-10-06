@@ -37,6 +37,7 @@ pub mod password_reset_attempt;
 pub mod platform_cost_metrics;
 pub mod query;
 pub mod tiptap_metrics;
+pub mod transcript_participant;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user;

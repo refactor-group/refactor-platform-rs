@@ -62,6 +62,7 @@ mod tests {
         Model {
             id: Id::new_v4(),
             transcription_id,
+            participant_id: None,
             speaker_label: "Jane Smith".to_string(),
             text: "What goals are you working toward this quarter?".to_string(),
             start_ms: 1000,
@@ -141,6 +142,7 @@ mod tests {
         let seg1 = Model {
             id: Id::new_v4(),
             transcription_id,
+            participant_id: None,
             speaker_label: "Alice".to_string(),
             text: "First utterance.".to_string(),
             start_ms: 500,
@@ -152,6 +154,7 @@ mod tests {
         let seg2 = Model {
             id: Id::new_v4(),
             transcription_id,
+            participant_id: None,
             speaker_label: "Bob".to_string(),
             text: "Second utterance.".to_string(),
             start_ms: 3000,

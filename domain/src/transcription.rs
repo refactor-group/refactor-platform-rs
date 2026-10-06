@@ -177,6 +177,7 @@ pub async fn handle_completion(
             .into_iter()
             .map(|seg| SegmentActiveModel {
                 id: Set(Id::new_v4()),
+                participant_id: Set(None),
                 transcription_id: Set(transcription.id),
                 speaker_label: Set(seg.speaker),
                 text: Set(seg.text),

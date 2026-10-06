@@ -140,6 +140,7 @@ fn segment(
     transcript_segment::Model {
         id: Id::new_v4(),
         transcription_id,
+        participant_id: None,
         speaker_label: label.to_string(),
         text: text.to_string(),
         start_ms,
