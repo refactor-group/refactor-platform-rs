@@ -114,6 +114,38 @@ pub async fn update_tokens(
     Ok(active_model.update(db).await?.try_into_model()?)
 }
 
+/// Rewrites a connection's platform account id and email, leaving its tokens untouched.
+pub async fn update_identity(
+    db: &DatabaseConnection,
+    id: Id,
+    external_account_id: Option<String>,
+    external_email: Option<String>,
+) -> Result<Model, Error> {
+    let existing = Entity::find_by_id(id).one(db).await?.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })?;
+
+    debug!("Updating OAuth connection identity: {id}");
+
+    let active_model = ActiveModel {
+        id: Unchanged(existing.id),
+        user_id: Unchanged(existing.user_id),
+        provider: Unchanged(existing.provider),
+        external_account_id: Set(external_account_id),
+        external_email: Set(external_email),
+        access_token: Unchanged(existing.access_token),
+        refresh_token: Unchanged(existing.refresh_token),
+        token_expires_at: Unchanged(existing.token_expires_at),
+        token_type: Unchanged(existing.token_type),
+        scopes: Unchanged(existing.scopes),
+        created_at: Unchanged(existing.created_at),
+        updated_at: Set(chrono::Utc::now().into()),
+    };
+
+    Ok(active_model.update(db).await?.try_into_model()?)
+}
+
 /// Deletes an OAuth connection by ID, succeeding when the row is already gone
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
     debug!("Deleting OAuth connection: {id}");
