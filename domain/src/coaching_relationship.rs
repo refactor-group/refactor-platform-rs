@@ -7,8 +7,8 @@ use sea_orm::{DatabaseConnection, TransactionTrait};
 pub use entity_api::coaching_relationship::{
     create, find_by_coach_and_organization, find_by_id, find_by_organization_with_user_names,
     find_by_user, find_by_user_and_organization, find_by_user_and_organization_with_user_names,
-    find_by_user_id_with_user_names, get_relationship_with_user_names, is_coach_of,
-    CoachingRelationshipWithUserNames, RoleFilterable,
+    find_by_user_id_with_user_names, find_coach_and_coachee, get_relationship_with_user_names,
+    is_coach_of, CoachingRelationshipWithUserNames, RoleFilterable,
 };
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -77,3 +77,7 @@ pub async fn find_by_organization_for_user_with_user_names(
 #[cfg(test)]
 #[path = "coaching_relationship_sqlite_tests.rs"]
 mod sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_relationship_people_sqlite_tests.rs"]
+mod people_sqlite_tests;

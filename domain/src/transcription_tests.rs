@@ -1,6 +1,7 @@
 use chrono::{NaiveDate, Utc};
 use entity::transcript_segment::Model as Segment;
-use sea_orm::{DatabaseBackend, MockDatabase};
+use sea_orm::sea_query::Iden;
+use sea_orm::{ActiveModelTrait, DatabaseBackend, Iterable, MockDatabase};
 
 use super::*;
 use crate::coaching_relationships;
@@ -157,6 +158,24 @@ fn not_found() -> DomainErrorKind {
     ))
 }
 
+/// The single joined row `find_coach_and_coachee` reads, with each user's columns prefixed.
+fn coach_and_coachee_row(
+    coach: &users::Model,
+    coachee: &users::Model,
+) -> std::collections::BTreeMap<String, sea_orm::Value> {
+    [("coach_", coach), ("coachee_", coachee)]
+        .into_iter()
+        .flat_map(|(prefix, user)| {
+            let user = users::ActiveModel::from(user.clone());
+            users::Column::iter().filter_map(move |column| {
+                user.get(column)
+                    .into_value()
+                    .map(|value| (format!("{prefix}{}", Iden::to_string(&column)), value))
+            })
+        })
+        .collect()
+}
+
 /// Every statement the mock saw, in order.
 fn statements(db: DatabaseConnection) -> Vec<String> {
     db.into_transaction_log()
@@ -238,9 +257,7 @@ async fn export_plain_text_renders_the_relationship_participants() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[relationship]])
-        .append_query_results([[coach]])
-        .append_query_results([[coachee]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
     let rendered = export_plain_text(&db, &session, row.id, &[SpeakerRole::Coach])
@@ -275,9 +292,7 @@ async fn export_plain_text_dates_the_file_in_the_coach_timezone() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[relationship]])
-        .append_query_results([[coach]])
-        .append_query_results([[coachee]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
     let rendered = export_plain_text(&db, &session, row.id, &[])
@@ -302,9 +317,7 @@ async fn export_plain_text_reports_an_unidentified_role() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[relationship]])
-        .append_query_results([[coach]])
-        .append_query_results([[coachee]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
     let error = export_plain_text(&db, &session, row.id, &[SpeakerRole::Coachee])
@@ -339,9 +352,7 @@ async fn read_with_speakers_labels_roles_in_speaking_order() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[relationship]])
-        .append_query_results([[coach]])
-        .append_query_results([[coachee]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
     let result = read_with_speakers(&db, &session, row.id)
@@ -376,9 +387,7 @@ async fn read_with_speakers_is_empty_without_segments() {
         .append_query_results([[row.clone()]])
         .append_query_results([Vec::<Segment>::new()])
         .append_query_results([Vec::<Participant>::new()])
-        .append_query_results([[relationship]])
-        .append_query_results([[coach]])
-        .append_query_results([[coachee]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
     let result = read_with_speakers(&db, &session, row.id)
@@ -421,4 +430,23 @@ async fn with_speakers_serializes_flat() {
     assert!(value.get("speakers").is_some());
     assert!(value.get("transcription").is_none());
     assert!(value.get("recall_recording_id").is_none());
+}
+
+#[tokio::test]
+async fn read_latest_with_speakers_stops_after_finding_no_segments() {
+    let session = session(Id::new_v4());
+    let row = transcription(session.id, TranscriptionStatus::Completed);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[row]])
+        .append_query_results([Vec::<Segment>::new()])
+        .into_connection();
+
+    let result = read_latest_with_speakers(&db, &session)
+        .await
+        .expect("a transcription without segments should still read")
+        .expect("the session has a transcription");
+
+    assert!(result.speakers.is_empty());
+    assert_eq!(statements(db).len(), 2);
 }

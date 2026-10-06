@@ -36,7 +36,9 @@ enum Representation {
 
 /// Read the most recent transcription for a coaching session
 ///
-/// A session can hold several transcriptions; this returns the latest by creation time.
+/// A session can hold several transcriptions; this returns the latest by creation time,
+/// with the same `speakers` list as the single-transcription read. `data` is `null` when
+/// the session has none.
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{coaching_session_id}/transcriptions",
@@ -45,7 +47,7 @@ enum Representation {
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
-        (status = 200, description = "Transcription metadata retrieved"),
+        (status = 200, description = "Latest transcription with its labeled speakers, or null", body = Option<domain::transcription::WithSpeakers>),
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
@@ -60,8 +62,7 @@ pub async fn read_latest(
     debug!("GET transcription for session {}", coaching_session_id);
 
     let transcription =
-        TranscriptionApi::find_by_coaching_session(app_state.db_conn_ref(), coaching_session_id)
-            .await?;
+        TranscriptionApi::read_latest_with_speakers(app_state.db_conn_ref(), &session).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), transcription)))
 }
@@ -69,7 +70,7 @@ pub async fn read_latest(
 /// Read one transcription as JSON metadata or download it as a plain-text file
 ///
 /// `Accept: text/plain` serves the rendered transcript as a file attachment; any other
-/// supported value, or no `Accept` at all, serves JSON metadata with the resolved speakers.
+/// supported value, or no `Accept` at all, serves JSON metadata with the labeled speakers.
 /// `speaker` narrows the plain-text file to the named participants; JSON validates it but
 /// does not apply it. Browsers send `text/html, ..., */*`, which selects JSON, so a plain
 /// link downloads JSON; fetch with an explicit `Accept: text/plain` and build the file.
@@ -83,7 +84,7 @@ pub async fn read_latest(
         ("speaker" = Option<Vec<SpeakerRole>>, Query, explode, description = "Limit the plain-text transcript to these participants. Repeat the parameter for both. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
     ),
     responses(
-        (status = 200, description = "JSON metadata with resolved speakers, or the plain-text transcript file when `Accept: text/plain`", content(
+        (status = 200, description = "JSON metadata with labeled speakers, or the plain-text transcript file when `Accept: text/plain`", content(
             (domain::transcription::WithSpeakers = "application/json"),
             (String = "text/plain", example = json!("Coaching session transcript\nDate: 2026-09-21\nSpeakers: Jim Hodapp, Caleb Bourg\n\n[0:00] Jim Hodapp: Good morning.\n"))
         )),
@@ -93,7 +94,7 @@ pub async fn read_latest(
         (status = 404, description = "`transcription_not_found`: no such transcription under this session"),
         (status = 406, description = "Accept names no supported representation"),
         (status = 409, description = "`transcription_not_completed`: plain text requested before transcription completed"),
-        (status = 422, description = "`speaker_not_identified`: a requested participant matched no speaker label"),
+        (status = 422, description = "`speaker_not_identified`: no speaker is attributed to a requested role"),
     ),
     security(("cookie_auth" = []))
 )]

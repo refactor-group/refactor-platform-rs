@@ -4,7 +4,7 @@
 use chrono::Utc;
 use entity::meeting_recording::{self, MeetingRecordingStatus};
 use entity::{coaching_relationships, transcript_participant, transcript_segment, users};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
+use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
 use crate::error::Error;
@@ -316,6 +316,110 @@ async fn another_sessions_transcription_reads_as_empty() -> Result<(), Error> {
         let segments = read_segments(&f.db, &f.session, f.other_transcription_id).await?;
 
         assert!(segments.is_empty());
+
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn the_latest_transcription_is_read_with_its_speakers() -> Result<(), Error> {
+    within_time_limit(async {
+        let f = fixture().await;
+
+        let latest = read_latest_with_speakers(&f.db, &f.session)
+            .await?
+            .expect("the session has a transcription");
+
+        assert_eq!(latest.transcription.id, f.transcription_id);
+        let speakers: Vec<(&str, Option<SpeakerRole>)> = latest
+            .speakers
+            .iter()
+            .map(|speaker| (speaker.label.as_str(), speaker.role))
+            .collect();
+        assert_eq!(
+            speakers,
+            vec![
+                ("Jim H", Some(SpeakerRole::Coach)),
+                ("cbourg2", Some(SpeakerRole::Coachee)),
+                ("Jim H (2)", None),
+                ("Guest 1", None),
+            ]
+        );
+
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn the_later_transcription_wins_with_its_own_speakers() -> Result<(), Error> {
+    within_time_limit(async {
+        let f = fixture().await;
+        let later_id = seed_transcription(&f.db, f.session.id).await;
+        let later = entity::transcription::Entity::find_by_id(later_id)
+            .one(&f.db)
+            .await
+            .expect("the transcription is read")
+            .expect("the later transcription exists");
+        let mut later: entity::transcription::ActiveModel = later.into();
+        later.created_at = Set((Utc::now() + chrono::Duration::minutes(1)).into());
+        later
+            .update(&f.db)
+            .await
+            .expect("the transcription is back-dated");
+        let participant = seed_participant(
+            &f.db,
+            later_id,
+            Some("Later Coach"),
+            Some((f.coach.id, MatchSource::Account)),
+        )
+        .await;
+        seed_segment(&f.db, later_id, participant, "Later Coach", 0).await;
+
+        let latest = read_latest_with_speakers(&f.db, &f.session)
+            .await?
+            .expect("the session has a transcription");
+
+        assert_eq!(latest.transcription.id, later_id);
+        let speakers: Vec<(&str, Option<SpeakerRole>)> = latest
+            .speakers
+            .iter()
+            .map(|speaker| (speaker.label.as_str(), speaker.role))
+            .collect();
+        assert_eq!(speakers, vec![("Jim H", Some(SpeakerRole::Coach))]);
+
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_session_without_a_transcription_reads_as_none() -> Result<(), Error> {
+    within_time_limit(async {
+        let f = fixture().await;
+        let empty = seed_session(&f.db, f.coach.id, f.coachee.id).await;
+
+        assert_eq!(read_latest_with_speakers(&f.db, &empty).await?, None);
+
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_latest_transcription_without_segments_has_no_speakers() -> Result<(), Error> {
+    within_time_limit(async {
+        let f = fixture().await;
+        let bare = seed_session(&f.db, f.coach.id, f.coachee.id).await;
+        let transcription_id = seed_transcription(&f.db, bare.id).await;
+
+        let latest = read_latest_with_speakers(&f.db, &bare)
+            .await?
+            .expect("the session has a transcription");
+
+        assert_eq!(latest.transcription.id, transcription_id);
+        assert!(latest.speakers.is_empty());
 
         Ok::<(), Error>(())
     })

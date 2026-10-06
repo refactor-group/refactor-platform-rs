@@ -15,7 +15,7 @@ use entity::transcript_segment::{ActiveModel as SegmentActiveModel, Model as Seg
 use entity::Id;
 use entity_api::{
     coaching_relationship, transcript_participant as participant_api,
-    transcript_segment as segment_api, transcription as transcription_api, user,
+    transcript_segment as segment_api, transcription as transcription_api,
 };
 use log::*;
 use meeting_ai::traits::transcription as transcription_trait;
@@ -225,12 +225,7 @@ async fn load_participants(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
 ) -> Result<(users::Model, users::Model), Error> {
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
-    let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
-
-    Ok((coach, coachee))
+    Ok(coaching_relationship::find_coach_and_coachee(db, session.coaching_relationship_id).await?)
 }
 
 /// Renders the session's transcript as plain text, optionally limited to given roles.
@@ -289,6 +284,33 @@ pub async fn read_with_speakers(
         transcription,
         speakers: labeled.speakers,
     })
+}
+
+/// The session's most recent transcription with its labeled speakers, if it has one.
+///
+/// `speakers` is empty until segments exist.
+pub async fn read_latest_with_speakers(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+) -> Result<Option<WithSpeakers>, Error> {
+    let Some(transcription) = find_by_coaching_session(db, session.id).await? else {
+        return Ok(None);
+    };
+    let segments =
+        segment_api::find_by_transcription_and_session(db, transcription.id, session.id).await?;
+    let speakers = if segments.is_empty() {
+        vec![]
+    } else {
+        label(db, session, transcription.id, &segments)
+            .await?
+            .0
+            .speakers
+    };
+
+    Ok(Some(WithSpeakers {
+        transcription,
+        speakers,
+    }))
 }
 
 /// The transcription's segments as readers see them, in speaking order.

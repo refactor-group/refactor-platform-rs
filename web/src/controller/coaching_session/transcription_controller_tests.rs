@@ -14,18 +14,20 @@ use domain::{
     users, Id,
 };
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, MockDatabase};
+use sea_orm::sea_query::Iden;
+use sea_orm::{ActiveModelTrait, DatabaseBackend, Iterable, MockDatabase};
 use service::config::Config;
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
 
-use super::read;
+use super::{read, read_latest};
 use crate::controller::coaching_session::transcription_segment_controller;
 use crate::middleware::auth::require_auth;
 use crate::AppState;
 
 const ROUTE: &str = "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id";
+const LATEST_ROUTE: &str = "/coaching_sessions/:coaching_session_id/transcriptions";
 const SEGMENTS_ROUTE: &str = "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id/transcription_segments";
 
 fn coach() -> users::Model {
@@ -226,11 +228,30 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .merge(
             Router::new()
                 .route(ROUTE, get(read))
+                .route(LATEST_ROUTE, get(read_latest))
                 .route(SEGMENTS_ROUTE, get(transcription_segment_controller::index))
                 .route_layer(from_fn(require_auth)),
         )
         .layer(auth_layer)
         .with_state(app_state)
+}
+
+/// The single joined row `find_coach_and_coachee` reads, with each user's columns prefixed.
+fn coach_and_coachee_row(
+    coach: &users::Model,
+    coachee: &users::Model,
+) -> std::collections::BTreeMap<String, sea_orm::Value> {
+    [("coach_", coach), ("coachee_", coachee)]
+        .into_iter()
+        .flat_map(|(prefix, user)| {
+            let user = users::ActiveModel::from(user.clone());
+            users::Column::iter().filter_map(move |column| {
+                user.get(column)
+                    .into_value()
+                    .map(|value| (format!("{prefix}{}", Iden::to_string(&column)), value))
+            })
+        })
+        .collect()
 }
 
 async fn login_cookie(app: &Router) -> String {
@@ -340,9 +361,7 @@ async fn world(
         .append_query_results([vec![transcription.clone()]])
         .append_query_results([lines])
         .append_query_results([participants])
-        .append_query_results([vec![relationship.clone()]])
-        .append_query_results([vec![coach.clone()]])
-        .append_query_results([vec![coachee.clone()]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
     let app = build_app(Arc::new(db));
@@ -690,9 +709,7 @@ async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
         .append_query_results([vec![queued.clone()]])
         .append_query_results([Vec::<transcript_segment::Model>::new()])
         .append_query_results([Vec::<transcript_participant::Model>::new()])
-        .append_query_results([vec![relationship.clone()]])
-        .append_query_results([vec![coach.clone()]])
-        .append_query_results([vec![coachee.clone()]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
     let app = build_app(Arc::new(db));
     let cookie = login_cookie(&app).await;
@@ -771,9 +788,7 @@ async fn segments_carry_their_labels_and_attribution_without_raw_participants() 
     let db = authorized(&coach, &role, &session, &relationship)
         .append_query_results([lines])
         .append_query_results([participants])
-        .append_query_results([vec![relationship.clone()]])
-        .append_query_results([vec![coach.clone()]])
-        .append_query_results([vec![coachee.clone()]])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
     let app = build_app(Arc::new(db));
     let cookie = login_cookie(&app).await;
@@ -808,4 +823,71 @@ async fn segments_carry_their_labels_and_attribution_without_raw_participants() 
             .for_each(|key| assert!(item.get(*key).is_some(), "missing {key}: {item}"));
         assert!(item.get("participant_id").is_none(), "{item}");
     });
+}
+
+async fn get_latest(app: &Router, cookie: &str, session_id: Id) -> axum::response::Response {
+    let request = Request::builder()
+        .uri(format!("/coaching_sessions/{session_id}/transcriptions"))
+        .header("cookie", cookie)
+        .header("x-version", "1.0.0")
+        .body(Body::empty())
+        .unwrap();
+    app.clone().oneshot(request).await.unwrap()
+}
+
+#[tokio::test]
+async fn latest_transcription_carries_its_speakers() {
+    let organization_id = Id::new_v4();
+    let coach = coach();
+    let coachee = coachee();
+    let role = role(coach.id, organization_id);
+    let relationship = relationship(organization_id, coach.id, coachee.id);
+    let session = session(relationship.id);
+    let latest = transcription(session.id, transcription::TranscriptionStatus::Completed);
+    let (participants, lines) = transcript(latest.id, coach.id, Some(coachee.id));
+
+    let db = authorized(&coach, &role, &session, &relationship)
+        .append_query_results([vec![latest.clone()]])
+        .append_query_results([lines])
+        .append_query_results([participants])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .into_connection();
+    let app = build_app(Arc::new(db));
+    let cookie = login_cookie(&app).await;
+
+    let response = get_latest(&app, &cookie, session.id).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_json(response).await;
+    assert_eq!(body["data"]["id"], serde_json::json!(latest.id));
+    assert_eq!(
+        body["data"]["speakers"],
+        serde_json::json!([
+            {"label": "Test User", "role": "coach"},
+            {"label": "Caleb Bourg", "role": "coachee"},
+            {"label": "Guest", "role": null},
+        ])
+    );
+}
+
+#[tokio::test]
+async fn latest_transcription_is_null_when_the_session_has_none() {
+    let organization_id = Id::new_v4();
+    let coach = coach();
+    let coachee = coachee();
+    let role = role(coach.id, organization_id);
+    let relationship = relationship(organization_id, coach.id, coachee.id);
+    let session = session(relationship.id);
+
+    let db = authorized(&coach, &role, &session, &relationship)
+        .append_query_results([Vec::<transcription::Model>::new()])
+        .into_connection();
+    let app = build_app(Arc::new(db));
+    let cookie = login_cookie(&app).await;
+
+    let response = get_latest(&app, &cookie, session.id).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["data"], serde_json::Value::Null);
 }
