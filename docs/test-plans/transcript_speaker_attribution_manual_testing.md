@@ -453,17 +453,17 @@ skipped and keep working through the download endpoint with unattributed speaker
 | A10 | | | |
 | A11 | | | |
 | A12 | | | |
-| A13 | | | |
+| A13 | PASS (API only) | 2026-10-06 | non-participant `admin@refactorcoach.com` got 403 from `meta`, `latest`, `segs` on a fixture transcript |
 | A14 | | | |
 | A15 | | | |
-| B1 | | | |
-| B2 | | | |
-| B3 | | | |
-| B3b | | | |
-| B3c | | | |
-| B4 | | | |
-| B5 | | | |
-| B6 | | | |
-| B7 | | | |
-| B8 | | | |
+| B1 | PASS | 2026-10-06 | PR #434 preview |
+| B2 | PASS | 2026-10-06 | PR #434 preview |
+| B3 | PASS | 2026-10-06 | PR #434 preview |
+| B3b | PASS | 2026-10-06 | PR #434 preview |
+| B3c | PASS | 2026-10-06 | PR #434 preview |
+| B4 | PASS | 2026-10-06 | PR #434 preview |
+| B5 | PASS | 2026-10-06 | PR #434 preview |
+| B6 | PASS | 2026-10-06 | PR #434 preview |
+| B7 | PASS | 2026-10-06 | PR #434 preview |
+| B8 | PASS | 2026-10-06 | PR #434 preview |
 | C | | | |
