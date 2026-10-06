@@ -11,11 +11,11 @@ use std::collections::HashMap;
 use chrono::{NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use entity::meeting_recording::Model as RecordingModel;
-use entity::transcript_segment::ActiveModel as SegmentActiveModel;
+use entity::transcript_segment::{ActiveModel as SegmentActiveModel, Model as Segment};
 use entity::Id;
 use entity_api::{
-    coaching_relationship, transcript_segment as segment_api, transcription as transcription_api,
-    user,
+    coaching_relationship, transcript_participant as participant_api,
+    transcript_segment as segment_api, transcription as transcription_api, user,
 };
 use log::*;
 use meeting_ai::traits::transcription as transcription_trait;
@@ -26,15 +26,15 @@ use utoipa::ToSchema;
 
 use crate::coaching_sessions;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
-use crate::transcript_export::{self, Rendered, Speaker, SpeakerRole};
+use crate::transcript_export::{self, Labeled, LabeledSegment, Rendered, Speaker, SpeakerRole};
 use crate::users;
 
 /// A transcription plus the speakers found in its transcript.
 ///
-/// `speakers` lists every distinct speaker label in first-appearance order with the
-/// relationship participant it resolved to, so a client can tell in advance whether
-/// filtering the plain-text download by `coach` or `coachee` will succeed. Empty until
-/// segments exist.
+/// `speakers` lists every distinct speaker in first-speaking order with the role stored
+/// for them at completion, labeled exactly as the transcript's segments are, so a client
+/// can tell in advance whether filtering the plain-text download by `coach` or `coachee`
+/// will succeed. Empty until segments exist.
 #[derive(Clone, Debug, PartialEq, Serialize, ToSchema)]
 #[schema(as = domain::transcription::WithSpeakers)]
 pub struct WithSpeakers {
@@ -256,15 +256,9 @@ pub async fn export_plain_text(
 
     let segments =
         segment_api::find_by_transcription_and_session(db, transcription_id, session.id).await?;
-    let (coach, coachee) = load_participants(db, session).await?;
-    let speakers = transcript_export::resolve_speakers(&coach, &coachee, &segments);
+    let (labeled, coach) = label(db, session, transcription_id, &segments).await?;
 
-    transcript_export::render_plain_text(
-        local_session_date(session, &coach),
-        &speakers,
-        &segments,
-        filter,
-    )
+    transcript_export::render_plain_text(local_session_date(session, &coach), &labeled, filter)
 }
 
 /// The session's calendar date where the coach is; the schedule is anchored on them.
@@ -278,7 +272,7 @@ fn local_session_date(session: &coaching_sessions::Model, coach: &users::Model) 
         .date_naive()
 }
 
-/// Reads the session's transcription along with its resolved speakers.
+/// Reads the session's transcription along with its labeled speakers.
 ///
 /// Readable at any status: the speaker list simply stays empty until segments land.
 pub async fn read_with_speakers(
@@ -289,15 +283,52 @@ pub async fn read_with_speakers(
     let transcription = find_for_session(db, transcription_id, session.id).await?;
     let segments =
         segment_api::find_by_transcription_and_session(db, transcription_id, session.id).await?;
-    let (coach, coachee) = load_participants(db, session).await?;
+    let (labeled, _) = label(db, session, transcription_id, &segments).await?;
 
     Ok(WithSpeakers {
         transcription,
-        speakers: transcript_export::resolve_speakers(&coach, &coachee, &segments),
+        speakers: labeled.speakers,
     })
+}
+
+/// The transcription's segments as readers see them, in speaking order.
+///
+/// Empty when the transcription does not exist, belongs to another session, or has no segments,
+/// matching the previous behavior of the segments endpoint.
+pub async fn read_segments(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    transcription_id: Id,
+) -> Result<Vec<LabeledSegment>, Error> {
+    let segments =
+        segment_api::find_by_transcription_and_session(db, transcription_id, session.id).await?;
+    if segments.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let (labeled, _) = label(db, session, transcription_id, &segments).await?;
+    Ok(labeled.segments)
+}
+
+/// Labels the segments from the transcription's stored participants; also returns the coach.
+async fn label(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    transcription_id: Id,
+    segments: &[Segment],
+) -> Result<(Labeled, users::Model), Error> {
+    let participants = participant_api::find_by_transcription(db, transcription_id).await?;
+    let (coach, coachee) = load_participants(db, session).await?;
+    let labeled = transcript_export::label_transcript(&participants, segments, &coach, &coachee);
+
+    Ok((labeled, coach))
 }
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
 #[path = "transcription_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transcription_sqlite_tests.rs"]
+mod sqlite_tests;

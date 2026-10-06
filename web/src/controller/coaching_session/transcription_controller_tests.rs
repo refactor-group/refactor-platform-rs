@@ -7,6 +7,7 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 use chrono::{NaiveDate, Utc};
+use domain::transcript_participant::{self, MatchSource};
 use domain::user::Backend;
 use domain::{
     coaching_relationships, coaching_sessions, transcript_segment, transcription, user_roles,
@@ -20,10 +21,12 @@ use tower::ServiceExt;
 use tower_sessions::Expiry;
 
 use super::read;
+use crate::controller::coaching_session::transcription_segment_controller;
 use crate::middleware::auth::require_auth;
 use crate::AppState;
 
 const ROUTE: &str = "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id";
+const SEGMENTS_ROUTE: &str = "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id/transcription_segments";
 
 fn coach() -> users::Model {
     let now = Utc::now();
@@ -131,17 +134,36 @@ fn transcription(
     }
 }
 
-fn segment(
+fn participant(
     transcription_id: Id,
-    label: &str,
+    name: &str,
+    attributed_to: Option<(Id, MatchSource)>,
+) -> transcript_participant::Model {
+    transcript_participant::Model {
+        id: Id::new_v4(),
+        transcription_id,
+        provider_participant_id: Id::new_v4().to_string(),
+        display_name: Some(name.to_string()),
+        is_host: None,
+        platform: None,
+        platform_account_id: None,
+        extra_data: None,
+        user_id: attributed_to.map(|(user_id, _)| user_id),
+        match_source: attributed_to.map(|(_, source)| source),
+        created_at: Utc::now().into(),
+    }
+}
+
+fn segment(
+    by: &transcript_participant::Model,
     text: &str,
     start_ms: i32,
 ) -> transcript_segment::Model {
     transcript_segment::Model {
         id: Id::new_v4(),
-        transcription_id,
-        participant_id: None,
-        speaker_label: label.to_string(),
+        transcription_id: by.transcription_id,
+        participant_id: Some(by.id),
+        speaker_label: by.display_name.clone().unwrap_or_default(),
         text: text.to_string(),
         start_ms,
         end_ms: start_ms + 2000,
@@ -151,12 +173,33 @@ fn segment(
     }
 }
 
-fn segments(transcription_id: Id) -> Vec<transcript_segment::Model> {
-    vec![
-        segment(transcription_id, "Test User", "Good morning.", 0),
-        segment(transcription_id, "Caleb Bourg", "Morning.", 4000),
-        segment(transcription_id, "Guest", "Hi both.", 9000),
-    ]
+/// Coach (typed `Test`), coachee (typed `Caleb Bourg`, attributed only when `coachee_id`
+/// is given), and an unattributed `Guest`, with one line each.
+fn transcript(
+    transcription_id: Id,
+    coach_id: Id,
+    coachee_id: Option<Id>,
+) -> (
+    Vec<transcript_participant::Model>,
+    Vec<transcript_segment::Model>,
+) {
+    let coach = participant(
+        transcription_id,
+        "Test",
+        Some((coach_id, MatchSource::Account)),
+    );
+    let coachee = participant(
+        transcription_id,
+        "Caleb Bourg",
+        coachee_id.map(|id| (id, MatchSource::Elimination)),
+    );
+    let guest = participant(transcription_id, "Guest", None);
+    let segments = vec![
+        segment(&coach, "Good morning.", 0),
+        segment(&coachee, "Morning.", 4000),
+        segment(&guest, "Hi both.", 9000),
+    ];
+    (vec![coach, coachee, guest], segments)
 }
 
 fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
@@ -183,6 +226,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .merge(
             Router::new()
                 .route(ROUTE, get(read))
+                .route(SEGMENTS_ROUTE, get(transcription_segment_controller::index))
                 .route_layer(from_fn(require_auth)),
         )
         .layer(auth_layer)
@@ -262,7 +306,7 @@ fn header(response: &axum::response::Response, name: &str) -> String {
         .to_string()
 }
 
-/// The full happy-path world: authorized rows plus the handler's five queries.
+/// The full happy-path world: authorized rows plus the handler's six queries.
 struct World {
     app: Router,
     session_id: Id,
@@ -270,33 +314,32 @@ struct World {
 }
 
 async fn completed_world() -> (World, String) {
-    world(transcription::TranscriptionStatus::Completed, true, None).await
+    world(transcription::TranscriptionStatus::Completed, true).await
 }
 
-/// Builds an app for one request. `with_segments` controls whether the transcript has
-/// lines; `coachee_override` replaces the coachee fixture.
+/// Builds an app for one request. `coachee_attributed` controls whether the coachee's
+/// meeting participant was attributed to them.
 async fn world(
     status: transcription::TranscriptionStatus,
-    with_segments: bool,
-    coachee_override: Option<users::Model>,
+    coachee_attributed: bool,
 ) -> (World, String) {
     let organization_id = Id::new_v4();
     let coach = coach();
-    let coachee = coachee_override.unwrap_or_else(coachee);
+    let coachee = coachee();
     let role = role(coach.id, organization_id);
     let relationship = relationship(organization_id, coach.id, coachee.id);
     let session = session(relationship.id);
     let transcription = transcription(session.id, status);
-
-    let lines = if with_segments {
-        segments(transcription.id)
-    } else {
-        vec![]
-    };
+    let (participants, lines) = transcript(
+        transcription.id,
+        coach.id,
+        coachee_attributed.then_some(coachee.id),
+    );
 
     let db = authorized(&coach, &role, &session, &relationship)
         .append_query_results([vec![transcription.clone()]])
         .append_query_results([lines])
+        .append_query_results([participants])
         .append_query_results([vec![relationship.clone()]])
         .append_query_results([vec![coach.clone()]])
         .append_query_results([vec![coachee.clone()]])
@@ -646,6 +689,7 @@ async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
     let db = authorized(&coach, &role, &session, &relationship)
         .append_query_results([vec![queued.clone()]])
         .append_query_results([Vec::<transcript_segment::Model>::new()])
+        .append_query_results([Vec::<transcript_participant::Model>::new()])
         .append_query_results([vec![relationship.clone()]])
         .append_query_results([vec![coach.clone()]])
         .append_query_results([vec![coachee.clone()]])
@@ -663,18 +707,8 @@ async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
 }
 
 #[tokio::test]
-async fn unmatched_participant_is_422() {
-    let stranger = users::Model {
-        first_name: "Nobody".to_string(),
-        last_name: "Here".to_string(),
-        ..coachee()
-    };
-    let (world, cookie) = world(
-        transcription::TranscriptionStatus::Completed,
-        true,
-        Some(stranger),
-    )
-    .await;
+async fn unattributed_participant_is_422() {
+    let (world, cookie) = world(transcription::TranscriptionStatus::Completed, false).await;
 
     let response = get_transcript(
         &world.app,
@@ -720,4 +754,58 @@ async fn non_participant_is_403() {
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(body_string(response).await, "FORBIDDEN");
+}
+
+#[tokio::test]
+async fn segments_carry_their_labels_and_attribution_without_raw_participants() {
+    let organization_id = Id::new_v4();
+    let coach = coach();
+    let coachee = coachee();
+    let role = role(coach.id, organization_id);
+    let relationship = relationship(organization_id, coach.id, coachee.id);
+    let session = session(relationship.id);
+    let transcription_id = Id::new_v4();
+    let (participants, lines) = transcript(transcription_id, coach.id, Some(coachee.id));
+
+    // Segments are scoped to the session by their own query, so no transcription row is read.
+    let db = authorized(&coach, &role, &session, &relationship)
+        .append_query_results([lines])
+        .append_query_results([participants])
+        .append_query_results([vec![relationship.clone()]])
+        .append_query_results([vec![coach.clone()]])
+        .append_query_results([vec![coachee.clone()]])
+        .into_connection();
+    let app = build_app(Arc::new(db));
+    let cookie = login_cookie(&app).await;
+
+    let request = Request::builder()
+        .uri(format!(
+            "/coaching_sessions/{}/transcriptions/{transcription_id}/transcription_segments",
+            session.id
+        ))
+        .header("cookie", &cookie)
+        .header("x-version", "1.0.0")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_json(response).await;
+    let items = body["data"].as_array().expect("data must be a list");
+    let labels: Vec<&str> = items
+        .iter()
+        .map(|item| item["speaker_label"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(labels, ["Test User", "Caleb Bourg", "Guest"]);
+    assert_eq!(items[0]["speaker_user_id"], serde_json::json!(coach.id));
+    assert_eq!(items[0]["speaker_role"], "coach");
+    assert_eq!(items[1]["speaker_role"], "coachee");
+    assert_eq!(items[2]["speaker_user_id"], serde_json::Value::Null);
+    items.iter().for_each(|item| {
+        ["speaker_label", "speaker_user_id", "speaker_role"]
+            .iter()
+            .for_each(|key| assert!(item.get(*key).is_some(), "missing {key}: {item}"));
+        assert!(item.get("participant_id").is_none(), "{item}");
+    });
 }

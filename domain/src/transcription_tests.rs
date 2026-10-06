@@ -4,6 +4,7 @@ use sea_orm::{DatabaseBackend, MockDatabase};
 
 use super::*;
 use crate::coaching_relationships;
+use crate::transcript_participant::{MatchSource, Model as Participant};
 
 fn session(coaching_relationship_id: Id) -> coaching_sessions::Model {
     let now = Utc::now();
@@ -89,12 +90,32 @@ fn transcription(coaching_session_id: Id, status: TranscriptionStatus) -> Model 
     }
 }
 
-fn segment(transcription_id: Id, label: &str, text: &str, start_ms: i32) -> Segment {
-    Segment {
+fn participant(
+    transcription_id: Id,
+    name: &str,
+    attributed_to: Option<(Id, MatchSource)>,
+) -> Participant {
+    Participant {
         id: Id::new_v4(),
         transcription_id,
-        participant_id: None,
-        speaker_label: label.to_owned(),
+        provider_participant_id: Id::new_v4().to_string(),
+        display_name: Some(name.to_owned()),
+        is_host: None,
+        platform: None,
+        platform_account_id: None,
+        extra_data: None,
+        user_id: attributed_to.map(|(user_id, _)| user_id),
+        match_source: attributed_to.map(|(_, source)| source),
+        created_at: Utc::now().into(),
+    }
+}
+
+fn segment(by: &Participant, text: &str, start_ms: i32) -> Segment {
+    Segment {
+        id: Id::new_v4(),
+        transcription_id: by.transcription_id,
+        participant_id: Some(by.id),
+        speaker_label: by.display_name.clone().unwrap_or_default(),
         text: text.to_owned(),
         start_ms,
         end_ms: start_ms + 1000,
@@ -104,12 +125,30 @@ fn segment(transcription_id: Id, label: &str, text: &str, start_ms: i32) -> Segm
     }
 }
 
-fn segments(transcription_id: Id) -> Vec<Segment> {
-    vec![
-        segment(transcription_id, "Jim H", "Good morning.", 0),
-        segment(transcription_id, "Caleb Bourg", "Morning.", 4000),
-        segment(transcription_id, "Guest", "Hi both.", 9000),
-    ]
+/// Coach (typed `J. Hodapp`), coachee (typed `Caleb Bourg`, attributed only when
+/// `coachee_id` is given), and an unattributed `Guest`, with one line each.
+fn transcript(
+    transcription_id: Id,
+    coach_id: Id,
+    coachee_id: Option<Id>,
+) -> (Vec<Participant>, Vec<Segment>) {
+    let coach = participant(
+        transcription_id,
+        "J. Hodapp",
+        Some((coach_id, MatchSource::Account)),
+    );
+    let coachee = participant(
+        transcription_id,
+        "Caleb Bourg",
+        coachee_id.map(|id| (id, MatchSource::Elimination)),
+    );
+    let guest = participant(transcription_id, "Guest", None);
+    let segments = vec![
+        segment(&coach, "Good morning.", 0),
+        segment(&coachee, "Morning.", 4000),
+        segment(&guest, "Hi both.", 9000),
+    ];
+    (vec![coach, coachee, guest], segments)
 }
 
 fn not_found() -> DomainErrorKind {
@@ -193,10 +232,12 @@ async fn export_plain_text_renders_the_relationship_participants() {
     let relationship = relationship(coach.id, coachee.id);
     let session = session(relationship.id);
     let row = transcription(session.id, TranscriptionStatus::Completed);
+    let (participants, segments) = transcript(row.id, coach.id, Some(coachee.id));
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[row.clone()]])
-        .append_query_results([segments(row.id)])
+        .append_query_results([segments])
+        .append_query_results([participants])
         .append_query_results([[relationship]])
         .append_query_results([[coach]])
         .append_query_results([[coachee]])
@@ -209,6 +250,7 @@ async fn export_plain_text_renders_the_relationship_participants() {
     assert_eq!(rendered.filename, "transcript-2026-09-21-filtered.txt");
     assert!(rendered.body.contains("Speakers: Jim H\n"));
     assert!(rendered.body.contains("[0:00] Jim H: Good morning.\n"));
+    assert!(!rendered.body.contains("J. Hodapp"));
     assert!(!rendered.body.contains("Caleb Bourg"));
     assert!(!rendered.body.contains("Guest"));
 }
@@ -227,10 +269,12 @@ async fn export_plain_text_dates_the_file_in_the_coach_timezone() {
         .and_then(|date| date.and_hms_opt(1, 30, 0))
         .unwrap_or_default();
     let row = transcription(session.id, TranscriptionStatus::Completed);
+    let (participants, segments) = transcript(row.id, coach.id, Some(coachee.id));
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[row.clone()]])
-        .append_query_results([segments(row.id)])
+        .append_query_results([segments])
+        .append_query_results([participants])
         .append_query_results([[relationship]])
         .append_query_results([[coach]])
         .append_query_results([[coachee]])
@@ -247,14 +291,17 @@ async fn export_plain_text_dates_the_file_in_the_coach_timezone() {
 #[tokio::test]
 async fn export_plain_text_reports_an_unidentified_role() {
     let coach = coach();
-    let coachee = user("Nobody", "Here", None);
+    let coachee = coachee();
     let relationship = relationship(coach.id, coachee.id);
     let session = session(relationship.id);
     let row = transcription(session.id, TranscriptionStatus::Completed);
+    // The coachee spoke but was never attributed, so the name alone identifies no one.
+    let (participants, segments) = transcript(row.id, coach.id, None);
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[row.clone()]])
-        .append_query_results([segments(row.id)])
+        .append_query_results([segments])
+        .append_query_results([participants])
         .append_query_results([[relationship]])
         .append_query_results([[coach]])
         .append_query_results([[coachee]])
@@ -262,7 +309,7 @@ async fn export_plain_text_reports_an_unidentified_role() {
 
     let error = export_plain_text(&db, &session, row.id, &[SpeakerRole::Coachee])
         .await
-        .expect_err("a coachee with no matching label must not export");
+        .expect_err("a coachee with no attributed speaker must not export");
 
     assert_eq!(
         error.error_kind,
@@ -280,16 +327,18 @@ async fn export_plain_text_reports_an_unidentified_role() {
 }
 
 #[tokio::test]
-async fn read_with_speakers_resolves_roles_in_appearance_order() {
+async fn read_with_speakers_labels_roles_in_speaking_order() {
     let coach = coach();
     let coachee = coachee();
     let relationship = relationship(coach.id, coachee.id);
     let session = session(relationship.id);
     let row = transcription(session.id, TranscriptionStatus::Queued);
+    let (participants, segments) = transcript(row.id, coach.id, Some(coachee.id));
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[row.clone()]])
-        .append_query_results([segments(row.id)])
+        .append_query_results([segments])
+        .append_query_results([participants])
         .append_query_results([[relationship]])
         .append_query_results([[coach]])
         .append_query_results([[coachee]])
@@ -326,6 +375,7 @@ async fn read_with_speakers_is_empty_without_segments() {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[row.clone()]])
         .append_query_results([Vec::<Segment>::new()])
+        .append_query_results([Vec::<Participant>::new()])
         .append_query_results([[relationship]])
         .append_query_results([[coach]])
         .append_query_results([[coachee]])
@@ -336,6 +386,21 @@ async fn read_with_speakers_is_empty_without_segments() {
         .expect("a transcription without segments should still read");
 
     assert!(result.speakers.is_empty());
+}
+
+#[tokio::test]
+async fn read_segments_stops_after_finding_no_segments() {
+    let session = session(Id::new_v4());
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([Vec::<Segment>::new()])
+        .into_connection();
+
+    let segments = read_segments(&db, &session, Id::new_v4())
+        .await
+        .expect("an empty transcript reads as empty");
+
+    assert!(segments.is_empty());
+    assert_eq!(statements(db).len(), 1);
 }
 
 #[tokio::test]
