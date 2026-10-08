@@ -48,6 +48,7 @@ pub mod organization;
 pub mod password_policy;
 pub mod password_reset;
 pub mod tiptap_metrics;
+pub(crate) mod transcript_attribution;
 pub mod transcript_export;
 pub mod transcript_participant;
 pub mod transcript_segment;
