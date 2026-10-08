@@ -74,9 +74,9 @@ set -a; source .env.backfill; set +a
 ```
 
 > [!NOTE]
-> If the binary exits naming another required variable, add it to `.env.backfill` with a harmless
-> value (the backfill does not send email or use collaboration services). The exact list is
-> finalized when the binary lands; update this section then.
+> No other variables are required: every other setting the backend reads has a default or is
+> optional, and the backfill does not send email or use collaboration services. Without
+> `RECALL_AI_API_KEY` the binary exits before touching the database.
 
 ## 3. Dry run (read-only)
 
@@ -93,10 +93,10 @@ directory (no names or transcript text, just ids, outcomes, and counts):
 | Column | Meaning |
 |---|---|
 | `transcription_id`, `coaching_session_id` | which transcript |
-| `outcome` | `would_attribute`, `already_done`, `segments_differ`, `recall_missing`, `not_google_meet`, `error` |
+| `outcome` | `would_attribute` (dry run) or `attributed` (apply), `already_done`, `segments_differ`, `recall_missing`, `not_google_meet`, `error` |
 | `speakers` | speakers Recall reports |
 | `coach`, `coachee` | `yes` / `no`: would each be identified |
-| `detail` | short reason for anything that is not `would_attribute` (never a name or text) |
+| `detail` | short reason for anything that is not `would_attribute` or `attributed` (never a name or text) |
 
 Optional:
 
@@ -125,7 +125,7 @@ Optional:
    ```
 5. Verify on the fork:
    - the fingerprint from step 3 is **unchanged**;
-   - `SELECT outcome, count(*)` from the CSV matches the dry run's `would_attribute` count;
+   - the apply CSV's `attributed` count matches the dry run's `would_attribute` count;
    - spot-check two attributed transcriptions with the attribution query in
      `transcript_speaker_attribution_manual_testing.md` section 1.4;
    - rerunning the dry run against the fork reports `already_done` for them and nothing new.
@@ -148,7 +148,7 @@ Optional:
 ## Undo
 
 The backfill only inserts participant rows and fills `participant_id`; it never changes text. To undo
-it for the transcriptions it applied (their ids are the `would_attribute` rows of the apply run's
+it for the transcriptions it applied (their ids are the `attributed` rows of the apply run's
 CSV):
 
 ```sql
