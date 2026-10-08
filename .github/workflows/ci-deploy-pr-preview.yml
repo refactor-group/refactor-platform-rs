@@ -452,9 +452,9 @@ jobs:
                   cache: "npm"
                   cache-dependency-path: package-lock.json
 
-            # Cache Next.js build output for faster subsequent builds
-            - name: Cache Next.js build
-              uses: actions/cache@v4
+            # Restore-only: this job builds untrusted PR code, so it must never save a cache
+            - name: Restore Next.js build cache
+              uses: actions/cache/restore@v4
               with:
                   path: .next/cache
                   key: ${{ runner.os }}-nextjs-test-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
