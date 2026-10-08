@@ -115,85 +115,19 @@ async fn main() {
     web::init_server(web_state).await.unwrap();
 }
 
-// This is the parent test "runner" that initiates all other crate
-// unit/integration tests.
+// Runs the mock-gated suites so a plain `cargo test` covers them too.
 #[cfg(test)]
 mod all_tests {
-    use log::LevelFilter;
-    use service::config::Config;
-    use service::logging::Logger;
-    use simplelog::{error, info};
     use std::process::Command;
 
-    #[tokio::test]
-    async fn main() {
-        // Use Config::default() (no .env load, no real CLI args) so that the
-        // child cargo processes spawned below inherit a clean env. Loading
-        // .env here would pollute the parent process and break tests like
-        // domain::emails::tests::test_send_*_missing_template_id.
-        let mut config = Config::default();
-        config.log_level_filter = LevelFilter::Trace;
-        Logger::init_logger(&config);
+    #[test]
+    fn mock_gated_suites_pass() {
+        let status = Command::new(env!("CARGO"))
+            .args(["test", "-p", "entity_api", "-p", "domain", "-p", "web"])
+            .args(["--features", "domain/mock,web/mock"])
+            .status()
+            .expect("failed to spawn cargo");
 
-        let mut exit_codes = Vec::new();
-
-        // Run tests with mocking
-        let mock_exit_codes = run_tests(crates_to_test_with_mocking(), &["--features", "mock"]);
-        exit_codes.extend(mock_exit_codes);
-
-        // Run regular tests
-        let test_exit_codes = run_tests(crates_to_test(), &[]);
-        exit_codes.extend(test_exit_codes);
-        if exit_codes.iter().any(|code| *code != 0i32) {
-            error!("** One or more crate tests failed.");
-            // Will fail CI
-            std::process::exit(1);
-        }
-        // Will pass CI
-        std::process::exit(0);
-
-        fn crates_to_test_with_mocking() -> Vec<String> {
-            vec!["entity_api".to_string(), "web".to_string()]
-        }
-
-        fn crates_to_test() -> Vec<String> {
-            vec!["domain".to_string()]
-        }
-
-        fn run_tests(crates: Vec<String>, args: &[&str]) -> Vec<i32> {
-            let mut exit_codes = Vec::new();
-
-            for crate_name in crates.iter() {
-                let mut command = Command::new("cargo");
-
-                info!("<b>Running tests for {:?} crate</b>\\r\\n", crate_name);
-
-                command.args(["test"]);
-                command.args(args);
-                command.args(["-p", crate_name]);
-
-                let output = command.output().unwrap();
-
-                match output.status.success() {
-                    true => {
-                        info!(
-                            "<b>All {:?} tests completed successfully.\\r\\n",
-                            crate_name
-                        )
-                    }
-                    false => error!(
-                        "<b>{:?} tests completed with errors ({})</b>\\r\\n",
-                        crate_name, output.status
-                    ),
-                }
-
-                info!("{}", String::from_utf8_lossy(output.stdout.as_slice()));
-                info!("{}", String::from_utf8_lossy(output.stderr.as_slice()));
-
-                exit_codes.push(output.status.code().unwrap());
-            }
-
-            exit_codes
-        }
+        assert!(status.success(), "mock-gated tests failed: {status}");
     }
 }

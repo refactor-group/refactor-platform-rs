@@ -3748,7 +3748,6 @@ dependencies = [
  "meeting-auth",
  "openssl-sys",
  "service",
- "simplelog",
  "sse",
  "tokio",
  "web",
