@@ -21,9 +21,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # sccache + incremental compilation are mutually exclusive — sccache caches
-  # whole-crate codegen units, while incremental layers per-edit deltas on top
-  # of an already-built crate. Disable incremental so sccache can do its job.
+  # Incremental artifacts are never reused in CI; skipping them keeps the
+  # cached target dir small.
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: short
   REGISTRY: ghcr.io
@@ -31,9 +30,6 @@ env:
   BRANCH_IMAGE: ghcr.io/${{ github.repository }}/${{ github.head_ref || github.ref_name }}
   # Docker layer cache, one tag per image.
   BUILD_CACHE: ghcr.io/${{ github.repository }}/buildcache
-  # Wire sccache as the rustc wrapper in every job that compiles Rust.
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # === LINT JOB (Fast Feedback) ===
@@ -69,15 +65,14 @@ jobs:
       - name: Run format check
         run: cargo fmt --all -- --check
 
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
+      # Each job keeps its own cache: clippy output cannot serve a real build.
+      # Only main saves, so PRs never evict the entries they restore from.
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "main"
-          key: "lint"
+          shared-key: "lint"
           cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -89,9 +84,6 @@ jobs:
       # --all-targets clippy above skips it; lint it explicitly.
       - name: Run clippy (docs-collab-server)
         run: cargo clippy -p docs-collab-server --all-targets -- -D warnings
-
-      - name: Show sccache stats
-        run: sccache --show-stats
 
   # === TEST JOB ===
   test:
@@ -115,17 +107,12 @@ jobs:
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" >> $GITHUB_ENV
 
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
       - name: Use cached dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "main"
-          key: "test"
+          shared-key: "test"
           cache-all-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
 
       - name: Build
         run: cargo build --all-targets
@@ -139,9 +126,6 @@ jobs:
       # without a live Postgres.
       - name: Run docs-collab-server tests
         run: cargo test -p docs-collab-server
-
-      - name: Show sccache stats
-        run: sccache --show-stats
 
   # === DOCKER BUILD & PUSH JOB ===
   # One leg per image, in parallel with each other and with lint and test.

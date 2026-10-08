@@ -50,7 +50,7 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 
 **Key Features:**
 - ✅ Quality gates (`latest` only moves after lint/test pass)
-- ✅ Rust dependency caching (Swatinem/rust-cache)
+- ✅ Rust dependency caching (Swatinem/rust-cache; one cache per job, saved on pushes to main only)
 - ✅ Docker layer caching in GHCR (`refactor-platform-rs/buildcache:{image}`; written on pushes to main only, read by PRs)
 - ✅ Build provenance attestations (main branch only)
 

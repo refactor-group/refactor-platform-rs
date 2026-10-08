@@ -275,8 +275,7 @@ jobs:
             - name: Use cached dependencies
               uses: Swatinem/rust-cache@v2
               with:
-                  shared-key: "pr-preview"
-                  key: "lint"
+                  shared-key: "pr-preview-lint"
                   cache-all-crates: true
 
             # Run clippy to catch common mistakes and improve code quality
@@ -384,8 +383,7 @@ jobs:
             - name: Use cached dependencies
               uses: Swatinem/rust-cache@v2
               with:
-                  shared-key: "pr-preview"
-                  key: "test"
+                  shared-key: "pr-preview-test"
                   cache-all-crates: true
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
