@@ -426,16 +426,15 @@ DELETE FROM refactor_platform.meeting_recordings WHERE id = '41900000-0000-0000-
 
 ## Part C: backfill (operator)
 
-1. `cargo run --bin backfill_transcript_speakers` (dry run is the default).
+Follow `transcript_speaker_attribution_backfill.md` (run from a local dev machine: read-only dry run
+against production, apply on a fork, then production).
 
-**Pass:** prints counts of completed transcriptions without participants, how many Recall
-still returns, and how many would be attributed. Writes nothing (1.4 unchanged).
-
-2. Run again with `--apply`, then a third time with `--apply`.
-
-**Pass:** second run writes participants and attribution for the recoverable transcriptions;
-third run reports zero to do. Transcriptions whose Recall payload is gone are reported as
-skipped and keep working through the download endpoint with unattributed speakers.
+**Pass:**
+- the dry run writes nothing and its CSV accounts for every completed transcription without
+  participants;
+- on the fork and on production, the segment fingerprint is unchanged after applying;
+- a second dry run after applying reports nothing left to attribute;
+- a backfilled session shows profile names and a working coach-only download.
 
 ## Results
 
