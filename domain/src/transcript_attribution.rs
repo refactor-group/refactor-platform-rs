@@ -2,7 +2,6 @@
 //!
 //! The coach is identified by the meeting host and by the platform's attendee list; when both
 //! answer they must agree. The coachee is then found by elimination among the other speakers.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::BTreeSet;
 

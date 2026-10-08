@@ -128,8 +128,15 @@ pub struct Timestamp {
 #[derive(Debug, Deserialize)]
 struct BotDetailResponse {
     id: String,
-    meeting_url: Option<String>,
+    meeting_url: Option<RecallMeetingUrl>,
     status_changes: Option<Vec<RecallBotStatusChange>>,
+}
+
+/// The meeting a bot joined, as Recall.ai describes it.
+#[derive(Debug, Deserialize)]
+struct RecallMeetingUrl {
+    meeting_id: Option<String>,
+    platform: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -353,7 +360,11 @@ fn bot_detail_to_info(detail: BotDetailResponse) -> recording_types::Info {
 
     recording_types::Info {
         id: detail.id,
-        meeting_url: detail.meeting_url.unwrap_or_default(),
+        meeting_url: String::new(),
+        meeting_id: detail.meeting_url.and_then(|url| {
+            debug!("Recall bot meeting platform: {:?}", url.platform);
+            url.meeting_id
+        }),
         status: current_status,
         artifacts: None,
         error_message,
@@ -783,6 +794,7 @@ impl recording_bot::Provider for Provider {
         Ok(recording_types::Info {
             id: bot.id,
             meeting_url: config.meeting_url,
+            meeting_id: None,
             status: recording_types::Status::Pending,
             artifacts: None,
             error_message: None,
@@ -907,6 +919,10 @@ impl transcription_trait::Provider for Provider {
 #[cfg(test)]
 #[path = "participants_tests.rs"]
 mod participants_tests;
+
+#[cfg(test)]
+#[path = "bot_detail_tests.rs"]
+mod bot_detail_tests;
 
 #[cfg(test)]
 mod tests {

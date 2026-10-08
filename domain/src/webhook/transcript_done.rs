@@ -3,13 +3,16 @@ use crate::transcription::{self as transcription_api, TranscriptionStatus};
 use entity::Id;
 use events::{DomainEvent, EventPublisher};
 use log::*;
-use meeting_ai::traits::transcription as transcription_trait;
+use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use sea_orm::DatabaseConnection;
+use service::config::Config;
 use std::sync::Arc;
 
 pub async fn handle(
     db: Arc<DatabaseConnection>,
     transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
+    recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
+    config: Config,
     event_publisher: EventPublisher,
     transcript_id: &str,
 ) -> Result<(), Error> {
@@ -48,6 +51,8 @@ pub async fn handle(
         let result = crate::transcription::handle_completion(
             &db,
             transcription_provider.as_deref(),
+            recording_bot_provider.as_deref(),
+            &config,
             &transcript_id,
         )
         .await;
@@ -146,7 +151,15 @@ mod tests {
         );
 
         let publisher = EventPublisher::new();
-        let result = handle(Arc::clone(&db), None, publisher, "ext-td-test").await;
+        let result = handle(
+            Arc::clone(&db),
+            None,
+            None,
+            Config::default(),
+            publisher,
+            "ext-td-test",
+        )
+        .await;
 
         assert!(result.is_ok());
     }
@@ -162,7 +175,15 @@ mod tests {
         );
 
         let publisher = EventPublisher::new();
-        let result = handle(Arc::clone(&db), None, publisher, "nonexistent-id").await;
+        let result = handle(
+            Arc::clone(&db),
+            None,
+            None,
+            Config::default(),
+            publisher,
+            "nonexistent-id",
+        )
+        .await;
 
         assert!(result.is_ok());
     }

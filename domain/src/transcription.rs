@@ -8,24 +8,32 @@ pub use entity_api::transcription::{
 
 use std::collections::HashMap;
 
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use entity::meeting_recording::Model as RecordingModel;
+use entity::transcript_participant::ActiveModel as ParticipantActiveModel;
 use entity::transcript_segment::{ActiveModel as SegmentActiveModel, Model as Segment};
 use entity::Id;
+use entity_api::error::Error as EntityApiError;
 use entity_api::{
-    coaching_relationship, transcript_participant as participant_api,
+    coaching_relationship, coaching_session as coaching_session_api,
+    meeting_recording as recording_api, transcript_participant as participant_api,
     transcript_segment as segment_api, transcription as transcription_api,
 };
 use log::*;
-use meeting_ai::traits::transcription as transcription_trait;
+use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use meeting_ai::types::transcription as transcription_types;
-use sea_orm::{ActiveValue::Set, DatabaseConnection};
+use sea_orm::{ActiveValue::Set, DatabaseConnection, TransactionTrait};
 use serde::Serialize;
+use service::config::Config;
 use utoipa::ToSchema;
 
 use crate::coaching_sessions;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::gateway::google_meet;
+use crate::meeting_provider::Provider as MeetingProvider;
+use crate::oauth_connection::{external_account_id, get_valid_access_token};
+use crate::transcript_attribution::{attribute, Attribution, Evidence};
 use crate::transcript_export::{self, Labeled, LabeledSegment, Rendered, Speaker, SpeakerRole};
 use crate::users;
 
@@ -109,15 +117,16 @@ pub async fn start(
     Ok(transcription_api::create(db, model).await?)
 }
 
-/// Fetches the completed transcript from the provider and persists segments.
+/// Fetches the completed transcript, attributes its speakers, and persists them with its segments.
 ///
-/// Called after `transcript.done` webhook:
-/// 1. Retrieves coalesced transcript segments from the provider
-/// 2. Updates the `transcriptions` row with word count and Completed status
-/// 3. Inserts all utterance segments as `transcript_segments`
+/// Called after the `transcript.done` webhook. Speaker attribution never fails the transcript: any
+/// evidence that cannot be gathered leaves the affected speakers unattributed. The transcription is
+/// marked `Completed` only after its participants and segments are committed.
 pub async fn handle_completion(
     db: &DatabaseConnection,
     provider: Option<&dyn transcription_trait::Provider>,
+    recording_bot: Option<&dyn recording_bot::Provider>,
+    config: &Config,
     external_id: &str,
 ) -> Result<(), Error> {
     info!(
@@ -147,13 +156,21 @@ pub async fn handle_completion(
         .await
         .map_err(Error::from)?;
 
+    let attributions = attribute_speakers(
+        db,
+        recording_bot,
+        config,
+        &transcription,
+        &result.participants,
+    )
+    .await;
+    persist_completion(db, &transcription, &result, &attributions).await?;
+
     let word_count: usize = result
         .segments
         .iter()
         .map(|s| s.text.split_whitespace().count())
         .sum();
-
-    let segment_count = result.segments.len();
 
     transcription_api::update_status(
         db,
@@ -165,39 +182,303 @@ pub async fn handle_completion(
     )
     .await?;
 
-    if result.segments.is_empty() {
-        warn!(
-            "No segments in transcript external_id={} — no segments inserted",
-            external_id
-        );
-    } else {
-        let now = chrono::Utc::now();
-        let segment_models: Vec<SegmentActiveModel> = result
-            .segments
-            .into_iter()
-            .map(|seg| SegmentActiveModel {
-                id: Set(Id::new_v4()),
-                participant_id: Set(None),
-                transcription_id: Set(transcription.id),
-                speaker_label: Set(seg.speaker),
-                text: Set(seg.text),
-                start_ms: Set(i32::try_from(seg.start_ms).unwrap_or(i32::MAX)),
-                end_ms: Set(i32::try_from(seg.end_ms).unwrap_or(i32::MAX)),
-                confidence: Set(None),
-                sentiment: Set(None),
-                created_at: Set(now.into()),
-            })
-            .collect();
-
-        segment_api::create_batch(db, segment_models).await?;
-    }
-
     info!(
-        "Transcript completion handled for session_id={}: {} segments inserted",
-        transcription.coaching_session_id, segment_count
+        "Transcript completion handled for transcription {}: {} segments, {} speakers, {} attributed",
+        transcription.id,
+        result.segments.len(),
+        attributions.len(),
+        attributions.iter().filter(|a| a.user_id.is_some()).count()
     );
 
     Ok(())
+}
+
+/// Stores the transcript's participants with their attribution and its segments linked to them,
+/// in one transaction.
+pub(crate) async fn persist_completion(
+    db: &DatabaseConnection,
+    transcription: &Model,
+    result: &transcription_types::Transcription,
+    attributions: &[Attribution],
+) -> Result<(), Error> {
+    if result.participants.is_empty() && result.segments.is_empty() {
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    let attribution_of: HashMap<&str, &Attribution> = attributions
+        .iter()
+        .map(|a| (a.provider_id.as_str(), a))
+        .collect();
+    let participant_rows: Vec<ParticipantActiveModel> = result
+        .participants
+        .iter()
+        .map(|p| {
+            let attribution = attribution_of.get(p.provider_id.as_str());
+            ParticipantActiveModel {
+                id: Set(Id::new_v4()),
+                transcription_id: Set(transcription.id),
+                provider_participant_id: Set(p.provider_id.clone()),
+                display_name: Set(p.display_name.clone()),
+                is_host: Set(p.is_host),
+                platform: Set(p.platform.clone()),
+                platform_account_id: Set(p.account_id.clone()),
+                extra_data: Set(p.extra_data.clone()),
+                user_id: Set(attribution.and_then(|a| a.user_id)),
+                match_source: Set(attribution.and_then(|a| a.source)),
+                created_at: Set(now.into()),
+            }
+        })
+        .collect();
+
+    let txn = db.begin().await.map_err(EntityApiError::from)?;
+
+    let participants = participant_api::create_batch(&txn, participant_rows).await?;
+    let row_of: HashMap<&str, Id> = participants
+        .iter()
+        .map(|p| (p.provider_participant_id.as_str(), p.id))
+        .collect();
+    let segment_rows: Vec<SegmentActiveModel> = result
+        .segments
+        .iter()
+        .map(|seg| SegmentActiveModel {
+            id: Set(Id::new_v4()),
+            participant_id: Set(seg
+                .participant_id
+                .as_deref()
+                .and_then(|provider_id| row_of.get(provider_id).copied())),
+            transcription_id: Set(transcription.id),
+            speaker_label: Set(seg.speaker.clone()),
+            text: Set(seg.text.clone()),
+            start_ms: Set(i32::try_from(seg.start_ms).unwrap_or(i32::MAX)),
+            end_ms: Set(i32::try_from(seg.end_ms).unwrap_or(i32::MAX)),
+            confidence: Set(None),
+            sentiment: Set(None),
+            created_at: Set(now.into()),
+        })
+        .collect();
+    segment_api::create_batch(&txn, segment_rows).await?;
+
+    txn.commit().await.map_err(EntityApiError::from)?;
+
+    Ok(())
+}
+
+/// Evidence gathered for attribution, owned so `Evidence` can borrow from it.
+#[derive(Default)]
+struct Gathered {
+    recorded_session_space: bool,
+    coach_account_id: Option<String>,
+    attendees: Option<Vec<google_meet::Participant>>,
+}
+
+impl Gathered {
+    fn evidence(&self) -> Evidence<'_> {
+        Evidence {
+            recorded_session_space: self.recorded_session_space,
+            coach_account_id: self.coach_account_id.as_deref(),
+            attendees: self.attendees.as_deref(),
+        }
+    }
+}
+
+/// Attributes the speakers to the session's coach and coachee; nobody when the people are unknown.
+async fn attribute_speakers(
+    db: &DatabaseConnection,
+    recording_bot: Option<&dyn recording_bot::Provider>,
+    config: &Config,
+    transcription: &Model,
+    speakers: &[transcription_types::Participant],
+) -> Vec<Attribution> {
+    let Ok((session, coach_id, coachee_id)) =
+        session_people(db, transcription).await.inspect_err(|e| {
+            warn!(
+                "Attribution for transcription {}: loading the session's coach and coachee failed: {e:?}",
+                transcription.id
+            )
+        })
+    else {
+        return unattributed(speakers);
+    };
+
+    let gathered =
+        gather_evidence(db, recording_bot, config, transcription, &session, coach_id).await;
+    attribute(speakers, coach_id, coachee_id, &gathered.evidence())
+}
+
+/// The transcription's session with the ids of its coach and coachee.
+async fn session_people(
+    db: &DatabaseConnection,
+    transcription: &Model,
+) -> Result<(coaching_sessions::Model, Id, Id), Error> {
+    let session = coaching_session_api::find_by_id(db, transcription.coaching_session_id).await?;
+    let (coach, coachee) =
+        coaching_relationship::find_coach_and_coachee(db, session.coaching_relationship_id).await?;
+    Ok((session, coach.id, coachee.id))
+}
+
+fn unattributed(speakers: &[transcription_types::Participant]) -> Vec<Attribution> {
+    speakers
+        .iter()
+        .map(|s| Attribution {
+            provider_id: s.provider_id.clone(),
+            user_id: None,
+            source: None,
+        })
+        .collect()
+}
+
+/// Gathers what is known about the coach; every failure degrades the evidence, none is fatal.
+async fn gather_evidence(
+    db: &DatabaseConnection,
+    recording_bot: Option<&dyn recording_bot::Provider>,
+    config: &Config,
+    transcription: &Model,
+    session: &coaching_sessions::Model,
+    coach_id: Id,
+) -> Gathered {
+    let Some(code) = session_meet_code(session) else {
+        debug!(
+            "Attribution for transcription {}: not a Google Meet session",
+            transcription.id
+        );
+        return Gathered::default();
+    };
+    let Some(recording) = recording_of_space(db, recording_bot, transcription, &code).await else {
+        return Gathered::default();
+    };
+
+    let coach_account_id = external_account_id(db, config, coach_id, MeetingProvider::Google)
+        .await
+        .inspect_err(|_| {
+            warn!(
+                "Attribution for transcription {}: looking up the coach's Google account failed",
+                transcription.id
+            )
+        })
+        .ok()
+        .flatten();
+
+    let attendees = match (&coach_account_id, recording.started_at, recording.ended_at) {
+        (Some(_), Some(started_at), Some(ended_at)) => {
+            conference_attendees(
+                db,
+                config,
+                transcription.id,
+                coach_id,
+                &code,
+                (started_at.with_timezone(&Utc), ended_at.with_timezone(&Utc)),
+            )
+            .await
+        }
+        _ => None,
+    };
+
+    Gathered {
+        recorded_session_space: true,
+        coach_account_id,
+        attendees,
+    }
+}
+
+/// The session's Meet code, when it is a Google Meet session.
+fn session_meet_code(session: &coaching_sessions::Model) -> Option<String> {
+    session
+        .provider
+        .filter(|provider| *provider == MeetingProvider::Google)
+        .and(session.meeting_url.as_deref())
+        .and_then(google_meet::meeting_code_from_url)
+}
+
+/// The transcription's recording, when its bot recorded the meeting with the given code.
+async fn recording_of_space(
+    db: &DatabaseConnection,
+    recording_bot: Option<&dyn recording_bot::Provider>,
+    transcription: &Model,
+    code: &str,
+) -> Option<RecordingModel> {
+    let Some(recording_bot) = recording_bot else {
+        warn!(
+            "Attribution for transcription {}: recording bot provider not configured",
+            transcription.id
+        );
+        return None;
+    };
+
+    let recording = recording_api::find_by_id(db, transcription.meeting_recording_id)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Attribution for transcription {}: loading the recording failed: {e:?}",
+                transcription.id
+            )
+        })
+        .ok()?
+        .or_else(|| {
+            warn!(
+                "Attribution for transcription {}: the recording does not exist",
+                transcription.id
+            );
+            None
+        })?;
+
+    let info = recording_bot
+        .get_bot_status(&recording.bot_id)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Attribution for transcription {}: reading the recording bot failed: {e}",
+                transcription.id
+            )
+        })
+        .ok()?;
+
+    if info.meeting_id.as_deref() == Some(code) {
+        Some(recording)
+    } else {
+        warn!(
+            "Attribution for transcription {}: the bot recorded a different meeting than the session's",
+            transcription.id
+        );
+        None
+    }
+}
+
+/// Attendees of the recorded conference, read with the coach's Google token.
+async fn conference_attendees(
+    db: &DatabaseConnection,
+    config: &Config,
+    transcription_id: Id,
+    coach_id: Id,
+    code: &str,
+    (started_at, ended_at): (DateTime<Utc>, DateTime<Utc>),
+) -> Option<Vec<google_meet::Participant>> {
+    let warn_step = |step: &str| {
+        warn!("Attribution for transcription {transcription_id}: {step} failed");
+    };
+
+    let token = get_valid_access_token(db, config, coach_id, MeetingProvider::Google)
+        .await
+        .inspect_err(|_| warn_step("getting the coach's Google token"))
+        .ok()?;
+    let client = google_meet::Client::new(&token, config.google_meet_api_url())
+        .inspect_err(|_| warn_step("building the Google Meet client"))
+        .ok()?;
+
+    match client
+        .conference_participants(code, started_at, ended_at)
+        .await
+    {
+        Ok(Some(attendees)) => Some(attendees),
+        Ok(None) => {
+            warn_step("finding the one conference overlapping the recording");
+            None
+        }
+        Err(_) => {
+            warn_step("listing the conference attendees");
+            None
+        }
+    }
 }
 
 /// Finds a transcription, requiring it to belong to the given coaching session.
@@ -352,5 +633,14 @@ async fn label(
 mod tests;
 
 #[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "transcription_completion_tests.rs"]
+mod completion_tests;
+
+#[cfg(test)]
 #[path = "transcription_sqlite_tests.rs"]
 mod sqlite_tests;
+
+#[cfg(test)]
+#[path = "transcription_completion_sqlite_tests.rs"]
+mod completion_sqlite_tests;

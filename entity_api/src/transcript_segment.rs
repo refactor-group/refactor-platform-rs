@@ -2,16 +2,23 @@ use entity::transcript_segment::{ActiveModel, Column, Entity, Model, Relation};
 use entity::transcription::Column as TranscriptionColumn;
 use entity::Id;
 use log::debug;
-use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, Order, QueryOrder, QuerySelect};
+use sea_orm::{
+    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, Order, QueryOrder,
+    QuerySelect,
+};
 
 use super::error::Error;
 
-/// Inserts multiple transcript segments in a single operation
-pub async fn create_batch(
-    db: &DatabaseConnection,
+/// Inserts multiple transcript segments in a single statement; an empty batch is a no-op.
+pub async fn create_batch<C: ConnectionTrait>(
+    db: &C,
     segments: Vec<ActiveModel>,
 ) -> Result<Vec<Model>, Error> {
     debug!("Inserting {} transcript segments", segments.len());
+
+    if segments.is_empty() {
+        return Ok(vec![]);
+    }
 
     Ok(Entity::insert_many(segments)
         .exec_with_returning(db)
