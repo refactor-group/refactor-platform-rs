@@ -62,6 +62,10 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
+      # Needs no build, so it runs first and fails in seconds.
+      - name: Run format check
+        run: cargo fmt --all -- --check
+
       - name: Run sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -82,9 +86,6 @@ jobs:
       # --all-targets clippy above skips it; lint it explicitly.
       - name: Run clippy (docs-collab-server)
         run: cargo clippy -p docs-collab-server --all-targets -- -D warnings
-
-      - name: Run format check
-        run: cargo fmt --all -- --check
 
       - name: Show sccache stats
         run: sccache --show-stats
