@@ -2,7 +2,7 @@
 
 # Stage 1: prepare dependency recipe
 # Pinned so a new Rust release cannot silently invalidate the layer cache;
-# bump the Rust version deliberately.
+# bump its Rust version together with RUST_TOOLCHAIN in .github/workflows/.
 FROM lukemathwalker/cargo-chef:0.1.78-rust-1.99.0-bookworm AS chef
 WORKDIR /usr/src/app
 
