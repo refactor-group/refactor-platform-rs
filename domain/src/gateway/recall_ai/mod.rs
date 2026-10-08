@@ -136,7 +136,6 @@ struct BotDetailResponse {
 #[derive(Debug, Deserialize)]
 struct RecallMeetingUrl {
     meeting_id: Option<String>,
-    platform: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -361,10 +360,7 @@ fn bot_detail_to_info(detail: BotDetailResponse) -> recording_types::Info {
     recording_types::Info {
         id: detail.id,
         meeting_url: String::new(),
-        meeting_id: detail.meeting_url.and_then(|url| {
-            debug!("Recall bot meeting platform: {:?}", url.platform);
-            url.meeting_id
-        }),
+        meeting_id: detail.meeting_url.and_then(|url| url.meeting_id),
         status: current_status,
         artifacts: None,
         error_message,

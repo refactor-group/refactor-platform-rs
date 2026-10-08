@@ -39,9 +39,9 @@ agree.
 
 ### 1.1 Environments
 
-- **Part A** needs an environment with Recall.ai configured and reachable by Recall
-  webhooks: a PR preview (dispatch `dispatch-pr-preview.yml` with this branch) or
-  production-like staging. Local `localhost` cannot receive Recall webhooks.
+- **Part A** needs Google OAuth and inbound Recall.ai webhooks. PR previews support neither yet
+  (tracked in #435), so run Part A in production after #434 deploys, as post-deploy verification.
+  The attribution rules were also replayed against two real production recordings before merge.
 - **Part B** needs only a local backend on `:4000` from branch
   `419-transcript-speaker-attribution`, migrations applied, DB seeded
   (`cargo run --bin seed_db`).
