@@ -1392,13 +1392,8 @@ mod tests {
         );
     }
 
-    /// Regression guard for the parent test runner in `src/main.rs`. The
-    /// runner calls `Config::default()` and then spawns child cargo
-    /// processes that inherit its env. If `Config::default()` ever started
-    /// loading `.env` (e.g. via a misplaced `dotenvy::dotenv()`), child
-    /// processes would inherit those values and tests like
-    /// `domain::emails::tests::test_send_*_missing_template_id` would
-    /// silently start failing again.
+    /// `Config::default()` must never load `.env`, or its values leak into
+    /// the process env and break tests that expect a setting to be absent.
     #[test]
     #[serial]
     fn default_constructor_does_not_load_env_file() {
