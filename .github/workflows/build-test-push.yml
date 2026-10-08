@@ -1,4 +1,4 @@
-name: Build, Test & Push to GHCR
+name: CI
 
 on:
   push:
@@ -126,11 +126,9 @@ jobs:
       - name: Build
         run: cargo build --all-targets
 
+      # Also runs the mock-gated suites, via the all_tests runner in src/main.rs.
       - name: Run tests
         run: cargo test
-
-      - name: Run mock-gated tests
-        run: cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"
 
       # Excluded from default-members, so `cargo test` above skips it. Runs the
       # unit + frozen protocol-conformance suites; DB-backed tests are ignored
@@ -142,16 +140,21 @@ jobs:
         run: sccache --show-stats
 
   # === DOCKER BUILD & PUSH JOB ===
+  # Runs in parallel with lint and test and pushes only the :<sha> tag. The
+  # promote job moves :latest once everything passes, so :latest (what
+  # production deploys) only ever points at tested code.
   docker:
     name: Build & Push Docker Image
     runs-on: ubuntu-24.04
-    needs: [lint, test]  # Only run if lint and test pass
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     permissions:
       contents: read
       packages: write
-      attestations: write
-      id-token: write
+    outputs:
+      backend_image_name: ${{ steps.tags.outputs.backend_image_name }}
+      backend_digest: ${{ steps.push_backend.outputs.digest }}
+      docs_collab_image_name: ${{ steps.tags.outputs.docs_collab_image_name }}
+      docs_collab_digest: ${{ steps.push_docs_collab.outputs.digest }}
 
     steps:
       - name: Checkout
@@ -169,17 +172,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine Image Tags
+      - name: Determine Image Names
         id: tags
         run: |
           BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF##*/}}
           IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository }}/${BRANCH_NAME}"
-          echo "backend_tags=$IMAGE_NAME:latest,$IMAGE_NAME:${{ github.sha }}" >> $GITHUB_OUTPUT
           echo "backend_image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
-          DOCS_COLLAB_IMAGE_NAME="${IMAGE_NAME}/docs-collab"
-          echo "docs_collab_tags=$DOCS_COLLAB_IMAGE_NAME:latest,$DOCS_COLLAB_IMAGE_NAME:${{ github.sha }}" >> $GITHUB_OUTPUT
-          echo "docs_collab_image_name=$DOCS_COLLAB_IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "docs_collab_image_name=${IMAGE_NAME}/docs-collab" >> $GITHUB_OUTPUT
 
+      # Only pushes to main write the layer cache (exporting it costs ~2 min);
+      # PRs still read it.
       - name: Build and Push Backend Image
         id: push_backend
         uses: docker/build-push-action@v5
@@ -189,9 +191,9 @@ jobs:
           platforms: linux/amd64
           push: true
           provenance: true
-          tags: ${{ steps.tags.outputs.backend_tags }}
+          tags: ${{ steps.tags.outputs.backend_image_name }}:${{ github.sha }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,mode=max' || '' }}
           labels: |
             org.opencontainers.image.title=Refactor Platform Backend
             org.opencontainers.image.description=Rust backend for refactor coaching platform
@@ -207,33 +209,65 @@ jobs:
           platforms: linux/amd64
           push: true
           provenance: true
-          tags: ${{ steps.tags.outputs.docs_collab_tags }}
+          tags: ${{ steps.tags.outputs.docs_collab_image_name }}:${{ github.sha }}
           cache-from: type=gha,scope=docs-collab
-          cache-to: type=gha,scope=docs-collab,mode=max
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=docs-collab,mode=max' || '' }}
           labels: |
             org.opencontainers.image.title=Refactor Platform docs-collab-server
             org.opencontainers.image.description=Self-hosted collaborative document server
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+  # === PROMOTE JOB ===
+  # Points :latest at the images built above, only after lint and test pass.
+  promote:
+    name: Promote Images to latest
+    runs-on: ubuntu-24.04
+    needs: [lint, test, docker]
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    env:
+      BACKEND_IMAGE: ${{ needs.docker.outputs.backend_image_name }}
+      BACKEND_DIGEST: ${{ needs.docker.outputs.backend_digest }}
+      DOCS_COLLAB_IMAGE: ${{ needs.docker.outputs.docs_collab_image_name }}
+      DOCS_COLLAB_DIGEST: ${{ needs.docker.outputs.docs_collab_digest }}
+
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag Images as latest
+        run: |
+          docker buildx imagetools create -t "$BACKEND_IMAGE:latest" "$BACKEND_IMAGE@$BACKEND_DIGEST"
+          docker buildx imagetools create -t "$DOCS_COLLAB_IMAGE:latest" "$DOCS_COLLAB_IMAGE@$DOCS_COLLAB_DIGEST"
+
       - name: Attest Backend Build
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ steps.tags.outputs.backend_image_name }}
-          subject-digest: ${{ steps.push_backend.outputs.digest }}
+          subject-name: ${{ env.BACKEND_IMAGE }}
+          subject-digest: ${{ env.BACKEND_DIGEST }}
           push-to-registry: true
 
       - name: Print Usage Instructions
         run: |
-          echo "🎉 Build, Test & Push completed successfully!"
+          echo "🎉 CI completed successfully!"
           echo ""
-          echo "📦 Backend Image Pushed:"
-          echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:latest"
-          echo "  docker pull ${{ steps.tags.outputs.backend_image_name }}:${{ github.sha }}"
+          echo "📦 Backend Image:"
+          echo "  docker pull $BACKEND_IMAGE:latest"
+          echo "  docker pull $BACKEND_IMAGE:${{ github.sha }}"
           echo ""
-          echo "📦 docs-collab Image Pushed:"
-          echo "  docker pull ${{ steps.tags.outputs.docs_collab_image_name }}:latest"
+          echo "📦 docs-collab Image:"
+          echo "  docker pull $DOCS_COLLAB_IMAGE:latest"
           echo ""
           echo "🚀 Run Backend:"
-          echo "  docker run --rm --env-file .env -p ${{ vars.BACKEND_PORT || '4000' }}:${{ vars.BACKEND_PORT || '4000' }} ${{ steps.tags.outputs.backend_image_name }}:latest"
+          echo "  docker run --rm --env-file .env -p ${{ vars.BACKEND_PORT || '4000' }}:${{ vars.BACKEND_PORT || '4000' }} $BACKEND_IMAGE:latest"

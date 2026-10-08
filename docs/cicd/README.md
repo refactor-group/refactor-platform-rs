@@ -34,24 +34,24 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 
 ## GitHub Actions Workflows
 
-### 1. Branch CI Pipeline
+### 1. Branch CI Pipeline (`CI`)
 **File:** `.github/workflows/build-test-push.yml`
 **Triggers:** Push to main, Pull requests to main, Manual dispatch
-**Documentation:** [workflows/build-test-push.md](workflows/build-test-push.md)
 
 **Jobs:**
-1. **Lint** - Clippy (zero warnings) + rustfmt check
+1. **Lint** - bats suites, Clippy (zero warnings) + rustfmt check
 2. **Test** - Build all targets + run test suite
-3. **Docker** - Build and push images to GHCR (only if lint and test pass)
+3. **Docker** - Build and push images to GHCR tagged `{git-sha}` (runs in parallel with lint and test)
+4. **Promote** - After lint, test, and docker all pass, point `latest` at the docker job's images
 
 **Image Tags:**
-- `ghcr.io/refactor-group/refactor-platform-rs/{branch}:latest`
-- `ghcr.io/refactor-group/refactor-platform-rs/{branch}:{git-sha}`
+- `ghcr.io/refactor-group/refactor-platform-rs/{branch}:latest` (tested code only, set by Promote)
+- `ghcr.io/refactor-group/refactor-platform-rs/{branch}:{git-sha}` (pushed even if tests later fail)
 
 **Key Features:**
-- ✅ Quality gates (lint/test before docker build)
+- ✅ Quality gates (`latest` only moves after lint/test pass)
 - ✅ Rust dependency caching (Swatinem/rust-cache)
-- ✅ Docker layer caching (GitHub Actions cache)
+- ✅ Docker layer caching (GitHub Actions cache; written on pushes to main only, read by PRs)
 - ✅ Build provenance attestations (main branch only)
 
 ### 2. Production Release Builds
