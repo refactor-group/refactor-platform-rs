@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # Base images are pinned by digest; this proposes bumps when their tags move.
+  # Proposes cargo-chef releases for the pinned Rust version; Rust bumps are manual.
   - package-ecosystem: docker
     directories:
       - /
