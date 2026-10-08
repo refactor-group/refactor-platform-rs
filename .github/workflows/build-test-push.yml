@@ -72,7 +72,7 @@ jobs:
         with:
           shared-key: "lint"
           cache-all-crates: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/rust-cache-and-chef-pin' }}
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -112,7 +112,7 @@ jobs:
         with:
           shared-key: "test"
           cache-all-crates: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/rust-cache-and-chef-pin' }}
 
       - name: Build
         run: cargo build --all-targets
