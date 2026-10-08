@@ -38,7 +38,7 @@ jobs:
   # a regex regression fails before clippy/test/docker eat their full
   # runtime. Keeps the Actions sidebar uncluttered (no separate "bats" job).
   lint:
-    name: Lint & Format
+    name: Lint & Format Check
     runs-on: ubuntu-24.04
 
     steps:
@@ -222,7 +222,7 @@ jobs:
   # === PROMOTE JOB ===
   # Points :latest at the images built above, only after lint and test pass.
   promote:
-    name: Promote Images to latest
+    name: Tag Images as Latest
     runs-on: ubuntu-24.04
     needs: [lint, test, docker]
     if: github.event_name == 'push' || github.event_name == 'pull_request'

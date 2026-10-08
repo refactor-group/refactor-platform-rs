@@ -39,13 +39,13 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 **Triggers:** Push to main, Pull requests to main, Manual dispatch
 
 **Jobs:**
-1. **Lint** - bats suites, Clippy (zero warnings) + rustfmt check
-2. **Test** - Build all targets + run test suite
-3. **Docker** - Build and push images to GHCR tagged `{git-sha}` (runs in parallel with lint and test)
-4. **Promote** - After lint, test, and docker all pass, point `latest` at the docker job's images
+1. **Lint & Format Check** - rustfmt check, bats suites, Clippy (zero warnings)
+2. **Build & Test** - Build all targets + run test suite
+3. **Build & Push Docker Image** - Push images to GHCR tagged `{git-sha}` (runs in parallel with lint and test)
+4. **Tag Images as Latest** - After the other three pass, point `latest` at the docker job's images
 
 **Image Tags:**
-- `ghcr.io/refactor-group/refactor-platform-rs/{branch}:latest` (tested code only, set by Promote)
+- `ghcr.io/refactor-group/refactor-platform-rs/{branch}:latest` (tested code only, set by Tag Images as Latest)
 - `ghcr.io/refactor-group/refactor-platform-rs/{branch}:{git-sha}` (pushed even if tests later fail)
 
 **Key Features:**
