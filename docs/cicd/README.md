@@ -41,7 +41,7 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 **Jobs:**
 1. **Lint & Format Check** - rustfmt check, bats suites, Clippy (zero warnings)
 2. **Build & Test** - Build all targets + run test suite
-3. **Build & Push Docker Image** - Push images to GHCR tagged `{git-sha}` (runs in parallel with lint and test)
+3. **Build & Push Docker Image (backend / docs-collab)** - One parallel job per image, pushed to GHCR tagged `{git-sha}` (runs in parallel with lint and test)
 4. **Tag Images as Latest** - After the other three pass, point `latest` at the docker job's images
 
 **Image Tags:**
@@ -51,7 +51,7 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 **Key Features:**
 - ✅ Quality gates (`latest` only moves after lint/test pass)
 - ✅ Rust dependency caching (Swatinem/rust-cache)
-- ✅ Docker layer caching (GitHub Actions cache; written on pushes to main only, read by PRs)
+- ✅ Docker layer caching in GHCR (`refactor-platform-rs/buildcache:{image}`; written on pushes to main only, read by PRs)
 - ✅ Build provenance attestations (main branch only)
 
 ### 2. Production Release Builds
