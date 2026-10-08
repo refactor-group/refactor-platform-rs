@@ -20,8 +20,6 @@ permissions:
   contents: read
 
 env:
-  # Must match the cargo-chef image in Dockerfile and docs-collab-server/Dockerfile; bump together.
-  RUST_TOOLCHAIN: "1.99.0"
   CARGO_TERM_COLOR: always
   # Incremental artifacts are never reused in CI; skipping them keeps the
   # cached target dir small.
@@ -58,9 +56,9 @@ jobs:
         run: bats scripts/tests/run_backend.bats
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          toolchain: stable
           components: clippy, rustfmt
 
       # Needs no build, so it runs first and fails in seconds.
@@ -99,9 +97,9 @@ jobs:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          toolchain: stable
           targets: x86_64-unknown-linux-gnu
 
       - name: Set OpenSSL Paths

@@ -233,8 +233,6 @@ permissions:
 
 # Set environment variables that apply to all jobs in this workflow
 env:
-    # Must match the cargo-chef image in Dockerfile and docs-collab-server/Dockerfile; bump together.
-    RUST_TOOLCHAIN: "1.99.0"
     REGISTRY: ghcr.io
     BACKEND_REPOSITORY: ${{ github.repository_owner }}/refactor-platform-rs
     FRONTEND_REPOSITORY: ${{ github.repository_owner }}/refactor-platform-fe
@@ -268,9 +266,9 @@ jobs:
 
             # Install Rust compiler and quality tools (clippy, rustfmt)
             - name: Install Rust toolchain
-              uses: dtolnay/rust-toolchain@master
+              uses: dtolnay/rust-toolchain@stable
               with:
-                  toolchain: ${{ env.RUST_TOOLCHAIN }}
+                  toolchain: stable
                   components: clippy, rustfmt
 
             # Cache Rust dependencies to speed up subsequent runs
@@ -370,9 +368,9 @@ jobs:
 
             # Install Rust compiler for x86_64 Linux (GitHub runner architecture)
             - name: Install Rust toolchain
-              uses: dtolnay/rust-toolchain@master
+              uses: dtolnay/rust-toolchain@stable
               with:
-                  toolchain: ${{ env.RUST_TOOLCHAIN }}
+                  toolchain: stable
                   targets: x86_64-unknown-linux-gnu
 
             # Configure OpenSSL paths for compilation on Ubuntu

@@ -6,8 +6,6 @@ on:
     types: [released]  # This workflow only runs when a new GitHub release is *actually* released publicly
   workflow_dispatch:
 env:
-  # Must match the cargo-chef image in Dockerfile and docs-collab-server/Dockerfile; bump together.
-  RUST_TOOLCHAIN: "1.99.0"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
@@ -25,9 +23,9 @@ jobs:
           platforms: linux/amd64,linux/arm64  # Enable multi-arch builds
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          toolchain: stable  # Install stable Rust toolchain
 
       - uses: Swatinem/rust-cache@v2
         with:

@@ -1,9 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
 # Stage 1: Prepare dependency recipe
-# Pinned so a new Rust release cannot silently invalidate the layer cache;
-# bump its Rust version together with RUST_TOOLCHAIN in .github/workflows/.
-FROM lukemathwalker/cargo-chef:0.1.78-rust-1.99.0-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
 WORKDIR /usr/src/app
 
 FROM chef AS planner
