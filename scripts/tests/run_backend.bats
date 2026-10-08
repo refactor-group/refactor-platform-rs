@@ -40,9 +40,11 @@ env | grep -E '^(DATABASE_URL|DATABASE_SCHEMA|JWT_SIGNING_KEY|MANAGEMENT_AUTH_KE
     | sed "s/^/$me env: /" >> "$CALLS"
 echo "$me started"
 # STUB_EXIT_<NAME>=<code> makes this binary exit with that code; else it idles.
+# exec so a TERM reaches the sleep (an orphaned one holds the output FIFO open);
+# -a keeps this path in argv for the pgrep/pkill checks.
 var="STUB_EXIT_$(echo "$me" | tr 'a-z-' 'A-Z_')"
 if [[ -n "${!var:-}" ]]; then exit "${!var}"; fi
-sleep 30
+exec -a "$0" sleep 30
 EOF
     done
     chmod +x "$ROOT/bin/"* "$ROOT/target/debug/"*
