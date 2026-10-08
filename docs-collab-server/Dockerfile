@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.4
 
 # Stage 1: prepare dependency recipe
-FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
+# Pinned by digest so a new Rust release cannot silently invalidate the layer
+# cache; Dependabot opens a PR when the tag moves.
+FROM lukemathwalker/cargo-chef:latest-rust-bookworm@sha256:2ee6e8edf0b91b5a7295071299596601710bccb243bd9735e0b9abf6e114582b AS chef
 WORKDIR /usr/src/app
 
 FROM chef AS planner

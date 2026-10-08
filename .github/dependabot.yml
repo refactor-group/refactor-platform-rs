@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Base images are pinned by digest; this proposes bumps when their tags move.
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /docs-collab-server
+    schedule:
+      interval: weekly
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
