@@ -129,7 +129,7 @@ the listed API checks.
   non-null `platform_account_id`; the coachee's row `elimination`, attributed to the coachee.
 - `meta coach` lists the coach's and coachee's profile names with roles `coach` and `coachee`.
   "J. Hodapp" appears nowhere.
-- `txt coach "?speaker=coach"` is 200, filename ends `-filtered.txt`, every line is the
+- `txt coach "?speaker=coach"` is 200, filename is `transcript-<date>-<coach name slug>.txt`, every line is the
   coach's, and the header and lines use the coach's profile name.
 - The session page's transcript shows the same two profile names.
 

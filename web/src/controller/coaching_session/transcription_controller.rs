@@ -140,9 +140,8 @@ pub async fn read(
             )
             .await?;
 
-            let disposition =
-                HeaderValue::from_str(&format!("attachment; filename=\"{}\"", rendered.filename))
-                    .map_err(|_| Error::Web(WebErrorKind::Other))?;
+            let disposition = HeaderValue::from_str(&content_disposition(&rendered.filename))
+                .map_err(|_| Error::Web(WebErrorKind::Other))?;
 
             (
                 StatusCode::OK,
@@ -164,6 +163,21 @@ pub async fn read(
         .headers_mut()
         .insert(VARY, HeaderValue::from_static("accept"));
     Ok(response)
+}
+
+/// An attachment `Content-Disposition` value, adding an RFC 5987 `filename*` for non-ASCII names.
+fn content_disposition(filename: &str) -> String {
+    if filename.is_ascii() {
+        return format!("attachment; filename=\"{filename}\"");
+    }
+    let fallback: String = filename
+        .chars()
+        .map(|c| if c.is_ascii() { c } else { '_' })
+        .collect();
+    format!(
+        "attachment; filename=\"{fallback}\"; filename*=UTF-8''{}",
+        urlencoding::encode(filename)
+    )
 }
 
 /// The decoded `speaker` values in a query string, bounded, for the 400 message.

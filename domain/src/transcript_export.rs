@@ -316,12 +316,42 @@ pub fn render_plain_text(
         },
     );
 
-    let suffix = if filter.is_empty() { "" } else { "-filtered" };
+    let suffix = if filter.is_empty() {
+        String::new()
+    } else {
+        let names = speakers
+            .iter()
+            .filter_map(|speaker| {
+                let role = speaker.role.filter(|role| filter.contains(role))?;
+                Some(slug(&speaker.label).unwrap_or_else(|| role_slug(role).to_owned()))
+            })
+            .collect::<Vec<_>>()
+            .join("-");
+        format!("-{names}")
+    };
 
     Ok(Rendered {
         body,
         filename: format!("transcript-{date}{suffix}.txt"),
     })
+}
+
+fn role_slug(role: SpeakerRole) -> &'static str {
+    match role {
+        SpeakerRole::Coach => "coach",
+        SpeakerRole::Coachee => "coachee",
+    }
+}
+
+/// Lowercases a label into filename-safe words joined by single dashes; `None` when nothing remains.
+fn slug(label: &str) -> Option<String> {
+    let words = label
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    (!words.is_empty()).then(|| words.join("-"))
 }
 
 fn speaker_not_identified(role: SpeakerRole, speakers: &[Speaker]) -> Error {

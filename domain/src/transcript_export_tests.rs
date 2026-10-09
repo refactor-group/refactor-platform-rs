@@ -446,7 +446,7 @@ fn render_filtered_to_coach_keeps_only_coach_lines() {
          [0:00] Jim H: Good morning.\n\
          [1:02:15] Jim H: Wrapping up.\n"
     );
-    assert_eq!(rendered.filename, "transcript-2026-09-21-filtered.txt");
+    assert_eq!(rendered.filename, "transcript-2026-09-21-jim-h.txt");
 }
 
 #[test]
@@ -459,6 +459,59 @@ fn render_filtered_to_both_roles_drops_guests() {
     .expect("renders");
     assert!(rendered.body.contains("Speakers: Jim H, Caleb Bourg\n"));
     assert!(!rendered.body.contains("Pat"));
+    assert_eq!(
+        rendered.filename,
+        "transcript-2026-09-21-jim-h-caleb-bourg.txt"
+    );
+}
+
+// ---- filtered filenames ----
+
+/// One attributed coach labeled `name`, so the filename shows how that label is slugged.
+fn coach_named(display: &str) -> Labeled {
+    let coach = user("Jim", "Hodapp", Some(display));
+    let coachee = coachee();
+    let coach_p = participant(Some("typed"), None, Some((coach.id, MatchSource::Account)));
+    let segments = vec![spoken(Some(&coach_p), "typed", "Hello.", 0)];
+    label_transcript(&[coach_p], &segments, &coach, &coachee)
+}
+
+#[test]
+fn a_filtered_filename_names_the_selected_people() {
+    let coach_only = render_plain_text(date(), &three_speaker_labeled(), &[SpeakerRole::Coach])
+        .expect("renders");
+    let coachee_only = render_plain_text(date(), &three_speaker_labeled(), &[SpeakerRole::Coachee])
+        .expect("renders");
+
+    assert_eq!(coach_only.filename, "transcript-2026-09-21-jim-h.txt");
+    assert_eq!(
+        coachee_only.filename,
+        "transcript-2026-09-21-caleb-bourg.txt"
+    );
+    assert_ne!(coach_only.filename, coachee_only.filename);
+}
+
+#[test]
+fn a_filtered_filename_slugs_punctuation_and_keeps_non_ascii_letters() {
+    let rendered = render_plain_text(
+        date(),
+        &coach_named("José  O'Brien-Smith!"),
+        &[SpeakerRole::Coach],
+    )
+    .expect("renders");
+
+    assert_eq!(
+        rendered.filename,
+        "transcript-2026-09-21-josé-o-brien-smith.txt"
+    );
+}
+
+#[test]
+fn a_name_with_nothing_usable_falls_back_to_the_role() {
+    let rendered =
+        render_plain_text(date(), &coach_named("🙂 !!"), &[SpeakerRole::Coach]).expect("renders");
+
+    assert_eq!(rendered.filename, "transcript-2026-09-21-coach.txt");
 }
 
 #[test]

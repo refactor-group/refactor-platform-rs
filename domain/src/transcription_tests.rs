@@ -264,7 +264,7 @@ async fn export_plain_text_renders_the_relationship_participants() {
         .await
         .expect("the coach-only export should render");
 
-    assert_eq!(rendered.filename, "transcript-2026-09-21-filtered.txt");
+    assert_eq!(rendered.filename, "transcript-2026-09-21-jim-h.txt");
     assert!(rendered.body.contains("Speakers: Jim H\n"));
     assert!(rendered.body.contains("[0:00] Jim H: Good morning.\n"));
     assert!(!rendered.body.contains("J. Hodapp"));

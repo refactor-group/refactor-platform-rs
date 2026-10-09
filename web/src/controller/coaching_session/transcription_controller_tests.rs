@@ -344,9 +344,16 @@ async fn world(
     status: transcription::TranscriptionStatus,
     coachee_attributed: bool,
 ) -> (World, String) {
+    world_with_coachee(status, coachee_attributed, coachee()).await
+}
+
+async fn world_with_coachee(
+    status: transcription::TranscriptionStatus,
+    coachee_attributed: bool,
+    coachee: users::Model,
+) -> (World, String) {
     let organization_id = Id::new_v4();
     let coach = coach();
-    let coachee = coachee();
     let role = role(coach.id, organization_id);
     let relationship = relationship(organization_id, coach.id, coachee.id);
     let session = session(relationship.id);
@@ -456,11 +463,40 @@ async fn speaker_filter_narrows_the_file_and_marks_the_filename() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(header(&response, "content-disposition").ends_with("-filtered.txt\""));
+    assert_eq!(
+        header(&response, "content-disposition"),
+        "attachment; filename=\"transcript-2026-09-21-test-user-caleb-bourg.txt\""
+    );
 
     let body = body_string(response).await;
     assert!(body.contains("Speakers: Test User, Caleb Bourg\n"));
     assert!(!body.contains("Guest"));
+}
+
+#[tokio::test]
+async fn non_ascii_speaker_name_adds_an_encoded_filename_parameter() {
+    let coachee = users::Model {
+        display_name: Some("José".to_string()),
+        ..coachee()
+    };
+    let (world, cookie) =
+        world_with_coachee(transcription::TranscriptionStatus::Completed, true, coachee).await;
+
+    let response = get_transcript(
+        &world.app,
+        &cookie,
+        world.session_id,
+        world.transcription_id,
+        Some("text/plain"),
+        "?speaker=coachee",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "content-disposition"),
+        "attachment; filename=\"transcript-2026-09-21-jos_.txt\"; filename*=UTF-8''transcript-2026-09-21-jos%C3%A9.txt"
+    );
 }
 
 #[tokio::test]
