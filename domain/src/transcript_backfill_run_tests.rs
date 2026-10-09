@@ -475,3 +475,68 @@ fn a_report_line_never_breaks_its_columns() {
     );
     assert!(row.csv_line().ends_with(",error,,no,yes,one; two"));
 }
+
+/// Stores a segment with a chosen id, so the tie order among equal starts is known.
+async fn store_segment(
+    db: &DatabaseConnection,
+    transcription_id: Id,
+    id: Id,
+    start_ms: i32,
+    text: &str,
+) {
+    let now = Utc::now();
+    transcript_segment::ActiveModel {
+        id: Set(id),
+        transcription_id: Set(transcription_id),
+        participant_id: Set(None),
+        speaker_label: Set("Typed".to_string()),
+        text: Set(text.to_string()),
+        start_ms: Set(start_ms),
+        end_ms: Set(start_ms + 1000),
+        confidence: Set(None),
+        sentiment: Set(None),
+        created_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the segment is seeded");
+}
+
+#[tokio::test]
+async fn a_tie_stored_in_the_other_order_links_each_line_to_its_speaker() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let transcription = seed(&db, Some(MEET_URL)).await;
+        // Stored order breaks the tie by id: "Yes." (200) before "Right, so" (100).
+        let yes = Id::from_u128(1);
+        let right_so = Id::from_u128(2);
+        store_segment(&db, transcription.id, yes, 2000, "Yes.").await;
+        store_segment(&db, transcription.id, right_so, 2000, "Right, so").await;
+        let rebuild = vec![
+            rebuilt("100", 0, "Good morning."),
+            rebuilt("100", 2000, "Right, so"),
+            rebuilt("200", 2000, "Yes."),
+            rebuilt("200", 4000, "Morning."),
+        ];
+
+        let row = run(&db, &transcripts(rebuild), &transcription, true).await;
+
+        assert_eq!(row.outcome, Outcome::Attributed);
+        let row_of: HashMap<String, Id> =
+            participant_api::find_by_transcription(&db, transcription.id)
+                .await?
+                .into_iter()
+                .map(|p| (p.provider_participant_id, p.id))
+                .collect();
+        let linked: HashMap<Id, Option<Id>> =
+            entity_api::transcript_segment::find_by_transcription(&db, transcription.id)
+                .await?
+                .into_iter()
+                .map(|s| (s.id, s.participant_id))
+                .collect();
+        assert_eq!(linked.get(&yes), Some(&row_of.get("200").copied()));
+        assert_eq!(linked.get(&right_so), Some(&row_of.get("100").copied()));
+        Ok::<(), Error>(())
+    })
+    .await
+}

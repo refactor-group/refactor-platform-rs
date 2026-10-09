@@ -443,9 +443,9 @@ pub async fn stored_segments(
         .collect())
 }
 
-/// Ok when `rebuilt` reproduces `stored` exactly: same count, and at each position the same text
-/// and start (ms). Speaker labels are not compared. The Err detail names only counts or an index
-/// (never text) and contains no commas.
+/// Ok when `rebuilt` reproduces `stored` as the same multiset of (start ms, text), so segments
+/// sharing a start may appear in either order. Speaker labels are not compared. The Err detail names
+/// only counts or a start (never text) and contains no commas.
 pub fn segments_match(
     stored: &[StoredSegment],
     rebuilt: &[transcription_types::Segment],
@@ -457,24 +457,78 @@ pub fn segments_match(
             rebuilt.len()
         ));
     }
+    let stored_keys = sorted_keys(
+        stored
+            .iter()
+            .map(|s| (i64::from(s.start_ms), s.text.as_str())),
+    );
+    let rebuilt_keys = sorted_keys(rebuilt.iter().map(|r| (r.start_ms, r.text.as_str())));
+    stored_keys
+        .iter()
+        .zip(&rebuilt_keys)
+        .find(|(s, r)| s != r)
+        .map_or(Ok(()), |(s, r)| {
+            Err(format!(
+                "content differs at start_ms {}",
+                Ord::min(s.0, r.0)
+            ))
+        })
+}
+
+/// The (start ms, text) keys in sorted order, for comparing as multisets.
+fn sorted_keys<'a>(keys: impl Iterator<Item = (i64, &'a str)>) -> Vec<(i64, &'a str)> {
+    let mut keys: Vec<_> = keys.collect();
+    keys.sort_unstable();
+    keys
+}
+
+/// Pairs each stored segment with the participant of the rebuilt segment carrying the same start
+/// and text, in stored order. Refuses when the content differs, or when segments sharing a start
+/// and text came from different participants (who said which cannot be known).
+pub(crate) fn pair_segments(
+    stored: &[StoredSegment],
+    rebuilt: &[transcription_types::Segment],
+) -> Result<Vec<(Id, Option<String>)>, String> {
+    segments_match(stored, rebuilt)?;
+
+    let speakers_of: HashMap<(i64, &str), Vec<Option<&str>>> =
+        rebuilt.iter().fold(HashMap::new(), |mut groups, r| {
+            groups
+                .entry((r.start_ms, r.text.as_str()))
+                .or_default()
+                .push(r.participant_id.as_deref());
+            groups
+        });
+
     stored
         .iter()
-        .zip(rebuilt)
-        .position(|(s, r)| i64::from(s.start_ms) != r.start_ms || s.text != r.text)
-        .map_or(Ok(()), |index| Err(format!("segment {index} differs")))
+        .map(|segment| {
+            let start = i64::from(segment.start_ms);
+            let speakers = speakers_of
+                .get(&(start, segment.text.as_str()))
+                .ok_or_else(|| format!("content differs at start_ms {start}"))?;
+            match speakers.split_first() {
+                Some((first, rest)) if rest.iter().all(|p| p == first) => {
+                    Ok((segment.id, first.map(str::to_string)))
+                }
+                _ => Err(format!("ambiguous speakers at start_ms {start}")),
+            }
+        })
+        .collect()
 }
 
 /// In one transaction: if the transcription already has participant rows, `AlreadyDone` and no
 /// writes; otherwise insert one participant row per `result.participants` (attribution from
 /// `attributions` by provider id), then set `participant_id` on the EXISTING stored segments,
-/// pairing `stored[i]` with `result.segments[i]` (unknown provider ids stay NULL).
+/// each paired with the rebuilt segment of the same start and text by `pair_segments` (unknown
+/// provider ids stay NULL).
 ///
-/// Refuses segments that do not match. Never inserts, deletes, or rewrites a segment's other
-/// columns.
+/// Refuses segments that do not match or cannot be paired. Never inserts, deletes, or rewrites a
+/// segment's other columns.
 ///
 /// # Errors
 ///
-/// Fails when the segments do not match or any statement fails; nothing is then written.
+/// Fails when the segments cannot be paired or any statement fails; nothing is then written.
 pub(crate) async fn link_participants(
     db: &DatabaseConnection,
     transcription_id: Id,
@@ -482,7 +536,7 @@ pub(crate) async fn link_participants(
     attributions: &[Attribution],
     stored: &[StoredSegment],
 ) -> Result<Linked, Error> {
-    segments_match(stored, &result.segments)
+    let pairs = pair_segments(stored, &result.segments)
         .map_err(|detail| other(&format!("refusing to link: {detail}")))?;
 
     let txn = db.begin().await.map_err(EntityApiError::from)?;
@@ -504,15 +558,13 @@ pub(crate) async fn link_participants(
         .iter()
         .map(|p| (p.provider_participant_id.as_str(), p.id))
         .collect();
-    let segments_of: BTreeMap<Id, Vec<Id>> = stored
+    let segments_of: BTreeMap<Id, Vec<Id>> = pairs
         .iter()
-        .zip(&result.segments)
-        .filter_map(|(segment, rebuilt)| {
-            rebuilt
-                .participant_id
+        .filter_map(|(segment, provider_id)| {
+            provider_id
                 .as_deref()
                 .and_then(|provider_id| row_of.get(provider_id))
-                .map(|&participant| (participant, segment.id))
+                .map(|&participant| (participant, *segment))
         })
         .fold(BTreeMap::new(), |mut groups, (participant, segment)| {
             groups
@@ -578,7 +630,7 @@ pub async fn process(
         Ok(stored) => stored,
         Err(e) => return failed(row, "reading the stored segments failed", &e),
     };
-    if let Err(detail) = segments_match(&stored, &result.segments) {
+    if let Err(detail) = pair_segments(&stored, &result.segments) {
         return row.finish(Outcome::SegmentsDiffer, Some(detail.as_str()));
     }
 
@@ -658,3 +710,7 @@ mod sqlite_tests;
 #[cfg(test)]
 #[path = "transcript_backfill_run_tests.rs"]
 mod run_tests;
+
+#[cfg(test)]
+#[path = "transcript_backfill_ties_tests.rs"]
+mod ties_tests;
