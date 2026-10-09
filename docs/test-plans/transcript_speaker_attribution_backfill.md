@@ -30,8 +30,8 @@ transaction, so a transcript completing during the run is never touched twice.
 | Step | Allowed |
 |---|---|
 | Dry run against production | Any time the backfill is on your checkout, **even before #434 is deployed** (a missing `transcript_participants` table reads as "nothing attributed yet") |
-| Apply against a fork | After #434 is deployed (the fork must contain the new tables) |
-| Apply against production | After the fork rehearsal checks out |
+| Apply against a fork | **Before** #434 deploys: fork production, then run #434's migrations on the fork |
+| Apply against production | **Right after** #434 deploys, once the fork rehearsal checked out. Until it runs, older transcripts show no coach or coachee (an accepted gap), so keep it short |
 
 ## 1. Prerequisites
 
@@ -111,19 +111,27 @@ Optional:
 **What to look at:** how many `would_attribute`, how many with `coach=yes`, and every
 `segments_differ` / `error` row. Share the CSV with the overseer before applying anything.
 
-## 4. Rehearse on a fork (after #434 is deployed)
+## 4. Rehearse on a fork (before #434 deploys)
 
 1. In the DigitalOcean console, open the production database cluster and **Fork** it (creates a new
    cluster from the latest backup). Note it costs money while it exists.
 2. Add your IP to the fork's Trusted Sources; copy its connection string into a second file,
    `.env.backfill.fork`, using the same certificate path and schema lines as above.
-3. Record the segment fingerprint on the fork (should be identical before and after):
+3. Bring the fork's schema up to #434 (production does not have the new tables yet). From the
+   checkout's root, with `sea-orm-cli` installed:
+   ```sh
+   set -a; source .env.backfill.fork; set +a
+   sea-orm-cli migrate up -s refactor_platform
+   ```
+   It applies only #434's two migrations, as long as the checkout contains every migration production
+   has already run (merge `main` into the branch first if `main` has gained migrations since).
+4. Record the segment fingerprint on the fork (should be identical before and after):
    ```sql
    SET search_path TO refactor_platform;
    SELECT count(*), md5(string_agg(id::text || '|' || start_ms || '|' || text, ',' ORDER BY id))
    FROM transcript_segments;
    ```
-4. Apply against the fork in two passes. Google evidence is apply-only, because looking it up
+5. Apply against the fork in two passes. Google evidence is apply-only, because looking it up
    writes refreshed tokens and account ids; the first pass needs this machine to have the
    backend's Google OAuth and token encryption settings.
    ```sh
@@ -134,8 +142,8 @@ Optional:
    # Pass 2: everything else, without Google.
    BACKFILL_APPLY=1 cargo run --bin backfill_transcript_speakers
    ```
-5. Verify on the fork:
-   - the fingerprint from step 3 is **unchanged**;
+6. Verify on the fork:
+   - the fingerprint from step 4 is **unchanged**;
    - the two apply CSVs' `attributed` counts together are close to the dry run's
      `would_attribute` count (Google can withhold a few where it disagrees with the host);
    - spot-check two attributed transcriptions with the attribution query in
@@ -143,12 +151,12 @@ Optional:
    - rerunning the dry run against the fork lists only transcriptions that were not linked
      (`nobody_identified`, `segments_differ`, `recall_missing`, `not_google_meet`, `error`) and
      none `would_attribute`; attributed ones are no longer candidates.
-6. Destroy the fork.
+7. Destroy the fork.
 
 ## 5. Apply to production
 
 1. Note the current UTC time (for point-in-time recovery if ever needed) and record the segment
-   fingerprint from step 4.3 against production.
+   fingerprint from step 4.4 against production.
 2. Apply in the same two passes as the rehearsal (Google is apply-only):
    ```sh
    set -a; source .env.backfill; set +a
