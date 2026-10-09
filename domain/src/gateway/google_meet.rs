@@ -3,6 +3,8 @@
 //! This module provides an HTTP client for the Google Meet API: creating meeting spaces, and
 //! listing the participants of the conference that overlapped a recording.
 
+use std::time::Duration;
+
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use chrono::{DateTime, Utc};
 use log::*;
@@ -150,6 +152,8 @@ impl Client {
 
         let client = reqwest::Client::builder()
             .use_rustls_tls()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .default_headers(headers)
             .build()?;
 

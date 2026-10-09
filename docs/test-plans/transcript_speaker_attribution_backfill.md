@@ -21,7 +21,8 @@ For each completed transcription with no participant rows, the backfill:
    participant rows and sets `participant_id` on the **existing** segments.
 
 It never deletes or rewrites a segment, so the worst outcome is "not attributed". It is safe to
-rerun: transcriptions that already have participant rows are skipped. That check happens inside each
+rerun: transcriptions that already have participant rows are skipped, and a transcription where
+nobody was identified is left unlinked so a later run can retry it. That check happens inside each
 transaction, so a transcript completing during the run is never touched twice.
 
 ## When
@@ -53,10 +54,10 @@ manager or the DigitalOcean console. The URL **must** stay double-quoted, or `so
 DATABASE_URL="postgresql://refactor:<PASSWORD>@db-postgresql-1-do-user-21553142-0.d.db.ondigitalocean.com:25060/refactor?sslmode=require&sslrootcert=/Users/jhodapp/Projects/refactor-coaching/refactor-platform-rs/ca-certificate.crt"
 DATABASE_SCHEMA=refactor_platform
 RECALL_AI_REGION=us-west-2
-# Google's attendee lists expire after 30 days, so they rarely help old transcripts.
-# Off means no Google credentials or token decryption are needed on this machine.
-BACKFILL_GOOGLE=0
 ```
+
+Google evidence is off by default, so no Google credentials or token decryption are needed for a
+dry run.
 
 Load the production Recall key into the current shell **without printing it** (it is read from the
 production backend container's environment):
@@ -93,7 +94,7 @@ directory (no names or transcript text, just ids, outcomes, and counts):
 | Column | Meaning |
 |---|---|
 | `transcription_id`, `coaching_session_id` | which transcript |
-| `outcome` | `would_attribute` (dry run) or `attributed` (apply), `already_done`, `segments_differ`, `recall_missing`, `not_google_meet`, `error` |
+| `outcome` | `would_attribute` (dry run) or `attributed` (apply), `already_done`, `nobody_identified` (left unlinked so a later run can retry), `segments_differ`, `recall_missing`, `not_google_meet`, `error` |
 | `speakers` | speakers Recall reports |
 | `coach`, `coachee` | `yes` / `no`: would each be identified |
 | `detail` | short reason for anything that is not `would_attribute` or `attributed` (never a name or text) |
@@ -118,29 +119,42 @@ Optional:
    SELECT count(*), md5(string_agg(id::text || '|' || start_ms || '|' || text, ',' ORDER BY id))
    FROM transcript_segments;
    ```
-4. Apply against the fork:
+4. Apply against the fork in two passes. Google evidence is apply-only, because looking it up
+   writes refreshed tokens and account ids; the first pass needs this machine to have the
+   backend's Google OAuth and token encryption settings.
    ```sh
    set -a; source .env.backfill.fork; set +a
+   # Pass 1: recent transcripts get the Google cross-check while Google still has attendee lists.
+   BACKFILL_APPLY=1 BACKFILL_GOOGLE=1 BACKFILL_SINCE=<today minus 30 days> \
+     cargo run --release --bin backfill_transcript_speakers
+   # Pass 2: everything else, without Google.
    BACKFILL_APPLY=1 cargo run --release --bin backfill_transcript_speakers
    ```
 5. Verify on the fork:
    - the fingerprint from step 3 is **unchanged**;
-   - the apply CSV's `attributed` count matches the dry run's `would_attribute` count;
+   - the two apply CSVs' `attributed` counts together are close to the dry run's
+     `would_attribute` count (Google can withhold a few where it disagrees with the host);
    - spot-check two attributed transcriptions with the attribution query in
      `transcript_speaker_attribution_manual_testing.md` section 1.4;
-   - rerunning the dry run against the fork reports `already_done` for them and nothing new.
+   - rerunning the dry run against the fork lists only transcriptions that were not linked
+     (`nobody_identified`, `segments_differ`, `recall_missing`, `not_google_meet`, `error`) and
+     none `would_attribute`; attributed ones are no longer candidates.
 6. Destroy the fork.
 
 ## 5. Apply to production
 
 1. Note the current UTC time (for point-in-time recovery if ever needed) and record the segment
    fingerprint from step 4.3 against production.
-2. ```sh
+2. Apply in the same two passes as the rehearsal (Google is apply-only):
+   ```sh
    set -a; source .env.backfill; set +a
+   BACKFILL_APPLY=1 BACKFILL_GOOGLE=1 BACKFILL_SINCE=<today minus 30 days> \
+     cargo run --release --bin backfill_transcript_speakers
    BACKFILL_APPLY=1 cargo run --release --bin backfill_transcript_speakers
    ```
-3. Re-check the fingerprint (unchanged) and rerun the dry run: everything reports `already_done`,
-   `segments_differ`, `recall_missing`, or `not_google_meet`, and nothing `would_attribute`.
+3. Re-check the fingerprint (unchanged) and rerun the dry run: it lists only transcriptions that
+   were not linked (`nobody_identified`, `segments_differ`, `recall_missing`, `not_google_meet`,
+   `error`) and none `would_attribute`.
 4. Open one backfilled session in the app: the transcript shows profile names for the coach and
    coachee, and the coach-only download works.
 5. Delete `.env.backfill` and run `unset RECALL_AI_API_KEY`.
@@ -148,8 +162,8 @@ Optional:
 ## Undo
 
 The backfill only inserts participant rows and fills `participant_id`; it never changes text. To undo
-it for the transcriptions it applied (their ids are the `attributed` rows of the apply run's
-CSV):
+it for the transcriptions it applied (their ids are the `attributed` rows of the apply runs'
+CSVs):
 
 ```sql
 SET search_path TO refactor_platform;

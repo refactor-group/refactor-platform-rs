@@ -59,7 +59,7 @@ pub enum Linked {
 pub struct Options {
     /// Writes attribution; otherwise a read-only dry run.
     pub apply: bool,
-    /// Consults Google's attendee lists, which needs the coach's Google token.
+    /// Consults Google's attendee lists, which needs the coach's Google token; apply mode only.
     pub google: bool,
     pub limit: Option<u64>,
     /// Only transcriptions created at or after this instant.
@@ -73,11 +73,21 @@ impl Options {
     ///
     /// # Errors
     ///
-    /// Returns a message naming the variable when any value is invalid.
+    /// Returns a message naming the variable when any value is invalid, or when Google evidence
+    /// is requested without apply mode.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let apply = flag("BACKFILL_APPLY", lookup("BACKFILL_APPLY"), false)?;
+        let google = flag("BACKFILL_GOOGLE", lookup("BACKFILL_GOOGLE"), false)?;
+        if google && !apply {
+            return Err(
+                "BACKFILL_GOOGLE=1 needs BACKFILL_APPLY=1: looking up Google evidence \
+                 writes refreshed tokens and account ids"
+                    .to_string(),
+            );
+        }
         Ok(Self {
-            apply: flag("BACKFILL_APPLY", lookup("BACKFILL_APPLY"), false)?,
-            google: flag("BACKFILL_GOOGLE", lookup("BACKFILL_GOOGLE"), true)?,
+            apply,
+            google,
             limit: lookup("BACKFILL_LIMIT")
                 .map(|v| parse_limit(&v))
                 .transpose()?,
@@ -145,6 +155,7 @@ pub enum Outcome {
     WouldAttribute,
     Attributed,
     AlreadyDone,
+    NobodyIdentified,
     SegmentsDiffer,
     RecallMissing,
     NotGoogleMeet,
@@ -153,10 +164,11 @@ pub enum Outcome {
 
 impl Outcome {
     /// Every outcome, in report order.
-    pub const ALL: [Outcome; 7] = [
+    pub const ALL: [Outcome; 8] = [
         Outcome::WouldAttribute,
         Outcome::Attributed,
         Outcome::AlreadyDone,
+        Outcome::NobodyIdentified,
         Outcome::SegmentsDiffer,
         Outcome::RecallMissing,
         Outcome::NotGoogleMeet,
@@ -168,6 +180,7 @@ impl Outcome {
             Outcome::WouldAttribute => "would_attribute",
             Outcome::Attributed => "attributed",
             Outcome::AlreadyDone => "already_done",
+            Outcome::NobodyIdentified => "nobody_identified",
             Outcome::SegmentsDiffer => "segments_differ",
             Outcome::RecallMissing => "recall_missing",
             Outcome::NotGoogleMeet => "not_google_meet",
@@ -578,6 +591,10 @@ pub async fn process(
         options.google,
     )
     .await;
+    // Left unlinked so a later run can retry it.
+    if attributions.iter().all(|a| a.user_id.is_none()) {
+        return row.finish(Outcome::NobodyIdentified, Some("no speaker identified"));
+    }
     let identified = |source| attributions.iter().any(|a| a.source == Some(source));
     let row = Row {
         coach: identified(MatchSource::Account),

@@ -7,6 +7,7 @@ pub use entity_api::transcription::{
 };
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -26,6 +27,7 @@ use meeting_ai::types::transcription as transcription_types;
 use sea_orm::{ActiveValue::Set, DatabaseConnection, TransactionTrait};
 use serde::Serialize;
 use service::config::Config;
+use tokio::time::timeout;
 use utoipa::ToSchema;
 
 use crate::coaching_sessions;
@@ -274,6 +276,9 @@ pub(crate) fn participant_rows(
         .collect()
 }
 
+/// Upper bound on evidence gathering so a hung provider never stalls a completion.
+const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Evidence gathered for attribution, owned so `Evidence` can borrow from it.
 #[derive(Default)]
 struct Gathered {
@@ -323,16 +328,26 @@ pub(crate) async fn attribute_speakers_with(
         return unattributed(speakers);
     };
 
-    let gathered = gather_evidence(
-        db,
-        recording_bot,
-        config,
-        transcription,
-        &session,
-        coach_id,
-        google,
+    let gathered = timeout(
+        EVIDENCE_TIMEOUT,
+        gather_evidence(
+            db,
+            recording_bot,
+            config,
+            transcription,
+            &session,
+            coach_id,
+            google,
+        ),
     )
-    .await;
+    .await
+    .unwrap_or_else(|_| {
+        warn!(
+            "Attribution for transcription {}: gathering evidence timed out",
+            transcription.id
+        );
+        Gathered::default()
+    });
     attribute(speakers, coach_id, coachee_id, &gathered.evidence())
 }
 

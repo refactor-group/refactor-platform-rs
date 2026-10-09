@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -22,9 +23,10 @@ use crate::transcript_participant::{MatchSource, Model as StoredParticipant};
 const SESSION_MEET_URL: &str = "https://meet.google.com/abc-mnop-xyz";
 const SESSION_CODE: &str = "abc-mnop-xyz";
 
-/// Answers `get_bot_status` with a fixed meeting id (or an error) and counts the calls.
+/// Answers `get_bot_status` with a fixed meeting id (or an error, or never) and counts the calls.
 struct FakeBot {
     meeting_id: Option<&'static str>,
+    hangs: bool,
     calls: AtomicUsize,
 }
 
@@ -32,6 +34,7 @@ impl FakeBot {
     fn in_meeting(meeting_id: &'static str) -> Self {
         Self {
             meeting_id: Some(meeting_id),
+            hangs: false,
             calls: AtomicUsize::new(0),
         }
     }
@@ -39,6 +42,16 @@ impl FakeBot {
     fn failing() -> Self {
         Self {
             meeting_id: None,
+            hangs: false,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// Sleeps ten minutes before answering in the session's space.
+    fn hanging() -> Self {
+        Self {
+            meeting_id: Some(SESSION_CODE),
+            hangs: true,
             calls: AtomicUsize::new(0),
         }
     }
@@ -56,6 +69,9 @@ impl recording_bot::Provider for FakeBot {
 
     async fn get_bot_status(&self, bot_id: &str) -> Result<Info, meeting_ai::Error> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.hangs {
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
         let meeting_id = self
             .meeting_id
             .ok_or_else(|| meeting_ai::Error::Network("unreachable".into()))?;
@@ -359,8 +375,9 @@ async fn the_session_space_with_a_host_attributes_the_coach_and_the_coachee() {
         .any(|sql| sql.contains("oauth_connections")));
 }
 
-#[tokio::test]
-async fn an_unreadable_bot_still_completes_the_transcript_with_nobody_attributed() {
+/// Runs `handle_completion` against a Google session with the given bot; returns its result,
+/// the statement log, and the session's people.
+async fn complete_with(bot: &FakeBot) -> (Result<(), Error>, Vec<String>, People) {
     let people = people();
     let session = session(&people, Some(MeetingProvider::Google));
     let transcription = transcription(&session);
@@ -430,20 +447,21 @@ async fn an_unreadable_bot_still_completes_the_transcript_with_nobody_attributed
         .append_query_results([vec![transcription.clone()]])
         .append_query_results([vec![completed]])
         .into_connection();
-    let bot = FakeBot::failing();
 
-    handle_completion(
+    let outcome = handle_completion(
         &db,
         Some(&FakeTranscripts(result)),
-        Some(&bot),
+        Some(bot),
         &Config::default(),
         "external-1",
     )
-    .await
-    .expect("the transcript completes");
+    .await;
 
-    assert_eq!(bot.calls(), 1);
-    let log = statements(db);
+    (outcome, statements(db), people)
+}
+
+/// The transcript completes, its segments are stored, and nobody is attributed.
+fn assert_completed_with_nobody_attributed(log: &[String], people: &People) {
     assert!(log
         .iter()
         .any(|sql| sql.contains(r#"INSERT INTO "refactor_platform"."transcript_segments""#)));
@@ -457,4 +475,29 @@ async fn an_unreadable_bot_still_completes_the_transcript_with_nobody_attributed
         .iter()
         .filter(|sql| sql.contains("transcript_participants"))
         .all(|sql| people_ids.iter().all(|id| !sql.contains(id.as_str()))));
+}
+
+#[tokio::test]
+async fn an_unreadable_bot_still_completes_the_transcript_with_nobody_attributed() {
+    let bot = FakeBot::failing();
+
+    let (outcome, log, people) = complete_with(&bot).await;
+
+    outcome.expect("the transcript completes");
+    assert_eq!(bot.calls(), 1);
+    assert_completed_with_nobody_attributed(&log, &people);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hung_bot_still_completes_the_transcript_with_nobody_attributed() {
+    let bot = FakeBot::hanging();
+
+    let (outcome, log, people) =
+        tokio::time::timeout(Duration::from_secs(300), complete_with(&bot))
+            .await
+            .expect("completion must not wait on a hung bot");
+
+    outcome.expect("the transcript completes");
+    assert_eq!(bot.calls(), 1);
+    assert_completed_with_nobody_attributed(&log, &people);
 }

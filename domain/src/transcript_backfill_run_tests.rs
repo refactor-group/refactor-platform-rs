@@ -113,6 +113,17 @@ fn transcripts(segments: Vec<Rebuilt>) -> FakeTranscripts {
     }
 }
 
+/// Like `transcripts`, but nobody hosts, so without Google nobody can be identified.
+fn hostless_transcripts(segments: Vec<Rebuilt>) -> FakeTranscripts {
+    let mut recall = transcripts(segments);
+    recall
+        .transcript
+        .participants
+        .iter_mut()
+        .for_each(|p| p.is_host = Some(false));
+    recall
+}
+
 fn rebuilt(participant: &str, start_ms: i64, text: &str) -> Rebuilt {
     Rebuilt {
         text: text.to_string(),
@@ -352,6 +363,34 @@ async fn a_rebuild_that_differs_is_left_alone() -> Result<(), Error> {
     .await
 }
 
+#[tokio::test]
+async fn applying_with_nobody_identified_links_nothing_and_stays_a_candidate() -> Result<(), Error>
+{
+    within_time_limit(async {
+        let db = database().await;
+        let transcription = seed(&db, Some(MEET_URL)).await;
+
+        let row = run(&db, &hostless_transcripts(matching()), &transcription, true).await;
+
+        assert_eq!(
+            (row.outcome, row.coach, row.coachee),
+            (Outcome::NobodyIdentified, false, false)
+        );
+        assert!(
+            participant_api::find_by_transcription(&db, transcription.id)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(links(&db, transcription.id).await, vec![None, None]);
+        assert!(find_candidates(&db, None, None)
+            .await?
+            .iter()
+            .any(|t| t.id == transcription.id));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
 fn lookup<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
     move |name| {
         vars.iter()
@@ -361,17 +400,29 @@ fn lookup<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String>
 }
 
 #[test]
-fn unset_options_are_a_dry_run_with_google_on() {
+fn unset_options_are_a_dry_run_with_google_off() {
     assert_eq!(
         Options::from_lookup(lookup(&[])),
         Ok(Options {
             apply: false,
-            google: true,
+            google: false,
             limit: None,
             since: None,
             delay: Duration::from_millis(300),
         })
     );
+}
+
+#[test]
+fn google_without_apply_is_rejected() {
+    let parsed = Options::from_lookup(lookup(&[("BACKFILL_GOOGLE", "1")]));
+    assert!(parsed.is_err_and(|e| e.contains("BACKFILL_APPLY=1")));
+}
+
+#[test]
+fn google_with_apply_is_accepted() {
+    let parsed = Options::from_lookup(lookup(&[("BACKFILL_GOOGLE", "1"), ("BACKFILL_APPLY", "1")]));
+    assert!(parsed.is_ok_and(|o| o.google && o.apply));
 }
 
 #[test]
