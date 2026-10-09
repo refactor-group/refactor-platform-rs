@@ -82,8 +82,12 @@ set -a; source .env.backfill; set +a
 ## 3. Dry run (read-only)
 
 ```sh
-cargo run --release --bin backfill_transcript_speakers
+cargo run --bin backfill_transcript_speakers
 ```
+
+Use a debug build (no `--release`): the backfill waits on Recall and the database, not the CPU, and
+release builds of this workspace currently fail on some macOS toolchains (a `sqlx_macros` dylib
+"mis-aligned LINKEDIT string pool" error).
 
 Without `BACKFILL_APPLY=1` the database session is opened with `default_transaction_read_only=on`,
 so Postgres rejects any write even if the code tried one.
@@ -97,7 +101,7 @@ directory (no names or transcript text, just ids, outcomes, and counts):
 | `outcome` | `would_attribute` (dry run) or `attributed` (apply), `already_done`, `nobody_identified` (left unlinked so a later run can retry), `segments_differ`, `recall_missing`, `not_google_meet`, `error` |
 | `speakers` | speakers Recall reports |
 | `coach`, `coachee` | `yes` / `no`: would each be identified |
-| `detail` | short reason for anything that is not `would_attribute` or `attributed` (never a name or text) |
+| `detail` | short reason for anything that is not `would_attribute` or `attributed` (never a name or text). For `segments_differ`: `segment count stored N rebuilt M`, `content differs at start_ms N`, or `ambiguous speakers at start_ms N` |
 
 Optional:
 
@@ -126,9 +130,9 @@ Optional:
    set -a; source .env.backfill.fork; set +a
    # Pass 1: recent transcripts get the Google cross-check while Google still has attendee lists.
    BACKFILL_APPLY=1 BACKFILL_GOOGLE=1 BACKFILL_SINCE=<today minus 30 days> \
-     cargo run --release --bin backfill_transcript_speakers
+     cargo run --bin backfill_transcript_speakers
    # Pass 2: everything else, without Google.
-   BACKFILL_APPLY=1 cargo run --release --bin backfill_transcript_speakers
+   BACKFILL_APPLY=1 cargo run --bin backfill_transcript_speakers
    ```
 5. Verify on the fork:
    - the fingerprint from step 3 is **unchanged**;
@@ -149,8 +153,8 @@ Optional:
    ```sh
    set -a; source .env.backfill; set +a
    BACKFILL_APPLY=1 BACKFILL_GOOGLE=1 BACKFILL_SINCE=<today minus 30 days> \
-     cargo run --release --bin backfill_transcript_speakers
-   BACKFILL_APPLY=1 cargo run --release --bin backfill_transcript_speakers
+     cargo run --bin backfill_transcript_speakers
+   BACKFILL_APPLY=1 cargo run --bin backfill_transcript_speakers
    ```
 3. Re-check the fingerprint (unchanged) and rerun the dry run: it lists only transcriptions that
    were not linked (`nobody_identified`, `segments_differ`, `recall_missing`, `not_google_meet`,
@@ -178,6 +182,9 @@ COMMIT;
 - **Connection timeout:** the `sslrootcert` path is wrong or unquoted, or your IP is not in Trusted
   Sources.
 - **Many `recall_missing`:** Recall no longer holds those transcripts; nothing can be done for them.
-- **Many `segments_differ`:** stop and share the CSV; the rebuild disagrees with stored data and the
-  rule is to leave those alone.
+- **`segments_differ`:** the rebuild must contain exactly the stored lines (same start times and text).
+  Lines that start in the same millisecond are matched by text, so their stored order does not
+  matter. `ambiguous speakers at start_ms N` means two different people said the identical words in
+  the same millisecond, so who said which cannot be known and the transcript is left alone. Many
+  `segments_differ` rows: stop and share the CSV.
 - **`not_google_meet`:** Zoom (deferred) or a session without a platform-created Meet link.
