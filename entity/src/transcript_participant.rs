@@ -1,7 +1,8 @@
-use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+use crate::Id;
 
 /// How a transcript participant was attributed to a platform user.
 #[derive(

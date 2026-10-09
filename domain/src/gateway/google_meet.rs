@@ -5,10 +5,11 @@
 
 use std::time::Duration;
 
-use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use chrono::{DateTime, Utc};
 use log::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 
 const MEET_HOST: &str = "meet.google.com";
 
