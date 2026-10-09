@@ -319,11 +319,27 @@ pub fn render_plain_text(
     let suffix = if filter.is_empty() {
         String::new()
     } else {
-        let names = speakers
+        let named: Vec<(SpeakerRole, String)> = speakers
             .iter()
             .filter_map(|speaker| {
-                let role = speaker.role.filter(|role| filter.contains(role))?;
-                Some(slug(&speaker.label).unwrap_or_else(|| role_slug(role).to_owned()))
+                let role = speaker.role?;
+                Some((
+                    role,
+                    slug(&speaker.label).unwrap_or_else(|| role_slug(role).to_owned()),
+                ))
+            })
+            .collect();
+        // Names that slug alike carry their role, so each person's download is named apart.
+        let names = named
+            .iter()
+            .filter(|(role, _)| filter.contains(role))
+            .map(|(role, name)| {
+                let shared = named.iter().any(|(other, n)| other != role && n == name);
+                if shared {
+                    format!("{name}-{}", role_slug(*role))
+                } else {
+                    name.clone()
+                }
             })
             .collect::<Vec<_>>()
             .join("-");

@@ -515,6 +515,42 @@ fn a_name_with_nothing_usable_falls_back_to_the_role() {
 }
 
 #[test]
+fn names_that_slug_alike_carry_their_role() {
+    let coach = user("Ann", "Lee", Some("Ann-Marie"));
+    let coachee = user("Ann", "Cole", Some("Ann Marie"));
+    let coach_p = participant(Some("A"), None, Some((coach.id, MatchSource::Account)));
+    let coachee_p = participant(
+        Some("B"),
+        None,
+        Some((coachee.id, MatchSource::Elimination)),
+    );
+    let segments = vec![
+        spoken(Some(&coach_p), "A", "Hello.", 0),
+        spoken(Some(&coachee_p), "B", "Hi.", 1000),
+    ];
+    let labeled = label_transcript(&[coach_p, coachee_p], &segments, &coach, &coachee);
+
+    let filename = |filter: &[SpeakerRole]| {
+        render_plain_text(date(), &labeled, filter)
+            .expect("renders")
+            .filename
+    };
+
+    assert_eq!(
+        filename(&[SpeakerRole::Coach]),
+        "transcript-2026-09-21-ann-marie-coach.txt"
+    );
+    assert_eq!(
+        filename(&[SpeakerRole::Coachee]),
+        "transcript-2026-09-21-ann-marie-coachee.txt"
+    );
+    assert_eq!(
+        filename(&[SpeakerRole::Coach, SpeakerRole::Coachee]),
+        "transcript-2026-09-21-ann-marie-coach-ann-marie-coachee.txt"
+    );
+}
+
+#[test]
 fn render_filters_by_attribution_not_by_label_text() {
     let (coach, coachee) = (coach(), coachee());
     let impostor = participant(Some("Jim H"), None, None);
