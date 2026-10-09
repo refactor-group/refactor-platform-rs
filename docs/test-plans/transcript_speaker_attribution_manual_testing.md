@@ -424,18 +424,6 @@ DELETE FROM refactor_platform.meeting_recordings WHERE id = '41900000-0000-0000-
 
 **Pass:** participants and segments for the transcription are gone (cascade).
 
-## Part C: backfill (operator)
-
-Follow `transcript_speaker_attribution_backfill.md` (run from a local dev machine: read-only dry run
-against production, apply on a fork, then production).
-
-**Pass:**
-- the dry run writes nothing and its CSV accounts for every completed transcription without
-  participants;
-- on the fork and on production, the segment fingerprint is unchanged after applying;
-- a second dry run after applying reports nothing left to attribute;
-- a backfilled session shows profile names and a working coach-only download.
-
 ## Results
 
 | Case | Result | Date | Notes |
@@ -465,4 +453,3 @@ against production, apply on a fork, then production).
 | B6 | PASS | 2026-10-06 | PR #434 preview |
 | B7 | PASS | 2026-10-06 | PR #434 preview |
 | B8 | PASS | 2026-10-06 | PR #434 preview |
-| C | | | |

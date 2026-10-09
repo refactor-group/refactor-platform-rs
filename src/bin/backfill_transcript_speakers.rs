@@ -2,7 +2,7 @@
 //!
 //! Modes are selected by environment variable, not CLI args, since `Config::new()` rejects
 //! unknown argv. A dry run (the default) uses a read-only database session; `BACKFILL_APPLY=1`
-//! writes. See `docs/test-plans/transcript_speaker_attribution_backfill.md`.
+//! writes.
 
 use std::fs::File;
 use std::io::Write;
