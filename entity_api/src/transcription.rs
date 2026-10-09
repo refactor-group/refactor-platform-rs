@@ -104,8 +104,8 @@ pub async fn find_by_external_id(
 /// Optional fields follow a preserve-or-overwrite pattern: passing `None` keeps the existing
 /// value; passing `Some(x)` overwrites it. Fields cannot be cleared back to `None` via this
 /// function.
-pub async fn update_status(
-    db: &DatabaseConnection,
+pub async fn update_status<C: ConnectionTrait>(
+    db: &C,
     id: Id,
     status: TranscriptionStatus,
     word_count: Option<i32>,

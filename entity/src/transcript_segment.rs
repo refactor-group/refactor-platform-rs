@@ -12,6 +12,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub transcription_id: Id,
+    pub participant_id: Option<Id>,
     pub speaker_label: String,
     pub text: String,
     pub start_ms: i32,
@@ -32,6 +33,16 @@ pub struct Model {
         on_delete = "Cascade"
     )]
     pub transcription: BelongsTo<super::transcription::Entity>,
+    #[serde(skip)]
+    #[sea_orm(
+        belongs_to,
+        relation_enum = "TranscriptParticipants",
+        from = "participant_id",
+        to = "id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    pub participant: BelongsTo<Option<super::transcript_participant::Entity>>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

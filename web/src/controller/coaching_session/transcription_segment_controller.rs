@@ -7,12 +7,18 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::transcript_segment as TranscriptionSegmentApi;
+use domain::transcription as TranscriptionApi;
 use domain::Id;
 use log::*;
 use service::config::ApiVersion;
 
-/// GET ordered transcript segments for a transcription (powers the conversation UI)
+/// GET a transcription's segments in speaking order, each labeled with who spoke it.
+///
+/// `speaker_label` is the profile name for the session's coach or coachee, the name the
+/// speaker typed in the meeting otherwise, or `Guest N` when there is none. Labels are unique
+/// per transcript and identical to the `speakers` labels of the transcription read.
+/// `speaker_user_id` and `speaker_role` identify the coach or coachee, and are `null` for
+/// anyone else. Empty when the transcription is not under this session or has no segments.
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{coaching_session_id}/transcriptions/{transcription_id}/transcription_segments",
@@ -22,7 +28,7 @@ use service::config::ApiVersion;
         ("transcription_id" = Uuid, Path, description = "Transcription id"),
     ),
     responses(
-        (status = 200, description = "Transcript segments retrieved ordered by start time"),
+        (status = 200, description = "Labeled transcript segments ordered by start time", body = [domain::transcript_export::LabeledSegment]),
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
@@ -39,12 +45,9 @@ pub async fn index(
         transcription_id
     );
 
-    let segments = TranscriptionSegmentApi::find_by_transcription_and_session(
-        app_state.db_conn_ref(),
-        transcription_id,
-        session.id,
-    )
-    .await?;
+    let segments =
+        TranscriptionApi::read_segments(app_state.db_conn_ref(), &session, transcription_id)
+            .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), segments)))
 }

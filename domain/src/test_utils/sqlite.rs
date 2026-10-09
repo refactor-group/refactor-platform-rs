@@ -12,8 +12,8 @@ use entity::{
     coaching_session_reminders, coaching_session_series, coaching_session_topics,
     coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_pricing_config, goals,
     magic_link_tokens, meeting_recording, notes, oauth_connections, organizations,
-    password_reset_attempts, platform_cost_metrics, transcript_segment, transcription,
-    user_lookup_attempts, user_role_changes, user_roles, users, Id,
+    password_reset_attempts, platform_cost_metrics, transcript_participant, transcript_segment,
+    transcription, user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
 use sea_orm::{
     ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, Set,
@@ -81,6 +81,7 @@ pub(crate) async fn database() -> DatabaseConnection {
         .register(organizations::Entity)
         .register(password_reset_attempts::Entity)
         .register(platform_cost_metrics::Entity)
+        .register(transcript_participant::Entity)
         .register(transcript_segment::Entity)
         .register(transcription::Entity)
         .register(user_lookup_attempts::Entity)

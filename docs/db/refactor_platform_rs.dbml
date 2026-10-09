@@ -275,10 +275,33 @@ Table refactor_platform.transcript_segments {
   end_ms integer [not null, note: 'Segment end time in milliseconds from recording start']
   confidence double [note: 'double precision']
   sentiment varchar(20) [note: 'VARCHAR (not enum) to avoid PostgreSQL enum ownership friction']
+  participant_id uuid [note: 'The speaker who said this segment; null for transcripts recorded before speakers were stored']
   created_at timestamptz [not null, default: `now()`]
 
   Indexes {
     (transcription_id, start_ms) [name: "idx_transcript_segments_transcription_start", note: "ASC on start_ms for ordered conversation fetch"]
+    participant_id [name: "idx_transcript_segments_participant_id"]
+  }
+}
+
+// One row per meeting participant Recall.ai reported for a transcription.
+// CHECK transcript_participants_user_has_source: user_id IS NULL OR match_source IS NOT NULL
+Table refactor_platform.transcript_participants {
+  id uuid [primary key, not null, default: `gen_random_uuid()`]
+  transcription_id uuid [not null, note: 'The transcription this participant spoke in']
+  provider_participant_id varchar(255) [not null, note: 'Recall.ai participant ID, unique within a transcription']
+  display_name varchar(255) [note: 'Name the participant typed when joining the meeting']
+  is_host boolean [note: 'Whether the meeting platform reported this participant as host']
+  platform varchar(64) [note: 'Meeting platform Recall.ai reported, e.g. google_meet']
+  platform_account_id varchar(255) [note: 'Platform account ID when the provider supplies one']
+  extra_data jsonb [note: 'Raw provider-specific participant data from Recall.ai']
+  user_id uuid [note: 'The coach or coachee this participant was identified as; null when not identified']
+  match_source refactor_platform.speaker_match_source [note: 'How user_id was identified; required when user_id is set']
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (transcription_id, provider_participant_id) [unique, name: "transcript_participants_transcription_provider_unique"]
+    user_id [name: "idx_transcript_participants_user_id"]
   }
 }
 
@@ -318,6 +341,11 @@ enum refactor_platform.transcription_status {
   processing
   completed
   failed
+}
+
+enum refactor_platform.speaker_match_source {
+  account [note: 'Matched by the coach\'s own connected meeting account']
+  elimination [note: 'The only other speaker once the coach was identified']
 }
 
 // coaching_relationships relationships
@@ -376,3 +404,8 @@ Ref: refactor_platform.transcriptions.meeting_recording_id > refactor_platform.m
 
 // transcript_segments relationships
 Ref: refactor_platform.transcript_segments.transcription_id > refactor_platform.transcriptions.id [delete: cascade]
+Ref: refactor_platform.transcript_segments.participant_id > refactor_platform.transcript_participants.id [delete: set null]
+
+// transcript_participants relationships
+Ref: refactor_platform.transcript_participants.transcription_id > refactor_platform.transcriptions.id [delete: cascade]
+Ref: refactor_platform.transcript_participants.user_id > refactor_platform.users.id [delete: set null]

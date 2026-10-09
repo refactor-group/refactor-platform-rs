@@ -37,6 +37,7 @@ pub mod status;
 pub mod token_purpose;
 pub mod topic_priority;
 pub mod topic_status;
+pub mod transcript_participant;
 pub mod transcript_segment;
 pub mod transcription;
 pub mod user_invite_status;

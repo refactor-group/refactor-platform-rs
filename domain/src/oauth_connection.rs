@@ -8,7 +8,7 @@ use entity_api::oauth_connection as ConnectionApi;
 use log::*;
 use meeting_auth::oauth::token::{encryption, Manager, Plain};
 use meeting_auth::oauth::UserInfo;
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use secrecy::{ExposeSecret, SecretString};
 use service::config::Config;
 
@@ -96,14 +96,24 @@ pub async fn exchange_and_store_tokens(
 
     match existing {
         Some(conn) => {
+            // Tokens and the account they belong to are saved together or not at all.
+            let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
             ConnectionApi::update_tokens(
-                db,
+                &txn,
                 conn.id,
                 encrypted_access,
                 encrypted_refresh,
                 tokens.expires_at,
             )
             .await?;
+            ConnectionApi::update_identity(
+                &txn,
+                conn.id,
+                Some(user_info.id),
+                Some(user_info.email),
+            )
+            .await?;
+            txn.commit().await.map_err(entity_api::error::Error::from)?;
         }
         None => {
             let model = create_oauth_connection_model(
@@ -209,6 +219,38 @@ pub async fn get_valid_access_token(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// The user's account id on `provider`, looked up from the provider once when not yet stored.
+///
+/// `None` when the user has no connection for `provider`. A stored id is returned without any
+/// network call; a missing one is fetched with the user's token and saved for next time.
+pub async fn external_account_id(
+    db: &DatabaseConnection,
+    config: &Config,
+    user_id: Id,
+    provider: MeetingProvider,
+) -> Result<Option<String>, Error> {
+    let Some(connection) = ConnectionApi::find_by_user_and_provider(db, user_id, provider).await?
+    else {
+        return Ok(None);
+    };
+
+    if let Some(stored) = connection.external_account_id {
+        return Ok(Some(stored));
+    }
+
+    let token = get_valid_access_token(db, config, user_id, provider).await?;
+    let info = create_provider(config, provider)?
+        .get_user_info(&token)
+        .await?;
+
+    ConnectionApi::update_identity(db, connection.id, Some(info.id.clone()), Some(info.email))
+        .await?;
+
+    info!("Backfilled {provider} account id for user {user_id}");
+
+    Ok(Some(info.id))
 }
 
 /// Disconnect a user from a provider: revoke the stored grant, then delete the connection.
@@ -365,13 +407,12 @@ fn create_oauth_connection_model(
 ) -> OauthConnectionModel {
     let now = chrono::Utc::now();
 
-    // Start with common fields
-    let mut model = OauthConnectionModel {
+    OauthConnectionModel {
         id: Id::new_v4(),
         user_id,
         provider,
-        external_account_id: None,
-        external_email: None,
+        external_account_id: Some(user_info.id),
+        external_email: Some(user_info.email),
         access_token: encrypted_access,
         refresh_token: encrypted_refresh,
         token_expires_at: tokens.expires_at.map(|dt| dt.into()),
@@ -379,24 +420,17 @@ fn create_oauth_connection_model(
         scopes,
         created_at: now.into(),
         updated_at: now.into(),
-    };
-
-    match provider {
-        MeetingProvider::Google => apply_google_fields(&mut model, user_info),
-        MeetingProvider::Zoom => apply_zoom_fields(&mut model, user_info),
     }
-
-    model
 }
 
-fn apply_google_fields(model: &mut OauthConnectionModel, user_info: UserInfo) {
-    model.external_email = Some(user_info.email);
-}
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "oauth_connection_identity_tests.rs"]
+mod identity_tests;
 
-fn apply_zoom_fields(model: &mut OauthConnectionModel, user_info: UserInfo) {
-    model.external_account_id = Some(user_info.id);
-    model.external_email = Some(user_info.email);
-}
+#[cfg(test)]
+#[path = "oauth_connection_sqlite_tests.rs"]
+mod sqlite_tests;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]

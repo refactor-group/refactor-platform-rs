@@ -55,6 +55,8 @@ pub struct StatusChange {
 pub struct Info {
     pub id: String,
     pub meeting_url: String,
+    /// The provider's identifier for the meeting the bot joined, e.g. a Google Meet code.
+    pub meeting_id: Option<String>,
     pub status: Status,
     pub artifacts: Option<Artifacts>,
     pub error_message: Option<String>,

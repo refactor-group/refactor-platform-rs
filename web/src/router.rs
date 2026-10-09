@@ -195,6 +195,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::organizations::Model,
                 domain::meeting_provider::Provider,
                 domain::status::Status,
+                domain::transcript_export::LabeledSegment,
                 domain::transcript_export::Speaker,
                 domain::transcript_export::SpeakerRole,
                 domain::transcription::Model,

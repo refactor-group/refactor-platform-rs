@@ -53,6 +53,8 @@ mod m20260818_000000_add_user_lookup_attempts;
 mod m20260818_000000_create_coaching_session_reminders;
 mod m20260820_000000_add_notice_given_at_to_coaching_sessions;
 mod m20260922_000000_create_coaching_session_images;
+mod m20261005_000000_add_transcript_participants;
+mod m20261009_000000_index_transcript_participant_links;
 
 pub struct Migrator;
 
@@ -115,6 +117,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260818_000000_create_coaching_session_reminders::Migration),
             Box::new(m20260820_000000_add_notice_given_at_to_coaching_sessions::Migration),
             Box::new(m20260922_000000_create_coaching_session_images::Migration),
+            Box::new(m20261005_000000_add_transcript_participants::Migration),
+            Box::new(m20261009_000000_index_transcript_participant_links::Migration),
         ]
     }
 }
