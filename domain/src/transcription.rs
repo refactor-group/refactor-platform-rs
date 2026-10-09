@@ -244,7 +244,7 @@ pub(crate) async fn persist_completion(
 }
 
 /// One participant row per transcript speaker, carrying its attribution by provider id.
-pub(crate) fn participant_rows(
+fn participant_rows(
     transcription_id: Id,
     result: &transcription_types::Transcription,
     attributions: &[Attribution],
@@ -305,18 +305,6 @@ async fn attribute_speakers(
     transcription: &Model,
     speakers: &[transcription_types::Participant],
 ) -> Vec<Attribution> {
-    attribute_speakers_with(db, recording_bot, config, transcription, speakers, true).await
-}
-
-/// Like `attribute_speakers`; with `google` off, no Google lookup or token use is attempted.
-pub(crate) async fn attribute_speakers_with(
-    db: &DatabaseConnection,
-    recording_bot: Option<&dyn recording_bot::Provider>,
-    config: &Config,
-    transcription: &Model,
-    speakers: &[transcription_types::Participant],
-    google: bool,
-) -> Vec<Attribution> {
     let Ok((session, coach_id, coachee_id)) =
         session_people(db, transcription).await.inspect_err(|e| {
             warn!(
@@ -330,15 +318,7 @@ pub(crate) async fn attribute_speakers_with(
 
     let gathered = timeout(
         EVIDENCE_TIMEOUT,
-        gather_evidence(
-            db,
-            recording_bot,
-            config,
-            transcription,
-            &session,
-            coach_id,
-            google,
-        ),
+        gather_evidence(db, recording_bot, config, transcription, &session, coach_id),
     )
     .await
     .unwrap_or_else(|_| {
@@ -374,8 +354,6 @@ fn unattributed(speakers: &[transcription_types::Participant]) -> Vec<Attributio
 }
 
 /// Gathers what is known about the coach; every failure degrades the evidence, none is fatal.
-///
-/// With `google` off, only the recorded meeting space is checked.
 async fn gather_evidence(
     db: &DatabaseConnection,
     recording_bot: Option<&dyn recording_bot::Provider>,
@@ -383,7 +361,6 @@ async fn gather_evidence(
     transcription: &Model,
     session: &coaching_sessions::Model,
     coach_id: Id,
-    google: bool,
 ) -> Gathered {
     let Some(code) = session_meet_code(session) else {
         debug!(
@@ -395,13 +372,6 @@ async fn gather_evidence(
     let Some(recording) = recording_of_space(db, recording_bot, transcription, &code).await else {
         return Gathered::default();
     };
-    if !google {
-        return Gathered {
-            recorded_session_space: true,
-            ..Gathered::default()
-        };
-    }
-
     let coach_account_id = external_account_id(db, config, coach_id, MeetingProvider::Google)
         .await
         .inspect_err(|_| {
@@ -436,7 +406,7 @@ async fn gather_evidence(
 }
 
 /// The session's Meet code, when it is a Google Meet session.
-pub(crate) fn session_meet_code(session: &coaching_sessions::Model) -> Option<String> {
+fn session_meet_code(session: &coaching_sessions::Model) -> Option<String> {
     session
         .provider
         .filter(|provider| *provider == MeetingProvider::Google)
