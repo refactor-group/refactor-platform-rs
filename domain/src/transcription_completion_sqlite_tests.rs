@@ -385,3 +385,42 @@ async fn persisted_attribution_reads_back_as_profile_names_and_roles() -> Result
     })
     .await
 }
+
+async fn stored_transcription(f: &Fixture) -> Result<Model, Error> {
+    Ok(
+        entity_api::transcription::find_by_external_id(&f.db, &f.transcription.external_id)
+            .await?
+            .expect("the transcription exists"),
+    )
+}
+
+#[tokio::test]
+async fn completion_is_recorded_with_the_rows() -> Result<(), Error> {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (result, attributions) = completed(&f);
+
+        persist_completion(&f.db, &f.transcription, &result, &attributions).await?;
+
+        let stored = stored_transcription(&f).await?;
+        assert_eq!(stored.status, TranscriptionStatus::Completed);
+        assert_eq!(stored.word_count, Some(6));
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn an_empty_transcript_is_still_completed() -> Result<(), Error> {
+    within_time_limit(async {
+        let f = fixture().await;
+
+        persist_completion(&f.db, &f.transcription, &transcript(vec![], vec![]), &[]).await?;
+
+        let stored = stored_transcription(&f).await?;
+        assert_eq!(stored.status, TranscriptionStatus::Completed);
+        assert_eq!(stored.word_count, Some(0));
+        Ok(())
+    })
+    .await
+}

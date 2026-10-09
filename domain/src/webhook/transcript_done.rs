@@ -63,7 +63,7 @@ pub async fn handle(
                 transcript_id, e
             );
             let _ = transcription_api::update_status(
-                &db,
+                db.as_ref(),
                 transcription_id,
                 TranscriptionStatus::Failed,
                 None,

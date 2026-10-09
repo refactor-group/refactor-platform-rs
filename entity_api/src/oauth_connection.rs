@@ -82,8 +82,8 @@ pub async fn get_by_user_and_provider(
 }
 
 /// Updates tokens on an existing OAuth connection
-pub async fn update_tokens(
-    db: &DatabaseConnection,
+pub async fn update_tokens<C: ConnectionTrait>(
+    db: &C,
     id: Id,
     access_token: String,
     refresh_token: Option<String>,
@@ -115,8 +115,8 @@ pub async fn update_tokens(
 }
 
 /// Rewrites a connection's platform account id and email, leaving its tokens untouched.
-pub async fn update_identity(
-    db: &DatabaseConnection,
+pub async fn update_identity<C: ConnectionTrait>(
+    db: &C,
     id: Id,
     external_account_id: Option<String>,
     external_email: Option<String>,

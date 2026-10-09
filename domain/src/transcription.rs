@@ -24,7 +24,7 @@ use entity_api::{
 use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use meeting_ai::types::transcription as transcription_types;
-use sea_orm::{ActiveValue::Set, DatabaseConnection, TransactionTrait};
+use sea_orm::{ActiveValue::Set, DatabaseConnection, DatabaseTransaction, TransactionTrait};
 use serde::Serialize;
 use service::config::Config;
 use tokio::time::timeout;
@@ -123,7 +123,7 @@ pub async fn start(
 ///
 /// Called after the `transcript.done` webhook. Speaker attribution never fails the transcript: any
 /// evidence that cannot be gathered leaves the affected speakers unattributed. The transcription is
-/// marked `Completed` only after its participants and segments are committed.
+/// marked `Completed` in the same transaction that stores its participants and segments.
 pub async fn handle_completion(
     db: &DatabaseConnection,
     provider: Option<&dyn transcription_trait::Provider>,
@@ -168,22 +168,6 @@ pub async fn handle_completion(
     .await;
     persist_completion(db, &transcription, &result, &attributions).await?;
 
-    let word_count: usize = result
-        .segments
-        .iter()
-        .map(|s| s.text.split_whitespace().count())
-        .sum();
-
-    transcription_api::update_status(
-        db,
-        transcription.id,
-        TranscriptionStatus::Completed,
-        Some(i32::try_from(word_count).unwrap_or(i32::MAX)),
-        None,
-        None,
-    )
-    .await?;
-
     info!(
         "Transcript completion handled for transcription {}: {} segments, {} speakers, {} attributed",
         transcription.id,
@@ -195,24 +179,50 @@ pub async fn handle_completion(
     Ok(())
 }
 
-/// Stores the transcript's participants with their attribution and its segments linked to them,
-/// in one transaction.
+/// Stores the transcript's participants with their attribution, its segments linked to them, and
+/// its `Completed` status with the word count, in one transaction.
 pub(crate) async fn persist_completion(
     db: &DatabaseConnection,
     transcription: &Model,
     result: &transcription_types::Transcription,
     attributions: &[Attribution],
 ) -> Result<(), Error> {
-    if result.participants.is_empty() && result.segments.is_empty() {
-        return Ok(());
+    let txn = db.begin().await.map_err(EntityApiError::from)?;
+
+    if !(result.participants.is_empty() && result.segments.is_empty()) {
+        store_speakers_and_segments(&txn, transcription, result, attributions).await?;
     }
 
+    let word_count: usize = result
+        .segments
+        .iter()
+        .map(|s| s.text.split_whitespace().count())
+        .sum();
+    transcription_api::update_status(
+        &txn,
+        transcription.id,
+        TranscriptionStatus::Completed,
+        Some(i32::try_from(word_count).unwrap_or(i32::MAX)),
+        None,
+        None,
+    )
+    .await?;
+
+    txn.commit().await.map_err(EntityApiError::from)?;
+
+    Ok(())
+}
+
+async fn store_speakers_and_segments(
+    txn: &DatabaseTransaction,
+    transcription: &Model,
+    result: &transcription_types::Transcription,
+    attributions: &[Attribution],
+) -> Result<(), Error> {
     let now = Utc::now();
     let participant_rows = participant_rows(transcription.id, result, attributions);
 
-    let txn = db.begin().await.map_err(EntityApiError::from)?;
-
-    let participants = participant_api::create_batch(&txn, participant_rows).await?;
+    let participants = participant_api::create_batch(txn, participant_rows).await?;
     let row_of: HashMap<&str, Id> = participants
         .iter()
         .map(|p| (p.provider_participant_id.as_str(), p.id))
@@ -236,9 +246,7 @@ pub(crate) async fn persist_completion(
             created_at: Set(now.into()),
         })
         .collect();
-    segment_api::create_batch(&txn, segment_rows).await?;
-
-    txn.commit().await.map_err(EntityApiError::from)?;
+    segment_api::create_batch(txn, segment_rows).await?;
 
     Ok(())
 }

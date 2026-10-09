@@ -8,7 +8,7 @@ use entity_api::oauth_connection as ConnectionApi;
 use log::*;
 use meeting_auth::oauth::token::{encryption, Manager, Plain};
 use meeting_auth::oauth::UserInfo;
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use secrecy::{ExposeSecret, SecretString};
 use service::config::Config;
 
@@ -96,16 +96,24 @@ pub async fn exchange_and_store_tokens(
 
     match existing {
         Some(conn) => {
+            // Tokens and the account they belong to are saved together or not at all.
+            let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
             ConnectionApi::update_tokens(
-                db,
+                &txn,
                 conn.id,
                 encrypted_access,
                 encrypted_refresh,
                 tokens.expires_at,
             )
             .await?;
-            ConnectionApi::update_identity(db, conn.id, Some(user_info.id), Some(user_info.email))
-                .await?;
+            ConnectionApi::update_identity(
+                &txn,
+                conn.id,
+                Some(user_info.id),
+                Some(user_info.email),
+            )
+            .await?;
+            txn.commit().await.map_err(entity_api::error::Error::from)?;
         }
         None => {
             let model = create_oauth_connection_model(
