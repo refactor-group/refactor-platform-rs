@@ -5,6 +5,7 @@ use chrono_tz::Tz;
 use sea_orm::prelude::DateTimeWithTimeZone;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use utoipa::ToSchema;
 
 use super::due_date::reconcile;
 use super::prompt::collapse;
@@ -46,7 +47,8 @@ pub struct Candidate {
 }
 
 /// The action accept will create, plus the spoken deadline for the reviewer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(as = domain::transcript_suggestion::actions::ActionProposal)]
 pub struct ActionProposal {
     #[serde(flatten)]
     pub action: ActionWithAssignees,

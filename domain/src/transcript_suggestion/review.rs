@@ -6,7 +6,7 @@ use chrono::{DateTime, Duration, Utc};
 use log::warn;
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::{DatabaseConnection, TransactionTrait};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use service::config::Config;
 use utoipa::ToSchema;
 
@@ -53,6 +53,33 @@ pub struct DefaultDue {
     pub source: DueSource,
 }
 
+/// What a reviewer may change on an action suggestion.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[schema(as = domain::transcript_suggestion::review::ActionEdits)]
+pub struct ActionEdits {
+    pub body: String,
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub due_by: Option<DateTimeWithTimeZone>,
+    pub assignee_ids: Vec<Id>,
+}
+
+impl ActionEdits {
+    /// `stored` with its body, due date and assignees replaced by these edits.
+    pub fn onto(&self, stored: &ActionProposal) -> ActionProposal {
+        ActionProposal {
+            action: ActionWithAssignees {
+                action: actions::Model {
+                    body: Some(self.body.clone()),
+                    due_by: self.due_by,
+                    ..stored.action.action.clone()
+                },
+                assignee_ids: self.assignee_ids.clone(),
+            },
+            due_phrase: stored.due_phrase.clone(),
+        }
+    }
+}
+
 /// A pending action suggestion as reviewers see it.
 #[derive(Clone, Debug, PartialEq, Serialize, ToSchema)]
 #[schema(as = domain::transcript_suggestion::review::ActionSuggestion)]
@@ -60,7 +87,6 @@ pub struct ActionSuggestion {
     pub id: Id,
     pub coaching_session_id: Id,
     /// The action accept will create, with `due_phrase` as the spoken deadline.
-    #[schema(value_type = Object)]
     pub proposal: ActionProposal,
     pub quote: String,
     pub segment: SourceSegment,
@@ -188,24 +214,17 @@ pub async fn list_pending_actions(
         .collect())
 }
 
-/// Replaces a pending suggestion's proposal with `proposal`'s editable fields.
+/// Applies `edits` to a pending suggestion's proposal.
 pub async fn edit_action(
     db: &DatabaseConnection,
     publisher: &EventPublisher,
     user: &users::Model,
     suggestion: Model,
-    proposal: ActionProposal,
+    edits: ActionEdits,
 ) -> Result<Model, Error> {
     let stored = read_proposal(&suggestion)?;
-    let (_, people) = authorize(
-        db,
-        user,
-        &suggestion,
-        &stored,
-        Some(&proposal.action.assignee_ids),
-    )
-    .await?;
-    let revised = revise(proposal, &stored, people)?;
+    let (_, people) = authorize(db, user, &suggestion, &stored, Some(&edits.assignee_ids)).await?;
+    let revised = revise(edits.onto(&stored), &stored, people)?;
     let json = serde_json::to_value(&revised)
         .map_err(|e| internal(format!("Serializing a proposal failed: {e}")))?;
 
@@ -226,14 +245,14 @@ pub async fn accept_action(
     config: &Config,
     user: &users::Model,
     suggestion: Model,
-    edits: Option<ActionProposal>,
+    edits: Option<ActionEdits>,
     now: DateTime<Utc>,
 ) -> Result<ActionWithAssignees, Error> {
     let stored = read_proposal(&suggestion)?;
-    let requested = edits.as_ref().map(|e| e.action.assignee_ids.as_slice());
+    let requested = edits.as_ref().map(|e| e.assignee_ids.as_slice());
     let (session, people) = authorize(db, user, &suggestion, &stored, requested).await?;
     let proposal = match edits {
-        Some(edits) => revise(edits, &stored, people)?,
+        Some(edits) => revise(edits.onto(&stored), &stored, people)?,
         None => stored,
     };
 

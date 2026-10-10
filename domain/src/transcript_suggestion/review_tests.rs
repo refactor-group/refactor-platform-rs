@@ -67,3 +67,44 @@ fn actor_of_names_the_coach_the_coachee_or_nobody() {
     assert_eq!(actor_of(p.coachee_id, p), Some(Actor::Coachee));
     assert_eq!(actor_of(Id::new_v4(), p), None);
 }
+
+#[test]
+fn edits_replace_exactly_the_body_due_date_and_assignees() {
+    let epoch = DateTime::<Utc>::UNIX_EPOCH.fixed_offset();
+    let stored = ActionProposal {
+        action: ActionWithAssignees {
+            action: actions::Model {
+                id: Id::new_v4(),
+                coaching_session_id: Id::new_v4(),
+                goal_id: Some(Id::new_v4()),
+                user_id: Id::new_v4(),
+                body: Some("Old body".to_string()),
+                due_by: Some(epoch),
+                status: ActionStatus::InProgress,
+                status_changed_at: epoch,
+                created_at: epoch,
+                updated_at: epoch,
+            },
+            assignee_ids: vec![Id::new_v4()],
+        },
+        due_phrase: Some("by Friday".to_string()),
+    };
+    let edits = ActionEdits {
+        body: "New body".to_string(),
+        due_by: None,
+        assignee_ids: vec![Id::new_v4(), Id::new_v4()],
+    };
+
+    let result = edits.onto(&stored);
+
+    assert_eq!(result.action.action.body.as_deref(), Some("New body"));
+    assert_eq!(result.action.action.due_by, None);
+    assert_eq!(result.action.assignee_ids, edits.assignee_ids);
+    let unchanged = |p: &ActionProposal| actions::Model {
+        body: None,
+        due_by: None,
+        ..p.action.action.clone()
+    };
+    assert_eq!(unchanged(&result), unchanged(&stored));
+    assert_eq!(result.due_phrase, stored.due_phrase);
+}

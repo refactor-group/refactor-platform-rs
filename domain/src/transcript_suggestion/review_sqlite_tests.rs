@@ -298,6 +298,15 @@ fn proposal(
     }
 }
 
+/// The edits that turn a suggestion into `proposal`.
+fn edits_of(proposal: ActionProposal) -> ActionEdits {
+    ActionEdits {
+        body: proposal.action.action.body.unwrap_or_default(),
+        due_by: proposal.action.action.due_by,
+        assignee_ids: proposal.action.assignee_ids,
+    }
+}
+
 /// A suggestion of `proposal` from the coachee's segment.
 async fn suggest(
     f: &Fixture,
@@ -572,7 +581,7 @@ async fn accept_with_edits_uses_them_and_rejects_an_outside_assignee() {
             &Config::default(),
             &f.coach,
             outsider.clone(),
-            Some(bad),
+            Some(edits_of(bad)),
             now(),
         )
         .await
@@ -595,7 +604,7 @@ async fn accept_with_edits_uses_them_and_rejects_an_outside_assignee() {
             &Config::default(),
             &f.coach,
             outsider,
-            Some(edits),
+            Some(edits_of(edits)),
             now(),
         )
         .await
@@ -652,7 +661,7 @@ async fn the_coachee_may_not_accept_a_coach_only_suggestion_or_add_the_coach() {
             &publisher,
             &f.coachee,
             coachee_only.clone(),
-            adds_coach,
+            edits_of(adds_coach),
         )
         .await
         .expect_err("adding the coach is refused");
@@ -687,7 +696,7 @@ async fn edit_rewrites_the_proposal_and_a_new_due_date_drops_the_phrase() {
             Some(due(3)),
             None,
         );
-        edit_action(&f.db, &publisher, &f.coachee, s.clone(), same_due)
+        edit_action(&f.db, &publisher, &f.coachee, s.clone(), edits_of(same_due))
             .await
             .expect("the edit succeeds");
         let stored: ActionProposal =
@@ -705,7 +714,7 @@ async fn edit_rewrites_the_proposal_and_a_new_due_date_drops_the_phrase() {
             Some(due(4)),
             Some("by Friday"),
         );
-        edit_action(&f.db, &publisher, &f.coachee, s.clone(), new_due)
+        edit_action(&f.db, &publisher, &f.coachee, s.clone(), edits_of(new_due))
             .await
             .expect("the edit succeeds");
         let stored: ActionProposal =
@@ -727,7 +736,7 @@ async fn edit_rewrites_the_proposal_and_a_new_due_date_drops_the_phrase() {
         .await
         .expect("the accept succeeds");
         let late = proposal(&f, "Too late", vec![f.coachee.id], None, None);
-        let refused = edit_action(&f.db, &publisher, &f.coachee, s, late)
+        let refused = edit_action(&f.db, &publisher, &f.coachee, s, edits_of(late))
             .await
             .expect_err("an accepted suggestion cannot be edited");
         assert!(is_conflict(&refused), "{refused:?}");
