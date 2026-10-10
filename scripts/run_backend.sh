@@ -26,7 +26,7 @@ usage() {
     sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# shellcheck source=lib/dotenv.sh
+# shellcheck source=SCRIPTDIR/lib/dotenv.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dotenv.sh"
 
 # Percent-encode a URL component so credentials with reserved characters
@@ -51,7 +51,7 @@ collab_database_url() {
 # The URL the app should use to reach a server bound at `bind`. A wildcard or
 # loopback bind is reachable as localhost; anything else is used verbatim.
 client_url_from_bind() {
-    local bind="$1" host="${1%:*}" port="${1##*:}"
+    local host="${1%:*}" port="${1##*:}"
     case "$host" in
         0.0.0.0|127.0.0.1|localhost|"") host=localhost ;;
     esac

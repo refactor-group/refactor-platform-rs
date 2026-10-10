@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared .env readers for the local dev scripts. Source it; it defines functions only.
 
 # Read one KEY from an env file without executing it as shell (values may hold
