@@ -18,8 +18,9 @@ use entity::Id;
 use entity_api::error::Error as EntityApiError;
 use entity_api::{
     coaching_relationship, coaching_session as coaching_session_api,
-    meeting_recording as recording_api, transcript_participant as participant_api,
-    transcript_segment as segment_api, transcription as transcription_api,
+    meeting_recording as recording_api, transcript_analysis as analysis_api,
+    transcript_participant as participant_api, transcript_segment as segment_api,
+    transcription as transcription_api,
 };
 use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
@@ -37,6 +38,7 @@ use crate::meeting_provider::Provider as MeetingProvider;
 use crate::oauth_connection::{external_account_id, get_valid_access_token};
 use crate::transcript_attribution::{attribute, Attribution, Evidence};
 use crate::transcript_export::{self, Labeled, LabeledSegment, Rendered, Speaker, SpeakerRole};
+use crate::transcript_suggestion_target::Target;
 use crate::users;
 
 /// A transcription plus the speakers found in its transcript.
@@ -166,7 +168,13 @@ pub async fn handle_completion(
         &result.participants,
     )
     .await;
-    persist_completion(db, &transcription, &result, &attributions).await?;
+    // Only transcripts completed while extraction is configured are ever analyzed.
+    let analyses: &[Target] = if config.assembly_ai_api_key().is_some() {
+        &[Target::Action]
+    } else {
+        &[]
+    };
+    persist_completion_with(db, &transcription, &result, &attributions, analyses).await?;
 
     info!(
         "Transcript completion handled for transcription {}: {} segments, {} speakers, {} attributed",
@@ -181,11 +189,26 @@ pub async fn handle_completion(
 
 /// Stores the transcript's participants with their attribution, its segments linked to them, and
 /// its `Completed` status with the word count, in one transaction.
+#[cfg(test)]
 pub(crate) async fn persist_completion(
     db: &DatabaseConnection,
     transcription: &Model,
     result: &transcription_types::Transcription,
     attributions: &[Attribution],
+) -> Result<(), Error> {
+    persist_completion_with(db, transcription, result, attributions, &[]).await
+}
+
+/// Like `persist_completion`, also recording a pending analysis per target in the same transaction.
+///
+/// Writing the pending rows with the segments means a completed transcript is never left without
+/// the analyses it was due, and an analysis never exists for a transcript that did not complete.
+pub(crate) async fn persist_completion_with(
+    db: &DatabaseConnection,
+    transcription: &Model,
+    result: &transcription_types::Transcription,
+    attributions: &[Attribution],
+    analyses: &[Target],
 ) -> Result<(), Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
@@ -207,6 +230,10 @@ pub(crate) async fn persist_completion(
         None,
     )
     .await?;
+
+    for target in analyses {
+        analysis_api::create_pending(&txn, transcription.id, *target).await?;
+    }
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
@@ -573,7 +600,10 @@ pub async fn export_plain_text(
 ///
 /// `session.date` is a UTC instant, so an evening session in the Americas would
 /// otherwise be dated tomorrow.
-fn local_session_date(session: &coaching_sessions::Model, coach: &users::Model) -> NaiveDate {
+pub(crate) fn local_session_date(
+    session: &coaching_sessions::Model,
+    coach: &users::Model,
+) -> NaiveDate {
     let tz: Tz = coach.timezone.parse().unwrap_or(chrono_tz::UTC);
     Utc.from_utc_datetime(&session.date)
         .with_timezone(&tz)
@@ -676,3 +706,7 @@ mod sqlite_tests;
 #[cfg(test)]
 #[path = "transcription_completion_sqlite_tests.rs"]
 mod completion_sqlite_tests;
+
+#[cfg(test)]
+#[path = "transcription_analysis_hook_sqlite_tests.rs"]
+mod analysis_hook_sqlite_tests;

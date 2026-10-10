@@ -2,7 +2,7 @@
 
 pub use entity::transcript_analysis::{Model, Status};
 pub use entity_api::transcript_analysis::{
-    claim, complete, create_pending, fail, find_claimable, release_for_retry,
+    claim, complete, complete_claimed, create_pending, fail, find_claimable, release_for_retry,
 };
 
 #[cfg(test)]

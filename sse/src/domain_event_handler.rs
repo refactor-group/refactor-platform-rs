@@ -233,6 +233,76 @@ impl EventHandler for SseDomainEventHandler {
 
                 self.send_to_users(sse_event, notify_user_ids);
             }
+
+            DomainEvent::TranscriptSuggestionsChanged {
+                coaching_session_id,
+                target,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::TranscriptSuggestionsChanged {
+                    coaching_session_id: coaching_session_id.to_string(),
+                    target: target.clone(),
+                };
+
+                self.send_to_users(sse_event, notify_user_ids);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+
+    use super::*;
+
+    type Received = UnboundedReceiver<Result<axum::response::sse::Event, std::convert::Infallible>>;
+
+    /// Drives a future that never actually suspends, so no runtime is needed.
+    fn run_ready(future: impl Future<Output = ()>) {
+        let mut future = pin!(future);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(
+            matches!(future.as_mut().poll(&mut cx), Poll::Ready(())),
+            "the handler completes without suspending"
+        );
+    }
+
+    fn connect(manager: &Manager, user_id: events::Id) -> Received {
+        let (sender, receiver) = unbounded_channel();
+        manager.register_connection(user_id.to_string(), sender);
+        receiver
+    }
+
+    fn count(receiver: &mut Received) -> usize {
+        std::iter::from_fn(|| receiver.try_recv().ok()).count()
+    }
+
+    #[test]
+    fn transcript_suggestions_changed_reaches_only_the_notified_users() {
+        let manager = Arc::new(Manager::new());
+        let (coach, coachee, outsider) = (
+            events::Id::new_v4(),
+            events::Id::new_v4(),
+            events::Id::new_v4(),
+        );
+        let mut coach_rx = connect(&manager, coach);
+        let mut coachee_rx = connect(&manager, coachee);
+        let mut outsider_rx = connect(&manager, outsider);
+
+        let handler = SseDomainEventHandler::new(manager);
+        run_ready(handler.handle(&DomainEvent::TranscriptSuggestionsChanged {
+            coaching_session_id: events::Id::new_v4(),
+            target: "action".to_string(),
+            notify_user_ids: vec![coach, coachee],
+        }));
+
+        assert_eq!(count(&mut coach_rx), 1);
+        assert_eq!(count(&mut coachee_rx), 1);
+        assert_eq!(count(&mut outsider_rx), 0);
     }
 }

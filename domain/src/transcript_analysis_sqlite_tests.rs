@@ -249,6 +249,69 @@ async fn release_fail_and_complete_leave_the_expected_state_in_the_table() {
 }
 
 #[tokio::test]
+async fn complete_claimed_completes_only_the_claim_with_matching_attempts() {
+    within_time_limit(async {
+        let db = database().await;
+        let transcription_id = seed_transcription(&db, 1).await.transcription_id;
+        let current = seed_analysis(
+            &db,
+            transcription_id,
+            Status::Processing,
+            2,
+            Some(at(-1)),
+            at(-5),
+        )
+        .await;
+        let retaken = seed_analysis(
+            &db,
+            transcription_id,
+            Status::Processing,
+            2,
+            Some(at(-1)),
+            at(-5),
+        )
+        .await;
+        let now = at(0);
+
+        let completed = complete_claimed(
+            &db,
+            current,
+            2,
+            "model-x".to_string(),
+            Some(120),
+            Some(30),
+            now,
+        )
+        .await?;
+        assert!(completed.is_some());
+        let row = reread(&db, current).await;
+        assert_eq!(row.status, Status::Completed);
+        assert_eq!(row.model.as_deref(), Some("model-x"));
+        assert_eq!(row.input_tokens, Some(120));
+        assert_eq!(row.output_tokens, Some(30));
+        assert_eq!(row.updated_at, now);
+
+        let before = reread(&db, retaken).await;
+        let superseded = complete_claimed(
+            &db,
+            retaken,
+            1,
+            "model-x".to_string(),
+            Some(120),
+            Some(30),
+            now,
+        )
+        .await?;
+        assert!(superseded.is_none());
+        assert_eq!(reread(&db, retaken).await, before, "the row is unchanged");
+
+        Ok::<(), Error>(())
+    })
+    .await
+    .expect("the test body succeeds");
+}
+
+#[tokio::test]
 async fn a_second_analysis_for_the_same_transcription_and_target_is_rejected() {
     within_time_limit(async {
         let db = database().await;

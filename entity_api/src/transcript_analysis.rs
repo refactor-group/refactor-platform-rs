@@ -120,6 +120,37 @@ pub async fn complete<C: ConnectionTrait>(
     .await?)
 }
 
+/// Completes an analysis only while it is still the caller's claim.
+///
+/// A worker whose claim went stale and was retaken sees a different `attempts` and gets `None`.
+pub async fn complete_claimed<C: ConnectionTrait>(
+    db: &C,
+    id: Id,
+    attempts: i16,
+    model: String,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+    now: DateTimeWithTimeZone,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::update_many()
+        .set(ActiveModel {
+            status: Set(Status::Completed),
+            model: Set(Some(model)),
+            input_tokens: Set(input_tokens),
+            output_tokens: Set(output_tokens),
+            error_message: Set(None),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .filter(Column::Id.eq(id))
+        .filter(Column::Status.eq(Status::Processing))
+        .filter(Column::Attempts.eq(attempts))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next())
+}
+
 /// Returns an analysis to pending after a retryable failure; attempts stay as counted.
 pub async fn release_for_retry<C: ConnectionTrait>(
     db: &C,

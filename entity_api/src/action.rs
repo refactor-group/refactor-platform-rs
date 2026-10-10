@@ -154,6 +154,19 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     })
 }
 
+/// Every action in a coaching session, oldest first.
+pub async fn find_by_coaching_session<C: ConnectionTrait>(
+    db: &C,
+    coaching_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(actions::Column::CoachingSessionId.eq(coaching_session_id))
+        .order_by(actions::Column::CreatedAt, Order::Asc)
+        .order_by(actions::Column::Id, Order::Asc)
+        .all(db)
+        .await?)
+}
+
 /// Open (not-completed) actions for a coaching session.
 /// "Open" reuses the shared `Status::COMPLETED` definition, filtered in SQL.
 pub async fn find_open_by_coaching_session_id(

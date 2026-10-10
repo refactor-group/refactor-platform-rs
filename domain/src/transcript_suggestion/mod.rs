@@ -20,6 +20,7 @@ pub use prompt::{render, Refs};
 
 pub mod actions;
 pub(crate) mod due_date;
+pub mod extract;
 pub mod prompt;
 
 /// The most verified suggestions kept from one answer.

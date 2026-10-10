@@ -121,6 +121,9 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "recall_ai_api_key",
     "recall_ai_region",
     "recall_ai_webhook_secret",
+    "assembly_ai_api_key",
+    "assembly_ai_llm_model",
+    "assembly_ai_llm_base_url",
     "object_store_backend",
     "object_store_local_path",
     "spaces_endpoint",
@@ -493,6 +496,18 @@ pub struct Config {
     /// Recall.ai webhook signing secret (Svix `whsec_...` format)
     #[arg(long, env)]
     recall_ai_webhook_secret: Option<String>,
+
+    /// AssemblyAI API key; transcript suggestions are disabled when unset
+    #[arg(long, env)]
+    assembly_ai_api_key: Option<String>,
+
+    /// Model the AssemblyAI LLM Gateway runs for transcript suggestions
+    #[arg(long, env, default_value = "claude-sonnet-4-6")]
+    assembly_ai_llm_model: String,
+
+    /// AssemblyAI LLM Gateway base URL
+    #[arg(long, env, default_value = "https://llm-gateway.assemblyai.com/v1")]
+    assembly_ai_llm_base_url: String,
 
     /// Object storage backend: "local" (filesystem) or "spaces" (DigitalOcean Spaces)
     #[arg(long, env, default_value = "local")]
@@ -1111,6 +1126,20 @@ impl Config {
 
     pub fn recall_ai_webhook_secret(&self) -> Option<String> {
         self.recall_ai_webhook_secret.clone()
+    }
+
+    // AssemblyAI accessors
+
+    pub fn assembly_ai_api_key(&self) -> Option<String> {
+        self.assembly_ai_api_key.clone()
+    }
+
+    pub fn assembly_ai_llm_model(&self) -> &str {
+        &self.assembly_ai_llm_model
+    }
+
+    pub fn assembly_ai_llm_base_url(&self) -> &str {
+        &self.assembly_ai_llm_base_url
     }
 
     // Object storage accessors
