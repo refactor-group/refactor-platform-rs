@@ -28,7 +28,14 @@ fn on_wed(phrase: &str) -> Phrase {
 
 #[test]
 fn same_day_phrases_resolve_to_the_session_date() {
-    for phrase in ["today", "tonight", "EOD", "by EOD", "end of day", "by the end of the day"] {
+    for phrase in [
+        "today",
+        "tonight",
+        "EOD",
+        "by EOD",
+        "end of day",
+        "by the end of the day",
+    ] {
         assert_eq!(on_wed(phrase), Phrase::Date(wed()), "{phrase}");
     }
 }
@@ -98,8 +105,14 @@ fn n_weeks_from_a_weekday_counts_from_that_weekday() {
         on_wed("two weeks from this Wednesday"),
         Phrase::Date(day(2026, 10, 21))
     );
-    assert_eq!(on_wed("a week from Friday"), Phrase::Date(day(2026, 10, 16)));
-    assert_eq!(on_wed("two weeks from today"), Phrase::Date(day(2026, 10, 21)));
+    assert_eq!(
+        on_wed("a week from Friday"),
+        Phrase::Date(day(2026, 10, 16))
+    );
+    assert_eq!(
+        on_wed("two weeks from today"),
+        Phrase::Date(day(2026, 10, 21))
+    );
     assert_eq!(on_wed("a week from now"), Phrase::Date(day(2026, 10, 14)));
 }
 
@@ -111,7 +124,10 @@ fn end_of_week_weekend_and_month() {
     assert_eq!(on_wed("end of next week"), Phrase::Date(day(2026, 10, 16)));
     assert_eq!(on_wed("this weekend"), Phrase::Date(day(2026, 10, 11)));
     assert_eq!(on_wed("over the weekend"), Phrase::Date(day(2026, 10, 11)));
-    assert_eq!(on_wed("by the end of the month"), Phrase::Date(day(2026, 10, 31)));
+    assert_eq!(
+        on_wed("by the end of the month"),
+        Phrase::Date(day(2026, 10, 31))
+    );
     assert_eq!(on_wed("end of this month"), Phrase::Date(day(2026, 10, 31)));
     assert_eq!(
         resolve_phrase("end of the month", day(2027, 2, 3), None),
@@ -151,7 +167,10 @@ fn explicit_dates_resolve_in_the_session_year_or_the_next() {
     assert_eq!(on_wed("October 20th"), Phrase::Date(day(2026, 10, 20)));
     assert_eq!(on_wed("by October 20"), Phrase::Date(day(2026, 10, 20)));
     assert_eq!(on_wed("Oct 20"), Phrase::Date(day(2026, 10, 20)));
-    assert_eq!(on_wed("on the 20th of October"), Phrase::Date(day(2026, 10, 20)));
+    assert_eq!(
+        on_wed("on the 20th of October"),
+        Phrase::Date(day(2026, 10, 20))
+    );
     assert_eq!(on_wed("10/20"), Phrase::Date(day(2026, 10, 20)));
     assert_eq!(on_wed("November 3rd"), Phrase::Date(day(2026, 11, 3)));
     // Already past this year, so next year's.
@@ -205,9 +224,15 @@ fn a_recognized_phrase_wins_over_a_wrong_model_date() {
         reconcile_on_wed(Some(day(2026, 10, 10)), Some("by Friday")),
         Some(fri())
     );
-    assert_eq!(reconcile_on_wed(Some(fri()), Some("by Friday")), Some(fri()));
+    assert_eq!(
+        reconcile_on_wed(Some(fri()), Some("by Friday")),
+        Some(fri())
+    );
     // The phrase resolves even when the model gave no date.
-    assert_eq!(reconcile_on_wed(None, Some("tomorrow")), Some(day(2026, 10, 8)));
+    assert_eq!(
+        reconcile_on_wed(None, Some("tomorrow")),
+        Some(day(2026, 10, 8))
+    );
 }
 
 #[test]
@@ -226,7 +251,10 @@ fn an_ambiguous_phrase_clears_any_model_date() {
 #[test]
 fn an_unrecognized_phrase_keeps_the_model_date_within_bounds() {
     assert_eq!(
-        reconcile_on_wed(Some(day(2026, 11, 30)), Some("the Monday after Thanksgiving")),
+        reconcile_on_wed(
+            Some(day(2026, 11, 30)),
+            Some("the Monday after Thanksgiving")
+        ),
         Some(day(2026, 11, 30))
     );
     // Before the session: cleared.
@@ -245,7 +273,10 @@ fn an_unrecognized_phrase_keeps_the_model_date_within_bounds() {
 fn a_model_date_without_a_phrase_is_kept_only_within_bounds() {
     assert_eq!(reconcile_on_wed(Some(fri()), None), Some(fri()));
     assert_eq!(reconcile_on_wed(Some(wed()), None), Some(wed()));
-    assert_eq!(reconcile_on_wed(Some(day(2027, 10, 7)), None), Some(day(2027, 10, 7)));
+    assert_eq!(
+        reconcile_on_wed(Some(day(2027, 10, 7)), None),
+        Some(day(2027, 10, 7))
+    );
     assert_eq!(reconcile_on_wed(Some(day(2026, 10, 6)), None), None);
     assert_eq!(reconcile_on_wed(Some(day(2027, 10, 8)), None), None);
     assert_eq!(reconcile_on_wed(None, None), None);

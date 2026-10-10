@@ -287,7 +287,5 @@ fn month(word: &str) -> Option<u32> {
 }
 
 #[cfg(test)]
-// The frozen spec file is kept byte-for-byte as written.
-#[rustfmt::skip]
 #[path = "due_date_tests.rs"]
 mod tests;
