@@ -82,11 +82,11 @@ tunnel keeps working (rerun A1 after stopping the second).
 
 | Case | Result | Date | Notes |
 |---|---|---|---|
-| A1 | | | |
-| A2 | | | |
-| A3 | | | |
-| A4 | | | |
-| A5 | | | |
+| A1 | PASS | 2026-10-10 | Real ngrok domain; route verified in ~4s; no ngrok left |
+| A2 | PASS | 2026-10-10 | Real Recall key; stopped before the tunnel |
+| A3 | PASS | 2026-10-10 | Recall returned 401 for us-east-1 |
+| A4 | PASS | 2026-10-10 | ERR_NGROK_334 shown with the hint; first tunnel kept answering 401 |
+| A5 | PASS | 2026-10-10 | Ctrl-C in a terminal: exit 130 at once, no ngrok left |
 | B1 | | | |
 | B2 | | | |
 | C1 | | | |
