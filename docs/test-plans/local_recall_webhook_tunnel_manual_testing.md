@@ -87,6 +87,6 @@ tunnel keeps working (rerun A1 after stopping the second).
 | A3 | PASS | 2026-10-10 | Recall returned 401 for us-east-1 |
 | A4 | PASS | 2026-10-10 | ERR_NGROK_334 shown with the hint; first tunnel kept answering 401 |
 | A5 | PASS | 2026-10-10 | Ctrl-C in a terminal: exit 130 at once, no ngrok left |
-| B1 | | | |
-| B2 | | | |
-| C1 | | | |
+| B1 | PASS | 2026-10-10 | Recording and transcript completed locally via the tunnel (24 words) |
+| B2 | PASS | 2026-10-10 | Coach by account (host), coachee by elimination; 5 of 5 lines linked. Download not rechecked |
+| C1 | PASS | 2026-10-10 | Production backend logs had no mention of the local bot id |
