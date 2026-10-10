@@ -109,7 +109,7 @@ Start the backend, then run `scripts/recall_webhook_tunnel.sh` in another termin
 - that the backend answers on `http://localhost:$PORT/health` (`PORT` defaults to 4000);
 - that `GOOGLE_REDIRECT_URI` points at the local backend (a warning only).
 
-Once the tunnel is up it sends an unsigned `POST /webhooks/recall_ai` through it. A **401** from the handler proves the route reaches the backend; anything else is reported with what to fix. `scripts/recall_webhook_tunnel.sh --check` does all of this and then closes the tunnel, which is handy for verifying a setup.
+Once the tunnel is up it sends an unsigned `POST /webhooks/recall_ai` through it. A **401** from the handler proves the route reaches the backend; anything else is reported with what to fix. Because that check is unsigned, the backend logs one `Svix validation error ... Missing svix-id/webhook-id header` warning each time the tunnel opens. That warning is expected; real Recall deliveries always carry the signature headers. `scripts/recall_webhook_tunnel.sh --check` does all of this and then closes the tunnel, which is handy for verifying a setup.
 
 If ngrok reports the domain is already online, another ngrok (often a forgotten earlier run) holds it; stop that one first.
 

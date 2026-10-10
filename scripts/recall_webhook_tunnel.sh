@@ -139,6 +139,7 @@ verify_route() {
                 sleep 1
                 kill -0 "$ngrok_pid" 2>/dev/null || { ngrok_failed; return 1; }
                 echo "==> $url reaches the backend"
+                echo "    (the backend logs one \"Missing svix-id/webhook-id header\" warning for this unsigned check; that is expected)"
                 return 0
                 ;;
             405) fail "$url answered 405: that port is not serving POST /webhooks/recall_ai. Is PORT the backend's port?"; return 1 ;;
