@@ -26,26 +26,8 @@ usage() {
     sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# Read one KEY from an env file without executing it as shell (values may hold
-# `&` or `$`). Last definition wins; trailing comments and surrounding quotes
-# are stripped, matching how the app's dotenv loader reads it.
-env_value() {
-    local file="$1" key="$2" line
-    line="$(grep -E "^${key}=" "$file" | tail -1)" || return 0
-    line="${line#*=}"
-    line="$(printf '%s' "$line" | sed -E 's/[[:space:]]+#.*$//')"
-    line="${line%\"}"; line="${line#\"}"
-    line="${line%\'}"; line="${line#\'}"
-    printf '%s' "$line"
-}
-
-# Populate a variable from the shell environment first, then the env file.
-load_key() {
-    local file="$1" key="$2"
-    if [[ -z "${!key:-}" ]]; then
-        printf -v "$key" '%s' "$(env_value "$file" "$key")"
-    fi
-}
+# shellcheck source=SCRIPTDIR/lib/dotenv.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/dotenv.sh"
 
 # Percent-encode a URL component so credentials with reserved characters
 # (`@ / ? # % :`) survive inside a connection string.
@@ -69,7 +51,7 @@ collab_database_url() {
 # The URL the app should use to reach a server bound at `bind`. A wildcard or
 # loopback bind is reachable as localhost; anything else is used verbatim.
 client_url_from_bind() {
-    local bind="$1" host="${1%:*}" port="${1##*:}"
+    local host="${1%:*}" port="${1##*:}"
     case "$host" in
         0.0.0.0|127.0.0.1|localhost|"") host=localhost ;;
     esac
@@ -127,6 +109,11 @@ prefixed() {
 stop_children() {
     local pid
     for pid in "${pids[@]:-}"; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    # Readers of stopped binaries end on their own; anything still running is untracked.
+    sleep 0.2
+    for pid in $(jobs -p); do
         kill -TERM "$pid" 2>/dev/null || true
     done
     wait 2>/dev/null || true
