@@ -210,7 +210,7 @@ async fn store<S: Suggestible>(
 }
 
 /// Tells the session's participants new suggestions exist; a failed lookup only skips the event.
-async fn notify<S: Suggestible>(
+pub(super) async fn notify<S: Suggestible>(
     db: &DatabaseConnection,
     publisher: &EventPublisher,
     coaching_session_id: Id,

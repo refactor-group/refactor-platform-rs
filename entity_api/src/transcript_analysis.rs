@@ -24,7 +24,7 @@ fn claimable(stale_before: DateTimeWithTimeZone, max_attempts: i16) -> Condition
     )
 }
 
-async fn find_by_id<C: ConnectionTrait>(db: &C, id: Id) -> Result<Model, Error> {
+pub async fn find_by_id<C: ConnectionTrait>(db: &C, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,

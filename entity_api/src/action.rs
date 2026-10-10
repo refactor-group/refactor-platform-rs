@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, ExprTrait, JoinType, Order, QueryOrder, QuerySelect, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, ExprTrait, JoinType, Order, QueryOrder, QuerySelect,
+    TransactionTrait, TryIntoModel,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -44,8 +45,8 @@ impl ActionWithAssignees {
     }
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
+pub async fn create<C: ConnectionTrait>(
+    db: &C,
     action_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
@@ -54,6 +55,7 @@ pub async fn create(
     let now = chrono::Utc::now();
 
     let action_active_model: ActiveModel = ActiveModel {
+        id: Set(Id::new_v4()),
         coaching_session_id: Set(action_model.coaching_session_id),
         goal_id: Set(action_model.goal_id),
         user_id: Set(user_id),
@@ -63,10 +65,9 @@ pub async fn create(
         status_changed_at: Set(now.into()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
-        ..Default::default()
     };
 
-    Ok(action_active_model.save(db).await?.try_into_model()?)
+    Ok(action_active_model.insert(db).await?)
 }
 
 pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
@@ -192,8 +193,8 @@ pub async fn find_open_by_coaching_session_id(
 /// # Errors
 ///
 /// Returns `Error` if the database operation fails.
-pub async fn create_with_assignees(
-    db: &DatabaseConnection,
+pub async fn create_with_assignees<C: ConnectionTrait + TransactionTrait>(
+    db: &C,
     action_model: Model,
     user_id: Id,
     assignee_ids: Option<Vec<Id>>,

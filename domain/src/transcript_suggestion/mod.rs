@@ -22,6 +22,7 @@ pub mod actions;
 pub(crate) mod due_date;
 pub mod extract;
 pub mod prompt;
+pub mod review;
 
 /// The most verified suggestions kept from one answer.
 pub const MAX_SUGGESTIONS: usize = 15;

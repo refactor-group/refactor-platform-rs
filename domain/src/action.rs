@@ -80,7 +80,7 @@ async fn action_notify_user_ids(
 }
 
 /// Publishes `ActionCreated` or `ActionUpdated` carrying the full action (with assignees).
-async fn publish_action_changed(
+pub(crate) async fn publish_action_changed(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     action: &ActionWithAssignees,
