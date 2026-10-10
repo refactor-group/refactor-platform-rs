@@ -305,6 +305,51 @@ Table refactor_platform.transcript_participants {
   }
 }
 
+// One row per (transcription, target): the model run that proposes suggestions for a completed transcript.
+Table refactor_platform.transcript_analyses {
+  id uuid [primary key, not null, default: `gen_random_uuid()`]
+  transcription_id uuid [not null, note: 'The completed transcription being analyzed']
+  target refactor_platform.transcript_suggestion_target [not null, note: 'The kind of suggestion this run produces']
+  status refactor_platform.transcript_analysis_status [not null, default: 'pending']
+  attempts smallint [not null, default: 0, note: 'Claims taken so far; incremented on every claim']
+  claimed_at timestamptz [note: 'When the current claim was taken; a stale claim may be retaken']
+  error_message text [note: 'Error kind of the last failure; never transcript text or model output']
+  model varchar(255) [note: 'Model that produced the answer; "none" when the transcript had no segments']
+  input_tokens integer [note: 'Prompt tokens reported by the provider']
+  output_tokens integer [note: 'Completion tokens reported by the provider']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (transcription_id, target) [unique, name: "transcript_analyses_transcription_target_unique"]
+    status [name: "transcript_analyses_status_idx"]
+  }
+}
+
+// One row per suggestion the model proposed. Accepting creates the real entity.
+// NOTE: duplicate_of_id and created_entity_id point at the target's own table (actions for target 'action'),
+// so they are plain uuid columns with no foreign key.
+Table refactor_platform.transcript_suggestions {
+  id uuid [primary key, not null, default: `gen_random_uuid()`]
+  coaching_session_id uuid [not null, note: 'The session the suggestion is for']
+  transcript_analysis_id uuid [not null, note: 'The analysis run that produced it']
+  target refactor_platform.transcript_suggestion_target [not null]
+  proposal jsonb [not null, note: 'What accept will create, shaped by the target (for actions: the action fields, assignee_ids and due_phrase)']
+  segment_id uuid [not null, note: 'The transcript segment the suggestion came from']
+  quote text [not null, note: 'Words from that segment that support the suggestion']
+  duplicate_of_id uuid [note: 'Existing entity of the same target this may repeat; no foreign key']
+  status refactor_platform.transcript_suggestion_status [not null, default: 'pending']
+  resolved_by uuid [note: 'The user who accepted or dismissed it']
+  resolved_at timestamptz
+  created_entity_id uuid [note: 'Entity created on accept; no foreign key']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (coaching_session_id, target, status) [name: "transcript_suggestions_session_target_status_idx"]
+  }
+}
+
 enum refactor_platform.status {
   not_started
   in_progress
@@ -346,6 +391,23 @@ enum refactor_platform.transcription_status {
 enum refactor_platform.speaker_match_source {
   account [note: 'Matched by the coach\'s own connected meeting account']
   elimination [note: 'The only other speaker once the coach was identified']
+}
+
+enum refactor_platform.transcript_suggestion_target {
+  action
+}
+
+enum refactor_platform.transcript_analysis_status {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum refactor_platform.transcript_suggestion_status {
+  pending
+  accepted
+  dismissed
 }
 
 // coaching_relationships relationships
@@ -409,3 +471,12 @@ Ref: refactor_platform.transcript_segments.participant_id > refactor_platform.tr
 // transcript_participants relationships
 Ref: refactor_platform.transcript_participants.transcription_id > refactor_platform.transcriptions.id [delete: cascade]
 Ref: refactor_platform.transcript_participants.user_id > refactor_platform.users.id [delete: set null]
+
+// transcript_analyses relationships
+Ref: refactor_platform.transcript_analyses.transcription_id > refactor_platform.transcriptions.id [delete: cascade]
+
+// transcript_suggestions relationships
+Ref: refactor_platform.transcript_suggestions.coaching_session_id > refactor_platform.coaching_sessions.id [delete: cascade]
+Ref: refactor_platform.transcript_suggestions.transcript_analysis_id > refactor_platform.transcript_analyses.id [delete: cascade]
+Ref: refactor_platform.transcript_suggestions.segment_id > refactor_platform.transcript_segments.id [delete: cascade]
+Ref: refactor_platform.transcript_suggestions.resolved_by > refactor_platform.users.id [delete: set null]
