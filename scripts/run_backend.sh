@@ -111,6 +111,11 @@ stop_children() {
     for pid in "${pids[@]:-}"; do
         kill -TERM "$pid" 2>/dev/null || true
     done
+    # Readers of stopped binaries end on their own; anything still running is untracked.
+    sleep 0.2
+    for pid in $(jobs -p); do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
     wait 2>/dev/null || true
     if [[ -n "$fifo_dir" ]]; then
         rm -rf "$fifo_dir"
