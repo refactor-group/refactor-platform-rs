@@ -173,3 +173,51 @@ async fn a_failing_analysis_does_not_stop_the_next_one() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_transient_database_error_on_the_first_attempt_is_released_for_retry() {
+    within_time_limit(async {
+        let db = database().await;
+        let (id, _) = seed_pending(&db, 0).await;
+        // Loading the session's actions then fails with a database error, not a missing record.
+        db.execute_unprepared("DROP TABLE refactor_platform.actions")
+            .await
+            .expect("the actions table is dropped");
+        let ctx = context(db);
+
+        sweep(None).run(&ctx).await.expect("the tick runs");
+
+        let row = reread(&ctx, id).await;
+        assert_eq!(row.status, Status::Pending);
+        assert_eq!(row.claimed_at, None);
+        assert_eq!(row.attempts, 1);
+        assert!(row.error_message.is_some());
+    })
+    .await;
+}
+
+#[test]
+fn only_bad_credentials_and_missing_records_are_permanent() {
+    let domain = |kind| {
+        RunError::Domain(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(kind),
+        })
+    };
+
+    assert!(!should_retry(&RunError::Provider(authentication())));
+    assert!(!should_retry(&RunError::Provider(
+        meeting_ai::Error::Configuration("bad base url".to_string())
+    )));
+    assert!(should_retry(&RunError::Provider(network())));
+    assert!(should_retry(&RunError::Verification(Error {
+        source: None,
+        error_kind: DomainErrorKind::Validation("no suggestions array".to_string()),
+    })));
+    assert!(!should_retry(&domain(InternalErrorKind::Entity(
+        EntityErrorKind::NotFound
+    ))));
+    assert!(should_retry(&domain(InternalErrorKind::Other(
+        "pool timed out".to_string()
+    ))));
+}

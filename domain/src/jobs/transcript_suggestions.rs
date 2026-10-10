@@ -17,7 +17,7 @@ use log::*;
 use meeting_ai::traits::analysis;
 use service::config::Config;
 
-use crate::error::Error;
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::EventPublisher;
 use crate::gateway::assembly_ai::llm_gateway;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
@@ -71,7 +71,7 @@ impl Sweep {
             }
         };
 
-        let (retryable, message) = match result {
+        let error = match result {
             Ok(extract::Outcome::Stored(_)) => return true,
             Ok(extract::Outcome::Superseded) => {
                 info!(
@@ -80,18 +80,11 @@ impl Sweep {
                 );
                 return true;
             }
-            Err(RunError::Provider(e)) => (
-                !matches!(
-                    e,
-                    meeting_ai::Error::Authentication(_) | meeting_ai::Error::Configuration(_)
-                ),
-                format!("provider error: {}", provider_error_kind(&e)),
-            ),
-            Err(RunError::Verification(_)) => (true, "model output failed verification".into()),
-            Err(RunError::Domain(e)) => (false, format!("domain error: {:?}", e.error_kind)),
+            Err(error) => error,
         };
+        let message = failure_message(&error);
 
-        let give_up = !retryable || analysis.attempts >= MAX_ATTEMPTS;
+        let give_up = !should_retry(&error) || analysis.attempts >= MAX_ATTEMPTS;
         warn!(
             "[transcript-suggestions] analysis {} attempt {} failed ({message}); {}",
             analysis.id,
@@ -110,6 +103,30 @@ impl Sweep {
             );
         }
         false
+    }
+}
+
+/// Whether a failed run may succeed later; bad credentials or a vanished record never will.
+fn should_retry(error: &RunError) -> bool {
+    match error {
+        RunError::Provider(e) => !matches!(
+            e,
+            meeting_ai::Error::Authentication(_) | meeting_ai::Error::Configuration(_)
+        ),
+        RunError::Verification(_) => true,
+        RunError::Domain(e) => {
+            e.error_kind
+                != DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+        }
+    }
+}
+
+/// What is stored on the analysis: the error's kind, never provider or model content.
+fn failure_message(error: &RunError) -> String {
+    match error {
+        RunError::Provider(e) => format!("provider error: {}", provider_error_kind(e)),
+        RunError::Verification(_) => "model output failed verification".to_string(),
+        RunError::Domain(e) => format!("domain error: {:?}", e.error_kind),
     }
 }
 
