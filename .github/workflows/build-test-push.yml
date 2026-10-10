@@ -55,6 +55,9 @@ jobs:
       - name: Run local backend launcher tests (bats)
         run: bats scripts/tests/run_backend.bats
 
+      - name: Run Recall webhook tunnel tests (bats)
+        run: bats scripts/tests/recall_webhook_tunnel.bats
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

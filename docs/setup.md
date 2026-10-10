@@ -11,7 +11,7 @@ This guide covers setting up the Refactor platform for local development and pro
 - Rust toolchain (`rustup` + stable)
 - PostgreSQL 14+ (see [README.md](../README.md) for DB setup)
 - `cargo`, `sea-orm-cli` 2.0.3 (matches `sea-orm-migration`)
-- [ngrok](https://ngrok.com/) or similar tunnel (for Recall.ai webhooks)
+- [ngrok](https://ngrok.com/) with a reserved domain (for Recall.ai webhooks; see section 4)
 
 ### 1. Core Application
 
@@ -51,7 +51,7 @@ ENCRYPTION_KEY=<64-hex-char output from above>
    - Add your Google account as a **Test user** (required while the app is in "Testing" status)
 4. Navigate to **APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID**:
    - Application type: **Web application**
-   - Authorized redirect URI: `http://localhost:4000/api/auth/google/callback`
+   - Authorized redirect URI: `http://localhost:4000/oauth/google/callback`
    - Download or copy the Client ID and Client Secret
 
 #### Environment Variables
@@ -59,7 +59,7 @@ ENCRYPTION_KEY=<64-hex-char output from above>
 ```env
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
-GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
+GOOGLE_REDIRECT_URI=http://localhost:4000/oauth/google/callback
 
 # Note: this var has NO `GOOGLE_` prefix even though it's used by the Google OAuth flow.
 # A typo like `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI=...` is silently ignored (the code
@@ -75,66 +75,43 @@ OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 
 ### 4. Recall.ai
 
-#### Get an API Key
+Recall.ai sends recording and transcript events to `POST /webhooks/recall_ai`, so during local development it has to reach your machine. Recall has no API for webhook endpoints, and every endpoint in a workspace receives every event in that workspace. So each developer uses **their own Recall development workspace** with one endpoint pointing at their own reserved ngrok domain. Set it up once; nothing needs editing afterwards.
 
-1. Sign up at [recall.ai](https://recall.ai) and create a workspace.
-2. In the dashboard, navigate to **API Keys** and generate a new key.
-3. Note your region — use `us-east-1` for US workspaces, `eu-west-2` for EU.
+#### One-time setup
 
-#### Configure a Webhook
+1. **Recall workspace.** In the Recall dashboard, create a development workspace for yourself (never the production one; a shared one would also deliver other developers' bot events to you). Note its region (`us-west-2` for ours).
+2. **API key and signing secret.** In that workspace, create an API key, then under **Developers > API Keys & Secrets** create the workspace secret (starts with `whsec_`).
+3. **ngrok domain.** Install [ngrok](https://ngrok.com/), run `ngrok config add-authtoken <token>`, and reserve a static domain in the ngrok dashboard (one is included on the free plan).
+4. **`.env`:**
 
-Recall.ai sends bot lifecycle events to `POST /webhooks/recall_ai`. For local development the backend must be publicly reachable — use ngrok:
+   ```env
+   NGROK_DOMAIN=<your-reserved-domain>        # e.g. jim-dev.ngrok.app
+   RECALL_AI_API_KEY=<key from your workspace>
+   RECALL_AI_REGION=us-west-2                 # your workspace's region
+   RECALL_AI_WEBHOOK_SECRET=whsec_<your workspace secret>
+   ```
 
-```bash
-# Start the backend first, then in another terminal.
+5. **Open the tunnel once** with the backend running (see Development Flow below):
 
-# Free plan (random subdomain, changes on every restart):
-ngrok http 4000
-# Copy the https URL from the output, e.g. https://abc123.ngrok-free.dev
+   ```bash
+   scripts/recall_webhook_tunnel.sh
+   ```
 
-# Paid plan (reserved domain that survives restarts):
-ngrok http 4000 --url=<your-stable-domain>.ngrok-free.dev
-```
+   It prints your endpoint URL and the events to subscribe to.
+6. **Recall endpoint.** In your workspace, **Webhooks > Add Endpoint**: paste the URL the script printed (`https://<your-domain>/webhooks/recall_ai`) and subscribe to every event it lists. The `/webhooks/recall_ai` path is required: the bare host answers POSTs with 405, because unmatched paths fall through to a static-file handler.
 
-> Note: ngrok deprecated the `--domain` flag. Use `--url` for reserved domains. Plain `ngrok http 4000` still works for free-plan ephemeral URLs.
+#### Every session
 
-In the Recall.ai dashboard:
+Start the backend, then run `scripts/recall_webhook_tunnel.sh` in another terminal and leave it running; Ctrl-C stops the tunnel. Before opening the tunnel it checks:
 
-1. Go to **Webhooks → Add Endpoint**
-2. URL: `https://<your-ngrok-url>/webhooks/recall_ai`
-3. Select events: `bot.status_change`, `recording.done`, `transcript.done`
-4. After saving, copy the **Signing Secret** (starts with `whsec_`)
+- `NGROK_DOMAIN`, `RECALL_AI_REGION`, and the `whsec_` form of `RECALL_AI_WEBHOOK_SECRET`;
+- that Recall accepts your key in that region (a key from another region or workspace is rejected here, rather than surfacing later as transcripts that never arrive);
+- that the backend answers on `http://localhost:$PORT/health` (`PORT` defaults to 4000);
+- that `GOOGLE_REDIRECT_URI` points at the local backend (a warning only).
 
-> **Important: the `/webhooks/recall_ai` path is required.**
->
-> Setting the URL to just the ngrok host (e.g. `https://abc123.ngrok-free.dev`) causes every delivery to fail with **405 Method Not Allowed**, because the Axum router falls back to a static-file handler that only accepts GET/HEAD for unmatched paths.
->
-> - Wrong: `https://abc123.ngrok-free.dev`
-> - Right: `https://abc123.ngrok-free.dev/webhooks/recall_ai`
+Once the tunnel is up it sends an unsigned `POST /webhooks/recall_ai` through it. A **401** from the handler proves the route reaches the backend; anything else is reported with what to fix. Because that check is unsigned, the backend logs one `Svix validation error ... Missing svix-id/webhook-id header` warning each time the tunnel opens. That warning is expected; real Recall deliveries always carry the signature headers. `scripts/recall_webhook_tunnel.sh --check` does all of this and then closes the tunnel, which is handy for verifying a setup.
 
-> **Note:** The ngrok URL changes every restart on the free plan. Update the Recall.ai webhook endpoint each session, or use a paid ngrok plan with a stable URL.
-
-#### Verify the endpoint
-
-Before triggering a real Recall.ai bot, send a raw POST to confirm the path resolves to the handler:
-
-```bash
-curl -i -X POST https://<your-ngrok-url>/webhooks/recall_ai
-```
-
-Interpret the response:
-
-- **401 Unauthorized** (body: `Webhook secret not configured`, `Signature validation failed`, or `Invalid signature`) means the request reached the Axum handler. This is the **expected** response for a raw curl, since it has no valid Svix signature. The URL is correct.
-- **405 Method Not Allowed** means the URL path is wrong and the request was absorbed by the static-file fallback. Re-check that the endpoint in the Recall.ai dashboard ends in `/webhooks/recall_ai`.
-- **404 Not Found** or no response means ngrok isn't tunneling to your backend, or the backend isn't running on port 4000.
-
-#### Environment Variables
-
-```env
-RECALL_AI_API_KEY=<your-recall-ai-api-key>
-RECALL_AI_REGION=us-east-1          # or eu-west-2
-RECALL_AI_WEBHOOK_SECRET=whsec_<base64-encoded-secret>
-```
+If ngrok reports the domain is already online, another ngrok (often a forgotten earlier run) holds it; stop that one first.
 
 ### 5. Coaching Note Images (Object Storage)
 
@@ -197,15 +174,16 @@ ENCRYPTION_KEY=<output of: openssl rand -hex 32>
 # ==============================
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
-GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
+GOOGLE_REDIRECT_URI=http://localhost:4000/oauth/google/callback
 OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 
 # ==============================
 #   Recall.ai
 # ==============================
-RECALL_AI_API_KEY=<recall-api-key>
-RECALL_AI_REGION=us-east-1
-RECALL_AI_WEBHOOK_SECRET=whsec_<signing-secret>
+NGROK_DOMAIN=<your-reserved-ngrok-domain>
+RECALL_AI_API_KEY=<key from your own Recall development workspace>
+RECALL_AI_REGION=us-west-2
+RECALL_AI_WEBHOOK_SECRET=whsec_<your workspace signing secret>
 
 # ==============================
 #   Coaching note images
@@ -256,8 +234,8 @@ If notes open but never sync or show presence, check that the collab server is r
 
 1. Generate and set `ENCRYPTION_KEY`.
 2. Start the backend: `scripts/run_backend.sh` (app server plus collab server).
-3. Start an ngrok tunnel: `ngrok http 4000`.
-4. Register the ngrok URL as the Recall.ai webhook endpoint (see above).
+3. Open the Recall webhook tunnel: `scripts/recall_webhook_tunnel.sh` (one-time Recall endpoint setup in section 4).
+4. Start the frontend.
 5. In the frontend, connect Google Meet via the settings page — this triggers the OAuth flow to `GOOGLE_REDIRECT_URI`.
 6. Once connected, starting a coaching session with a Google Meet link will dispatch a Recall.ai bot. Bot events arrive at `/webhooks/recall_ai` and are verified using `RECALL_AI_WEBHOOK_SECRET`.
 
