@@ -21,13 +21,22 @@ setup() {
     TUNNEL="$ROOT/scripts/recall_webhook_tunnel.sh"
     CALLS="$ROOT/calls.log"
 
-    # curl answers by URL with the code a test sets, recording only its URL and
-    # method so the API key never reaches the log even if it were passed in argv.
+    # curl answers by URL with the code a test sets, recording its arguments.
+    # Recall answers only when the key arrives as a Token header read from
+    # stdin (-H @-); the stub logs whether it matched, never the key itself.
     cat > "$ROOT/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "curl $*" >> "$CALLS"
 case "$*" in
-    *recall.ai*) echo "${STUB_RECALL_CODE:-200}" ;;
+    *recall.ai*)
+        if [[ " $* " == *" -H @- "* && "$(cat)" == "Authorization: Token $STUB_RECALL_KEY" ]]; then
+            echo "recall auth header ok" >> "$CALLS"
+            echo "${STUB_RECALL_CODE:-200}"
+        else
+            echo "recall auth header missing or wrong" >> "$CALLS"
+            echo 401
+        fi
+        ;;
     */health*) echo "${STUB_HEALTH_CODE:-200}" ;;
     */webhooks/recall_ai*) echo "${STUB_WEBHOOK_CODE:-401}" ;;
     *) echo 000 ;;
@@ -45,6 +54,7 @@ exec -a "$NGROK_STUB_TAG" sleep 30
 EOF
     chmod +x "$ROOT/bin/"*
     export CALLS
+    export STUB_RECALL_KEY=key-that-must-stay-secret
     export NGROK_STUB_TAG="ngrok-stub-$BATS_TEST_NUMBER-$$"
     export PATH="$ROOT/bin:$PATH"
     export TUNNEL_WAIT_SECS=2
@@ -133,8 +143,15 @@ ngrok_is_running() {
     ! grep -q '^ngrok' "$CALLS"
 }
 
+@test "the Recall check sends the key as a Token header on stdin" {
+    run "$TUNNEL" --check
+    [ "$status" -eq 0 ]
+    grep -q '^recall auth header ok$' "$CALLS"
+}
+
 @test "the API key never appears in any command line" {
     run "$TUNNEL" --check
+    [ "$status" -eq 0 ]
     ! grep -q 'key-that-must-stay-secret' "$CALLS"
     [[ "$output" != *"key-that-must-stay-secret"* ]]
 }
