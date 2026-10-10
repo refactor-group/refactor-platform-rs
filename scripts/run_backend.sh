@@ -26,26 +26,8 @@ usage() {
     sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# Read one KEY from an env file without executing it as shell (values may hold
-# `&` or `$`). Last definition wins; trailing comments and surrounding quotes
-# are stripped, matching how the app's dotenv loader reads it.
-env_value() {
-    local file="$1" key="$2" line
-    line="$(grep -E "^${key}=" "$file" | tail -1)" || return 0
-    line="${line#*=}"
-    line="$(printf '%s' "$line" | sed -E 's/[[:space:]]+#.*$//')"
-    line="${line%\"}"; line="${line#\"}"
-    line="${line%\'}"; line="${line#\'}"
-    printf '%s' "$line"
-}
-
-# Populate a variable from the shell environment first, then the env file.
-load_key() {
-    local file="$1" key="$2"
-    if [[ -z "${!key:-}" ]]; then
-        printf -v "$key" '%s' "$(env_value "$file" "$key")"
-    fi
-}
+# shellcheck source=lib/dotenv.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/dotenv.sh"
 
 # Percent-encode a URL component so credentials with reserved characters
 # (`@ / ? # % :`) survive inside a connection string.

@@ -15,8 +15,9 @@ setup() {
     source "$SCRIPT"
 
     ROOT="$BATS_TEST_TMPDIR/repo"
-    mkdir -p "$ROOT/scripts" "$ROOT/target/debug" "$ROOT/bin"
+    mkdir -p "$ROOT/scripts/lib" "$ROOT/target/debug" "$ROOT/bin"
     cp "$SCRIPT" "$ROOT/scripts/run_backend.sh"
+    cp "$BATS_TEST_DIRNAME/../lib/dotenv.sh" "$ROOT/scripts/lib/dotenv.sh"
     LAUNCHER="$ROOT/scripts/run_backend.sh"
     CALLS="$ROOT/calls.log"
 
