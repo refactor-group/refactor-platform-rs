@@ -3,6 +3,7 @@
 use chrono::NaiveDate;
 use chrono_tz::Tz;
 use log::{debug, warn};
+use sea_orm::prelude::DateTimeWithTimeZone;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -50,11 +51,19 @@ pub struct Session<'a> {
     pub coach_timezone: Tz,
     /// The session's calendar date in the coach's timezone.
     pub session_date: NaiveDate,
-    /// The next session's calendar date in the coach's timezone, if one is scheduled.
-    pub next_session: Option<NaiveDate>,
+    /// The next session in the relationship, if one is scheduled.
+    pub next_session: Option<NextSession>,
     /// Ordered by (start_ms, id); refs are assigned in this order.
     pub segments: &'a [LabeledSegment],
     pub existing: Vec<Existing>,
+}
+
+/// The next session in a coaching relationship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NextSession {
+    /// Its calendar date in the coach's timezone.
+    pub date: NaiveDate,
+    pub start: DateTimeWithTimeZone,
 }
 
 /// A proposal that passed verification, with where it came from.

@@ -7,8 +7,8 @@ use meeting_ai::types::analysis::Request;
 use sea_orm::{ActiveEnum, ActiveValue::Set, DatabaseConnection, TransactionTrait};
 
 use super::{
-    create_batch, render, verify_output, ActiveModel, Existing, People, Refs, Session, Status,
-    Suggestible, Verified,
+    create_batch, render, verify_output, ActiveModel, Existing, NextSession, People, Refs, Session,
+    Status, Suggestible, Verified,
 };
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
@@ -87,7 +87,10 @@ pub async fn run<S: Suggestible>(
     let next_session =
         coaching_session::find_next_session(db, session.coaching_relationship_id, session.date)
             .await?
-            .map(|next| local_session_date(&next, &coach));
+            .map(|next| NextSession {
+                date: local_session_date(&next, &coach),
+                start: next.date.and_utc().fixed_offset(),
+            });
 
     let input = Session {
         coaching_session_id: session.id,

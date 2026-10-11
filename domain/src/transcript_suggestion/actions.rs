@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
 
-use super::due_date::reconcile;
+use super::due_date::{names_next_session, reconcile};
 use super::prompt::collapse;
 use super::{validation, People, Refs, Session, Suggestible, Target, Verified};
 use crate::action::ActionWithAssignees;
@@ -142,13 +142,19 @@ impl Suggestible for Actions {
             .due_date
             .as_deref()
             .and_then(|d| NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok());
+        let at_next_session = session
+            .next_session
+            .filter(|_| due_phrase.as_deref().is_some_and(names_next_session));
         let due_by = reconcile(
             model_date,
             due_phrase.as_deref(),
             session.session_date,
-            session.next_session,
+            session.next_session.map(|next| next.date),
         )
-        .and_then(|date| due_at(date, session.session_date, session.coach_timezone));
+        .and_then(|date| match at_next_session {
+            Some(next) => Some(next.start),
+            None => due_at(date, session.session_date, session.coach_timezone),
+        });
 
         let duplicate_of_id = candidate
             .duplicate_of
@@ -221,7 +227,6 @@ fn quote(candidate: &str, segment_text: &str) -> String {
     }
 }
 
-/// Noon on `date` in `tz`, so the day holds for viewers in other timezones.
 /// Noon on `date` in the coach's timezone, or the end of that day when it is the session's own day,
 /// so a same-day deadline ("after our call") never falls before the session.
 fn due_at(date: NaiveDate, session_date: NaiveDate, tz: Tz) -> Option<DateTimeWithTimeZone> {

@@ -169,7 +169,8 @@ directions, not spoken.
 5. Record the outcome in the Part F results table, noting any line that differed.
 
 **Date notation.** `D` is the session's date in Jim's timezone, `N` the next scheduled session's date.
-"Fri+" means the first Friday after `D`. Dates show as `due_by` at 12:00 noon in Jim's timezone. Groups
+"Fri+" means the first Friday after `D`. Dates show as `due_by` at 12:00 noon in Jim's timezone, except
+the session-day and next-session deadlines described under F6. Groups
 F6 and F7 are written for a session recorded on a **Wednesday**. Their tables say what changes on other
 days.
 
@@ -390,13 +391,14 @@ Exactly one suggestion (line 17) should exist for this group.
 | 15 | last day of `D`'s month | end of the month | same |
 | 16 | November 20 | November 20th | next year's if already past |
 | 17 | November 18 | 11/18 | next year's if already past |
-| 18 | `N` | before our next session | same |
+| 18 | `N`, at its start time | before our next session | same |
 | 19-22 | **blank** | soon / ASAP / at some point / next week | same |
 | 23-24 | `D` | after our call / later today | same |
 
 Deadlines on `D` itself (lines 1-3, 23-24) are due at the **end** of that day (23:59 in the coach's
-timezone), never before the session; every other date is due at noon. Check `due_by` in the database
-for line 23: its time must be later than the session's start.
+timezone), never before the session. Line 18 is due exactly when the next session starts. Every other
+date is due at noon. Check `due_by` in the database for line 23 (its time must be later than the
+session's start) and line 18 (it must equal the next session's start).
 
 All 24 lines must come through as suggestions. The transcript may render "11/18" (line 17) as a
 clock time such as "11:18"; if so, a blank date with that phrase is a transcription miss, not a
@@ -523,7 +525,7 @@ those listed should have a date.
 | F3 |  |  |  |
 | F4 |  |  |  |
 | F5 |  |  |  |
-| F6 | Partial | 2026-10-11 | Lines 1-15 all correct. Lines 16-24 dropped by the old 15-suggestion cap (now 50); re-record. Line 17 transcribed as "11:18", line 19 lost "soon". |
+| F6 |  |  |  |
 | F7 |  |  |  |
 | F8 |  |  |  |
 | F9 |  |  |  |

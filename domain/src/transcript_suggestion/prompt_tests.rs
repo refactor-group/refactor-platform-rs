@@ -4,7 +4,7 @@ use chrono::{NaiveDate, Utc};
 
 use super::*;
 use crate::transcript_export::{LabeledSegment, SpeakerRole};
-use crate::transcript_suggestion::{Existing, People, Session};
+use crate::transcript_suggestion::{Existing, NextSession, People, Session};
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
@@ -55,7 +55,14 @@ fn session(segments: &[LabeledSegment], next_session: Option<NaiveDate>) -> Sess
         coachee_name: "Alex Rivera".to_string(),
         coach_timezone: chrono_tz::America::Chicago,
         session_date: day(2026, 10, 7),
-        next_session,
+        next_session: next_session.map(|date| NextSession {
+            date,
+            start: date
+                .and_hms_opt(15, 0, 0)
+                .expect("valid time")
+                .and_utc()
+                .fixed_offset(),
+        }),
         segments,
         existing: vec![Existing {
             id: Id::new_v4(),

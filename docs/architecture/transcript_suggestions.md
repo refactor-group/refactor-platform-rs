@@ -101,7 +101,7 @@ The model is asked for a date, but dates are settled by `due_date::reconcile`, w
 - An **ambiguous** phrase blanks the date: "soon", "ASAP", "next week", "at some point", `next <weekday>` said earlier in the same week, and "next time" when no next session exists.
 - An **unrecognized** phrase keeps the model's date, if it is within bounds.
 
-A resolved date is stored as noon in the coach's timezone so the day holds for viewers elsewhere.
+A resolved date is stored as noon in the coach's timezone so the day holds for viewers elsewhere. Two exceptions keep a deadline from landing mid-meeting: a date on the session's own day is due at 23:59 that day, so "after our call" never falls before the session; and a phrase naming the next session is due when that session starts.
 
 ## Review
 

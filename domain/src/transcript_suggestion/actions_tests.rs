@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::transcript_export::{LabeledSegment, SpeakerRole};
-use crate::transcript_suggestion::{verify_output, Existing};
+use crate::transcript_suggestion::{verify_output, Existing, NextSession};
 
 const S2_TEXT: &str = "Um, yeah, I'll schedule a one-on-one with my manager by Friday.";
 
@@ -41,6 +41,14 @@ fn segments() -> Vec<LabeledSegment> {
     ]
 }
 
+/// 10:00 CDT on Wednesday 2026-10-21.
+fn next_session_start() -> DateTimeWithTimeZone {
+    Utc.with_ymd_and_hms(2026, 10, 21, 15, 0, 0)
+        .single()
+        .expect("valid time")
+        .fixed_offset()
+}
+
 fn session(segments: &[LabeledSegment]) -> Session<'_> {
     Session {
         coaching_session_id: Id::new_v4(),
@@ -52,7 +60,10 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
         coachee_name: "Alex Rivera".to_string(),
         coach_timezone: chrono_tz::America::Chicago,
         session_date: day(2026, 10, 7),
-        next_session: Some(day(2026, 10, 21)),
+        next_session: Some(NextSession {
+            date: day(2026, 10, 21),
+            start: next_session_start(),
+        }),
         segments,
         existing: vec![Existing {
             id: Id::new_v4(),
@@ -345,6 +356,42 @@ fn a_deadline_on_the_session_day_is_due_at_the_end_of_that_day() {
         .expect("valid time")
         .fixed_offset();
     assert_eq!(verified.proposal.action.action.due_by, Some(end_of_day_cdt));
+}
+
+#[test]
+fn a_deadline_of_the_next_session_is_due_when_it_starts() {
+    let segments = segments();
+    let session = session(&segments);
+    for phrase in ["before our next session", "by next time"] {
+        let candidate = Candidate {
+            due_date: Some("2026-10-21".to_string()),
+            due_phrase: Some(phrase.to_string()),
+            ..valid()
+        };
+
+        let verified = verify(candidate, &session).expect("verified");
+
+        assert_eq!(
+            verified.proposal.action.action.due_by,
+            Some(next_session_start()),
+            "{phrase}"
+        );
+    }
+}
+
+#[test]
+fn the_next_sessions_day_said_another_way_stays_at_noon() {
+    let segments = segments();
+    let session = session(&segments);
+    let candidate = Candidate {
+        due_date: Some("2026-10-21".to_string()),
+        due_phrase: Some("October 21st".to_string()),
+        ..valid()
+    };
+
+    let verified = verify(candidate, &session).expect("verified");
+
+    assert_eq!(verified.proposal.action.action.due_by, Some(noon_cdt(21)));
 }
 
 #[test]

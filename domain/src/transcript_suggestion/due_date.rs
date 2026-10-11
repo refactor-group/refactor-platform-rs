@@ -96,6 +96,11 @@ pub(crate) fn resolve_phrase(
         .unwrap_or(Phrase::Unrecognized)
 }
 
+/// Whether a spoken deadline means the next session.
+pub(crate) fn names_next_session(phrase: &str) -> bool {
+    NEXT_SESSION.contains(&strip_filler(&normalize(phrase)))
+}
+
 /// The deadline to store: a recognized phrase wins, an ambiguous one clears, otherwise the model's.
 pub(crate) fn reconcile(
     model_date: Option<NaiveDate>,

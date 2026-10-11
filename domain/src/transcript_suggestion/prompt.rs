@@ -49,7 +49,7 @@ impl Refs {
 pub fn render(session: &Session) -> String {
     let next_session = session
         .next_session
-        .map_or("none scheduled".to_string(), long_date);
+        .map_or("none scheduled".to_string(), |next| long_date(next.date));
     let existing = if session.existing.is_empty() {
         vec!["(none)".to_string()]
     } else {
