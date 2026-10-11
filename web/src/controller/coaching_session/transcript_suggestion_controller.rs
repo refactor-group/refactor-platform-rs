@@ -15,6 +15,7 @@ use axum::Json;
 use chrono::Utc;
 use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
 use domain::transcript_suggestion::review::{self, ActionEdits};
+use domain::transcript_suggestion::Status;
 use domain::Id;
 use log::*;
 use serde::de::DeserializeOwned;
@@ -27,11 +28,13 @@ const ACTION_TARGET: &str = "action";
 #[derive(Debug, Deserialize)]
 pub struct IndexParams {
     target: Option<String>,
+    status: Option<String>,
 }
 
-/// GET the pending suggested Actions for a coaching session
+/// GET a coaching session's suggested Actions
 ///
-/// Lists suggestions oldest first. Only `target=action`, the default, is supported.
+/// Lists pending suggestions by default, or dismissed ones with `status=dismissed`, oldest
+/// first. Only `target=action`, the default, is supported.
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{coaching_session_id}/transcript_suggestions",
@@ -39,12 +42,13 @@ pub struct IndexParams {
         ApiVersion,
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
         ("target" = Option<String>, Query, description = "Kind of suggestion to list; only `action` (the default) is supported"),
+        ("status" = Option<String>, Query, description = "pending (default) or dismissed"),
     ),
     responses(
-        (status = 200, description = "Pending suggestions retrieved", body = [domain::transcript_suggestion::review::ActionSuggestion]),
+        (status = 200, description = "Suggestions in the requested status retrieved", body = [domain::transcript_suggestion::review::ActionSuggestion]),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching session not found"),
-        (status = 422, description = "Unsupported target"),
+        (status = 422, description = "Unsupported target or status"),
     ),
     security(("cookie_auth" = []))
 )]
@@ -65,9 +69,10 @@ pub async fn index(
                 "'{target}' is not a supported target. Expected: {ACTION_TARGET}."
             )))
         })?;
+    let status = listed_status(params.status.as_deref())?;
 
     let suggestions =
-        review::list_pending_actions(app_state.db_conn_ref(), &session, Utc::now()).await?;
+        review::list_actions(app_state.db_conn_ref(), &session, status, Utc::now()).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), suggestions)))
 }
@@ -273,6 +278,17 @@ where
     }
 }
 
+/// The status a list request asks for; pending when absent.
+fn listed_status(param: Option<&str>) -> Result<Status, Error> {
+    match param {
+        None | Some("pending") => Ok(Status::Pending),
+        Some("dismissed") => Ok(Status::Dismissed),
+        Some(other) => Err(validation(format!(
+            "'{other}' is not a supported status. Expected: pending or dismissed."
+        ))),
+    }
+}
+
 fn validation(message: String) -> Error {
     Error::Domain(DomainError {
         source: None,
@@ -286,3 +302,7 @@ fn not_found() -> Error {
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound)),
     })
 }
+
+#[cfg(test)]
+#[path = "transcript_suggestion_controller_tests.rs"]
+mod tests;

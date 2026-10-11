@@ -12,8 +12,8 @@ use utoipa::ToSchema;
 
 use super::extract::notify;
 use super::{
-    find_pending_by_session, transition, update_proposal, ActionProposal, Actions, Model, People,
-    Status, Suggestible, Target,
+    find_by_session, transition, update_proposal, ActionProposal, Actions, Model, People, Status,
+    Suggestible, Target,
 };
 use crate::action::{self, ActionWithAssignees};
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
@@ -80,7 +80,7 @@ impl ActionEdits {
     }
 }
 
-/// A pending action suggestion as reviewers see it.
+/// An action suggestion as reviewers see it.
 #[derive(Clone, Debug, PartialEq, Serialize, ToSchema)]
 #[schema(as = domain::transcript_suggestion::review::ActionSuggestion)]
 pub struct ActionSuggestion {
@@ -95,6 +95,11 @@ pub struct ActionSuggestion {
     pub default_due: DefaultDue,
     #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeWithTimeZone,
+    /// Who dismissed or accepted the suggestion; `null` while pending.
+    pub resolved_by: Option<Id>,
+    /// When it was dismissed or accepted; `null` while pending.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub resolved_at: Option<DateTimeWithTimeZone>,
 }
 
 /// The transcript segment a suggestion came from.
@@ -167,14 +172,24 @@ pub async fn default_due(
 }
 
 /// The session's pending action suggestions, oldest first.
-///
-/// A row whose proposal or segment cannot be read is skipped with a warning.
 pub async fn list_pending_actions(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
     now: DateTime<Utc>,
 ) -> Result<Vec<ActionSuggestion>, Error> {
-    let rows = find_pending_by_session(db, session.id, Target::Action).await?;
+    list_actions(db, session, Status::Pending, now).await
+}
+
+/// The session's action suggestions in `status`, oldest first.
+///
+/// A row whose proposal or segment cannot be read is skipped with a warning.
+pub async fn list_actions(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    status: Status,
+    now: DateTime<Utc>,
+) -> Result<Vec<ActionSuggestion>, Error> {
+    let rows = find_by_session(db, session.id, Target::Action, status).await?;
     if rows.is_empty() {
         return Ok(vec![]);
     }
@@ -209,6 +224,8 @@ pub async fn list_pending_actions(
                     .and_then(|id| duplicates.get(&id).cloned()),
                 default_due: default_due.clone(),
                 created_at: row.created_at,
+                resolved_by: row.resolved_by,
+                resolved_at: row.resolved_at,
             })
         })
         .collect())

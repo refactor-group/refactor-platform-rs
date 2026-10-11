@@ -42,10 +42,20 @@ pub async fn find_pending_by_session<C: ConnectionTrait>(
     coaching_session_id: Id,
     target: Target,
 ) -> Result<Vec<Model>, Error> {
+    find_by_session(db, coaching_session_id, target, Status::Pending).await
+}
+
+/// Suggestions of a session, target and status, oldest first.
+pub async fn find_by_session<C: ConnectionTrait>(
+    db: &C,
+    coaching_session_id: Id,
+    target: Target,
+    status: Status,
+) -> Result<Vec<Model>, Error> {
     Ok(Entity::find()
         .filter(Column::CoachingSessionId.eq(coaching_session_id))
         .filter(Column::Target.eq(target))
-        .filter(Column::Status.eq(Status::Pending))
+        .filter(Column::Status.eq(status))
         .order_by(Column::CreatedAt, Order::Asc)
         .order_by(Column::Id, Order::Asc)
         .all(db)

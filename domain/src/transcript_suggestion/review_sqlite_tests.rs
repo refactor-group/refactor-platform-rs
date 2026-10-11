@@ -885,3 +885,62 @@ async fn a_next_session_that_already_started_gives_seven_days() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_dismissed_list_holds_only_dismissed_suggestions_with_who_dismissed_them() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let kept = suggest(
+            &f,
+            &proposal(&f, "Keep me", vec![f.coachee.id], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+        let set_aside = suggest(
+            &f,
+            &proposal(&f, "Set me aside", vec![f.coachee.id], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+        suggest(
+            &f,
+            &proposal(&f, "Already accepted", vec![], None, None),
+            Status::Accepted,
+            None,
+        )
+        .await;
+        dismiss(&f.db, &publisher, &f.coachee, set_aside.clone(), now())
+            .await
+            .expect("the dismiss succeeds");
+
+        let dismissed = list_actions(&f.db, &f.session, Status::Dismissed, now())
+            .await
+            .expect("the list reads");
+        assert_eq!(
+            dismissed.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![set_aside.id]
+        );
+        assert_eq!(dismissed[0].resolved_by, Some(f.coachee.id));
+        assert_eq!(dismissed[0].resolved_at, Some(now().fixed_offset()));
+
+        let pending = list_actions(&f.db, &f.session, Status::Pending, now())
+            .await
+            .expect("the list reads");
+        assert_eq!(
+            pending.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![kept.id]
+        );
+        assert_eq!(pending[0].resolved_by, None);
+        assert_eq!(pending[0].resolved_at, None);
+        assert_eq!(
+            list_pending_actions(&f.db, &f.session, now())
+                .await
+                .expect("the list reads"),
+            pending
+        );
+    })
+    .await;
+}
