@@ -28,7 +28,7 @@ curl -s -H "x-version: 1.0.0" -b "$COACH_COOKIE" \
    - Coach: "I'll share the delegation worksheet with you this week."
    - Coach: "Let's both think about what a good week looks like before we meet again."
    - Coachee: "Maybe I could start a reading group someday."
-   - Coachee: "And I still need to send the Q4 hiring plan to Dana."
+   - Coachee: "And I'll send the Q4 hiring plan to Dana." (A bare "I still need to..." is not a commitment; see F5.)
 2. End the meeting and wait for the transcript to complete (`transcript.done` in the backend log).
 3. Within about a minute, list the suggestions as above.
 
@@ -133,3 +133,337 @@ Sign in as the coach (`$COACH_COOKIE`).
 | D2 |  |  |  |
 | D3 |  |  |  |
 | E1 |  |  |  |
+
+## Part F: comprehensive prompt testing
+
+Checks what the model suggests across every kind of spoken commitment, and every look-alike, that the
+prompt is meant to handle. Each group below is one short recording (about 3 to 6 minutes) between
+**Jim** (coach) and **Caleb** (coachee) in their coaching relationship. Read the script naturally;
+small wording changes are fine as long as the meaning stays the same. Lines in *italics* are stage
+directions, not spoken.
+
+### How to run a group
+
+1. Do the group's **Setup** in the app (existing actions, next session).
+2. Start the backend from the branch and the webhook tunnel, start recording, and read the **Script**.
+3. After `transcript.done`, wait about a minute and list the suggestions (as in the Prerequisites, with
+   Jim's or Caleb's cookie).
+4. Compare against the **Expected** table. "None" means the line must not produce a suggestion.
+5. Record the outcome in the Part F results table, noting any line that differed.
+
+**Date notation.** `D` is the session's date in Jim's timezone, `N` the next scheduled session's date.
+"Fri+" means the first Friday after `D`. Dates show as `due_by` at 12:00 noon in Jim's timezone. Groups
+F6 and F7 are written for a session recorded on a **Wednesday**. Their tables say what changes on other
+days.
+
+**Every group also passes these checks:**
+- every `quote` is text that appears in the stated line of the transcript (or the whole line);
+- a commitment repeated or recapped appears once;
+- the `transcript_analyses` row is `completed` and the backend log has no spoken words.
+
+### F1. Plain commitments
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script:**
+1. Caleb: "I'll send the revised budget to Priya by Friday."
+2. Caleb: "I will update the team wiki with the new process."
+3. Caleb: "I'm going to book a one-on-one with my manager."
+4. Caleb: "I'm gonna clean up the shared drive."
+5. Caleb: "My plan this week is to finish the vendor comparison."
+6. Caleb: "I'm committing to leaving work by six every day."
+7. Caleb: "Let me check with HR on the headcount numbers and get back to you."
+8. Jim: "I'll send you that article on feedback after our call."
+9. Jim: "I'll find you a template for the project charter."
+
+**Expected:**
+
+| Line | Suggestion | Assignees | Due |
+|---|---|---|---|
+| 1 | Send the revised budget to Priya | Caleb | Fri+ (phrase "by Friday") |
+| 2 | Update the team wiki with the new process | Caleb | none |
+| 3 | Book a one-on-one with your manager | Caleb | none |
+| 4 | Clean up the shared drive | Caleb | none |
+| 5 | Finish the vendor comparison | Caleb | blank or end of this week; phrase "this week" |
+| 6 | Leave work by six every day | Caleb | none |
+| 7 | Check with HR on headcount numbers and report back | Caleb | none |
+| 8 | Send Caleb the article on feedback | Jim | blank or `D`; phrase "after our call" if present |
+| 9 | Find Caleb a template for the project charter | Jim | none |
+
+### F2. Requests and agreement
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script:**
+1. Jim: "Could you block two hours on your calendar each week for interview feedback?"
+2. Caleb: "Yes, I'll do that starting Monday."
+3. Jim: "For next time, try giving feedback within a day of each interview."
+4. Caleb: "Okay."
+5. Jim: "Would you be willing to mentor the two new team leads this month?"
+6. Caleb: "I don't think I can take that on right now, honestly."
+7. Jim: "That's fair."
+8. Caleb: "Could you introduce me to Maria in finance?"
+9. Jim: "Sure, I can do that this week."
+10. Jim: "It might help to keep a decision log."
+11. Caleb: "Hmm. Maybe."
+
+**Expected:**
+
+| Line | Suggestion | Assignees | Due |
+|---|---|---|---|
+| 1-2 | Block two hours each week for interview feedback | Caleb | none ("starting Monday" is a start, not a deadline) |
+| 3-4 | Give interview feedback within a day of each interview | Caleb | blank or `N` |
+| 5-7 | None (declined) | | |
+| 8-9 | Introduce Caleb to Maria in finance | Jim | blank; phrase "this week" |
+| 10-11 | None (advice not taken up) | | |
+
+### F3. Shapes of a commitment
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script:**
+1. Jim: "Let's both think about what psychological safety looks like on your team before next time."
+2. Caleb: "Yes, let's."
+3. Jim: "We'll each bring one example of a hard conversation that went well."
+4. Jim: "For the offsite, you'll draft the agenda and I'll bring the facilitation guide."
+5. Caleb: "If the reorg is announced this week, I'll talk to HR about my role."
+6. Caleb: "Every morning I'll write down my top three priorities, for the next two weeks."
+7. Caleb: "For the board deck, I'll draft the outline, get Lena's feedback, and then send it to the CFO by October 30th."
+8. Caleb: "And I'll ask Priya to take over the vendor reviews."
+9. Jim: "So Caleb, you're going to share the retro notes with the team by Friday, right?"
+10. Caleb: "Right."
+11. Caleb: "I'll try to say no to at least one meeting request this week."
+12. Caleb: "Should I just email the recruiter tonight about the backlog? Yeah, I'll do that."
+
+**Expected:**
+
+| Line | Suggestion | Assignees | Due |
+|---|---|---|---|
+| 1-2 | Think about psychological safety on Caleb's team | **Jim and Caleb, one suggestion** | `N` (phrase "before next time") |
+| 3 | Bring an example of a hard conversation that went well | **Jim and Caleb, one suggestion** | none |
+| 4 | Draft the offsite agenda | Caleb | none |
+| 4 | Bring the facilitation guide to the offsite | Jim (a second suggestion) | none |
+| 5 | If the reorg is announced this week, talk to HR about your role | Caleb (condition kept in the body) | blank or end of this week |
+| 6 | Each morning, write down your top three priorities (frequency kept) | Caleb | blank or `D` + 14 days |
+| 7 | One suggestion with steps as a bullet list (draft outline, get Lena's feedback, send to the CFO) | Caleb | October 30 |
+| 8 | Ask Priya to take over the vendor reviews | Caleb | none |
+| 9-10 | Share the retro notes with the team | Caleb | Fri+ |
+| 11 | Say no to at least one meeting request this week ("I'll try" counts) | Caleb | blank; phrase "this week" |
+| 12 | Email the recruiter about the backlog | Caleb | `D` (phrase "tonight") |
+
+### F4. Commitments that change during the conversation
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script:**
+1. Caleb: "I'll rewrite the job description by Friday. Actually, make that Monday, Friday is packed."
+2. Jim: "How many of the open reqs can you review before we meet again? All five?"
+3. Caleb: "Let's say two."
+4. Jim: "Two it is."
+5. Caleb: "Okay, two."
+6. Caleb: "I'll cancel the Thursday sync. Actually no, let's keep it, the team needs it."
+7. Caleb: "I'll talk to Dana about the on-call rotation."
+8. *(a minute of other conversation)*
+9. Jim: "Let's recap. You're rewriting the job description by Monday, reviewing two reqs, and talking to Dana."
+10. Caleb: "Yes, all three."
+11. Caleb: "Oh, and the job description, I'll definitely get that done Monday."
+
+**Expected:**
+
+| Line | Suggestion | Assignees | Due |
+|---|---|---|---|
+| 1 (and 9, 11) | Rewrite the job description, **once** | Caleb | first Monday after `D` (the corrected day) |
+| 2-5 (and 9) | Review two of the open reqs (narrowed, not five), **once** | Caleb | `N` |
+| 6 | None (retracted) | | |
+| 7 (and 9) | Talk to Dana about the on-call rotation, **once** | Caleb | none |
+
+### F5. Look-alikes that must not become actions
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script:**
+1. Jim: "Let me share my screen so we can look at your goals."
+2. Caleb: "I really should exercise more. I'd love to get back to running someday."
+3. Caleb: "Maybe I could start a reading group. I might ask around."
+4. Caleb: "And I still need to send the quarterly numbers to finance."
+5. Caleb: "I already sent the offsite agenda last week, so that's done."
+6. Caleb: "The quarterly plan is about halfway done."
+7. Jim: "Let's always start our sessions with one win from your week."
+8. Caleb: "I like that, let's do that."
+9. Jim: "Want to practice? Pretend I'm your director. Go."
+10. Caleb: "Okay. 'I'll have the revised forecast on your desk Friday, and I'll own the hiring plan.'"
+11. Jim: "Good. How did that feel?"
+12. Caleb: "My boss said, 'I'll fix the budget issue myself,' so that's on him."
+13. Caleb: "My manager will send me the reorg list next week."
+14. Caleb: "I'm off to Denver next week for my sister's wedding."
+15. Caleb: "Sure, I'll just quit my job and become a llama farmer, ha."
+16. Caleb: "I'll write that down right now so I don't lose it."
+17. Caleb: "I should call the vendor, and I will, by Friday."
+18. Jim: "Same time in two weeks?"
+19. Caleb: "Yes. I'll stop the recording now."
+
+**Expected:**
+
+| Line | Suggestion | Why |
+|---|---|---|
+| 1 | None | done during the session |
+| 2 | None | "should" and a wish without a commitment |
+| 3 | None | maybes |
+| 4 | None | "still need to" without "I will" |
+| 5 | None | already done |
+| 6 | None | progress report only |
+| 7-8 | None | a working agreement, not an action |
+| 9-11 | None | spoken in role-play |
+| 12 | None | quoting someone else |
+| 13 | None | someone else's commitment |
+| 14 | None | a personal plan, not a task |
+| 15 | None | a joke |
+| 16 | None | done during the session |
+| **17** | **Call the vendor**, Caleb, due Fri+ | positive control: "should, and I will" counts |
+| 18-19 | None | scheduling the next session; the recording |
+
+Exactly one suggestion (line 17) should exist for this group.
+
+### F6. Due dates (record on a Wednesday)
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script** (all Caleb, one commitment per line):
+1. "I'll send the status update today."
+2. "I'll email the recruiter tonight."
+3. "I'll get you the numbers by end of day."
+4. "I'll fix the dashboard tomorrow."
+5. "I'll send Maria the contract Monday."
+6. "I'll finish the slides this Friday."
+7. "I'll book the offsite venue by next Friday."
+8. "I'll call the landlord next Monday."
+9. "I'll finish the security review in two weeks."
+10. "I'll get the pricing memo out two weeks from this Wednesday."
+11. "I'll send the draft a week from Friday."
+12. "I'll update the interview rubric by the end of the week."
+13. "I'll finish the hiring plan by the end of next week."
+14. "I'll read that leadership book this weekend."
+15. "I'll close out the expense reports by the end of the month."
+16. "I'll submit the proposal by November 20th."
+17. "I'll file the form by 11/18."
+18. "I'll prepare three questions before our next session."
+19. "I'll reach out to the new VP soon."
+20. "I'll fix the onboarding checklist ASAP."
+21. "I'll set up the mentoring program at some point."
+22. "I'll look into the training budget next week."
+
+**Expected** (`D` is the Wednesday):
+
+| Line | `due_by` | `due_phrase` | On another weekday |
+|---|---|---|---|
+| 1-3 | `D` | today / tonight / end of day | same |
+| 4 | `D` + 1 | tomorrow | same |
+| 5 | `D` + 5 (Monday) | Monday | the first Monday after `D` |
+| 6 | `D` + 2 (Friday) | this Friday | the first Friday after `D` |
+| 7 | **blank** | next Friday | blank when Friday is still ahead in `D`'s week, otherwise the first Friday after `D` |
+| 8 | `D` + 5 (Monday) | next Monday | the same rule as line 7, for Monday |
+| 9 | `D` + 14 | in two weeks | same |
+| 10 | `D` + 14 | two weeks from this Wednesday | 14 days after the first Wednesday on or after `D` |
+| 11 | `D` + 9 | a week from Friday | 7 days after the first Friday on or after `D` |
+| 12 | `D` + 2 (Friday) | end of the week | the first Friday on or after `D` |
+| 13 | `D` + 9 | end of next week | that Friday + 7 |
+| 14 | `D` + 4 (Sunday) | this weekend | the first Sunday on or after `D` |
+| 15 | last day of `D`'s month | end of the month | same |
+| 16 | November 20 | November 20th | next year's if already past |
+| 17 | November 18 | 11/18 | next year's if already past |
+| 18 | `N` | before our next session | same |
+| 19-22 | **blank** | soon / ASAP / at some point / next week | same |
+
+### F7. No next session scheduled
+
+**Setup:** make sure **no** session is scheduled after this one in Jim and Caleb's relationship. No
+existing actions.
+
+**Script:**
+1. Caleb: "Before our next session, I'll map out my stakeholders."
+2. Jim: "By next time, I'll send you the stakeholder template."
+3. Caleb: "I'll have the draft done before we meet again."
+
+**Expected:** three suggestions (Caleb, Jim, Caleb), each with **blank** `due_by` and its phrase kept.
+The list's `default_due.source` is `seven_days`. Accepting one without a date gives a due date 7 days
+from the moment of acceptance.
+
+### F8. Duplicates of existing actions
+
+**Setup:** next session `N` scheduled. Before recording, create two actions on the session:
+"Send the Q4 hiring plan to Dana" and "Update the onboarding doc".
+
+**Script:**
+1. Caleb: "I'll get the Q4 hiring plan over to Dana."
+2. Caleb: "Oh, and I really do need to finish updating the onboarding doc, I'll get it done this week."
+3. Caleb: "I'll also write a separate onboarding checklist for interns."
+
+**Expected:**
+
+| Line | Suggestion | `duplicate_of` |
+|---|---|---|
+| 1 | Send the Q4 hiring plan to Dana | the "Send the Q4 hiring plan to Dana" action |
+| 2 | Update the onboarding doc | the "Update the onboarding doc" action |
+| 3 | Write an onboarding checklist for interns | none (related, but a different task) |
+
+Then delete the "Update the onboarding doc" action and list again: line 2's suggestion stays, with
+`duplicate_of` now null.
+
+### F9. Speech quirks
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script:**
+1. Caleb: "So I'll, um, I'll, uh, send the" *(pause two seconds)* "the escalation summary to the leadership channel by Friday."
+2. Jim: "And I'll look up a couple of, sorry, go ahead." Caleb: "No, you go." Jim: "A couple of facilitation guides for you."
+3. Caleb *(mumbled or fast)*: "I'll ping Dana about the on-call thing."
+
+**Expected:**
+- line 1: one suggestion "Send the escalation summary to the leadership channel", Caleb, Fri+. If
+  the transcript splits the sentence across two lines, the `quote` is one line's actual text (filler
+  words included) and is never a tidied rewrite;
+- line 2: one suggestion "Look up facilitation guides for Caleb", Jim;
+- line 3: one suggestion for Caleb, even if the transcript garbles a word (the body may reflect the
+  garble).
+
+### F10. A third person in the meeting (optional)
+
+**Setup:** a third person joins the Meet (not Jim or Caleb), for example a colleague named Priya.
+
+**Script:**
+1. Priya: "Happy to help. I'll send Caleb the org chart after this call."
+2. Caleb: "Thanks. I'll review it by Thursday."
+
+**Expected:** no suggestion for Priya's line (only the coach and coachee get suggestions). Line 2 is
+Caleb's, due the first Thursday after `D`.
+
+### F11. A session with no commitments
+
+**Setup:** next session `N` scheduled. No existing actions.
+
+**Script:**
+1. Jim: "How are you arriving today?"
+2. Caleb: "Tired, honestly. It's been a heavy week."
+3. Jim: "What's been the heaviest part?"
+4. Caleb: "Feeling like I'm letting my team down. I keep saying yes to everything."
+5. Jim: "Maybe we just sit with that today rather than solve it."
+6. Caleb: "I'd like that. I could think about it more, but I don't want homework this week."
+
+**Expected:** the analysis completes with **no** suggestions, the list is empty, and no
+`transcript_suggestions_changed` event is sent.
+
+### Part F results
+
+| Group | Result | Date | Lines that differed |
+|---|---|---|---|
+| F1 |  |  |  |
+| F2 |  |  |  |
+| F3 |  |  |  |
+| F4 |  |  |  |
+| F5 |  |  |  |
+| F6 |  |  |  |
+| F7 |  |  |  |
+| F8 |  |  |  |
+| F9 |  |  |  |
+| F10 |  |  |  |
+| F11 |  |  |  |
