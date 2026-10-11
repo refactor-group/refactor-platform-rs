@@ -85,8 +85,9 @@ pub async fn update_proposal<C: ConnectionTrait>(
 
 /// Moves a suggestion `from` one status `to` another in one conditional UPDATE.
 ///
-/// Returns `None` when the row is not in `from`, which guards double accepts.
-/// Restoring to pending clears who resolved it and the entity it created.
+/// Returns `None` when the row is not in `from`, or when accepting a suggestion that already
+/// created an entity; both guard against a second entity. Restoring to pending clears who
+/// resolved it. Only accepting writes the created entity, so the link survives other moves.
 pub async fn transition<C: ConnectionTrait>(
     db: &C,
     id: Id,
@@ -100,27 +101,33 @@ pub async fn transition<C: ConnectionTrait>(
         Status::Pending => ActiveModel {
             resolved_by: Set(None),
             resolved_at: Set(None),
-            created_entity_id: Set(None),
             ..Default::default()
         },
-        Status::Accepted | Status::Dismissed => ActiveModel {
+        Status::Accepted => ActiveModel {
             resolved_by: Set(Some(actor)),
             resolved_at: Set(Some(now)),
             created_entity_id: Set(created_entity_id),
             ..Default::default()
         },
+        Status::Dismissed => ActiveModel {
+            resolved_by: Set(Some(actor)),
+            resolved_at: Set(Some(now)),
+            ..Default::default()
+        },
     };
 
-    Ok(Entity::update_many()
+    let update = Entity::update_many()
         .set(ActiveModel {
             status: Set(to),
             updated_at: Set(now),
             ..resolution
         })
         .filter(Column::Id.eq(id))
-        .filter(Column::Status.eq(from))
-        .exec_with_returning(db)
-        .await?
-        .into_iter()
-        .next())
+        .filter(Column::Status.eq(from));
+    let update = match to {
+        Status::Accepted => update.filter(Column::CreatedEntityId.is_null()),
+        Status::Pending | Status::Dismissed => update,
+    };
+
+    Ok(update.exec_with_returning(db).await?.into_iter().next())
 }

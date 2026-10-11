@@ -1132,3 +1132,116 @@ async fn editing_keeps_a_valid_goal_on_the_pending_suggestion() {
     })
     .await;
 }
+
+/// Puts an accepted suggestion back to pending by hand, keeping the link to its action.
+async fn reset_to_pending(f: &Fixture, id: Id) {
+    transcript_suggestion::ActiveModel {
+        id: Set(id),
+        status: Set(Status::Pending),
+        ..Default::default()
+    }
+    .update(&f.db)
+    .await
+    .expect("the suggestion is reset");
+}
+
+#[tokio::test]
+async fn a_suggestion_that_already_created_an_action_cannot_be_accepted_again() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let s = suggest(&f, &p, Status::Pending, None).await;
+        let first = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the first accept succeeds");
+
+        reset_to_pending(&f, s.id).await;
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            reread(&f, s.id).await,
+            None,
+            now(),
+        )
+        .await
+        .expect_err("a second action is refused");
+
+        assert!(is_conflict(&refused), "{refused:?}");
+        assert_eq!(session_actions(&f).await.len(), 1);
+        let stored = reread(&f, s.id).await;
+        assert_eq!(stored.status, Status::Pending);
+        assert_eq!(stored.created_entity_id, Some(first.action.id));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dismissing_and_restoring_does_not_clear_the_created_action_guard() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let s = suggest(&f, &p, Status::Pending, None).await;
+        let first = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the first accept succeeds");
+
+        reset_to_pending(&f, s.id).await;
+        let dismissed = dismiss(&f.db, &publisher, &f.coach, reread(&f, s.id).await, now())
+            .await
+            .expect("the dismiss succeeds");
+        restore(&f.db, &publisher, &f.coach, dismissed, now())
+            .await
+            .expect("the restore succeeds");
+        assert_eq!(
+            reread(&f, s.id).await.created_entity_id,
+            Some(first.action.id)
+        );
+
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            reread(&f, s.id).await,
+            None,
+            now(),
+        )
+        .await
+        .expect_err("a second action is refused after dismiss and restore");
+        assert!(is_conflict(&refused), "{refused:?}");
+        assert_eq!(session_actions(&f).await.len(), 1);
+    })
+    .await;
+}
