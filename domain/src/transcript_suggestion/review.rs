@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use service::config::Config;
 use utoipa::ToSchema;
 
+use super::due_date::names_next_session;
 use super::extract::notify;
 use super::{
     find_by_session, transition, validation, ActionProposal, Actions, Model, People, Status,
@@ -26,7 +27,8 @@ use crate::{
     users, Id,
 };
 
-/// Days until a suggestion without a due date is due when no later session is scheduled.
+/// Days after the session, or after now once it has started, until a suggestion without a due
+/// date is due when no later session is scheduled.
 const FALLBACK_DUE_DAYS: i64 = 7;
 
 /// Who is acting in the session.
@@ -42,7 +44,21 @@ pub enum Actor {
 #[schema(as = domain::transcript_suggestion::review::DueSource)]
 pub enum DueSource {
     NextSession,
+    /// A week after a session that has not started yet.
+    WeekAfterSession,
+    /// A week from now.
     SevenDays,
+}
+
+/// Why a spoken deadline gave no due date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(as = domain::transcript_suggestion::review::UndatedReason)]
+pub enum UndatedReason {
+    /// It names the next session, and none is scheduled.
+    NoNextSession,
+    /// It is vague or ambiguous, such as "soon" or "next week".
+    NotADate,
 }
 
 /// The due date accept applies when a suggestion has none.
@@ -98,6 +114,8 @@ pub struct ActionSuggestion {
     /// The existing action this may repeat; `null` when not flagged or that action is gone.
     pub duplicate_of: Option<DuplicateOf>,
     pub default_due: DefaultDue,
+    /// Why the spoken `due_phrase` gave no due date; `null` when it did, or when none was spoken.
+    pub undated_reason: Option<UndatedReason>,
     #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeWithTimeZone,
     /// Who dismissed or accepted the suggestion; `null` while pending.
@@ -187,7 +205,8 @@ pub fn may_act(actor: Actor, people: People, stored: &[Id], requested: Option<&[
 
 /// The due date accept applies when a suggestion has none.
 ///
-/// The next session's start when it has not started yet, otherwise seven days from `now`.
+/// The next session's start when it has not started yet, otherwise seven days after the later of
+/// this session's start and `now`.
 pub async fn default_due(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
@@ -203,9 +222,17 @@ pub async fn default_due(
             at: start.fixed_offset(),
             source: DueSource::NextSession,
         })
-        .unwrap_or_else(|| DefaultDue {
-            at: (now + Duration::days(FALLBACK_DUE_DAYS)).fixed_offset(),
-            source: DueSource::SevenDays,
+        .unwrap_or_else(|| {
+            let start = session.date.and_utc();
+            let (from, source) = if start > now {
+                (start, DueSource::WeekAfterSession)
+            } else {
+                (now, DueSource::SevenDays)
+            };
+            DefaultDue {
+                at: (from + Duration::days(FALLBACK_DUE_DAYS)).fixed_offset(),
+                source,
+            }
         }))
 }
 
@@ -238,6 +265,7 @@ pub async fn list_actions(
                 return None;
             };
             Some(ActionSuggestion {
+                undated_reason: undated_reason(&proposal, &default_due),
                 id: row.id,
                 coaching_session_id: row.coaching_session_id,
                 proposal,
@@ -258,6 +286,21 @@ pub async fn list_actions(
             })
         })
         .collect())
+}
+
+/// Why a spoken deadline gave no due date; `None` when it did, or nothing was spoken.
+///
+/// A phrase naming the next session resolves once one is scheduled, so it then has no reason.
+fn undated_reason(proposal: &ActionProposal, default_due: &DefaultDue) -> Option<UndatedReason> {
+    let phrase = proposal
+        .due_phrase
+        .as_deref()
+        .filter(|_| proposal.action.action.due_by.is_none())?;
+    match (names_next_session(phrase), default_due.source) {
+        (true, DueSource::NextSession) => None,
+        (true, _) => Some(UndatedReason::NoNextSession),
+        (false, _) => Some(UndatedReason::NotADate),
+    }
 }
 
 /// Creates the suggested action, applying `edits` when given, and marks the suggestion accepted.

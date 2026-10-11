@@ -877,6 +877,82 @@ async fn a_next_session_that_already_started_gives_seven_days() {
 }
 
 #[tokio::test]
+async fn a_session_that_has_not_started_defaults_to_a_week_after_it() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let start = now() + Duration::days(23);
+        let upcoming = seed_session(&f.db, f.relationship_id, start.naive_utc()).await;
+
+        let default = default_due(&f.db, &upcoming, now())
+            .await
+            .expect("the default reads");
+
+        assert_eq!(
+            default,
+            DefaultDue {
+                at: (start + Duration::days(7)).fixed_offset(),
+                source: DueSource::WeekAfterSession,
+            }
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_list_says_why_a_spoken_deadline_gave_no_date() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let mut suggested = vec![];
+        for (body, due_by, phrase) in [
+            ("Map out stakeholders", None, Some("by our next session")),
+            ("Reach out to the VP", None, Some("soon")),
+            ("Send the deck", Some(due(3)), Some("by Friday")),
+            ("Read the article", None, None),
+        ] {
+            let p = proposal(&f, body, vec![f.coachee.id], due_by, phrase);
+            suggested.push(suggest(&f, &p, Status::Pending, None).await.id);
+        }
+        let reasons = || async {
+            let listed = list_actions(&f.db, &f.session, Status::Pending, now())
+                .await
+                .expect("the list reads");
+            suggested
+                .iter()
+                .map(|id| {
+                    listed
+                        .iter()
+                        .find(|s| s.id == *id)
+                        .expect("listed")
+                        .undated_reason
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            reasons().await,
+            vec![
+                Some(UndatedReason::NoNextSession),
+                Some(UndatedReason::NotADate),
+                None,
+                None
+            ]
+        );
+
+        seed_session(
+            &f.db,
+            f.relationship_id,
+            (now() + Duration::days(3)).naive_utc(),
+        )
+        .await;
+        assert_eq!(
+            reasons().await,
+            vec![None, Some(UndatedReason::NotADate), None, None]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_dismissed_list_holds_only_dismissed_suggestions_with_who_dismissed_them() {
     within_time_limit(async {
         let f = fixture().await;

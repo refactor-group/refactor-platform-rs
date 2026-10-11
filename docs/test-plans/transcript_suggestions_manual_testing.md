@@ -92,7 +92,7 @@ curl -s -X POST -H "x-version: 1.0.0" -H "content-type: application/json" -b "$C
 1. Accept the one-on-one suggestion (no due date) while the next session (2026-10-19) is in the future.
 2. Delete or move the next session so none is scheduled after this one, then accept a suggestion that has no due date (restore one first if needed).
 
-**Pass:** the first Action's due date is the next session's start; the second is 7 days from the moment you accepted (`default_due.source` was `seven_days` in the list).
+**Pass:** the first Action's due date is the next session's start; the second is 7 days from the moment you accepted (`default_due.source` was `seven_days` in the list). Had the session not started yet, it would be 7 days after the session's start instead, with source `week_after_session`.
 
 ### C3. A suggestion that already made an action
 1. Put the suggestion accepted in C1 back to pending by hand, as a database editor would:
@@ -414,17 +414,18 @@ existing actions.
 2. Jim: "By next time, I'll send you the stakeholder template."
 3. Caleb: "I'll have the draft done before we meet again."
 
-**Expected:** three suggestions (Caleb, Jim, Caleb), each with **blank** `due_by` and its phrase kept.
-The list's `default_due.source` is `seven_days`. Accepting one without a date gives a due date 7 days
-from the moment of acceptance.
+**Expected:** three suggestions (Caleb, Jim, Caleb), each with **blank** `due_by`, its phrase kept, and
+`undated_reason` `no_next_session`. The list's `default_due` is 7 days after the session's start
+(source `week_after_session`) when the session is dated in the future, otherwise 7 days from now
+(`seven_days`); accepting one without a date gives that due date.
 
 4. Jim: "I'll find you a template for the project chart" (pause) "and I'll get it to you by our next
    session."
 
 **Expected:** a fourth suggestion (Jim), sourced to the first line, with **blank** `due_by` but
 `due_phrase` "by our next session" kept (not null). On the card the date is the regular-weight default
-(a week from today) and its tooltip quotes the phrase, so it never says "No date mentioned". Then
-schedule a next session and refresh: the default becomes that session's date.
+and its tooltip quotes the phrase, so it never says "No date mentioned". Then schedule a next session
+and refresh: the default becomes that session's date and `undated_reason` becomes null.
 
 ### F8. Duplicates of existing actions
 

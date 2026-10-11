@@ -205,6 +205,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::transcript_suggestion::review::Scan,
                 domain::transcript_suggestion::review::ScanStatus,
                 domain::transcript_suggestion::review::SourceSegment,
+                domain::transcript_suggestion::review::UndatedReason,
                 domain::jwts::Jwt,
                 domain::notes::Model,
                 domain::organizations::Model,
