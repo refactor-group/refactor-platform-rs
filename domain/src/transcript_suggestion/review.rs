@@ -12,8 +12,8 @@ use utoipa::ToSchema;
 
 use super::extract::notify;
 use super::{
-    find_by_session, transition, update_proposal, ActionProposal, Actions, Model, People, Status,
-    Suggestible, Target,
+    find_by_session, transition, update_proposal, validation, ActionProposal, Actions, Model,
+    People, Status, Suggestible, Target,
 };
 use crate::action::{self, ActionWithAssignees};
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
@@ -21,7 +21,7 @@ use crate::events::EventPublisher;
 use crate::status::Status as ActionStatus;
 use crate::transcript_export::{LabeledSegment, SpeakerRole};
 use crate::{
-    actions, coaching_session, coaching_sessions, emails, transcript_analysis, transcription,
+    actions, coaching_session, coaching_sessions, emails, goal, transcript_analysis, transcription,
     users, Id,
 };
 
@@ -61,16 +61,20 @@ pub struct ActionEdits {
     #[schema(value_type = Option<String>, format = DateTime)]
     pub due_by: Option<DateTimeWithTimeZone>,
     pub assignee_ids: Vec<Id>,
+    /// The goal to link the action to; `null` or absent for none.
+    #[serde(default)]
+    pub goal_id: Option<Id>,
 }
 
 impl ActionEdits {
-    /// `stored` with its body, due date and assignees replaced by these edits.
+    /// `stored` with its body, due date, goal and assignees replaced by these edits.
     pub fn onto(&self, stored: &ActionProposal) -> ActionProposal {
         ActionProposal {
             action: ActionWithAssignees {
                 action: actions::Model {
                     body: Some(self.body.clone()),
                     due_by: self.due_by,
+                    goal_id: self.goal_id,
                     ..stored.action.action.clone()
                 },
                 assignee_ids: self.assignee_ids.clone(),
@@ -240,8 +244,10 @@ pub async fn edit_action(
     edits: ActionEdits,
 ) -> Result<Model, Error> {
     let stored = read_proposal(&suggestion)?;
-    let (_, people) = authorize(db, user, &suggestion, &stored, Some(&edits.assignee_ids)).await?;
+    let (session, people) =
+        authorize(db, user, &suggestion, &stored, Some(&edits.assignee_ids)).await?;
     let revised = revise(edits.onto(&stored), &stored, people)?;
+    check_goal(db, &session, revised.action.action.goal_id).await?;
     let json = serde_json::to_value(&revised)
         .map_err(|e| internal(format!("Serializing a proposal failed: {e}")))?;
 
@@ -272,6 +278,7 @@ pub async fn accept_action(
         Some(edits) => revise(edits.onto(&stored), &stored, people)?,
         None => stored,
     };
+    check_goal(db, &session, proposal.action.action.goal_id).await?;
 
     let due_by = match proposal.action.action.due_by {
         Some(due_by) => due_by,
@@ -279,7 +286,6 @@ pub async fn accept_action(
     };
     let model = actions::Model {
         coaching_session_id: suggestion.coaching_session_id,
-        goal_id: None,
         due_by: Some(due_by),
         status: ActionStatus::NotStarted,
         ..proposal.action.action
@@ -409,6 +415,25 @@ async fn authorize(
         .ok_or_else(forbidden)
 }
 
+/// Rejects a goal outside the session's coaching relationship; a missing goal is rejected alike.
+async fn check_goal(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    goal_id: Option<Id>,
+) -> Result<(), Error> {
+    let Some(goal_id) = goal_id else {
+        return Ok(());
+    };
+    let in_relationship = match goal::find_by_id(db, goal_id).await.map_err(Error::from) {
+        Ok(found) => found.coaching_relationship_id == session.coaching_relationship_id,
+        Err(e) if is_not_found(&e) => false,
+        Err(e) => return Err(e),
+    };
+    in_relationship
+        .then_some(())
+        .ok_or_else(|| validation("The goal is not in this coaching relationship."))
+}
+
 /// `edits`' editable fields on top of `stored`; a changed due date drops the spoken phrase.
 fn revise(
     edits: ActionProposal,
@@ -438,7 +463,7 @@ fn revise(
             action: actions::Model {
                 body: edits.action.action.body.map(|b| b.trim().to_string()),
                 due_by,
-                goal_id: None,
+                goal_id: edits.action.action.goal_id,
                 status: ActionStatus::NotStarted,
                 ..stored_action.clone()
             },
@@ -509,6 +534,13 @@ fn read_proposal(suggestion: &Model) -> Result<ActionProposal, Error> {
             suggestion.id
         ))
     })
+}
+
+fn is_not_found(error: &Error) -> bool {
+    matches!(
+        error.error_kind,
+        DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
+    )
 }
 
 fn forbidden() -> Error {

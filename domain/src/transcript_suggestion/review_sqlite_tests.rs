@@ -304,6 +304,7 @@ fn edits_of(proposal: ActionProposal) -> ActionEdits {
         body: proposal.action.action.body.unwrap_or_default(),
         due_by: proposal.action.action.due_by,
         assignee_ids: proposal.action.assignee_ids,
+        goal_id: proposal.action.action.goal_id,
     }
 }
 
@@ -941,6 +942,193 @@ async fn the_dismissed_list_holds_only_dismissed_suggestions_with_who_dismissed_
                 .expect("the list reads"),
             pending
         );
+    })
+    .await;
+}
+
+async fn seed_goal(db: &DatabaseConnection, relationship_id: Id, user_id: Id) -> Id {
+    let at = Utc::now();
+    entity::goals::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_relationship_id: Set(relationship_id),
+        created_in_session_id: Set(None),
+        user_id: Set(user_id),
+        title: Set(Some("Grow as a leader".to_string())),
+        body: Set(None),
+        status: Set(entity::status::Status::InProgress),
+        status_changed_at: Set(None),
+        completed_at: Set(None),
+        target_date: Set(None),
+        created_at: Set(at.into()),
+        updated_at: Set(at.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the goal is seeded")
+    .id
+}
+
+#[tokio::test]
+async fn accept_links_the_action_to_a_goal_in_the_relationship() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let goal_id = seed_goal(&f.db, f.relationship_id, f.coach.id).await;
+        let s = suggest(
+            &f,
+            &proposal(
+                &f,
+                "Send the org chart",
+                vec![f.coachee.id],
+                Some(due(3)),
+                None,
+            ),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            Some(ActionEdits {
+                body: "Send the org chart".to_string(),
+                due_by: Some(due(3)),
+                assignee_ids: vec![f.coachee.id],
+                goal_id: Some(goal_id),
+            }),
+            now(),
+        )
+        .await
+        .expect("the accept succeeds");
+
+        let rows = session_actions(&f).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].goal_id, Some(goal_id));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn accept_and_edit_refuse_a_goal_from_another_relationship() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let other = fixture_in(f.db.clone()).await;
+        let (publisher, recorder) = recording_publisher();
+        let foreign_goal = seed_goal(&f.db, other.relationship_id, other.coach.id).await;
+        let s = suggest(
+            &f,
+            &proposal(
+                &f,
+                "Send the org chart",
+                vec![f.coachee.id],
+                Some(due(3)),
+                None,
+            ),
+            Status::Pending,
+            None,
+        )
+        .await;
+        let edits = ActionEdits {
+            body: "Send the org chart".to_string(),
+            due_by: Some(due(3)),
+            assignee_ids: vec![f.coachee.id],
+            goal_id: Some(foreign_goal),
+        };
+
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s.clone(),
+            Some(edits.clone()),
+            now(),
+        )
+        .await
+        .expect_err("a foreign goal is refused");
+        assert!(is_validation(&refused), "{refused:?}");
+        assert!(session_actions(&f).await.is_empty());
+        assert_eq!(reread(&f, s.id).await.status, Status::Pending);
+
+        let refused = edit_action(&f.db, &publisher, &f.coach, s.clone(), edits)
+            .await
+            .expect_err("a foreign goal is refused on edit");
+        assert!(is_validation(&refused), "{refused:?}");
+        assert_eq!(
+            read_proposal(&reread(&f, s.id).await)
+                .expect("readable")
+                .action
+                .action
+                .goal_id,
+            None
+        );
+        assert_eq!(recorder.suggestion_changes(), 0);
+
+        let missing = ActionEdits {
+            body: "Send the org chart".to_string(),
+            due_by: Some(due(3)),
+            assignee_ids: vec![f.coachee.id],
+            goal_id: Some(Id::new_v4()),
+        };
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            Some(missing),
+            now(),
+        )
+        .await
+        .expect_err("a missing goal is refused");
+        assert!(is_validation(&refused), "{refused:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn editing_keeps_a_valid_goal_on_the_pending_suggestion() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let goal_id = seed_goal(&f.db, f.relationship_id, f.coachee.id).await;
+        let s = suggest(
+            &f,
+            &proposal(
+                &f,
+                "Send the org chart",
+                vec![f.coachee.id],
+                Some(due(3)),
+                None,
+            ),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        edit_action(
+            &f.db,
+            &publisher,
+            &f.coachee,
+            s.clone(),
+            ActionEdits {
+                body: "Send the org chart".to_string(),
+                due_by: Some(due(3)),
+                assignee_ids: vec![f.coachee.id],
+                goal_id: Some(goal_id),
+            },
+        )
+        .await
+        .expect("the edit succeeds");
+
+        let listed = list_pending_actions(&f.db, &f.session, now())
+            .await
+            .expect("the list reads");
+        assert_eq!(listed[0].proposal.action.action.goal_id, Some(goal_id));
     })
     .await;
 }

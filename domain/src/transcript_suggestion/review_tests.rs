@@ -93,6 +93,7 @@ fn edits_replace_exactly_the_body_due_date_and_assignees() {
         body: "New body".to_string(),
         due_by: None,
         assignee_ids: vec![Id::new_v4(), Id::new_v4()],
+        goal_id: stored.action.action.goal_id,
     };
 
     let result = edits.onto(&stored);
@@ -107,4 +108,17 @@ fn edits_replace_exactly_the_body_due_date_and_assignees() {
     };
     assert_eq!(unchanged(&result), unchanged(&stored));
     assert_eq!(result.due_phrase, stored.due_phrase);
+}
+
+#[test]
+fn edits_without_a_goal_deserialize_as_none_and_with_one_as_some() {
+    let none: ActionEdits = serde_json::from_value(serde_json::json!({
+        "body": "x", "due_by": null, "assignee_ids": [] }))
+    .expect("parses");
+    assert_eq!(none.goal_id, None);
+    let id = Id::new_v4();
+    let some: ActionEdits = serde_json::from_value(serde_json::json!({
+        "body": "x", "due_by": null, "assignee_ids": [], "goal_id": id }))
+    .expect("parses");
+    assert_eq!(some.goal_id, Some(id));
 }
