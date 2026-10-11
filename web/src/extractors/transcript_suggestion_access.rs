@@ -3,7 +3,7 @@ use axum::{
     extract::{FromRef, FromRequestParts},
     http::request::Parts,
 };
-use domain::{coaching_sessions, transcript_suggestion};
+use domain::transcript_suggestion;
 
 use crate::{
     extractors::{
@@ -18,9 +18,8 @@ use crate::{
 ///
 /// Composes `CoachingSessionAccess`, then loads the suggestion and confirms it belongs to the
 /// path session. Any failure collapses to 404 so a suggestion in an inaccessible session is
-/// never revealed. On success, yields the session and the suggestion.
+/// never revealed. On success, yields the suggestion.
 pub(crate) struct TranscriptSuggestionAccess {
-    pub session: coaching_sessions::Model,
     pub suggestion: transcript_suggestion::Model,
 }
 
@@ -52,10 +51,7 @@ where
             return Err(not_found());
         }
 
-        Ok(TranscriptSuggestionAccess {
-            session,
-            suggestion,
-        })
+        Ok(TranscriptSuggestionAccess { suggestion })
     }
 }
 

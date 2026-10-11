@@ -1,4 +1,4 @@
-//! Reviewing action suggestions: list, edit, accept, dismiss and restore, and scanning for them.
+//! Reviewing action suggestions: list, accept, dismiss and restore, and scanning for them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -12,8 +12,8 @@ use utoipa::ToSchema;
 
 use super::extract::notify;
 use super::{
-    find_by_session, transition, update_proposal, validation, ActionProposal, Actions, Model,
-    People, Status, Suggestible, Target,
+    find_by_session, transition, validation, ActionProposal, Actions, Model, People, Status,
+    Suggestible, Target,
 };
 use crate::action::{self, ActionWithAssignees};
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
@@ -209,15 +209,6 @@ pub async fn default_due(
         }))
 }
 
-/// The session's pending action suggestions, oldest first.
-pub async fn list_pending_actions(
-    db: &DatabaseConnection,
-    session: &coaching_sessions::Model,
-    now: DateTime<Utc>,
-) -> Result<Vec<ActionSuggestion>, Error> {
-    list_actions(db, session, Status::Pending, now).await
-}
-
 /// The session's action suggestions in `status`, oldest first.
 ///
 /// A row whose proposal or segment cannot be read is skipped with a warning.
@@ -269,29 +260,6 @@ pub async fn list_actions(
         .collect())
 }
 
-/// Applies `edits` to a pending suggestion's proposal.
-pub async fn edit_action(
-    db: &DatabaseConnection,
-    publisher: &EventPublisher,
-    user: &users::Model,
-    suggestion: Model,
-    edits: ActionEdits,
-) -> Result<Model, Error> {
-    let stored = read_proposal(&suggestion)?;
-    let (session, people) =
-        authorize(db, user, &suggestion, &stored, Some(&edits.assignee_ids)).await?;
-    let revised = revise(edits.onto(&stored), &stored, people)?;
-    check_goal(db, &session, revised.action.action.goal_id).await?;
-    let json = serde_json::to_value(&revised)
-        .map_err(|e| internal(format!("Serializing a proposal failed: {e}")))?;
-
-    let updated = update_proposal(db, suggestion.id, json, Utc::now().fixed_offset())
-        .await?
-        .ok_or_else(|| conflict("Only a pending suggestion can be edited."))?;
-    notify::<Actions>(db, publisher, suggestion.coaching_session_id).await;
-    Ok(updated)
-}
-
 /// Creates the suggested action, applying `edits` when given, and marks the suggestion accepted.
 ///
 /// The accepting user owns the action. Without a due date it gets `default_due`. The action and
@@ -308,13 +276,13 @@ pub async fn accept_action(
     let stored = read_proposal(&suggestion)?;
     let requested = edits.as_ref().map(|e| e.assignee_ids.as_slice());
     let (session, people) = authorize(db, user, &suggestion, &stored, requested).await?;
-    let proposal = match edits {
+    let proposed = match edits {
         Some(edits) => revise(edits.onto(&stored), &stored, people)?,
-        None => stored,
+        None => stored.action,
     };
-    check_goal(db, &session, proposal.action.action.goal_id).await?;
+    check_goal(db, &session, proposed.action.goal_id).await?;
 
-    let due_by = match proposal.action.action.due_by {
+    let due_by = match proposed.action.due_by {
         Some(due_by) => due_by,
         None => default_due(db, &session, now).await?.at,
     };
@@ -322,7 +290,7 @@ pub async fn accept_action(
         coaching_session_id: suggestion.coaching_session_id,
         due_by: Some(due_by),
         status: ActionStatus::NotStarted,
-        ..proposal.action.action
+        ..proposed.action
     };
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
@@ -330,7 +298,7 @@ pub async fn accept_action(
         &txn,
         model,
         user.id,
-        Some(proposal.action.assignee_ids),
+        Some(proposed.assignee_ids),
     )
     .await?;
     let accepted = transition(
@@ -554,19 +522,13 @@ async fn check_goal(
         .ok_or_else(|| validation("The goal is not in this coaching relationship."))
 }
 
-/// `edits`' editable fields on top of `stored`; a changed due date drops the spoken phrase.
+/// The action `edits` describe on top of `stored`, with a trimmed body and no repeated assignee.
 fn revise(
     edits: ActionProposal,
     stored: &ActionProposal,
     people: People,
-) -> Result<ActionProposal, Error> {
+) -> Result<ActionWithAssignees, Error> {
     Actions::check(&edits, people)?;
-    let stored_action = &stored.action.action;
-    let due_by = edits.action.action.due_by;
-    let due_phrase = stored
-        .due_phrase
-        .clone()
-        .filter(|_| due_by == stored_action.due_by);
     let assignee_ids = edits
         .action
         .assignee_ids
@@ -578,18 +540,15 @@ fn revise(
             ids
         });
 
-    Ok(ActionProposal {
-        action: ActionWithAssignees {
-            action: actions::Model {
-                body: edits.action.action.body.map(|b| b.trim().to_string()),
-                due_by,
-                goal_id: edits.action.action.goal_id,
-                status: ActionStatus::NotStarted,
-                ..stored_action.clone()
-            },
-            assignee_ids,
+    Ok(ActionWithAssignees {
+        action: actions::Model {
+            body: edits.action.action.body.map(|b| b.trim().to_string()),
+            due_by: edits.action.action.due_by,
+            goal_id: edits.action.action.goal_id,
+            status: ActionStatus::NotStarted,
+            ..stored.action.action.clone()
         },
-        due_phrase,
+        assignee_ids,
     })
 }
 

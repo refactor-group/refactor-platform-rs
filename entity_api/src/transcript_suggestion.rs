@@ -46,41 +46,29 @@ pub async fn find_pending_by_session<C: ConnectionTrait>(
 }
 
 /// Suggestions of a session, target and status, oldest first.
+///
+/// A suggestion that already created an entity counts as accepted, so it is never listed as
+/// pending or dismissed even when its status says so.
 pub async fn find_by_session<C: ConnectionTrait>(
     db: &C,
     coaching_session_id: Id,
     target: Target,
     status: Status,
 ) -> Result<Vec<Model>, Error> {
-    Ok(Entity::find()
+    let query = Entity::find()
         .filter(Column::CoachingSessionId.eq(coaching_session_id))
         .filter(Column::Target.eq(target))
-        .filter(Column::Status.eq(status))
+        .filter(Column::Status.eq(status));
+    let query = match status {
+        Status::Accepted => query,
+        Status::Pending | Status::Dismissed => query.filter(Column::CreatedEntityId.is_null()),
+    };
+
+    Ok(query
         .order_by(Column::CreatedAt, Order::Asc)
         .order_by(Column::Id, Order::Asc)
         .all(db)
         .await?)
-}
-
-/// Edits a pending suggestion's proposal; `None` when it is not pending.
-pub async fn update_proposal<C: ConnectionTrait>(
-    db: &C,
-    id: Id,
-    proposal: Json,
-    now: DateTimeWithTimeZone,
-) -> Result<Option<Model>, Error> {
-    Ok(Entity::update_many()
-        .set(ActiveModel {
-            proposal: Set(proposal),
-            updated_at: Set(now),
-            ..Default::default()
-        })
-        .filter(Column::Id.eq(id))
-        .filter(Column::Status.eq(Status::Pending))
-        .exec_with_returning(db)
-        .await?
-        .into_iter()
-        .next())
 }
 
 /// Moves a suggestion `from` one status `to` another in one conditional UPDATE.

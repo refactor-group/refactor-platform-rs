@@ -132,12 +132,9 @@ fn test_suggestion(
 }
 
 async fn suggestion_route(
-    TranscriptSuggestionAccess {
-        session,
-        suggestion,
-    }: TranscriptSuggestionAccess,
+    TranscriptSuggestionAccess { suggestion }: TranscriptSuggestionAccess,
 ) -> String {
-    format!("{}:{}", session.id, suggestion.id)
+    format!("{}:{}", suggestion.coaching_session_id, suggestion.id)
 }
 
 fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {

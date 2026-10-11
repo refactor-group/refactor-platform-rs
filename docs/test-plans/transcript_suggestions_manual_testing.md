@@ -52,14 +52,14 @@ Use the suggestions from A1, signed in as the coachee (`$COACHEE_COOKIE`).
 
 ### B1. Coach-only suggestion
 1. Try to accept the worksheet suggestion (coach only): `POST .../transcript_suggestions/<id>/accept`.
-2. Try to edit it: `PUT .../transcript_suggestions/<id>` with its body, due date and assignees.
+2. Try to accept it with edits: the same request with a JSON body of its body, due date and assignees.
 
-**Pass:** both return 403, and the suggestion is still pending.
+**Pass:** both return 403, no Action is created, and the suggestion is still pending.
 
 ### B2. Adding the coach
-1. Edit the one-on-one suggestion (coachee only) so `assignee_ids` includes the coach.
+1. Accept the one-on-one suggestion (coachee only) with edits whose `assignee_ids` include the coach.
 
-**Pass:** 403, and the suggestion is unchanged.
+**Pass:** 403, no Action is created, and the suggestion is still pending.
 
 ### B3. Accepting their own
 1. Accept the budget suggestion.
@@ -77,18 +77,34 @@ Use the suggestions from A1, signed in as the coachee (`$COACHEE_COOKIE`).
 
 Sign in as the coach (`$COACH_COOKIE`).
 
-### C1. Edit then accept
-1. Edit the worksheet suggestion: change the body, set `due_by` to `2026-10-14T12:00:00Z`, and add the coachee as a second assignee.
-2. List and check the suggestion shows the new values (and no `due_phrase` for the changed date).
-3. Accept it.
+### C1. Accept with edits
+1. Accept the worksheet suggestion with edits: change the body, set `due_by` to `2026-10-14T12:00:00Z`, and add the coachee as a second assignee.
 
-**Pass:** the edit returns 200 and the list reflects it; accept returns 201 and the new Action has the edited body, the edited due date and both assignees. The coach is its owner.
+```bash
+curl -s -X POST -H "x-version: 1.0.0" -H "content-type: application/json" -b "$COACH_COOKIE" \
+  -d '{"body":"<new body>","due_by":"2026-10-14T12:00:00Z","assignee_ids":["<coach id>","<coachee id>"]}' \
+  "http://localhost:4000/coaching_sessions/$SESSION/transcript_suggestions/<id>/accept" | jq .
+```
+
+**Pass:** 201, and the new Action has the edited body, the edited due date and both assignees. The coach is its owner. The suggestion leaves the pending list. `PUT .../transcript_suggestions/<id>` returns 404: there is no separate edit.
 
 ### C2. Default due date
 1. Accept the one-on-one suggestion (no due date) while the next session (2026-10-19) is in the future.
 2. Delete or move the next session so none is scheduled after this one, then accept a suggestion that has no due date (restore one first if needed).
 
 **Pass:** the first Action's due date is the next session's start; the second is 7 days from the moment you accepted (`default_due.source` was `seven_days` in the list).
+
+### C3. A suggestion that already made an action
+1. Put the suggestion accepted in C1 back to pending by hand, as a database editor would:
+
+```sql
+UPDATE refactor_platform.transcript_suggestions SET status = 'pending' WHERE id = '<id>';
+```
+
+2. List pending suggestions, then try to accept it again.
+3. Set its status to `dismissed` the same way, then list with `?status=dismissed`.
+
+**Pass:** it appears in neither list; the accept returns 409; the session still has exactly one Action from it, and `created_entity_id` still points at that Action.
 
 ## Part D: reliability
 
@@ -129,6 +145,7 @@ Sign in as the coach (`$COACH_COOKIE`).
 | B4 |  |  |  |
 | C1 |  |  |  |
 | C2 |  |  |  |
+| C3 |  |  |  |
 | D1 |  |  |  |
 | D2 |  |  |  |
 | D3 |  |  |  |

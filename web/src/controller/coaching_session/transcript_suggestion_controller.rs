@@ -13,10 +13,9 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
-use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
+use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::transcript_suggestion::review::{self, ActionEdits, Scan};
 use domain::transcript_suggestion::Status;
-use domain::Id;
 use log::*;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -161,60 +160,6 @@ pub async fn start_scan(
     ))
 }
 
-/// PUT edit a pending suggested Action
-///
-/// Replaces the suggestion's body, due date and assignees and returns the updated suggestion.
-#[utoipa::path(
-    put,
-    path = "/coaching_sessions/{coaching_session_id}/transcript_suggestions/{suggestion_id}",
-    params(
-        ApiVersion,
-        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
-        ("suggestion_id" = Uuid, Path, description = "Suggestion id"),
-    ),
-    request_body = ActionEdits,
-    responses(
-        (status = 200, description = "Suggestion updated", body = domain::transcript_suggestion::review::ActionSuggestion),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "The coachee may not edit this suggestion"),
-        (status = 404, description = "Suggestion not found in this session"),
-        (status = 409, description = "The suggestion is no longer pending"),
-        (status = 422, description = "Invalid edits"),
-    ),
-    security(("cookie_auth" = []))
-)]
-pub async fn update(
-    CompareApiVersion(_v): CompareApiVersion,
-    TranscriptSuggestionAccess {
-        session,
-        suggestion,
-    }: TranscriptSuggestionAccess,
-    AuthenticatedUser(user): AuthenticatedUser,
-    State(app_state): State<AppState>,
-    Json(edits): Json<ActionEdits>,
-) -> Result<impl IntoResponse, Error> {
-    debug!("PUT transcript suggestion {}", suggestion.id);
-
-    let db = app_state.db_conn_ref();
-    let id: Id = suggestion.id;
-    review::edit_action(
-        db,
-        app_state.event_publisher.as_ref(),
-        &user,
-        suggestion,
-        edits,
-    )
-    .await?;
-
-    let updated = review::list_pending_actions(db, &session, Utc::now())
-        .await?
-        .into_iter()
-        .find(|s| s.id == id)
-        .ok_or_else(not_found)?;
-
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
-}
-
 /// POST accept a pending suggested Action
 ///
 /// Creates the Action, optionally applying the edits in the body, and returns it. An empty
@@ -241,7 +186,7 @@ pub async fn update(
 )]
 pub async fn accept(
     CompareApiVersion(_v): CompareApiVersion,
-    TranscriptSuggestionAccess { suggestion, .. }: TranscriptSuggestionAccess,
+    TranscriptSuggestionAccess { suggestion }: TranscriptSuggestionAccess,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     OptionalJson(edits): OptionalJson<ActionEdits>,
@@ -282,7 +227,7 @@ pub async fn accept(
 )]
 pub async fn dismiss(
     CompareApiVersion(_v): CompareApiVersion,
-    TranscriptSuggestionAccess { suggestion, .. }: TranscriptSuggestionAccess,
+    TranscriptSuggestionAccess { suggestion }: TranscriptSuggestionAccess,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
@@ -320,7 +265,7 @@ pub async fn dismiss(
 )]
 pub async fn restore(
     CompareApiVersion(_v): CompareApiVersion,
-    TranscriptSuggestionAccess { suggestion, .. }: TranscriptSuggestionAccess,
+    TranscriptSuggestionAccess { suggestion }: TranscriptSuggestionAccess,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
@@ -388,13 +333,6 @@ fn validation(message: String) -> Error {
     Error::Domain(DomainError {
         source: None,
         error_kind: DomainErrorKind::Validation(message),
-    })
-}
-
-fn not_found() -> Error {
-    Error::Domain(DomainError {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound)),
     })
 }
 

@@ -178,56 +178,55 @@ async fn find_pending_by_session_skips_other_sessions_and_resolved_rows_in_creat
 }
 
 #[tokio::test]
-async fn update_proposal_changes_a_pending_row_but_not_an_accepted_one() {
+async fn find_by_session_lists_a_row_that_created_an_entity_only_as_accepted() {
     within_time_limit(async {
         let db = database().await;
         let (session_id, analysis_id, segment_id, user_id) = seed_parents(&db).await;
-        let pending = insert_one(
+        let row = insert_one(
             &db,
-            pending_row(
-                session_id,
-                analysis_id,
-                segment_id,
-                json!({"body": "old"}),
-                at(-5),
-            ),
-        )
-        .await;
-        let accepted = insert_one(
-            &db,
-            pending_row(
-                session_id,
-                analysis_id,
-                segment_id,
-                json!({"body": "kept"}),
-                at(-5),
-            ),
+            pending_row(session_id, analysis_id, segment_id, json!({"n": 1}), at(-5)),
         )
         .await;
         transition(
             &db,
-            accepted.id,
+            row.id,
             Status::Pending,
             Status::Accepted,
             user_id,
-            None,
+            Some(Id::new_v4()),
             at(0),
         )
         .await?;
+        let ids = |status| {
+            let db = &db;
+            async move {
+                find_by_session(db, session_id, Target::Action, status)
+                    .await
+                    .map(|rows| rows.into_iter().map(|m| m.id).collect::<Vec<_>>())
+            }
+        };
 
-        let updated = update_proposal(&db, pending.id, json!({"body": "new"}), at(0)).await?;
-        assert!(updated.is_some());
-        assert_eq!(
-            reread(&db, pending.id).await.proposal,
-            json!({"body": "new"})
-        );
+        for status in [Status::Pending, Status::Dismissed] {
+            ActiveModel {
+                id: Set(row.id),
+                status: Set(status),
+                ..Default::default()
+            }
+            .update(&db)
+            .await
+            .expect("the status is set");
+            assert!(ids(status).await?.is_empty(), "{status:?}");
+        }
 
-        let refused = update_proposal(&db, accepted.id, json!({"body": "new"}), at(0)).await?;
-        assert!(refused.is_none());
-        assert_eq!(
-            reread(&db, accepted.id).await.proposal,
-            json!({"body": "kept"})
-        );
+        ActiveModel {
+            id: Set(row.id),
+            status: Set(Status::Accepted),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .expect("the status is set");
+        assert_eq!(ids(Status::Accepted).await?, vec![row.id]);
 
         Ok::<(), Error>(())
     })

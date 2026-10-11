@@ -669,30 +669,30 @@ async fn the_coachee_may_not_accept_a_coach_only_suggestion_or_add_the_coach() {
             None,
             None,
         );
-        let refused = edit_action(
+        let refused = accept_action(
             &f.db,
             &publisher,
+            &Config::default(),
             &f.coachee,
             coachee_only.clone(),
-            edits_of(adds_coach),
+            Some(edits_of(adds_coach)),
+            now(),
         )
         .await
         .expect_err("adding the coach is refused");
         assert!(is_forbidden(&refused), "{refused:?}");
-        assert_eq!(
-            reread(&f, coachee_only.id).await.proposal,
-            coachee_only.proposal
-        );
+        assert!(session_actions(&f).await.is_empty());
+        assert_eq!(reread(&f, coachee_only.id).await.status, Status::Pending);
         assert_eq!(recorder.suggestion_changes(), 0);
     })
     .await;
 }
 
 #[tokio::test]
-async fn edit_rewrites_the_proposal_and_a_new_due_date_drops_the_phrase() {
+async fn accept_with_edits_trims_the_body_and_drops_a_repeated_assignee() {
     within_time_limit(async {
         let f = fixture().await;
-        let (publisher, recorder) = recording_publisher();
+        let (publisher, _) = recording_publisher();
         let p = proposal(
             &f,
             "Send the org chart",
@@ -702,58 +702,35 @@ async fn edit_rewrites_the_proposal_and_a_new_due_date_drops_the_phrase() {
         );
         let s = suggest(&f, &p, Status::Pending, None).await;
 
-        let same_due = proposal(
-            &f,
-            "Send the full org chart",
-            vec![f.coachee.id],
-            Some(due(3)),
-            None,
-        );
-        edit_action(&f.db, &publisher, &f.coachee, s.clone(), edits_of(same_due))
-            .await
-            .expect("the edit succeeds");
-        let stored: ActionProposal =
-            serde_json::from_value(reread(&f, s.id).await.proposal).expect("the proposal reads");
-        assert_eq!(
-            stored.action.action.body.as_deref(),
-            Some("Send the full org chart")
-        );
-        assert_eq!(stored.due_phrase.as_deref(), Some("by Friday"));
-
-        let new_due = proposal(
-            &f,
-            "Send the full org chart",
-            vec![f.coachee.id],
-            Some(due(4)),
-            Some("by Friday"),
-        );
-        edit_action(&f.db, &publisher, &f.coachee, s.clone(), edits_of(new_due))
-            .await
-            .expect("the edit succeeds");
-        let stored: ActionProposal =
-            serde_json::from_value(reread(&f, s.id).await.proposal).expect("the proposal reads");
-        assert_eq!(stored.action.action.due_by, Some(due(4)));
-        assert_eq!(stored.due_phrase, None);
-        assert_eq!(stored.action.action.coaching_session_id, f.session.id);
-        assert_eq!(recorder.suggestion_changes(), 2);
-
-        accept_action(
+        let edits = ActionEdits {
+            body: "  Send the full org chart  ".to_string(),
+            due_by: Some(due(4)),
+            assignee_ids: vec![f.coachee.id, f.coach.id, f.coachee.id],
+            goal_id: None,
+        };
+        let created = accept_action(
             &f.db,
             &publisher,
             &Config::default(),
-            &f.coachee,
-            s.clone(),
-            None,
+            &f.coach,
+            s,
+            Some(edits),
             now(),
         )
         .await
-        .expect("the accept succeeds");
-        let late = proposal(&f, "Too late", vec![f.coachee.id], None, None);
-        let refused = edit_action(&f.db, &publisher, &f.coachee, s, edits_of(late))
-            .await
-            .expect_err("an accepted suggestion cannot be edited");
-        assert!(is_conflict(&refused), "{refused:?}");
-        assert_eq!(recorder.suggestion_changes(), 3);
+        .expect("the edited accept succeeds");
+
+        assert_eq!(
+            created.action.body.as_deref(),
+            Some("Send the full org chart")
+        );
+        assert_eq!(created.action.due_by, Some(due(4)));
+        assert_eq!(created.action.coaching_session_id, f.session.id);
+        let mut assignees = assignees_of(&f, created.action.id).await;
+        assignees.sort();
+        let mut expected = vec![f.coachee.id, f.coach.id];
+        expected.sort();
+        assert_eq!(assignees, expected);
     })
     .await;
 }
@@ -836,7 +813,7 @@ async fn list_returns_the_sessions_pending_suggestions_with_their_segment_and_du
         )
         .await;
 
-        let listed = list_pending_actions(&f.db, &f.session, now())
+        let listed = list_actions(&f.db, &f.session, Status::Pending, now())
             .await
             .expect("the list reads");
         assert_eq!(listed.len(), 1);
@@ -865,7 +842,7 @@ async fn list_returns_the_sessions_pending_suggestions_with_their_segment_and_du
         );
 
         existing.delete(&f.db).await.expect("the action is deleted");
-        let listed = list_pending_actions(&f.db, &f.session, now())
+        let listed = list_actions(&f.db, &f.session, Status::Pending, now())
             .await
             .expect("the list reads");
         assert_eq!(listed[0].duplicate_of, None);
@@ -949,7 +926,7 @@ async fn the_dismissed_list_holds_only_dismissed_suggestions_with_who_dismissed_
         assert_eq!(pending[0].resolved_by, None);
         assert_eq!(pending[0].resolved_at, None);
         assert_eq!(
-            list_pending_actions(&f.db, &f.session, now())
+            list_actions(&f.db, &f.session, Status::Pending, now())
                 .await
                 .expect("the list reads"),
             pending
@@ -1025,7 +1002,7 @@ async fn accept_links_the_action_to_a_goal_in_the_relationship() {
 }
 
 #[tokio::test]
-async fn accept_and_edit_refuse_a_goal_from_another_relationship() {
+async fn accept_refuses_a_goal_from_another_relationship_or_a_missing_one() {
     within_time_limit(async {
         let f = fixture().await;
         let other = fixture_in(f.db.clone()).await;
@@ -1057,7 +1034,7 @@ async fn accept_and_edit_refuse_a_goal_from_another_relationship() {
             &Config::default(),
             &f.coach,
             s.clone(),
-            Some(edits.clone()),
+            Some(edits),
             now(),
         )
         .await
@@ -1065,19 +1042,6 @@ async fn accept_and_edit_refuse_a_goal_from_another_relationship() {
         assert!(is_validation(&refused), "{refused:?}");
         assert!(session_actions(&f).await.is_empty());
         assert_eq!(reread(&f, s.id).await.status, Status::Pending);
-
-        let refused = edit_action(&f.db, &publisher, &f.coach, s.clone(), edits)
-            .await
-            .expect_err("a foreign goal is refused on edit");
-        assert!(is_validation(&refused), "{refused:?}");
-        assert_eq!(
-            read_proposal(&reread(&f, s.id).await)
-                .expect("readable")
-                .action
-                .action
-                .goal_id,
-            None
-        );
         assert_eq!(recorder.suggestion_changes(), 0);
 
         let missing = ActionEdits {
@@ -1098,49 +1062,6 @@ async fn accept_and_edit_refuse_a_goal_from_another_relationship() {
         .await
         .expect_err("a missing goal is refused");
         assert!(is_validation(&refused), "{refused:?}");
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn editing_keeps_a_valid_goal_on_the_pending_suggestion() {
-    within_time_limit(async {
-        let f = fixture().await;
-        let (publisher, _) = recording_publisher();
-        let goal_id = seed_goal(&f.db, f.relationship_id, f.coachee.id).await;
-        let s = suggest(
-            &f,
-            &proposal(
-                &f,
-                "Send the org chart",
-                vec![f.coachee.id],
-                Some(due(3)),
-                None,
-            ),
-            Status::Pending,
-            None,
-        )
-        .await;
-
-        edit_action(
-            &f.db,
-            &publisher,
-            &f.coachee,
-            s.clone(),
-            ActionEdits {
-                body: "Send the org chart".to_string(),
-                due_by: Some(due(3)),
-                assignee_ids: vec![f.coachee.id],
-                goal_id: Some(goal_id),
-            },
-        )
-        .await
-        .expect("the edit succeeds");
-
-        let listed = list_pending_actions(&f.db, &f.session, now())
-            .await
-            .expect("the list reads");
-        assert_eq!(listed[0].proposal.action.action.goal_id, Some(goal_id));
     })
     .await;
 }
@@ -1259,6 +1180,61 @@ async fn dismissing_and_restoring_does_not_clear_the_created_action_guard() {
 }
 
 /// Config with transcript suggestions turned on.
+#[tokio::test]
+async fn a_suggestion_that_already_created_an_action_is_listed_nowhere() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let linked = suggest(&f, &p, Status::Pending, None).await;
+        let unlinked = suggest(&f, &p, Status::Pending, None).await;
+        let dismissed = suggest(&f, &p, Status::Dismissed, None).await;
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            linked.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the accept succeeds");
+        let listed = |status| {
+            let f = &f;
+            async move {
+                list_actions(&f.db, &f.session, status, now())
+                    .await
+                    .expect("the list reads")
+                    .into_iter()
+                    .map(|s| s.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        reset_to_pending(&f, linked.id).await;
+        assert_eq!(listed(Status::Pending).await, vec![unlinked.id]);
+
+        transcript_suggestion::ActiveModel {
+            id: Set(linked.id),
+            status: Set(Status::Dismissed),
+            ..Default::default()
+        }
+        .update(&f.db)
+        .await
+        .expect("the suggestion is set to dismissed");
+        assert_eq!(listed(Status::Dismissed).await, vec![dismissed.id]);
+        assert_eq!(listed(Status::Pending).await, vec![unlinked.id]);
+    })
+    .await;
+}
+
 fn scanning() -> Config {
     Config::from_args(["test", "--assembly-ai-api-key=test-key"])
 }
