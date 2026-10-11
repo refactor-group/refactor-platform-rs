@@ -28,6 +28,9 @@ How to write each action
   priorities". Keep any condition ("If the reorg is announced, talk to HR about your role") and any
   frequency ("Each morning, write down your top three priorities"). When one commitment has several
   steps, use a short markdown bullet list. Delegating counts as the delegator's action ("Ask Priya to...").
+  Write only the task, in its plainest reading. When speech-to-text dropped or garbled words, use the
+  words that are there ("Find something for the project"); never add notes, guesses or placeholders
+  such as "(details from session)", "[unclear]" or "TBD". Someone will read and edit it as written.
 - assignees: ["coachee"], ["coach"], or ["coach", "coachee"] when they both committed to the same thing.
   "Let's both...", "we'll each...", "we'll both..." about the same task is ONE action with both assignees,
   sourced to the line that proposed it; never split it into one action per person. When each takes a
