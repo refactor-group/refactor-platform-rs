@@ -398,6 +398,10 @@ Deadlines on `D` itself (lines 1-3, 23-24) are due at the **end** of that day (2
 timezone), never before the session; every other date is due at noon. Check `due_by` in the database
 for line 23: its time must be later than the session's start.
 
+All 24 lines must come through as suggestions. The transcript may render "11/18" (line 17) as a
+clock time such as "11:18"; if so, a blank date with that phrase is a transcription miss, not a
+resolver failure. Note it and move on.
+
 ### F7. No next session scheduled
 
 **Setup:** make sure **no** session is scheduled after this one in Jim and Caleb's relationship. No
@@ -519,7 +523,7 @@ those listed should have a date.
 | F3 |  |  |  |
 | F4 |  |  |  |
 | F5 |  |  |  |
-| F6 |  |  |  |
+| F6 | Partial | 2026-10-11 | Lines 1-15 all correct. Lines 16-24 dropped by the old 15-suggestion cap (now 50); re-record. Line 17 transcribed as "11:18", line 19 lost "soon". |
 | F7 |  |  |  |
 | F8 |  |  |  |
 | F9 |  |  |  |

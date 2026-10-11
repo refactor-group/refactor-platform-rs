@@ -215,28 +215,32 @@ fn bodies_must_be_present_and_bounded() {
 }
 
 #[test]
-fn verify_output_keeps_at_most_fifteen_valid_items_in_order() {
+fn verify_output_keeps_at_most_fifty_valid_items_in_order() {
     let segments = segments();
     let session = session(&segments);
     let refs = Refs::new(&session);
-    let items: Vec<Value> = (1..=17)
-        .map(|i| {
-            let mut item = valid_json();
-            item["body"] = json!(format!("Action {i}"));
-            item
-        })
-        .collect();
+    let bodies_kept_from = |count: usize| {
+        let items: Vec<Value> = (1..=count)
+            .map(|i| {
+                let mut item = valid_json();
+                item["body"] = json!(format!("Action {i}"));
+                item
+            })
+            .collect();
+        verify_output::<Actions>(&json!({ "suggestions": items }), &session, &refs)
+            .expect("verified")
+            .into_iter()
+            .filter_map(|v| v.proposal.action.action.body)
+            .collect::<Vec<_>>()
+    };
+    let numbered = |count: usize| {
+        (1..=count)
+            .map(|i| format!("Action {i}"))
+            .collect::<Vec<_>>()
+    };
 
-    let verified = verify_output::<Actions>(&json!({ "suggestions": items }), &session, &refs)
-        .expect("verified");
-    let bodies: Vec<String> = verified
-        .iter()
-        .filter_map(|v| v.proposal.action.action.body.clone())
-        .collect();
-    assert_eq!(
-        bodies,
-        (1..=15).map(|i| format!("Action {i}")).collect::<Vec<_>>()
-    );
+    assert_eq!(bodies_kept_from(24), numbered(24));
+    assert_eq!(bodies_kept_from(52), numbered(50));
 }
 
 #[test]

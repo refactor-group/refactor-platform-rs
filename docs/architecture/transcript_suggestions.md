@@ -79,7 +79,7 @@ Constants live in `domain/src/jobs/transcript_suggestions.rs`.
 
 ## Verification
 
-The model's answer is untrusted. Each item is checked independently by `Actions::verify`; one bad item never discards the others. At most 15 verified suggestions are kept from one answer.
+The model's answer is untrusted. Each item is checked independently by `Actions::verify`; one bad item never discards the others. At most 50 verified suggestions are kept from one answer, as a backstop against a runaway answer; when more arrive, the first 50 in answer order are kept and a warning logs how many were dropped (counts only, no text).
 
 | Condition | Result |
 |---|---|

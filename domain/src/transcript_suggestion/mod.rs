@@ -2,7 +2,7 @@
 
 use chrono::NaiveDate;
 use chrono_tz::Tz;
-use log::debug;
+use log::{debug, warn};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -24,8 +24,8 @@ pub mod extract;
 pub mod prompt;
 pub mod review;
 
-/// The most verified suggestions kept from one answer.
-pub const MAX_SUGGESTIONS: usize = 15;
+/// The most verified suggestions kept from one answer; a backstop against a runaway answer.
+pub const MAX_SUGGESTIONS: usize = 50;
 
 /// One action in the session that the model may flag as a duplicate.
 pub struct Existing {
@@ -102,7 +102,7 @@ pub fn verify_output<S: Suggestible>(
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| validation("Model output has no suggestions array."))?;
 
-    Ok(items
+    let mut verified: Vec<_> = items
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
@@ -114,8 +114,17 @@ pub fn verify_output<S: Suggestible>(
             }
             verified
         })
-        .take(MAX_SUGGESTIONS)
-        .collect())
+        .collect();
+    if verified.len() > MAX_SUGGESTIONS {
+        warn!(
+            "Kept {MAX_SUGGESTIONS} of {} verified {} suggestions for session {}",
+            verified.len(),
+            S::TARGET,
+            session.coaching_session_id
+        );
+        verified.truncate(MAX_SUGGESTIONS);
+    }
+    Ok(verified)
 }
 
 pub(crate) fn validation(message: &str) -> Error {
