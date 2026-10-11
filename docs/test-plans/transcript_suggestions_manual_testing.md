@@ -536,8 +536,7 @@ WHERE t.coaching_session_id = '<session id>' AND a.target = 'action';
 2. POST a scan.
 3. Run the SQL again and watch the backend log for a minute.
 
-**Pass:** GET returns `{"status": "completed"}`; POST returns 409 with message "Suggested actions were
-already made for this transcript."; the analysis is the same row with the same `updated_at`, no new row
+**Pass:** GET returns `{"status": "completed"}`; POST returns 409 with message "Transcript already scanned for actions."; the analysis is the same row with the same `updated_at`, no new row
 exists, and the log shows no `[transcript-suggestions]` run or `LLM Gateway` call for it.
 
 ### G2. Rescanning a failed scan

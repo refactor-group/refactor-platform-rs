@@ -465,9 +465,7 @@ pub async fn start_scan(
             return Err(conflict(SCAN_RUNNING))
         }
         Some((_, AnalysisStatus::Completed)) => {
-            return Err(conflict(
-                "Suggested actions were already made for this transcript.",
-            ))
+            return Err(conflict("Transcript already scanned for actions."))
         }
     }
 

@@ -386,6 +386,17 @@ fn is_conflict(error: &Error) -> bool {
     )
 }
 
+/// The message a conflict carries, shown to the user as a toast.
+fn conflict_message(error: &Error) -> Option<&str> {
+    match kind(error) {
+        DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            message,
+            ..
+        })) => Some(message.as_str()),
+        _ => None,
+    }
+}
+
 fn is_validation(error: &Error) -> bool {
     matches!(kind(error), DomainErrorKind::Validation(_))
 }
@@ -1362,6 +1373,10 @@ async fn starting_a_scan_that_completed_conflicts_and_changes_nothing() {
             .expect_err("a completed scan is never repeated");
 
         assert!(is_conflict(&error));
+        assert_eq!(
+            conflict_message(&error),
+            Some("Transcript already scanned for actions.")
+        );
         assert_eq!(analyses(&f).await, before);
         assert_eq!(recorder.suggestion_changes(), 0);
     })
