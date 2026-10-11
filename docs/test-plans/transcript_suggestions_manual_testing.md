@@ -351,6 +351,8 @@ Exactly one suggestion (line 17) should exist for this group.
 20. "I'll fix the onboarding checklist ASAP."
 21. "I'll set up the mentoring program at some point."
 22. "I'll look into the training budget next week."
+23. Jim: "I'll send you that article feedback after our call."
+24. "I'll send the recap later today."
 
 **Expected** (`D` is the Wednesday):
 
@@ -373,6 +375,11 @@ Exactly one suggestion (line 17) should exist for this group.
 | 17 | November 18 | 11/18 | next year's if already past |
 | 18 | `N` | before our next session | same |
 | 19-22 | **blank** | soon / ASAP / at some point / next week | same |
+| 23-24 | `D` | after our call / later today | same |
+
+Deadlines on `D` itself (lines 1-3, 23-24) are due at the **end** of that day (23:59 in the coach's
+timezone), never before the session; every other date is due at noon. Check `due_by` in the database
+for line 23: its time must be later than the session's start.
 
 ### F7. No next session scheduled
 
@@ -387,6 +394,14 @@ existing actions.
 **Expected:** three suggestions (Caleb, Jim, Caleb), each with **blank** `due_by` and its phrase kept.
 The list's `default_due.source` is `seven_days`. Accepting one without a date gives a due date 7 days
 from the moment of acceptance.
+
+4. Jim: "I'll find you a template for the project chart" (pause) "and I'll get it to you by our next
+   session."
+
+**Expected:** a fourth suggestion (Jim), sourced to the first line, with **blank** `due_by` but
+`due_phrase` "by our next session" kept (not null). On the card the date is the regular-weight default
+(a week from today) and its tooltip quotes the phrase, so it never says "No date mentioned". Then
+schedule a next session and refresh: the default becomes that session's date.
 
 ### F8. Duplicates of existing actions
 
@@ -452,6 +467,32 @@ Caleb's, due the first Thursday after `D`.
 **Expected:** the analysis completes with **no** suggestions, the list is empty, and no
 `transcript_suggestions_changed` event is sent.
 
+### F12. Deadlines said after the commitment
+
+**Setup:** next session `N` scheduled. No existing actions. Record on any day; `Fri`, `Mon` and `Thu`
+mean the first such day after the session.
+
+**Script** (pause briefly where shown, so the transcript splits the lines):
+1. Jim: "I'll find you a template for the project chart" (pause) "and I will commit to giving you that
+   by our next session."
+2. Caleb: "I'll update the team wiki with the new process." Jim: "When by?" Caleb: "Let's say by
+   Friday."
+3. Caleb: "I'll call the vendor about the renewal. And I'll draft the hiring plan." (pause) "The hiring
+   plan by Monday."
+4. Caleb: "I'll prep the board slides." Jim: "And I'll review your draft by Thursday."
+
+**Expected:**
+
+| Line | Suggestions | `due_by` | Notes |
+|---|---|---|---|
+| 1 | Jim: find a template | `N` | sourced and quoted from the first line, phrase from the second, even if the transcript garbles "by" ("that our next session") |
+| 2 | Caleb: update the wiki | `Fri` | sourced to Caleb's first line, not "Let's say by Friday" |
+| 3 | Caleb: call the vendor, Caleb: draft the hiring plan | blank, `Mon` | the later deadline belongs only to the hiring plan |
+| 4 | Caleb: prep the slides, Jim: review the draft | blank, `Thu` | Jim's deadline is not given to Caleb's action |
+
+Watch for a deadline being invented for a commitment that had none: no suggestion here other than
+those listed should have a date.
+
 ### Part F results
 
 | Group | Result | Date | Lines that differed |
@@ -467,3 +508,4 @@ Caleb's, due the first Thursday after `D`.
 | F9 |  |  |  |
 | F10 |  |  |  |
 | F11 |  |  |  |
+| F12 |  |  |  |

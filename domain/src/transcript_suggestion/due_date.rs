@@ -22,7 +22,17 @@ const FILLERS: [&str; 8] = [
     "our",
 ];
 
-const SAME_DAY: [&str; 5] = ["today", "tonight", "eod", "end of day", "end of the day"];
+const SAME_DAY: [&str; 9] = [
+    "today",
+    "tonight",
+    "eod",
+    "end of day",
+    "end of the day",
+    "later today",
+    "after our call",
+    "after this call",
+    "after the call",
+];
 
 const TOMORROW_PARTS: [&str; 7] = [
     "eod",
@@ -289,3 +299,7 @@ fn month(word: &str) -> Option<u32> {
 #[cfg(test)]
 #[path = "due_date_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "due_date_same_day_tests.rs"]
+mod same_day_tests;

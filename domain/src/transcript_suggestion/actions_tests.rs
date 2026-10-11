@@ -322,3 +322,33 @@ fn the_output_schema_is_strict() {
     assert_eq!(Actions::TARGET, Target::Action);
     assert!(!Actions::instructions().is_empty());
 }
+
+#[test]
+fn a_deadline_on_the_session_day_is_due_at_the_end_of_that_day() {
+    let segments = segments();
+    let session = session(&segments);
+    let candidate = Candidate {
+        due_date: Some("2026-10-07".to_string()),
+        due_phrase: Some("after our call".to_string()),
+        ..valid()
+    };
+
+    let verified = verify(candidate, &session).expect("verified");
+
+    let end_of_day_cdt = Utc
+        .with_ymd_and_hms(2026, 10, 8, 4, 59, 0)
+        .single()
+        .expect("valid time")
+        .fixed_offset();
+    assert_eq!(verified.proposal.action.action.due_by, Some(end_of_day_cdt));
+}
+
+#[test]
+fn a_deadline_on_a_later_day_stays_at_noon() {
+    let segments = segments();
+    let session = session(&segments);
+
+    let verified = verify(valid(), &session).expect("verified");
+
+    assert_eq!(verified.proposal.action.action.due_by, Some(noon_cdt(9)));
+}

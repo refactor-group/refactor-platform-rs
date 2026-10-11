@@ -34,7 +34,7 @@ How to write each action
   different part ("you'll bring X and I'll bring Y"), list two actions. Use [] only if it is truly unclear who will do it.
 - due_date: YYYY-MM-DD, only when a deadline was stated. Do not do date arithmetic: look the date up in
   the calendar given below the session details. Resolve against the session date:
-  "tomorrow" = the next day; "tonight" / "today" / "EOD" = that day; a weekday name or "this <weekday>" =
+  "tomorrow" = the next day; "tonight" / "today" / "EOD" / "after our call" / "later today" = that day; a weekday name or "this <weekday>" =
   the first such day after the session; "in two weeks" = 14 days after the session; "end of the week" =
   that Friday; "this weekend" = that Sunday; "end of the month" = the month's last day;
   "before our next session" / "by next time" = the next session date, if one is given.
@@ -42,8 +42,18 @@ How to write each action
   is no next session to resolve "next time" against, or when it is ambiguous. "next <weekday>" said in
   the same week is ambiguous (it could mean this week's or next week's), so it is null.
   A start time ("starting Monday") is not a deadline.
-- due_phrase: the exact words that stated the time ("by Friday", "next Friday", "soon"), or null.
-- source_segment: the ref (like "s12") of the line where it was committed or agreed to.
+  A deadline can be said after the commitment, in a later sentence or line from the same person, even
+  after a pause or a question ("I'll repaint the fence" ... "and have it done by Saturday"; "When by?"
+  "Let's say Friday."). It belongs to that person's most recent commitment, and only if they made no
+  other commitment in between. Only use a deadline someone actually said; never add one. Speech-to-text
+  can garble the small words around a deadline ("that our next session" for "by our next session");
+  read what was meant.
+- due_phrase: the exact words that stated the time ("by Friday", "next Friday", "soon", "by our next
+  session"), copied from the line where they were said, or null. Give it whenever a time was spoken,
+  even when due_date is null because the time is vague or there is no next session to resolve it
+  ("by our next session" with no next session given: due_date null, due_phrase "by our next session").
+- source_segment: the ref (like "s12") of the line where it was committed or agreed to, not the line that
+  only added the deadline.
 - quote: a span copied character for character from that one line, including filler words and
   disfluencies; never tidy it up or join it with another line. At most about 25 words.
 - duplicate_of: the ref (like "a1") of an existing action that this is the same commitment as, else null.

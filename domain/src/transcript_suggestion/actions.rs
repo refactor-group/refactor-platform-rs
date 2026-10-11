@@ -148,7 +148,7 @@ impl Suggestible for Actions {
             session.session_date,
             session.next_session,
         )
-        .and_then(|date| noon(date, session.coach_timezone));
+        .and_then(|date| due_at(date, session.session_date, session.coach_timezone));
 
         let duplicate_of_id = candidate
             .duplicate_of
@@ -222,8 +222,15 @@ fn quote(candidate: &str, segment_text: &str) -> String {
 }
 
 /// Noon on `date` in `tz`, so the day holds for viewers in other timezones.
-fn noon(date: NaiveDate, tz: Tz) -> Option<DateTimeWithTimeZone> {
-    tz.from_local_datetime(&date.and_time(NaiveTime::from_hms_opt(12, 0, 0)?))
+/// Noon on `date` in the coach's timezone, or the end of that day when it is the session's own day,
+/// so a same-day deadline ("after our call") never falls before the session.
+fn due_at(date: NaiveDate, session_date: NaiveDate, tz: Tz) -> Option<DateTimeWithTimeZone> {
+    let time = if date == session_date {
+        NaiveTime::from_hms_opt(23, 59, 0)?
+    } else {
+        NaiveTime::from_hms_opt(12, 0, 0)?
+    };
+    tz.from_local_datetime(&date.and_time(time))
         .earliest()
         .map(|t| t.fixed_offset())
 }
