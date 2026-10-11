@@ -58,6 +58,19 @@ pub async fn create_pending<C: ConnectionTrait>(
     .await?)
 }
 
+/// The transcription's analysis for `target`, if one was recorded.
+pub async fn find_by_transcription_and_target<C: ConnectionTrait>(
+    db: &C,
+    transcription_id: Id,
+    target: Target,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::TranscriptionId.eq(transcription_id))
+        .filter(Column::Target.eq(target))
+        .one(db)
+        .await?)
+}
+
 /// Claimable analyses, oldest first, at most `limit`.
 pub async fn find_claimable<C: ConnectionTrait>(
     db: &C,
@@ -182,4 +195,29 @@ pub async fn fail<C: ConnectionTrait>(db: &C, id: Id, error: String) -> Result<M
     }
     .update(db)
     .await?)
+}
+
+/// Returns a failed analysis to pending with fresh attempts, in one conditional UPDATE.
+///
+/// `None` when the analysis is no longer failed.
+pub async fn restart_failed<C: ConnectionTrait>(
+    db: &C,
+    id: Id,
+    now: DateTimeWithTimeZone,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::update_many()
+        .set(ActiveModel {
+            status: Set(Status::Pending),
+            attempts: Set(0),
+            claimed_at: Set(None),
+            error_message: Set(None),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .filter(Column::Id.eq(id))
+        .filter(Column::Status.eq(Status::Failed))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next())
 }

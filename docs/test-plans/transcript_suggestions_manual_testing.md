@@ -464,8 +464,8 @@ Caleb's, due the first Thursday after `D`.
 5. Jim: "Maybe we just sit with that today rather than solve it."
 6. Caleb: "I'd like that. I could think about it more, but I don't want homework this week."
 
-**Expected:** the analysis completes with **no** suggestions, the list is empty, and no
-`transcript_suggestions_changed` event is sent.
+**Expected:** the analysis completes with **no** suggestions, the list is empty, and one
+`transcript_suggestions_changed` event is sent so an open page refreshes its scan state.
 
 ### F12. Deadlines said after the commitment
 
@@ -509,3 +509,97 @@ those listed should have a date.
 | F10 |  |  |  |
 | F11 |  |  |  |
 | F12 |  |  |  |
+
+## Part G: seeing and starting a scan
+
+Each case uses a session whose latest transcript completed (Part A works). Read the scan state and
+start a scan with:
+
+```bash
+curl -s -H "x-version: 1.0.0" -b "$COACH_COOKIE" \
+  "http://localhost:4000/coaching_sessions/$SESSION/transcript_suggestions/scan" | jq .
+curl -s -i -X POST -H "x-version: 1.0.0" -b "$COACH_COOKIE" \
+  "http://localhost:4000/coaching_sessions/$SESSION/transcript_suggestions/scan"
+```
+
+Inspect the session's action analysis with:
+
+```sql
+SELECT a.id, a.status, a.attempts, a.claimed_at, a.error_message, a.updated_at
+FROM refactor_platform.transcript_analyses a
+JOIN refactor_platform.transcriptions t ON t.id = a.transcription_id
+WHERE t.coaching_session_id = '<session id>' AND a.target = 'action';
+```
+
+### G1. A completed scan is never repeated
+1. After A1, GET the scan state and note the analysis row (id and `updated_at`).
+2. POST a scan.
+3. Run the SQL again and watch the backend log for a minute.
+
+**Pass:** GET returns `{"status": "completed"}`; POST returns 409 with message "Suggested actions were
+already made for this transcript."; the analysis is the same row with the same `updated_at`, no new row
+exists, and the log shows no `[transcript-suggestions]` run or `LLM Gateway` call for it.
+
+### G2. Rescanning a failed scan
+1. Mark the analysis failed:
+
+```sql
+UPDATE refactor_platform.transcript_analyses
+SET status = 'failed', attempts = 3, error_message = 'provider error: Network'
+WHERE id = '<analysis id>';
+```
+
+2. GET the scan state, then POST a scan.
+3. Run the SQL right away, then again after about 30 seconds, and list the suggestions.
+
+**Pass:** GET returns `failed`; POST returns 202 with `{"status": "pending"}`; right after, the same row
+is `pending` with `attempts` 0 and no `error_message` or `claimed_at`; within about 30 seconds the sweep
+claims it, suggestions appear in the list (alongside any already there), and GET ends at `completed`.
+
+### G3. A transcript that was never scanned
+1. Delete the action analysis (its suggestions go with it):
+
+```sql
+DELETE FROM refactor_platform.transcript_analyses WHERE id = '<analysis id>';
+```
+
+2. GET the scan state, then POST a scan, and wait about 30 seconds.
+
+**Pass:** GET returns `none`; POST returns 202 `pending`; the SQL shows one new action analysis for the
+same transcription; the sweep processes it, suggestions appear, and GET ends at `completed`.
+
+### G4. A scan already running
+1. Repeat G2 step 1, POST a scan, then POST again at once (status `pending`).
+2. Set the row to `processing` (`UPDATE ... SET status = 'processing' WHERE id = '<analysis id>';`) and
+   POST again.
+
+**Pass:** each second POST returns 409 with message "A scan is already running.", and the row is
+unchanged by it.
+
+### G5. Nothing to scan
+1. Remove `ASSEMBLY_AI_API_KEY` from `.env`, restart, then GET and POST for the session.
+2. Restore the key and restart. For a session with no transcript, or whose latest transcript has not
+   completed, GET and POST.
+
+**Pass:** in both cases GET returns `{"status": "unavailable"}` and POST returns 422 with message
+"Transcript suggestions are not available for this session."; no analysis row is created.
+
+### G6. Access
+1. Sign in as a third local user who is not the coach or coachee of the session (`$OTHER_COOKIE`),
+   then GET and POST.
+2. Repeat as a member of the session's organization who is not in its coaching relationship.
+3. Repeat with no cookie.
+
+**Pass:** steps 1 and 2 return 403 for both GET and POST and the analysis row is unchanged; step 3
+returns 401.
+
+### Part G results
+
+| Case | Result | Date | Notes |
+|---|---|---|---|
+| G1 |  |  |  |
+| G2 |  |  |  |
+| G3 |  |  |  |
+| G4 |  |  |  |
+| G5 |  |  |  |
+| G6 |  |  |  |

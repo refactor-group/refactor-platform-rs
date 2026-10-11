@@ -24,6 +24,7 @@ use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::transcript_analysis::{self, claim, fail, find_claimable, release_for_retry};
 use crate::transcript_suggestion::extract::{self, RunError};
 use crate::transcript_suggestion::{Actions, Target};
+use crate::transcription;
 
 /// Time between ticks.
 const INTERVAL: Duration = Duration::from_secs(30);
@@ -72,7 +73,13 @@ impl Sweep {
         };
 
         let error = match result {
-            Ok(extract::Outcome::Stored(_)) => return true,
+            Ok(extract::Outcome::Stored(stored)) => {
+                // The run itself announces stored suggestions.
+                if stored == 0 {
+                    self.announce(ctx, analysis).await;
+                }
+                return true;
+            }
             Ok(extract::Outcome::Superseded) => {
                 info!(
                     "[transcript-suggestions] analysis {} was superseded by another worker",
@@ -96,13 +103,32 @@ impl Sweep {
         } else {
             release_for_retry(ctx.db.as_ref(), analysis.id, message).await
         };
-        if let Err(e) = recorded {
-            warn!(
+        match recorded {
+            Ok(_) if give_up => self.announce(ctx, analysis).await,
+            Ok(_) => {}
+            Err(e) => warn!(
                 "[transcript-suggestions] recording the failure of analysis {} failed: {e:?}",
                 analysis.id
-            );
+            ),
         }
         false
+    }
+
+    /// Tells the session's participants the analysis ended; a failed lookup only skips the event.
+    async fn announce(&self, ctx: &Context, analysis: &transcript_analysis::Model) {
+        let db = ctx.db.as_ref();
+        match transcription::find_by_id(db, analysis.transcription_id).await {
+            Ok(Some(t)) => match analysis.target {
+                Target::Action => {
+                    extract::notify::<Actions>(db, &self.publisher, t.coaching_session_id).await
+                }
+            },
+            Ok(None) => {}
+            Err(e) => warn!(
+                "[transcript-suggestions] loading the transcription of analysis {} failed: {e:?}",
+                analysis.id
+            ),
+        }
     }
 }
 

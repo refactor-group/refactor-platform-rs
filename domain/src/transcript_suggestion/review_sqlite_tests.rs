@@ -8,6 +8,7 @@ use chrono::{NaiveDateTime, TimeZone};
 use entity::meeting_recording::{self, MeetingRecordingStatus};
 use entity::transcription::TranscriptionStatus;
 use entity::{actions_users, coaching_relationships, transcript_segment, transcript_suggestion};
+use entity::{transcript_analysis as analysis_rows, transcription as transcription_rows};
 use meeting_ai::types::transcription::{
     Participant as SpeakerIn, Segment as SegmentIn, Status as TranscriptStatus, Transcription,
 };
@@ -1242,6 +1243,189 @@ async fn dismissing_and_restoring_does_not_clear_the_created_action_guard() {
         .expect_err("a second action is refused after dismiss and restore");
         assert!(is_conflict(&refused), "{refused:?}");
         assert_eq!(session_actions(&f).await.len(), 1);
+    })
+    .await;
+}
+
+/// Config with transcript suggestions turned on.
+fn scanning() -> Config {
+    Config::from_args(["test", "--assembly-ai-api-key=test-key"])
+}
+
+/// Every analysis recorded for the fixture's transcript.
+async fn analyses(f: &Fixture) -> Vec<transcript_analysis::Model> {
+    analysis_rows::Entity::find()
+        .all(&f.db)
+        .await
+        .expect("the analyses are read")
+}
+
+async fn set_analysis(f: &Fixture, status: AnalysisStatus, attempts: i16, error: Option<&str>) {
+    analysis_rows::ActiveModel {
+        id: Set(f.analysis_id),
+        status: Set(status),
+        attempts: Set(attempts),
+        claimed_at: Set(Some(now().fixed_offset())),
+        error_message: Set(error.map(str::to_string)),
+        ..Default::default()
+    }
+    .update(&f.db)
+    .await
+    .expect("the analysis is set");
+}
+
+async fn delete_analysis(f: &Fixture) {
+    analysis_rows::Entity::delete_by_id(f.analysis_id)
+        .exec(&f.db)
+        .await
+        .expect("the analysis is deleted");
+}
+
+#[tokio::test]
+async fn starting_a_scan_never_run_queues_one_pending_analysis_and_announces_it() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let transcription_id = analyses(&f).await[0].transcription_id;
+        delete_analysis(&f).await;
+        let config = scanning();
+        assert_eq!(
+            scan_status(&f.db, &config, &f.session).await.unwrap(),
+            ScanStatus::None
+        );
+        let (publisher, recorder) = recording_publisher();
+
+        let status = start_scan(&f.db, &publisher, &config, &f.session)
+            .await
+            .expect("the scan starts");
+
+        assert_eq!(status, ScanStatus::Pending);
+        let rows = analyses(&f).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].transcription_id, transcription_id);
+        assert_eq!(rows[0].target, Target::Action);
+        assert_eq!(rows[0].status, AnalysisStatus::Pending);
+        assert_eq!(recorder.suggestion_changes(), 1);
+        assert_eq!(
+            scan_status(&f.db, &config, &f.session).await.unwrap(),
+            ScanStatus::Pending
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn starting_a_scan_after_a_failure_resets_the_same_analysis() {
+    within_time_limit(async {
+        let f = fixture().await;
+        set_analysis(
+            &f,
+            AnalysisStatus::Failed,
+            3,
+            Some("provider error: Timeout"),
+        )
+        .await;
+        let config = scanning();
+        assert_eq!(
+            scan_status(&f.db, &config, &f.session).await.unwrap(),
+            ScanStatus::Failed
+        );
+        let (publisher, recorder) = recording_publisher();
+
+        let status = start_scan(&f.db, &publisher, &config, &f.session)
+            .await
+            .expect("the scan restarts");
+
+        assert_eq!(status, ScanStatus::Pending);
+        let rows = analyses(&f).await;
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.id, f.analysis_id);
+        assert_eq!(row.status, AnalysisStatus::Pending);
+        assert_eq!(row.attempts, 0);
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.claimed_at, None);
+        assert_eq!(recorder.suggestion_changes(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn starting_a_scan_that_completed_conflicts_and_changes_nothing() {
+    within_time_limit(async {
+        let f = fixture().await;
+        set_analysis(&f, AnalysisStatus::Completed, 1, None).await;
+        let before = analyses(&f).await;
+        let (publisher, recorder) = recording_publisher();
+
+        let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+            .await
+            .expect_err("a completed scan is never repeated");
+
+        assert!(is_conflict(&error));
+        assert_eq!(analyses(&f).await, before);
+        assert_eq!(recorder.suggestion_changes(), 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn starting_a_scan_while_one_is_running_conflicts_and_changes_nothing() {
+    within_time_limit(async {
+        let f = fixture().await;
+        for status in [AnalysisStatus::Pending, AnalysisStatus::Processing] {
+            set_analysis(&f, status, 1, None).await;
+            let before = analyses(&f).await;
+            let (publisher, recorder) = recording_publisher();
+
+            let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+                .await
+                .expect_err("a running scan is not restarted");
+
+            assert!(is_conflict(&error), "{status:?}");
+            assert_eq!(analyses(&f).await, before, "{status:?}");
+            assert_eq!(recorder.suggestion_changes(), 0, "{status:?}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_session_without_a_completed_transcript_or_a_key_cannot_be_scanned() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let transcription_id = analyses(&f).await[0].transcription_id;
+        delete_analysis(&f).await;
+        let (publisher, recorder) = recording_publisher();
+
+        let unconfigured = Config::from_args(["test"]);
+        assert_eq!(
+            scan_status(&f.db, &unconfigured, &f.session).await.unwrap(),
+            ScanStatus::Unavailable
+        );
+        let error = start_scan(&f.db, &publisher, &unconfigured, &f.session)
+            .await
+            .expect_err("nothing to scan without a key");
+        assert!(is_validation(&error));
+
+        transcription_rows::ActiveModel {
+            id: Set(transcription_id),
+            status: Set(TranscriptionStatus::Processing),
+            ..Default::default()
+        }
+        .update(&f.db)
+        .await
+        .expect("the transcript is reopened");
+        assert_eq!(
+            scan_status(&f.db, &scanning(), &f.session).await.unwrap(),
+            ScanStatus::Unavailable
+        );
+        let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+            .await
+            .expect_err("nothing to scan without a completed transcript");
+        assert!(is_validation(&error));
+
+        assert!(analyses(&f).await.is_empty());
+        assert_eq!(recorder.suggestion_changes(), 0);
     })
     .await;
 }

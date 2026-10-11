@@ -1,7 +1,7 @@
 //! The sweep against a real SQL engine with a fake model: what each failure leaves in the
-//! analyses table, and that one failure does not stop the rest.
+//! analyses table, that one failure does not stop the rest, and what each outcome announces.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use entity::{coaching_sessions, transcript_analysis};
@@ -10,6 +10,7 @@ use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait
 use serde_json::json;
 
 use super::*;
+use crate::events::{DomainEvent, EventHandler};
 use crate::test_utils::sqlite::{database, seed_transcription, within_time_limit};
 use crate::transcript_analysis::{create_pending, Status};
 use crate::Id;
@@ -46,6 +47,72 @@ fn sweep(fail: Option<fn() -> meeting_ai::Error>) -> Sweep {
         provider: Arc::new(FakeModel { fail }),
         publisher: EventPublisher::new(),
     }
+}
+
+/// Answers with one suggestion for the coachee, sourced from the first segment.
+struct OneSuggestion;
+
+#[async_trait]
+impl analysis::Provider for OneSuggestion {
+    async fn complete(&self, _request: Request) -> Result<Completion, meeting_ai::Error> {
+        Ok(Completion {
+            output: json!({ "suggestions": [{
+                "body": "Send the segment summary",
+                "assignees": ["coachee"],
+                "due_date": null,
+                "due_phrase": null,
+                "source_segment": "s1",
+                "quote": "Segment 0",
+                "duplicate_of": null,
+            }]}),
+            model: "fake-model".to_string(),
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+            },
+            request_id: None,
+        })
+    }
+
+    fn provider_id(&self) -> &str {
+        "fake"
+    }
+}
+
+/// Keeps every published event.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<DomainEvent>>);
+
+#[async_trait]
+impl EventHandler for Recorder {
+    async fn handle(&self, event: &DomainEvent) {
+        self.0.lock().expect("the lock is free").push(event.clone());
+    }
+}
+
+impl Recorder {
+    /// Suggestion events for `session_id` with target `action`.
+    fn action_changes(&self, session_id: Id) -> usize {
+        self.0
+            .lock()
+            .expect("the lock is free")
+            .iter()
+            .filter(|e| {
+                matches!(e, DomainEvent::TranscriptSuggestionsChanged { coaching_session_id, target, .. }
+                    if *coaching_session_id == session_id && target == "action")
+            })
+            .count()
+    }
+}
+
+/// A sweep over `provider` whose events are recorded.
+fn recorded(provider: Arc<dyn analysis::Provider>) -> (Sweep, Arc<Recorder>) {
+    let recorder = Arc::new(Recorder::default());
+    let sweep = Sweep {
+        provider,
+        publisher: EventPublisher::new().with_handler(recorder.clone()),
+    };
+    (sweep, recorder)
 }
 
 fn context(db: DatabaseConnection) -> Context {
@@ -192,6 +259,79 @@ async fn a_transient_database_error_on_the_first_attempt_is_released_for_retry()
         assert_eq!(row.claimed_at, None);
         assert_eq!(row.attempts, 1);
         assert!(row.error_message.is_some());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_run_with_no_suggestions_announces_once() {
+    within_time_limit(async {
+        let db = database().await;
+        let (id, session_id) = seed_pending(&db, 0).await;
+        let ctx = context(db);
+        let (sweep, recorder) = recorded(Arc::new(FakeModel { fail: None }));
+
+        sweep.run(&ctx).await.expect("the tick runs");
+
+        assert_eq!(reread(&ctx, id).await.status, Status::Completed);
+        assert_eq!(recorder.action_changes(session_id), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_run_that_gives_up_announces_once() {
+    within_time_limit(async {
+        let db = database().await;
+        let (id, session_id) = seed_pending(&db, 2).await;
+        let ctx = context(db);
+        let (sweep, recorder) = recorded(Arc::new(FakeModel {
+            fail: Some(network),
+        }));
+
+        sweep.run(&ctx).await.expect("the tick runs");
+
+        assert_eq!(reread(&ctx, id).await.status, Status::Failed);
+        assert_eq!(recorder.action_changes(session_id), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_run_released_for_retry_announces_nothing() {
+    within_time_limit(async {
+        let db = database().await;
+        let (id, session_id) = seed_pending(&db, 0).await;
+        let ctx = context(db);
+        let (sweep, recorder) = recorded(Arc::new(FakeModel {
+            fail: Some(network),
+        }));
+
+        sweep.run(&ctx).await.expect("the tick runs");
+
+        assert_eq!(reread(&ctx, id).await.status, Status::Pending);
+        assert_eq!(recorder.action_changes(session_id), 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_run_that_stores_suggestions_announces_once() {
+    within_time_limit(async {
+        let db = database().await;
+        let (id, session_id) = seed_pending(&db, 0).await;
+        let ctx = context(db);
+        let (sweep, recorder) = recorded(Arc::new(OneSuggestion));
+
+        sweep.run(&ctx).await.expect("the tick runs");
+
+        assert_eq!(reread(&ctx, id).await.status, Status::Completed);
+        let stored = entity::transcript_suggestion::Entity::find()
+            .all(ctx.db.as_ref())
+            .await
+            .expect("the suggestions are read");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(recorder.action_changes(session_id), 1);
     })
     .await;
 }

@@ -1,4 +1,4 @@
-//! Reviewing action suggestions: list, edit, accept, dismiss and restore.
+//! Reviewing action suggestions: list, edit, accept, dismiss and restore, and scanning for them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,6 +19,7 @@ use crate::action::{self, ActionWithAssignees};
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::EventPublisher;
 use crate::status::Status as ActionStatus;
+use crate::transcript_analysis::Status as AnalysisStatus;
 use crate::transcript_export::{LabeledSegment, SpeakerRole};
 use crate::{
     actions, coaching_session, coaching_sessions, emails, goal, transcript_analysis, transcription,
@@ -122,6 +123,39 @@ pub struct SourceSegment {
 pub struct DuplicateOf {
     pub action_id: Id,
     pub body: Option<String>,
+}
+
+/// Where scanning the session's latest transcript for suggested actions stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(as = domain::transcript_suggestion::review::ScanStatus)]
+pub enum ScanStatus {
+    /// Suggestions are not configured, or the session has no completed transcript.
+    Unavailable,
+    /// The latest completed transcript was never scanned.
+    None,
+    Pending,
+    Processing,
+    Completed,
+    Failed,
+}
+
+impl From<AnalysisStatus> for ScanStatus {
+    fn from(status: AnalysisStatus) -> Self {
+        match status {
+            AnalysisStatus::Pending => Self::Pending,
+            AnalysisStatus::Processing => Self::Processing,
+            AnalysisStatus::Completed => Self::Completed,
+            AnalysisStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+/// A session's scan state as clients see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::transcript_suggestion::review::Scan)]
+pub struct Scan {
+    pub status: ScanStatus,
 }
 
 /// Which participant `user_id` is; `None` when neither.
@@ -392,6 +426,94 @@ async fn resolve(
     .ok_or_else(|| conflict(refusal))?;
     notify::<Actions>(db, publisher, suggestion.coaching_session_id).await;
     Ok(moved)
+}
+
+/// Where scanning the session's latest completed transcript for suggested actions stands.
+pub async fn scan_status(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) -> Result<ScanStatus, Error> {
+    Ok(match scannable(db, config, session).await? {
+        None => ScanStatus::Unavailable,
+        Some((_, None)) => ScanStatus::None,
+        Some((_, Some(analysis))) => analysis.status.into(),
+    })
+}
+
+/// Queues a scan of the session's latest completed transcript that never ran or failed.
+///
+/// A scan that is running or already completed is never repeated.
+pub async fn start_scan(
+    db: &DatabaseConnection,
+    publisher: &EventPublisher,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) -> Result<ScanStatus, Error> {
+    let (transcription_id, analysis) = scannable(db, config, session)
+        .await?
+        .ok_or_else(|| validation("Transcript suggestions are not available for this session."))?;
+
+    match analysis.map(|a| (a.id, a.status)) {
+        None => queue_scan(db, transcription_id).await?,
+        Some((id, AnalysisStatus::Failed)) => {
+            transcript_analysis::restart_failed(db, id, Utc::now().fixed_offset())
+                .await?
+                .ok_or_else(|| conflict(SCAN_RUNNING))?;
+        }
+        Some((_, AnalysisStatus::Pending | AnalysisStatus::Processing)) => {
+            return Err(conflict(SCAN_RUNNING))
+        }
+        Some((_, AnalysisStatus::Completed)) => {
+            return Err(conflict(
+                "Suggested actions were already made for this transcript.",
+            ))
+        }
+    }
+
+    notify::<Actions>(db, publisher, session.id).await;
+    Ok(ScanStatus::Pending)
+}
+
+const SCAN_RUNNING: &str = "A scan is already running.";
+
+/// The latest transcription's id and its action analysis, or `None` when nothing can be scanned.
+async fn scannable(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+) -> Result<Option<(Id, Option<transcript_analysis::Model>)>, Error> {
+    if config.assembly_ai_api_key().is_none() {
+        return Ok(None);
+    }
+    let Some(latest) = transcription::find_by_coaching_session(db, session.id)
+        .await?
+        .filter(|t| t.status == transcription::TranscriptionStatus::Completed)
+    else {
+        return Ok(None);
+    };
+    let analysis =
+        transcript_analysis::find_by_transcription_and_target(db, latest.id, Target::Action)
+            .await?;
+    Ok(Some((latest.id, analysis)))
+}
+
+/// Records a pending action analysis; one created meanwhile by another request is a conflict.
+async fn queue_scan(db: &DatabaseConnection, transcription_id: Id) -> Result<(), Error> {
+    let Err(e) = transcript_analysis::create_pending(db, transcription_id, Target::Action).await
+    else {
+        return Ok(());
+    };
+    match transcript_analysis::find_by_transcription_and_target(
+        db,
+        transcription_id,
+        Target::Action,
+    )
+    .await?
+    {
+        Some(_) => Err(conflict(SCAN_RUNNING)),
+        None => Err(e.into()),
+    }
 }
 
 /// Loads the suggestion's session and people, and rejects a user who may not act on it.

@@ -78,6 +78,8 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::set_status,
             coaching_session::topic_controller::undo,
             coaching_session::transcript_suggestion_controller::index,
+            coaching_session::transcript_suggestion_controller::scan,
+            coaching_session::transcript_suggestion_controller::start_scan,
             coaching_session::transcript_suggestion_controller::update,
             coaching_session::transcript_suggestion_controller::accept,
             coaching_session::transcript_suggestion_controller::dismiss,
@@ -201,6 +203,8 @@ use utoipa_rapidoc::RapiDoc;
                 domain::transcript_suggestion::review::DefaultDue,
                 domain::transcript_suggestion::review::DueSource,
                 domain::transcript_suggestion::review::DuplicateOf,
+                domain::transcript_suggestion::review::Scan,
+                domain::transcript_suggestion::review::ScanStatus,
                 domain::transcript_suggestion::review::SourceSegment,
                 domain::jwts::Jwt,
                 domain::notes::Model,
@@ -904,6 +908,12 @@ fn coaching_session_transcript_suggestion_routes(app_state: AppState) -> Router 
         .route(
             "/coaching_sessions/:coaching_session_id/transcript_suggestions",
             get(coaching_session::transcript_suggestion_controller::index),
+        )
+        // A static segment outranks `:suggestion_id`, so `scan` never reads as a suggestion id.
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/scan",
+            get(coaching_session::transcript_suggestion_controller::scan)
+                .post(coaching_session::transcript_suggestion_controller::start_scan),
         )
         .route(
             "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id",

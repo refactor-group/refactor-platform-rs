@@ -14,7 +14,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
 use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
-use domain::transcript_suggestion::review::{self, ActionEdits};
+use domain::transcript_suggestion::review::{self, ActionEdits, Scan};
 use domain::transcript_suggestion::Status;
 use domain::Id;
 use log::*;
@@ -29,6 +29,11 @@ const ACTION_TARGET: &str = "action";
 pub struct IndexParams {
     target: Option<String>,
     status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScanParams {
+    target: Option<String>,
 }
 
 /// GET a coaching session's suggested Actions
@@ -60,21 +65,100 @@ pub async fn index(
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET transcript suggestions for session {}", session.id);
 
-    params
-        .target
-        .as_deref()
-        .filter(|target| *target != ACTION_TARGET)
-        .map_or(Ok(()), |target| {
-            Err(validation(format!(
-                "'{target}' is not a supported target. Expected: {ACTION_TARGET}."
-            )))
-        })?;
+    supported_target(params.target.as_deref())?;
     let status = listed_status(params.status.as_deref())?;
 
     let suggestions =
         review::list_actions(app_state.db_conn_ref(), &session, status, Utc::now()).await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), suggestions)))
+}
+
+/// GET whether a coaching session's transcript was scanned for suggested Actions
+///
+/// Reports the scan of the session's latest completed transcript: `unavailable` when
+/// suggestions are not configured or no transcript completed, `none` when it was never
+/// scanned, otherwise `pending`, `processing`, `completed` or `failed`.
+#[utoipa::path(
+    get,
+    path = "/coaching_sessions/{coaching_session_id}/transcript_suggestions/scan",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("target" = Option<String>, Query, description = "Kind of suggestion; only `action` (the default) is supported"),
+    ),
+    responses(
+        (status = 200, description = "Scan state retrieved", body = domain::transcript_suggestion::review::Scan),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Not the session's coach or coachee"),
+        (status = 404, description = "Coaching session not found"),
+        (status = 422, description = "Unsupported target"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn scan(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionAccess(session): CoachingSessionAccess,
+    State(app_state): State<AppState>,
+    Query(params): Query<ScanParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("GET transcript scan for session {}", session.id);
+
+    supported_target(params.target.as_deref())?;
+    let status = review::scan_status(app_state.db_conn_ref(), &app_state.config, &session).await?;
+
+    Ok(Json(ApiResponse::new(
+        StatusCode::OK.into(),
+        Scan { status },
+    )))
+}
+
+/// POST start a scan of a coaching session's transcript for suggested Actions
+///
+/// Queues a scan of the latest completed transcript when it was never scanned or the scan
+/// failed. A running or completed scan is never repeated.
+#[utoipa::path(
+    post,
+    path = "/coaching_sessions/{coaching_session_id}/transcript_suggestions/scan",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("target" = Option<String>, Query, description = "Kind of suggestion; only `action` (the default) is supported"),
+    ),
+    responses(
+        (status = 202, description = "Scan queued", body = domain::transcript_suggestion::review::Scan),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Not the session's coach or coachee"),
+        (status = 404, description = "Coaching session not found"),
+        (status = 409, description = "A scan is running or already completed"),
+        (status = 422, description = "Unsupported target, or suggestions are not available for this session"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn start_scan(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionAccess(session): CoachingSessionAccess,
+    State(app_state): State<AppState>,
+    Query(params): Query<ScanParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("POST transcript scan for session {}", session.id);
+
+    supported_target(params.target.as_deref())?;
+    let status = review::start_scan(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        &app_state.config,
+        &session,
+    )
+    .await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ApiResponse::new(
+            StatusCode::ACCEPTED.into(),
+            Scan { status },
+        )),
+    ))
 }
 
 /// PUT edit a pending suggested Action
@@ -278,6 +362,17 @@ where
     }
 }
 
+/// Rejects any target but `action`; absent means `action`.
+fn supported_target(param: Option<&str>) -> Result<(), Error> {
+    param
+        .filter(|target| *target != ACTION_TARGET)
+        .map_or(Ok(()), |target| {
+            Err(validation(format!(
+                "'{target}' is not a supported target. Expected: {ACTION_TARGET}."
+            )))
+        })
+}
+
 /// The status a list request asks for; pending when absent.
 fn listed_status(param: Option<&str>) -> Result<Status, Error> {
     match param {
@@ -306,3 +401,8 @@ fn not_found() -> Error {
 #[cfg(test)]
 #[path = "transcript_suggestion_controller_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "transcript_suggestion_scan_tests.rs"]
+mod scan_tests;
