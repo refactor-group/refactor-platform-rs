@@ -207,39 +207,92 @@ async fn claim_retakes_a_stale_row_but_not_one_out_of_attempts() {
     .expect("the test body succeeds");
 }
 
+/// A processing analysis claimed with `attempts`, for its own fresh transcription.
+async fn seed_claimed(db: &DatabaseConnection, attempts: i16) -> Id {
+    let transcription_id = seed_transcription(db, 1).await.transcription_id;
+    seed_analysis(
+        db,
+        transcription_id,
+        Status::Processing,
+        attempts,
+        Some(at(-1)),
+        at(-5),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn release_fail_and_complete_leave_the_expected_state_in_the_table() {
     within_time_limit(async {
         let db = database().await;
-        let transcription_id = seed_transcription(&db, 1).await.transcription_id;
-        let id = seed_analysis(
-            &db,
-            transcription_id,
-            Status::Processing,
-            2,
-            Some(at(-1)),
-            at(-5),
-        )
-        .await;
 
-        release_for_retry(&db, id, "timeout".to_string()).await?;
-        let row = reread(&db, id).await;
+        let released = seed_claimed(&db, 2).await;
+        assert!(
+            release_for_retry(&db, released, 2, "timeout".to_string(), at(0))
+                .await?
+                .is_some()
+        );
+        let row = reread(&db, released).await;
         assert_eq!(row.status, Status::Pending);
         assert_eq!(row.claimed_at, None);
         assert_eq!(row.error_message.as_deref(), Some("timeout"));
         assert_eq!(row.attempts, 2);
 
-        fail(&db, id, "gave up".to_string()).await?;
-        let row = reread(&db, id).await;
+        let failed = seed_claimed(&db, 3).await;
+        assert!(fail(&db, failed, 3, "gave up".to_string(), at(0))
+            .await?
+            .is_some());
+        let row = reread(&db, failed).await;
         assert_eq!(row.status, Status::Failed);
         assert_eq!(row.error_message.as_deref(), Some("gave up"));
+        assert_eq!(row.attempts, 3);
 
-        complete(&db, id, "model-x".to_string(), Some(120), Some(30)).await?;
-        let row = reread(&db, id).await;
+        complete(&db, failed, "model-x".to_string(), Some(120), Some(30)).await?;
+        let row = reread(&db, failed).await;
         assert_eq!(row.status, Status::Completed);
         assert_eq!(row.model.as_deref(), Some("model-x"));
         assert_eq!(row.input_tokens, Some(120));
         assert_eq!(row.output_tokens, Some(30));
+        assert_eq!(row.error_message, None);
+
+        Ok::<(), Error>(())
+    })
+    .await
+    .expect("the test body succeeds");
+}
+
+#[tokio::test]
+async fn a_worker_whose_claim_was_retaken_cannot_release_or_fail_the_analysis() {
+    within_time_limit(async {
+        let db = database().await;
+
+        // Another worker retook the claim, so the attempts no longer match.
+        let retaken = seed_claimed(&db, 2).await;
+        assert!(
+            release_for_retry(&db, retaken, 1, "timeout".to_string(), at(0))
+                .await?
+                .is_none()
+        );
+        assert!(fail(&db, retaken, 1, "gave up".to_string(), at(0))
+            .await?
+            .is_none());
+        let row = reread(&db, retaken).await;
+        assert_eq!((row.status, row.attempts), (Status::Processing, 2));
+        assert_eq!(row.error_message, None);
+
+        // Another worker finished it, with the same attempts the caller counted.
+        let finished = seed_claimed(&db, 2).await;
+        complete_claimed(&db, finished, 2, "model-x".to_string(), None, None, at(0)).await?;
+        assert!(
+            release_for_retry(&db, finished, 2, "timeout".to_string(), at(0))
+                .await?
+                .is_none()
+        );
+        assert!(fail(&db, finished, 2, "gave up".to_string(), at(0))
+            .await?
+            .is_none());
+        let row = reread(&db, finished).await;
+        assert_eq!(row.status, Status::Completed);
         assert_eq!(row.error_message, None);
 
         Ok::<(), Error>(())

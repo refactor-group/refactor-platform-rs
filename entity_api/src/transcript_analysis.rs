@@ -11,6 +11,14 @@ use sea_orm::{
 
 use super::error::{EntityApiErrorKind, Error};
 
+/// The row `id` while it is still claimed by the worker that counted `attempts`.
+fn held(id: Id, attempts: i16) -> Condition {
+    Condition::all()
+        .add(Column::Id.eq(id))
+        .add(Column::Status.eq(Status::Processing))
+        .add(Column::Attempts.eq(attempts))
+}
+
 /// Rows a worker may take: pending, or processing past `stale_before`, with attempts left.
 fn claimable(stale_before: DateTimeWithTimeZone, max_attempts: i16) -> Condition {
     Condition::all().add(Column::Attempts.lt(max_attempts)).add(
@@ -155,46 +163,62 @@ pub async fn complete_claimed<C: ConnectionTrait>(
             updated_at: Set(now),
             ..Default::default()
         })
-        .filter(Column::Id.eq(id))
-        .filter(Column::Status.eq(Status::Processing))
-        .filter(Column::Attempts.eq(attempts))
+        .filter(held(id, attempts))
         .exec_with_returning(db)
         .await?
         .into_iter()
         .next())
 }
 
-/// Returns an analysis to pending after a retryable failure; attempts stay as counted.
+/// Returns the caller's claimed analysis to pending after a retryable failure; attempts stay as
+/// counted.
+///
+/// `None` when the claim is no longer the caller's, so a worker whose claim was retaken never
+/// undoes the other worker's result.
 pub async fn release_for_retry<C: ConnectionTrait>(
     db: &C,
     id: Id,
+    attempts: i16,
     error: String,
-) -> Result<Model, Error> {
-    let existing = find_by_id(db, id).await?;
-
-    Ok(ActiveModel {
-        status: Set(Status::Pending),
-        error_message: Set(Some(error)),
-        claimed_at: Set(None),
-        updated_at: Set(chrono::Utc::now().into()),
-        ..existing.into()
-    }
-    .update(db)
-    .await?)
+    now: DateTimeWithTimeZone,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::update_many()
+        .set(ActiveModel {
+            status: Set(Status::Pending),
+            error_message: Set(Some(error)),
+            claimed_at: Set(None),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .filter(held(id, attempts))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next())
 }
 
-/// Marks an analysis failed for good.
-pub async fn fail<C: ConnectionTrait>(db: &C, id: Id, error: String) -> Result<Model, Error> {
-    let existing = find_by_id(db, id).await?;
-
-    Ok(ActiveModel {
-        status: Set(Status::Failed),
-        error_message: Set(Some(error)),
-        updated_at: Set(chrono::Utc::now().into()),
-        ..existing.into()
-    }
-    .update(db)
-    .await?)
+/// Marks the caller's claimed analysis failed for good.
+///
+/// `None` when the claim is no longer the caller's.
+pub async fn fail<C: ConnectionTrait>(
+    db: &C,
+    id: Id,
+    attempts: i16,
+    error: String,
+    now: DateTimeWithTimeZone,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::update_many()
+        .set(ActiveModel {
+            status: Set(Status::Failed),
+            error_message: Set(Some(error)),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .filter(held(id, attempts))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next())
 }
 
 /// Returns a failed analysis to pending with fresh attempts, in one conditional UPDATE.

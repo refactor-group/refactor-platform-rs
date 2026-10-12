@@ -3,8 +3,8 @@
 //! A pending analysis row is written in the same transaction that completes a transcript.
 //! Each tick claims a few of those rows (or ones whose claim went stale), asks the model,
 //! and stores the verified suggestions. The claim is a conditional UPDATE, so replicas
-//! divide the work, and completion is conditional on the claim still being the caller's,
-//! so a worker whose claim was retaken stores nothing.
+//! divide the work, and completing, releasing or failing an analysis is conditional on the
+//! claim still being the caller's, so a worker whose claim was retaken changes nothing.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, FixedOffset, Utc};
 use log::*;
 use meeting_ai::traits::analysis;
 use service::config::Config;
@@ -98,14 +98,19 @@ impl Sweep {
             analysis.attempts,
             if give_up { "failing it" } else { "will retry" }
         );
+        let (db, now) = (ctx.db.as_ref(), Utc::now().fixed_offset());
         let recorded = if give_up {
-            fail(ctx.db.as_ref(), analysis.id, message).await
+            fail(db, analysis.id, analysis.attempts, message, now).await
         } else {
-            release_for_retry(ctx.db.as_ref(), analysis.id, message).await
+            release_for_retry(db, analysis.id, analysis.attempts, message, now).await
         };
         match recorded {
-            Ok(_) if give_up => self.announce(ctx, analysis).await,
-            Ok(_) => {}
+            Ok(Some(_)) if give_up => self.announce(ctx, analysis).await,
+            Ok(Some(_)) => {}
+            Ok(None) => info!(
+                "[transcript-suggestions] analysis {} was retaken before its failure was recorded",
+                analysis.id
+            ),
             Err(e) => warn!(
                 "[transcript-suggestions] recording the failure of analysis {} failed: {e:?}",
                 analysis.id
@@ -130,6 +135,11 @@ impl Sweep {
             ),
         }
     }
+}
+
+/// Claims made before this are presumed abandoned.
+fn stale_before(now: DateTime<FixedOffset>) -> DateTime<FixedOffset> {
+    now - chrono::Duration::minutes(STALE_AFTER_MINUTES)
 }
 
 /// Whether a failed run may succeed later; bad credentials or a vanished record never will.
@@ -187,17 +197,23 @@ impl Job for Sweep {
     }
 
     async fn run(&self, ctx: &Context) -> Result<Outcome, Error> {
-        let now = Utc::now().fixed_offset();
-        let stale_before = now - chrono::Duration::minutes(STALE_AFTER_MINUTES);
-        let due = find_claimable(ctx.db.as_ref(), stale_before, MAX_ATTEMPTS, MAX_PER_TICK).await?;
+        let due = find_claimable(
+            ctx.db.as_ref(),
+            stale_before(Utc::now().fixed_offset()),
+            MAX_ATTEMPTS,
+            MAX_PER_TICK,
+        )
+        .await?;
 
         let (mut processed, mut attempted) = (0, 0);
         for candidate in due {
+            // Stamped per claim: earlier model calls in this tick must not make a claim look stale.
+            let now = Utc::now().fixed_offset();
             let claimed = match claim(
                 ctx.db.as_ref(),
                 candidate.id,
                 now,
-                stale_before,
+                stale_before(now),
                 MAX_ATTEMPTS,
             )
             .await

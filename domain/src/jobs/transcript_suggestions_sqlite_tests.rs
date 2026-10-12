@@ -315,6 +315,110 @@ async fn a_run_released_for_retry_announces_nothing() {
     .await;
 }
 
+/// Another worker retakes and completes the analysis during the call, which then fails late.
+struct RetakenThenFails {
+    db: Arc<DatabaseConnection>,
+    id: Id,
+    retaken_attempts: i16,
+}
+
+#[async_trait]
+impl analysis::Provider for RetakenThenFails {
+    async fn complete(&self, _request: Request) -> Result<Completion, meeting_ai::Error> {
+        transcript_analysis::ActiveModel {
+            id: Set(self.id),
+            status: Set(Status::Completed),
+            attempts: Set(self.retaken_attempts),
+            ..Default::default()
+        }
+        .update(self.db.as_ref())
+        .await
+        .expect("the other worker completes it");
+        Err(network())
+    }
+
+    fn provider_id(&self) -> &str {
+        "fake"
+    }
+}
+
+#[tokio::test]
+async fn a_late_failure_never_undoes_another_workers_completion() {
+    within_time_limit(async {
+        let db = database().await;
+        // First attempt (released on failure) and last attempt (failed on failure).
+        for (seeded, retaken_attempts) in [(0, 2), (2, 3)] {
+            let (id, session_id) = seed_pending(&db, seeded).await;
+            let ctx = context(db.clone());
+            let (sweep, recorder) = recorded(Arc::new(RetakenThenFails {
+                db: ctx.db.clone(),
+                id,
+                retaken_attempts,
+            }));
+
+            sweep.run(&ctx).await.expect("the tick runs");
+
+            let row = reread(&ctx, id).await;
+            assert_eq!(row.status, Status::Completed, "seeded at {seeded}");
+            assert_eq!(row.attempts, retaken_attempts);
+            assert_eq!(row.error_message, None);
+            assert_eq!(recorder.action_changes(session_id), 0);
+        }
+    })
+    .await;
+}
+
+/// Answers with no suggestions and records when each call began.
+#[derive(Default)]
+struct RecordsCalls(Mutex<Vec<chrono::DateTime<chrono::FixedOffset>>>);
+
+#[async_trait]
+impl analysis::Provider for RecordsCalls {
+    async fn complete(&self, _request: Request) -> Result<Completion, meeting_ai::Error> {
+        self.0
+            .lock()
+            .expect("the lock is free")
+            .push(Utc::now().fixed_offset());
+        Ok(Completion {
+            output: json!({ "suggestions": [] }),
+            model: "fake-model".to_string(),
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+            },
+            request_id: None,
+        })
+    }
+
+    fn provider_id(&self) -> &str {
+        "fake"
+    }
+}
+
+#[tokio::test]
+async fn each_claim_is_stamped_when_it_is_made_not_when_the_tick_began() {
+    within_time_limit(async {
+        let db = database().await;
+        let (first, _) = seed_pending(&db, 0).await;
+        let (second, _) = seed_pending(&db, 0).await;
+        let ctx = context(db);
+        let calls = Arc::new(RecordsCalls::default());
+        let (sweep, _) = recorded(calls.clone());
+
+        sweep.run(&ctx).await.expect("the tick runs");
+
+        let first_call = calls.0.lock().expect("the lock is free")[0];
+        let claimed = [reread(&ctx, first).await, reread(&ctx, second).await]
+            .map(|row| row.claimed_at.expect("the row was claimed"));
+        let last_claim = claimed.iter().max().expect("two claims");
+        assert!(
+            *last_claim >= first_call,
+            "the later claim ({last_claim}) predates the first model call ({first_call})"
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_run_that_stores_suggestions_announces_once() {
     within_time_limit(async {
