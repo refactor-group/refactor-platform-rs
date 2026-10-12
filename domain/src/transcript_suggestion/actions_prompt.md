@@ -13,6 +13,9 @@ What counts as a commitment
 
 What does not count
 - Ideas, options and maybes: "I could", "maybe", "I might", "one option", "I'd love to", "someday".
+- Obligations and to-dos mentioned without a commitment: "I need to...", "I still need to update the
+  budget", "I have to...", "that's on my list". They are not actions unless the same person
+  also says they will do it.
   A firm commitment with vague timing ("I'll set it up at some point this year") still counts.
 - Things already done, and progress updates on existing work with no new commitment.
 - Agreements about how the coach and coachee work together ("let's always start with a win").
