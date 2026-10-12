@@ -6,7 +6,6 @@ use meeting_ai::traits::analysis;
 use meeting_ai::types::analysis::Request;
 use sea_orm::{ActiveEnum, ActiveValue::Set, DatabaseConnection, TransactionTrait};
 
-use super::due_date::DEFAULT_WEEK_END;
 use super::{
     create_batch, render, verify_output, ActiveModel, Existing, NextSession, People, Refs, Session,
     Status, Suggestible, Verified,
@@ -15,7 +14,7 @@ use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::transcript_analysis::{self, complete_claimed};
 use crate::transcription::{local_session_date, read_segments};
-use crate::{action, coaching_relationship, coaching_session, cost, transcription, Id};
+use crate::{action, coaching_relationship, coaching_session, cost, transcription, user, Id};
 
 /// Upper bound on generated tokens for one answer.
 const MAX_OUTPUT_TOKENS: u32 = 8192;
@@ -104,7 +103,7 @@ pub async fn run<S: Suggestible>(
         coach_timezone: coach.timezone.parse().unwrap_or(chrono_tz::UTC),
         session_date: local_session_date(&session, &coach),
         next_session,
-        week_end: DEFAULT_WEEK_END,
+        week_end: user::week_end(&coach),
         segments: &segments,
         existing,
     };

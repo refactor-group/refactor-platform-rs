@@ -2,6 +2,9 @@
 
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 
+#[cfg(test)]
+use crate::user::DEFAULT_WEEK_END;
+
 /// What a spoken deadline names.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Phrase {
@@ -75,9 +78,6 @@ const END_OF_WEEK: [&str; 4] = [
 ];
 const WEEKEND: [&str; 3] = ["weekend", "this weekend", "over the weekend"];
 const END_OF_MONTH: [&str; 3] = ["end of month", "end of the month", "end of this month"];
-
-/// The day a week ends on until coaches can choose their own.
-pub(crate) const DEFAULT_WEEK_END: Weekday = Weekday::Fri;
 
 /// What spoken deadlines resolve against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
