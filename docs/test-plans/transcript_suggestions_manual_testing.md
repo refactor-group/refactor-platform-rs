@@ -65,7 +65,7 @@ Use the suggestions from A1, signed in as the coachee (`$COACHEE_COOKIE`).
 1. Accept the budget suggestion.
 2. Accept the same suggestion again.
 
-**Pass:** the first returns 201 with one new Action owned by the coachee, assigned to the coachee, due 2026-10-16; the Action appears in the session's actions; if Resend is configured, an assignment email is sent. The second returns 409 and no second Action exists. The suggestion no longer appears in the pending list.
+**Pass:** the first returns `status_code` 201 in the body (HTTP 200, like every create route) with one new Action owned by the coachee, assigned to the coachee, due 2026-10-16; the Action appears in the session's actions; if Resend is configured, an assignment email is sent. The second returns 409 and no second Action exists. The suggestion no longer appears in the pending list.
 
 ### B4. Dismiss and restore
 1. Dismiss the one-on-one suggestion (`POST .../dismiss`), then list.
@@ -86,7 +86,7 @@ curl -s -X POST -H "x-version: 1.0.0" -H "content-type: application/json" -b "$C
   "http://localhost:4000/coaching_sessions/$SESSION/transcript_suggestions/<id>/accept" | jq .
 ```
 
-**Pass:** 201, and the new Action has the edited body, the edited due date and both assignees. The coach is its owner. The suggestion leaves the pending list. `PUT .../transcript_suggestions/<id>` returns 404: there is no separate edit.
+**Pass:** `status_code` 201 in the body, and the new Action has the edited body, the edited due date and both assignees. The coach is its owner. The suggestion leaves the pending list. `PUT .../transcript_suggestions/<id>` returns 405: there is no separate edit.
 
 ### C2. Default due date
 1. Accept the one-on-one suggestion (no due date) while the next session (2026-10-19) is in the future.
