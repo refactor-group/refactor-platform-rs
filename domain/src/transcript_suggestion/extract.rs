@@ -6,6 +6,7 @@ use meeting_ai::traits::analysis;
 use meeting_ai::types::analysis::Request;
 use sea_orm::{ActiveEnum, ActiveValue::Set, DatabaseConnection, TransactionTrait};
 
+use super::due_date::DEFAULT_WEEK_END;
 use super::{
     create_batch, render, verify_output, ActiveModel, Existing, NextSession, People, Refs, Session,
     Status, Suggestible, Verified,
@@ -103,6 +104,7 @@ pub async fn run<S: Suggestible>(
         coach_timezone: coach.timezone.parse().unwrap_or(chrono_tz::UTC),
         session_date: local_session_date(&session, &coach),
         next_session,
+        week_end: DEFAULT_WEEK_END,
         segments: &segments,
         existing,
     };

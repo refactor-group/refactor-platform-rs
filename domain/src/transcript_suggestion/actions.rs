@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
 
-use super::due_date::{names_next_session, reconcile};
+use super::due_date::{names_next_session, Anchors};
 use super::prompt::collapse;
 use super::{validation, People, Refs, Session, Suggestible, Target, Verified};
 use crate::action::ActionWithAssignees;
@@ -145,16 +145,17 @@ impl Suggestible for Actions {
         let at_next_session = session
             .next_session
             .filter(|_| due_phrase.as_deref().is_some_and(names_next_session));
-        let due_by = reconcile(
-            model_date,
-            due_phrase.as_deref(),
-            session.session_date,
-            session.next_session.map(|next| next.date),
-        )
-        .and_then(|date| match at_next_session {
-            Some(next) => Some(next.start),
-            None => due_at(date, session.session_date, session.coach_timezone),
-        });
+        let anchors = Anchors {
+            session_date: session.session_date,
+            next_session: session.next_session.map(|next| next.date),
+            week_end: session.week_end,
+        };
+        let due_by = anchors
+            .reconcile(model_date, due_phrase.as_deref())
+            .and_then(|date| match at_next_session {
+                Some(next) => Some(next.start),
+                None => due_at(date, session.session_date, session.coach_timezone),
+            });
 
         let duplicate_of_id = candidate
             .duplicate_of

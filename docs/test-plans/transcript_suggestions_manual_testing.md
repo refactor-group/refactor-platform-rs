@@ -232,7 +232,7 @@ days.
 | 1-2 | Block two hours each week for interview feedback | Caleb | none ("starting Monday" is a start, not a deadline) |
 | 3-4 | Give interview feedback within a day of each interview | Caleb | blank or `N` |
 | 5-7 | None (declined) | | |
-| 8-9 | Introduce Caleb to Maria in finance | Jim | blank; phrase "this week" |
+| 8-9 | Introduce Caleb to Maria in finance | Jim | Fri+ ("this week" = the end of the week) |
 | 10-11 | None (advice not taken up) | | |
 
 ### F3. Shapes of a commitment
@@ -258,7 +258,7 @@ days.
 | Line | Suggestion | Assignees | Due |
 |---|---|---|---|
 | 1-2 | Think about psychological safety on Caleb's team | **Jim and Caleb, one suggestion** | `N` (phrase "before next time") |
-| 3 | Bring an example of a hard conversation that went well | **Jim and Caleb, one suggestion** | none |
+| 3 | Bring an example of a hard conversation that went well | **Jim and Caleb, one suggestion** | none, or `N` (bringing it implies the next session) |
 | 4 | Draft the offsite agenda | Caleb | none |
 | 4 | Bring the facilitation guide to the offsite | Jim (a second suggestion) | none |
 | 5 | If the reorg is announced this week, talk to HR about your role | Caleb (condition kept in the body) | blank or end of this week |
@@ -266,7 +266,7 @@ days.
 | 7 | One suggestion with steps as a bullet list (draft outline, get Lena's feedback, send to the CFO) | Caleb | October 30 |
 | 8 | Ask Priya to take over the vendor reviews | Caleb | none |
 | 9-10 | Share the retro notes with the team | Caleb | Fri+ |
-| 11 | Say no to at least one meeting request this week ("I'll try" counts) | Caleb | blank; phrase "this week" |
+| 11 | Say no to at least one meeting request this week ("I'll try" counts) | Caleb | Fri+ with phrase "this week", or blank when "this week" stays in the body |
 | 12 | Email the recruiter about the backlog | Caleb | `D` (phrase "tonight") |
 
 ### F4. Commitments that change during the conversation

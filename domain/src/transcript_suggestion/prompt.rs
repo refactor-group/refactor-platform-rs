@@ -66,6 +66,7 @@ pub fn render(session: &Session) -> String {
         format!("Coachee: {}", session.coachee_name),
         format!("Session date: {}", long_date(session.session_date)),
         format!("Next session: {next_session}"),
+        format!("Week ends on: {}", day_name(session.week_end)),
         "Calendar (the 60 days after the session):".to_string(),
     ]
     .into_iter()
@@ -95,6 +96,18 @@ fn lookup(ids: &[Id], r: &str, prefix: char) -> Option<Id> {
         .parse()
         .ok()?;
     ids.get(index.checked_sub(1)?).copied()
+}
+
+fn day_name(day: Weekday) -> &'static str {
+    match day {
+        Weekday::Mon => "Monday",
+        Weekday::Tue => "Tuesday",
+        Weekday::Wed => "Wednesday",
+        Weekday::Thu => "Thursday",
+        Weekday::Fri => "Friday",
+        Weekday::Sat => "Saturday",
+        Weekday::Sun => "Sunday",
+    }
 }
 
 fn long_date(date: NaiveDate) -> String {

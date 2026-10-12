@@ -41,8 +41,8 @@ How to write each action
 - due_date: YYYY-MM-DD, only when a deadline was stated. Do not do date arithmetic: look the date up in
   the calendar given below the session details. Resolve against the session date:
   "tomorrow" = the next day; "tonight" / "today" / "EOD" / "after our call" / "later today" = that day; a weekday name or "this <weekday>" =
-  the first such day after the session; "in two weeks" = 14 days after the session; "end of the week" =
-  that Friday; "this weekend" = that Sunday; "end of the month" = the month's last day;
+  the first such day after the session; "in two weeks" = 14 days after the session; "end of the week" /
+  "this week" = that week's last day, given as "Week ends on" below the session details; "this weekend" = that Sunday; "end of the month" = the month's last day;
   "before our next session" / "by next time" = the next session date, if one is given.
   Use null when no deadline was stated, when it is vague ("soon", "ASAP", "at some point"), when there
   is no next session to resolve "next time" against, or when it is ambiguous. "next <weekday>" said in

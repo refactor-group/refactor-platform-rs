@@ -1,6 +1,6 @@
 //! The rendered model input and the short refs it uses.
 
-use chrono::{NaiveDate, Utc};
+use chrono::{NaiveDate, Utc, Weekday};
 
 use super::*;
 use crate::transcript_export::{LabeledSegment, SpeakerRole};
@@ -63,6 +63,7 @@ fn session(segments: &[LabeledSegment], next_session: Option<NaiveDate>) -> Sess
                 .and_utc()
                 .fixed_offset(),
         }),
+        week_end: Weekday::Fri,
         segments,
         existing: vec![Existing {
             id: Id::new_v4(),
@@ -77,7 +78,7 @@ fn render_writes_the_session_existing_actions_and_transcript() {
     let rendered = render(&session(&segments, None));
     let lines: Vec<&str> = rendered.lines().collect();
 
-    let calendar_start = 5;
+    let calendar_start = 6;
     let calendar_end = lines
         .iter()
         .position(|l| l.is_empty())
@@ -93,6 +94,7 @@ fn render_writes_the_session_existing_actions_and_transcript() {
          Coachee: Alex Rivera\n\
          Session date: Wednesday 2026-10-07\n\
          Next session: none scheduled\n\
+         Week ends on: Friday\n\
          Calendar (the 60 days after the session):\n\
          \n\
          Existing actions in this session:\n\

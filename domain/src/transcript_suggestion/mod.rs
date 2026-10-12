@@ -1,6 +1,6 @@
 //! Transcript suggestions: data access, the model's input, and verification of its answer.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Weekday};
 use chrono_tz::Tz;
 use log::{debug, warn};
 use sea_orm::prelude::DateTimeWithTimeZone;
@@ -53,6 +53,8 @@ pub struct Session<'a> {
     pub session_date: NaiveDate,
     /// The next session in the relationship, if one is scheduled.
     pub next_session: Option<NextSession>,
+    /// The day the coach's week ends on; "end of the week" and "this week" mean it.
+    pub week_end: Weekday,
     /// Ordered by (start_ms, id); refs are assigned in this order.
     pub segments: &'a [LabeledSegment],
     pub existing: Vec<Existing>,

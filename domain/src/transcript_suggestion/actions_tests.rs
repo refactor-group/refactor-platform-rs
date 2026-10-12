@@ -1,6 +1,6 @@
 //! Verification of the model's action candidates into stored proposals.
 
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::{NaiveDate, TimeZone, Utc, Weekday};
 use serde_json::{json, Value};
 
 use super::*;
@@ -64,6 +64,7 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
             date: day(2026, 10, 21),
             start: next_session_start(),
         }),
+        week_end: Weekday::Fri,
         segments,
         existing: vec![Existing {
             id: Id::new_v4(),

@@ -67,33 +67,79 @@ const VAGUE: [&str; 11] = [
     "at some point",
 ];
 
-const END_OF_WEEK: [&str; 3] = ["end of week", "end of the week", "end of this week"];
+const END_OF_WEEK: [&str; 4] = [
+    "end of week",
+    "end of the week",
+    "end of this week",
+    "this week",
+];
 const WEEKEND: [&str; 3] = ["weekend", "this weekend", "over the weekend"];
 const END_OF_MONTH: [&str; 3] = ["end of month", "end of the month", "end of this month"];
 
-/// Resolves a spoken deadline against the session date and the next session's date.
+/// The day a week ends on until coaches can choose their own.
+pub(crate) const DEFAULT_WEEK_END: Weekday = Weekday::Fri;
+
+/// What spoken deadlines resolve against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Anchors {
+    pub session_date: NaiveDate,
+    pub next_session: Option<NaiveDate>,
+    /// The day "end of the week" and "this week" mean.
+    pub week_end: Weekday,
+}
+
+impl Anchors {
+    /// Resolves a spoken deadline.
+    pub(crate) fn resolve(&self, phrase: &str) -> Phrase {
+        let normalized = normalize(phrase);
+        let text = strip_filler(&normalized);
+
+        if NEXT_SESSION.contains(&text) {
+            return self.next_session.map_or(Phrase::Ambiguous, Phrase::Date);
+        }
+        if VAGUE.contains(&text) || text.starts_with("at some point ") {
+            return Phrase::Ambiguous;
+        }
+        if let Some(weekday) = text.strip_prefix("next ").and_then(weekday) {
+            return next_weekday(weekday, self.session_date);
+        }
+
+        fixed(text, self.session_date, self.week_end)
+            .or_else(|| relative(text, self.session_date))
+            .or_else(|| explicit(text, self.session_date))
+            .unwrap_or(Phrase::Unrecognized)
+    }
+
+    /// The deadline to store: a recognized phrase wins, an ambiguous one clears, otherwise the
+    /// model's.
+    pub(crate) fn reconcile(
+        &self,
+        model_date: Option<NaiveDate>,
+        phrase: Option<&str>,
+    ) -> Option<NaiveDate> {
+        let latest = self.session_date.checked_add_days(Days::new(365))?;
+        let in_bounds = |d: &NaiveDate| (self.session_date..=latest).contains(d);
+        match phrase.map(|p| self.resolve(p)) {
+            Some(Phrase::Date(date)) => Some(date).filter(in_bounds),
+            Some(Phrase::Ambiguous) => None,
+            Some(Phrase::Unrecognized) | None => model_date.filter(in_bounds),
+        }
+    }
+}
+
+/// `Anchors::resolve` with the default week end.
+#[cfg(test)]
 pub(crate) fn resolve_phrase(
     phrase: &str,
     session_date: NaiveDate,
     next_session: Option<NaiveDate>,
 ) -> Phrase {
-    let normalized = normalize(phrase);
-    let text = strip_filler(&normalized);
-
-    if NEXT_SESSION.contains(&text) {
-        return next_session.map_or(Phrase::Ambiguous, Phrase::Date);
+    Anchors {
+        session_date,
+        next_session,
+        week_end: DEFAULT_WEEK_END,
     }
-    if VAGUE.contains(&text) || text.starts_with("at some point ") {
-        return Phrase::Ambiguous;
-    }
-    if let Some(weekday) = text.strip_prefix("next ").and_then(weekday) {
-        return next_weekday(weekday, session_date);
-    }
-
-    fixed(text, session_date)
-        .or_else(|| relative(text, session_date))
-        .or_else(|| explicit(text, session_date))
-        .unwrap_or(Phrase::Unrecognized)
+    .resolve(phrase)
 }
 
 /// Whether a spoken deadline means the next session.
@@ -101,20 +147,20 @@ pub(crate) fn names_next_session(phrase: &str) -> bool {
     NEXT_SESSION.contains(&strip_filler(&normalize(phrase)))
 }
 
-/// The deadline to store: a recognized phrase wins, an ambiguous one clears, otherwise the model's.
+/// `Anchors::reconcile` with the default week end.
+#[cfg(test)]
 pub(crate) fn reconcile(
     model_date: Option<NaiveDate>,
     phrase: Option<&str>,
     session_date: NaiveDate,
     next_session: Option<NaiveDate>,
 ) -> Option<NaiveDate> {
-    let latest = session_date.checked_add_days(Days::new(365))?;
-    let in_bounds = |d: &NaiveDate| (session_date..=latest).contains(d);
-    match phrase.map(|p| resolve_phrase(p, session_date, next_session)) {
-        Some(Phrase::Date(date)) => Some(date).filter(in_bounds),
-        Some(Phrase::Ambiguous) => None,
-        Some(Phrase::Unrecognized) | None => model_date.filter(in_bounds),
+    Anchors {
+        session_date,
+        next_session,
+        week_end: DEFAULT_WEEK_END,
     }
+    .reconcile(model_date, phrase)
 }
 
 /// Lowercased, punctuation (except `/`) turned to spaces, whitespace collapsed.
@@ -144,22 +190,22 @@ fn strip_filler(text: &str) -> &str {
 }
 
 /// Phrases tied to a fixed point: today, tomorrow, end of week, weekend, end of month.
-fn fixed(text: &str, session_date: NaiveDate) -> Option<Phrase> {
+fn fixed(text: &str, session_date: NaiveDate, week_end: Weekday) -> Option<Phrase> {
     let is_tomorrow = text == "tomorrow"
         || text
             .strip_prefix("tomorrow ")
             .or_else(|| text.strip_suffix(" tomorrow"))
             .is_some_and(|part| TOMORROW_PARTS.contains(&part));
-    let friday = on_or_after(session_date, Weekday::Fri);
+    let end_of_week = on_or_after(session_date, week_end);
 
     let date = if SAME_DAY.contains(&text) {
         Some(session_date)
     } else if is_tomorrow {
         session_date.succ_opt()
     } else if END_OF_WEEK.contains(&text) {
-        friday
+        end_of_week
     } else if text == "end of next week" {
-        friday.and_then(|d| d.checked_add_days(Days::new(7)))
+        end_of_week.and_then(|d| d.checked_add_days(Days::new(7)))
     } else if WEEKEND.contains(&text) {
         on_or_after(session_date, Weekday::Sun)
     } else if END_OF_MONTH.contains(&text) {
@@ -308,3 +354,7 @@ mod tests;
 #[cfg(test)]
 #[path = "due_date_same_day_tests.rs"]
 mod same_day_tests;
+
+#[cfg(test)]
+#[path = "due_date_week_end_tests.rs"]
+mod week_end_tests;
