@@ -63,5 +63,10 @@ How to write each action
 - quote: a span copied character for character from that one line, including filler words and
   disfluencies; never tidy it up or join it with another line. At most about 25 words.
 - duplicate_of: the ref (like "a1") of an existing action that this is the same commitment as, else null.
+  When someone makes a new commitment to something that is already an existing action, list it with
+  duplicate_of set; never leave it out because the action exists ("I'll book the venue" with existing
+  "[a2] Book the offsite venue" is listed with duplicate_of "a2"). This is only for a commitment: a
+  progress update on an existing action ("the venue is half booked") is still not an action, and a
+  commitment repeated within this session is still listed once.
 
 List each commitment once, even when it is repeated or recapped. Return an empty list when there are none.
