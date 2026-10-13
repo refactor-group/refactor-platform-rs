@@ -182,6 +182,17 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from coaching relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when new transcript suggestions are stored for a session.
+    ///
+    /// Coarse: carries no suggestions, so participants refetch them. Triggers SSE to coach + coachee.
+    TranscriptSuggestionsChanged {
+        /// The coaching session the suggestions belong to.
+        coaching_session_id: Id,
+        /// The suggested entity type in snake_case, e.g. "action".
+        target: String,
+        /// User IDs to receive SSE notifications (coach + coachee from the relationship).
+        notify_user_ids: Vec<Id>,
+    },
 }
 
 /// Trait for handling domain events.

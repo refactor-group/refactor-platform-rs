@@ -121,6 +121,9 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "recall_ai_api_key",
     "recall_ai_region",
     "recall_ai_webhook_secret",
+    "assembly_ai_api_key",
+    "assembly_ai_llm_model",
+    "assembly_ai_llm_base_url",
     "object_store_backend",
     "object_store_local_path",
     "spaces_endpoint",
@@ -494,6 +497,18 @@ pub struct Config {
     #[arg(long, env)]
     recall_ai_webhook_secret: Option<String>,
 
+    /// AssemblyAI API key; transcript suggestions are disabled when unset
+    #[arg(long, env)]
+    assembly_ai_api_key: Option<String>,
+
+    /// Model the AssemblyAI LLM Gateway runs for transcript suggestions
+    #[arg(long, env, default_value = "claude-sonnet-4-6")]
+    assembly_ai_llm_model: String,
+
+    /// AssemblyAI LLM Gateway base URL
+    #[arg(long, env, default_value = "https://llm-gateway.assemblyai.com/v1")]
+    assembly_ai_llm_base_url: String,
+
     /// Object storage backend: "local" (filesystem) or "spaces" (DigitalOcean Spaces)
     #[arg(long, env, default_value = "local")]
     object_store_backend: String,
@@ -571,6 +586,7 @@ impl Config {
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
         config.capture_value_sources(&matches);
+        config.normalize_assembly_ai_api_key();
         Self::warn_untracked_fields(&matches);
         Self::warn_on_shared_template_ids(&matches);
 
@@ -595,8 +611,28 @@ impl Config {
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
         config.capture_value_sources(&matches);
+        config.normalize_assembly_ai_api_key();
 
         config
+    }
+
+    /// Trims the AssemblyAI key and drops one an HTTP header cannot carry.
+    ///
+    /// Every check of whether transcript suggestions are on reads this key, and the sweep that
+    /// runs them sends it as a header, so a key the header would reject must read as unset
+    /// rather than leave scans queued that nothing processes.
+    fn normalize_assembly_ai_api_key(&mut self) {
+        self.assembly_ai_api_key = self.assembly_ai_api_key.take().and_then(|key| {
+            let key = key.trim().to_string();
+            let sendable = key.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b));
+            if !sendable {
+                warn!(
+                    "ASSEMBLY_AI_API_KEY contains characters an HTTP header cannot carry; \
+                     transcript suggestions are disabled"
+                );
+            }
+            Some(key).filter(|k| sendable && !k.is_empty())
+        });
     }
 
     /// Unset any process env var that clap is configured to read (via
@@ -1113,6 +1149,23 @@ impl Config {
         self.recall_ai_webhook_secret.clone()
     }
 
+    // AssemblyAI accessors
+
+    /// The trimmed AssemblyAI key, or `None` when unset or not sendable; suggestions are off then.
+    pub fn assembly_ai_api_key(&self) -> Option<String> {
+        self.assembly_ai_api_key.clone()
+    }
+
+    /// The model the AssemblyAI LLM Gateway runs for transcript suggestions.
+    pub fn assembly_ai_llm_model(&self) -> &str {
+        &self.assembly_ai_llm_model
+    }
+
+    /// The AssemblyAI LLM Gateway base URL.
+    pub fn assembly_ai_llm_base_url(&self) -> &str {
+        &self.assembly_ai_llm_base_url
+    }
+
     // Object storage accessors
 
     /// Returns which object storage backend to build: "local" or "spaces".
@@ -1287,6 +1340,23 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+
+    #[test]
+    fn the_assembly_ai_key_is_trimmed_and_an_unsendable_one_reads_as_unset() {
+        let key = |value: &str| {
+            Config::from_args(["test_binary", &format!("--assembly-ai-api-key={value}")])
+                .assembly_ai_api_key()
+        };
+
+        assert_eq!(key("sk-test-123\n"), Some("sk-test-123".to_string()));
+        assert_eq!(key("  sk-test-123  "), Some("sk-test-123".to_string()));
+        assert_eq!(key("sk-test\n123"), None);
+        assert_eq!(key("sk-test-\u{e9}"), None);
+        assert_eq!(
+            Config::from_args(["test_binary"]).assembly_ai_api_key(),
+            None
+        );
+    }
 
     #[test]
     fn unset_field_shows_default_value_and_suffix() {

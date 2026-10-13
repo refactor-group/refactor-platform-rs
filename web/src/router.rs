@@ -77,6 +77,12 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::set_rating,
             coaching_session::topic_controller::set_status,
             coaching_session::topic_controller::undo,
+            coaching_session::transcript_suggestion_controller::index,
+            coaching_session::transcript_suggestion_controller::scan,
+            coaching_session::transcript_suggestion_controller::start_scan,
+            coaching_session::transcript_suggestion_controller::accept,
+            coaching_session::transcript_suggestion_controller::dismiss,
+            coaching_session::transcript_suggestion_controller::restore,
             coaching_session::transcription_controller::read_latest,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
@@ -190,6 +196,16 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_sessions::Model,
                 domain::coaching_sessions_goals::Model,
                 domain::goals::Model,
+                domain::transcript_suggestion::actions::ActionProposal,
+                domain::transcript_suggestion::review::ActionEdits,
+                domain::transcript_suggestion::review::ActionSuggestion,
+                domain::transcript_suggestion::review::DefaultDue,
+                domain::transcript_suggestion::review::DueSource,
+                domain::transcript_suggestion::review::DuplicateOf,
+                domain::transcript_suggestion::review::Scan,
+                domain::transcript_suggestion::review::ScanStatus,
+                domain::transcript_suggestion::review::SourceSegment,
+                domain::transcript_suggestion::review::UndatedReason,
                 domain::jwts::Jwt,
                 domain::notes::Model,
                 domain::organizations::Model,
@@ -254,6 +270,9 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(coaching_session_meeting_recording_routes(app_state.clone()))
         .merge(coaching_session_image_routes(app_state.clone()))
         .merge(coaching_session_topic_routes(app_state.clone()))
+        .merge(coaching_session_transcript_suggestion_routes(
+            app_state.clone(),
+        ))
         .merge(coaching_session_transcription_routes(app_state.clone()))
         .merge(coaching_session_transcription_segment_routes(
             app_state.clone(),
@@ -879,6 +898,33 @@ fn coaching_session_topic_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_sessions/:coaching_session_id/topics/:topic_id/undo",
             post(coaching_session::topic_controller::undo),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_transcript_suggestion_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions",
+            get(coaching_session::transcript_suggestion_controller::index),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/scan",
+            get(coaching_session::transcript_suggestion_controller::scan)
+                .post(coaching_session::transcript_suggestion_controller::start_scan),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/accept",
+            post(coaching_session::transcript_suggestion_controller::accept),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/dismiss",
+            post(coaching_session::transcript_suggestion_controller::dismiss),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/restore",
+            post(coaching_session::transcript_suggestion_controller::restore),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

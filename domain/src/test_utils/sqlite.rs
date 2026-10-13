@@ -7,13 +7,16 @@ use std::future::Future;
 use std::time::Duration;
 
 use chrono::Utc;
+use entity::meeting_recording::MeetingRecordingStatus;
+use entity::transcription::TranscriptionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
     coaching_session_reminders, coaching_session_series, coaching_session_topics,
     coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_pricing_config, goals,
     magic_link_tokens, meeting_recording, notes, oauth_connections, organizations,
-    password_reset_attempts, platform_cost_metrics, transcript_participant, transcript_segment,
-    transcription, user_lookup_attempts, user_role_changes, user_roles, users, Id,
+    password_reset_attempts, platform_cost_metrics, transcript_analysis, transcript_participant,
+    transcript_segment, transcript_suggestion, transcription, user_lookup_attempts,
+    user_role_changes, user_roles, users, Id,
 };
 use sea_orm::{
     ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, Set,
@@ -81,8 +84,10 @@ pub(crate) async fn database() -> DatabaseConnection {
         .register(organizations::Entity)
         .register(password_reset_attempts::Entity)
         .register(platform_cost_metrics::Entity)
+        .register(transcript_analysis::Entity)
         .register(transcript_participant::Entity)
         .register(transcript_segment::Entity)
+        .register(transcript_suggestion::Entity)
         .register(transcription::Entity)
         .register(user_lookup_attempts::Entity)
         .register(user_role_changes::Entity)
@@ -181,4 +186,89 @@ pub(crate) async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
     .expect("the coaching session is seeded");
 
     (session.id, user_id)
+}
+
+/// Ids of a seeded completed transcription and the rows around it.
+pub(crate) struct SeededTranscription {
+    pub session_id: Id,
+    pub user_id: Id,
+    pub transcription_id: Id,
+    pub segment_ids: Vec<Id>,
+}
+
+/// Inserts a session, a completed recording and transcription, and `segments` segments.
+pub(crate) async fn seed_transcription(
+    db: &DatabaseConnection,
+    segments: usize,
+) -> SeededTranscription {
+    let (session_id, user_id) = seed_coaching_session(db).await;
+    let now = Utc::now();
+
+    let recording_id = Id::new_v4();
+    meeting_recording::ActiveModel {
+        id: Set(recording_id),
+        coaching_session_id: Set(session_id),
+        bot_id: Set(format!("bot-{recording_id}")),
+        status: Set(MeetingRecordingStatus::Completed),
+        video_url: Set(None),
+        audio_url: Set(None),
+        duration_seconds: Set(None),
+        started_at: Set(None),
+        ended_at: Set(None),
+        error_message: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the recording is seeded");
+
+    let transcription_id = Id::new_v4();
+    transcription::ActiveModel {
+        id: Set(transcription_id),
+        coaching_session_id: Set(session_id),
+        meeting_recording_id: Set(recording_id),
+        external_id: Set(format!("ext-{transcription_id}")),
+        recall_recording_id: Set(None),
+        status: Set(TranscriptionStatus::Completed),
+        language_code: Set(None),
+        speaker_count: Set(None),
+        word_count: Set(None),
+        duration_seconds: Set(None),
+        confidence: Set(None),
+        error_message: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the transcription is seeded");
+
+    let mut segment_ids = Vec::with_capacity(segments);
+    for index in 0..segments {
+        let start_ms = i32::try_from(index).expect("few segments") * 1000;
+        let segment = transcript_segment::ActiveModel {
+            id: Set(Id::new_v4()),
+            transcription_id: Set(transcription_id),
+            participant_id: Set(None),
+            speaker_label: Set("A".to_string()),
+            text: Set(format!("Segment {index}")),
+            start_ms: Set(start_ms),
+            end_ms: Set(start_ms + 900),
+            confidence: Set(None),
+            sentiment: Set(None),
+            created_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the segment is seeded");
+        segment_ids.push(segment.id);
+    }
+
+    SeededTranscription {
+        session_id,
+        user_id,
+        transcription_id,
+        segment_ids,
+    }
 }

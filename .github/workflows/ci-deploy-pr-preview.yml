@@ -150,6 +150,12 @@ on:
                 description: "Recall.ai webhook signing secret (Svix whsec_... format)"
                 required: false
 
+            # AssemblyAI LLM Gateway for transcript suggestions (model and base URL
+            # are non-sensitive vars, not secrets).
+            ASSEMBLY_AI_API_KEY:
+                description: "AssemblyAI API key"
+                required: false
+
             GOOGLE_CLIENT_SECRET:
                 description: "Google OAuth client secret"
                 required: false
@@ -1262,6 +1268,11 @@ jobs:
                   RECALL_AI_API_KEY='${{ secrets.RECALL_AI_API_KEY || 'UNUSED' }}'
                   RECALL_AI_REGION='${{ vars.RECALL_AI_REGION || 'us-west-2' }}'
                   RECALL_AI_WEBHOOK_SECRET='${{ secrets.RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
+                  # Empty, not 'UNUSED': a non-empty bogus key would switch the
+                  # suggestions sweep on and fail every analysis.
+                  ASSEMBLY_AI_API_KEY='${{ secrets.ASSEMBLY_AI_API_KEY || '' }}'
+                  ASSEMBLY_AI_LLM_MODEL='${{ vars.ASSEMBLY_AI_LLM_MODEL || 'claude-sonnet-4-6' }}'
+                  ASSEMBLY_AI_LLM_BASE_URL='${{ vars.ASSEMBLY_AI_LLM_BASE_URL || 'https://llm-gateway.assemblyai.com/v1' }}'
                   # Coaching note image storage. Defaulted to 'spaces', never 'local':
                   # an empty value is stripped before parsing and would fall back to
                   # the "local" default, writing images into the ephemeral container.
