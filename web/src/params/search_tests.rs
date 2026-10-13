@@ -81,7 +81,7 @@ fn all_requested_types_dropped_means_search_nothing_not_everything() {
 #[test]
 fn unlinked_goal_filter_with_goal_id_is_contradictory() {
     let mut p = params("review");
-    p.goal_filter = Some(GoalFilterParam::Unlinked);
+    p.goal_filter = Some(GoalFilter::Unlinked);
     p.goal_id = Some(Id::new_v4());
     assert_eq!(discriminator(p.compile()), "contradictory_params");
 }

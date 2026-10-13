@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use chrono::{NaiveDate, TimeZone};
 use chrono_tz::Tz;
-use domain::search::{Cursor, Filters, GoalFilter, HitType, Spec, TimeRange};
+use domain::search::{self, Cursor, Filters, HitType, Spec, TimeRange};
 use domain::status::Status;
 use domain::topic_status::Status as TopicStatus;
 use domain::Id;
@@ -38,11 +38,22 @@ pub(crate) enum Mode {
 /// precedent on `GET /users/{id}/actions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum GoalFilterParam {
+#[schema(as = params::search::GoalFilter)]
+pub(crate) enum GoalFilter {
     #[default]
     All,
     Linked,
     Unlinked,
+}
+
+impl From<GoalFilter> for search::GoalFilter {
+    fn from(filter: GoalFilter) -> Self {
+        match filter {
+            GoalFilter::All => Self::All,
+            GoalFilter::Linked => Self::Linked,
+            GoalFilter::Unlinked => Self::Unlinked,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -57,7 +68,7 @@ pub(crate) struct IndexParams {
     pub(crate) user_id: Option<Id>,
     pub(crate) coaching_session_id: Option<Id>,
     pub(crate) goal_id: Option<Id>,
-    pub(crate) goal_filter: Option<GoalFilterParam>,
+    pub(crate) goal_filter: Option<GoalFilter>,
     pub(crate) status: Option<Status>,
     pub(crate) topic_status: Option<TopicStatus>,
     pub(crate) created_from: Option<NaiveDate>,
@@ -114,7 +125,7 @@ impl IndexParams {
         }
 
         let goal_filter = self.goal_filter.unwrap_or_default();
-        if goal_filter == GoalFilterParam::Unlinked && self.goal_id.is_some() {
+        if goal_filter == GoalFilter::Unlinked && self.goal_id.is_some() {
             return Err(invalid(
                 "contradictory_params",
                 "`goal_filter=unlinked` cannot be combined with `goal_id`.".to_string(),
@@ -152,11 +163,7 @@ impl IndexParams {
                 user_id: self.user_id,
                 coaching_session_id: self.coaching_session_id,
                 goal_id: self.goal_id,
-                goal_filter: match goal_filter {
-                    GoalFilterParam::All => GoalFilter::All,
-                    GoalFilterParam::Linked => GoalFilter::Linked,
-                    GoalFilterParam::Unlinked => GoalFilter::Unlinked,
-                },
+                goal_filter: goal_filter.into(),
                 status: self.status,
                 topic_status: self.topic_status,
                 created: day_range(self.created_from, self.created_to, tz),

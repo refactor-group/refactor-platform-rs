@@ -175,7 +175,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::coaching_session_series::RescheduleParams,
                 crate::params::goal::SortField,
                 crate::params::search::Mode,
-                crate::params::search::GoalFilterParam,
+                crate::params::search::GoalFilter,
                 crate::params::sort::SortOrder,
                 crate::params::user::AttachRoleParams,
                 crate::params::user::UpdateRoleParams,
