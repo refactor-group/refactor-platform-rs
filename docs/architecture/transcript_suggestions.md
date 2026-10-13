@@ -26,7 +26,7 @@ flowchart TD
 4. **Model call.** `gateway::assembly_ai::llm_gateway` posts to `{base_url}/chat/completions` with a strict `json_schema` response format, a 10 second connect timeout and a 180 second request timeout. The model defaults to `claude-sonnet-4-6`.
 5. **Verification.** See [Verification](#verification).
 6. **Store.** One transaction completes the claim (recording model and token counts) and inserts the suggestion rows. Token cost is recorded afterwards when a pricing row exists.
-7. **Notify.** When an analysis ends, completed (with or without suggestions) or failed for good, `DomainEvent::TranscriptSuggestionsChanged` goes to the session's coach and coachee, so an open page refetches its suggestions and scan state. Delivery is ephemeral like every SSE event.
+7. **Notify.** When an analysis ends, completed (with or without suggestions) or failed for good, `DomainEvent::TranscriptSuggestionsChanged` goes to the session's coach and coachee, so an open page refetches its suggestions and scan state. `extract::run` sends it for every completed run, including one with no suggestions or no transcript lines; the sweep sends it only when it fails an analysis for good, which a run cannot know. Delivery is ephemeral like every SSE event, so the page also re-reads a running scan's state on a timer.
 
 A transcript with no segments completes its analysis with model `none` and no suggestions, without calling the model.
 

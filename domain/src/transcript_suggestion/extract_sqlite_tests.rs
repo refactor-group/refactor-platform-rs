@@ -451,13 +451,13 @@ async fn a_transcript_without_segments_completes_without_calling_the_model() {
         let stored = reread_analysis(&db, analysis.id).await;
         assert_eq!(stored.status, AnalysisStatus::Completed);
         assert_eq!(stored.input_tokens, None);
-        assert!(suggestion_changed_events(&recorder).is_empty());
+        assert_eq!(suggestion_changed_events(&recorder).len(), 1);
     })
     .await;
 }
 
 #[tokio::test]
-async fn storing_suggestions_announces_them_once_and_storing_none_announces_nothing() {
+async fn every_completed_run_announces_once_with_or_without_suggestions() {
     within_time_limit(async {
         let f = fixture().await;
         let analysis = claimed_analysis(&f.db, f.transcription.id).await;
@@ -500,7 +500,7 @@ async fn storing_suggestions_announces_them_once_and_storing_none_announces_noth
         .expect("the run succeeds");
 
         assert_eq!(outcome, Outcome::Stored(0));
-        assert!(suggestion_changed_events(&recorder).is_empty());
+        assert_eq!(suggestion_changed_events(&recorder).len(), 1);
     })
     .await;
 }

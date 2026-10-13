@@ -53,16 +53,31 @@ impl From<entity_api::error::Error> for RunError {
     }
 }
 
-/// Runs one claimed analysis end to end for target `S`.
+/// Runs one claimed analysis end to end for target `S`, and announces it once it completes.
 ///
 /// `analysis` is the row as returned by `claim`. Completion is conditional on that claim, so a
-/// worker whose claim was retaken stores nothing and returns `Superseded`.
+/// worker whose claim was retaken stores nothing and returns `Superseded`. Every completed run
+/// sends `TranscriptSuggestionsChanged`, with or without suggestions, so an open page learns the
+/// scan finished; a run that fails sends nothing, and its caller announces a final failure.
 pub async fn run<S: Suggestible>(
     db: &DatabaseConnection,
     provider: &dyn analysis::Provider,
     publisher: &EventPublisher,
     analysis: &transcript_analysis::Model,
 ) -> Result<Outcome, RunError> {
+    let (outcome, coaching_session_id) = analyze::<S>(db, provider, analysis).await?;
+    if let Outcome::Stored(_) = outcome {
+        notify::<S>(db, publisher, coaching_session_id).await;
+    }
+    Ok(outcome)
+}
+
+/// Runs one claimed analysis and returns how it ended, with its session's id.
+async fn analyze<S: Suggestible>(
+    db: &DatabaseConnection,
+    provider: &dyn analysis::Provider,
+    analysis: &transcript_analysis::Model,
+) -> Result<(Outcome, Id), RunError> {
     let transcription = transcription::find_by_id(db, analysis.transcription_id)
         .await?
         .ok_or_else(not_found)?;
@@ -73,7 +88,9 @@ pub async fn run<S: Suggestible>(
     let segments = read_segments(db, &session, transcription.id).await?;
     if segments.is_empty() {
         debug!("Analysis {} has no segments to read", analysis.id);
-        return store::<S>(db, analysis, session.id, NO_MODEL.to_string(), None, vec![]).await;
+        let outcome =
+            store::<S>(db, analysis, session.id, NO_MODEL.to_string(), None, vec![]).await?;
+        return Ok((outcome, session.id));
     }
 
     let existing = action::find_by_coaching_session(db, session.id)
@@ -136,7 +153,7 @@ pub async fn run<S: Suggestible>(
     )
     .await?;
 
-    if let Outcome::Stored(stored) = outcome {
+    if let Outcome::Stored(_) = outcome {
         if let Err(e) =
             cost::record_llm_tokens(db, analysis.id, session.id, tokens.0, tokens.1).await
         {
@@ -145,12 +162,9 @@ pub async fn run<S: Suggestible>(
                 analysis.id
             );
         }
-        if stored > 0 {
-            notify::<S>(db, publisher, session.id).await;
-        }
     }
 
-    Ok(outcome)
+    Ok((outcome, session.id))
 }
 
 /// Completes the claim and stores the verified rows in one transaction, or neither.

@@ -73,13 +73,8 @@ impl Sweep {
         };
 
         let error = match result {
-            Ok(extract::Outcome::Stored(stored)) => {
-                // The run itself announces stored suggestions.
-                if stored == 0 {
-                    self.announce(ctx, analysis).await;
-                }
-                return true;
-            }
+            // The run announces its own completion, with or without suggestions.
+            Ok(extract::Outcome::Stored(_)) => return true,
             Ok(extract::Outcome::Superseded) => {
                 info!(
                     "[transcript-suggestions] analysis {} was superseded by another worker",
