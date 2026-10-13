@@ -332,5 +332,5 @@ mod tests;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
-#[path = "transcript_suggestion_scan_tests.rs"]
-mod scan_tests;
+#[path = "transcript_suggestion_route_tests.rs"]
+mod route_tests;
