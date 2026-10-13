@@ -21,11 +21,26 @@ pub struct Provider {
     base_url: String,
 }
 
+/// How long Recall.ai keeps a recording's media, transcript included, before deleting it.
+const RETENTION_HOURS: u32 = 168;
+
 #[derive(Debug, Serialize)]
 struct CreateBotRequest {
     meeting_url: String,
     bot_name: String,
     metadata: BotMetadata,
+    recording_config: RecordingConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct RecordingConfig {
+    retention: Retention,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Retention {
+    Timed { hours: u32 },
 }
 
 #[derive(Debug, Serialize)]
@@ -430,6 +445,11 @@ impl Provider {
             bot_name: bot_name.to_string(),
             metadata: BotMetadata {
                 coaching_session_id: coaching_session_id.to_string(),
+            },
+            recording_config: RecordingConfig {
+                retention: Retention::Timed {
+                    hours: RETENTION_HOURS,
+                },
             },
         };
 
@@ -1120,6 +1140,28 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().id, "bot-test-123");
+    }
+
+    #[tokio::test]
+    async fn create_bot_asks_recall_to_delete_the_recording_after_seven_days() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/bot/")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "recording_config": { "retention": { "type": "timed", "hours": 168 } }
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"bot-test-123"}"#)
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider
+            .create_bot("session-abc", "https://zoom.us/j/123", "Bot")
+            .await;
+
+        assert!(result.is_ok(), "the request carried no 7-day retention");
     }
 
     #[tokio::test]
