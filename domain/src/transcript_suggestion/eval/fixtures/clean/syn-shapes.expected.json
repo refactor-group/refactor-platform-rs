@@ -1,0 +1,10 @@
+[
+  {"segments": ["s3", "s4"], "assignees": ["coach", "coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "7 shared"},
+  {"segments": ["s5"], "assignees": ["coachee"], "due_dates": [null, "2026-10-09", "2026-10-11"], "duplicate_of": null, "note": "9 conditional"},
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": ["2026-10-21", null], "duplicate_of": null, "note": "10 habit for two weeks"},
+  {"segments": ["s7"], "assignees": ["coachee"], "due_dates": ["2026-10-20"], "duplicate_of": null, "note": "11 multi-step, corrected name"},
+  {"segments": ["s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "15 delegation = ask Priya"},
+  {"segments": ["s9", "s10"], "assignees": ["coachee"], "due_dates": ["2026-10-09"], "duplicate_of": null, "note": "17 third person about coachee"},
+  {"segments": ["s11"], "assignees": ["coachee"], "due_dates": [null, "2026-10-09", "2026-10-11"], "duplicate_of": null, "note": "I'll try counts"},
+  {"segments": ["s12"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "6 coach follow-up no date"}
+]

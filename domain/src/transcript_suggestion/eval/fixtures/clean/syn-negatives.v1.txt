@@ -1,0 +1,25 @@
+# Synthetic case syn-negatives, original wording.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Alex Rivera
+# existing a1: Draft the quarterly plan
+[s1 00:02] Coach: Let me share my screen so we can look at your goals.
+[s2 00:20] Coachee: I really should exercise more. I'd love to get back to running someday.
+[s3 00:50] Coachee: I already sent the offsite agenda last week, so that's done.
+[s4 01:20] Coachee: The quarterly plan is about halfway done.
+[s5 02:00] Coach: Let's always start our sessions with one win from your week.
+[s6 02:05] Coachee: I like that, let's do that.
+[s7 02:40] Coach: Want to practice? Pretend I'm your director. Go.
+[s8 02:48] Coachee: Okay. "I'll have the revised forecast on your desk Friday, and I'll own the hiring plan."
+[s9 03:20] Coach: Good. How did that feel?
+[s10 03:40] Coachee: My boss said, "I'll fix the budget issue myself," so that's on him.
+[s11 04:10] Coachee: My manager will send me the reorg list next week.
+[s12 04:40] Coach: It might help to keep a decision log.
+[s13 04:45] Coachee: Hmm. Maybe.
+[s14 05:10] Coachee: I'm off to Denver next week for my sister's wedding.
+[s15 05:30] Coachee: Sure, I'll just quit my job and become a llama farmer, ha.
+[s16 05:50] Coachee: I'll write that down right now so I don't lose it.
+[s17 06:30] Coachee: I should call the vendor, and I will, by Friday.
+[s18 07:00] Coach: Same time in two weeks?
+[s19 07:03] Coachee: Yes. I'll stop the recording now.

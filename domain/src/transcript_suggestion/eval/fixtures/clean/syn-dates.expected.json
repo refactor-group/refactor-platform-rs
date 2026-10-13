@@ -1,0 +1,13 @@
+[
+  {"segments": ["s2"], "assignees": ["coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "in two weeks"},
+  {"segments": ["s3"], "assignees": ["coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "two weeks from this Wednesday"},
+  {"segments": ["s4"], "assignees": ["coachee"], "due_dates": ["2026-10-31"], "duplicate_of": null, "note": "end of month"},
+  {"segments": ["s5"], "assignees": ["coachee"], "due_dates": ["2026-10-09", "2026-10-11"], "duplicate_of": null, "note": "end of week"},
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": ["2026-10-11", "2026-10-10"], "duplicate_of": null, "note": "this weekend"},
+  {"segments": ["s7"], "assignees": ["coachee"], "due_dates": ["2026-10-12"], "duplicate_of": null, "note": "Monday"},
+  {"segments": ["s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "next Friday is ambiguous: blank"},
+  {"segments": ["s9"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "soon: blank"},
+  {"segments": ["s10"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "ASAP: blank"},
+  {"segments": ["s11"], "assignees": ["coachee"], "due_dates": [null, "2026-12-31"], "duplicate_of": null, "note": "at some point this year"},
+  {"segments": ["s12"], "assignees": ["coach"], "due_dates": ["2026-10-08"], "duplicate_of": null, "note": "EOD tomorrow"}
+]

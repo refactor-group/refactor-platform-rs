@@ -1,0 +1,5 @@
+[
+  {"segments": ["s1", "s10", "s12"], "assignees": ["coachee"], "due_dates": ["2026-10-12"], "duplicate_of": null, "note": "job description, corrected to Monday, once"},
+  {"segments": ["s2", "s3", "s5", "s10"], "assignees": ["coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "narrowed to two reqs, before we meet again, once"},
+  {"segments": ["s7", "s10"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "talk to Dana, once"}
+]

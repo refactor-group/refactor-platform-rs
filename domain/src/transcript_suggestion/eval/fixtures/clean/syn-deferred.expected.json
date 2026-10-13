@@ -1,0 +1,10 @@
+[
+  {"segments": ["s2"], "assignees": ["coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "deadline in the next line"},
+  {"segments": ["s4"], "assignees": ["coach"], "due_dates": ["2026-10-07"], "duplicate_of": null, "note": "after our call = session day"},
+  {"segments": ["s5"], "assignees": ["coachee"], "due_dates": ["2026-10-09"], "duplicate_of": null, "note": "deadline after a question"},
+  {"segments": ["s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "vendor call: no deadline (later deadline is for the hiring plan)"},
+  {"segments": ["s8", "s9"], "assignees": ["coachee"], "due_dates": ["2026-10-12"], "duplicate_of": null, "note": "hiring plan by Monday"},
+  {"segments": ["s10"], "assignees": ["coach"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "garbled 'that our next session'"},
+  {"segments": ["s12"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "slides: Thursday is the coach's review, not this"},
+  {"segments": ["s13"], "assignees": ["coach"], "due_dates": ["2026-10-08"], "duplicate_of": null, "note": "review by Thursday"}
+]
