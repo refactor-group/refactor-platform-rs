@@ -4,6 +4,7 @@ use entity::Id;
 use log::debug;
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, ColumnTrait, ConnectionTrait, Order, QueryOrder,
+    QuerySelect,
 };
 
 use super::error::{EntityApiErrorKind, Error};
@@ -37,16 +38,7 @@ pub async fn find_by_id<C: ConnectionTrait>(db: &C, id: Id) -> Result<Model, Err
     })
 }
 
-/// Pending suggestions of a session and target, oldest first.
-pub async fn find_pending_by_session<C: ConnectionTrait>(
-    db: &C,
-    coaching_session_id: Id,
-    target: Target,
-) -> Result<Vec<Model>, Error> {
-    find_by_session(db, coaching_session_id, target, Status::Pending).await
-}
-
-/// Suggestions of a session, target and status, oldest first.
+/// Suggestions of a session, target and status, oldest first, at most `limit`.
 ///
 /// A suggestion that already created an entity counts as accepted, so it is never listed as
 /// pending or dismissed even when its status says so.
@@ -55,6 +47,7 @@ pub async fn find_by_session<C: ConnectionTrait>(
     coaching_session_id: Id,
     target: Target,
     status: Status,
+    limit: u64,
 ) -> Result<Vec<Model>, Error> {
     let query = Entity::find()
         .filter(Column::CoachingSessionId.eq(coaching_session_id))
@@ -68,6 +61,7 @@ pub async fn find_by_session<C: ConnectionTrait>(
     Ok(query
         .order_by(Column::CreatedAt, Order::Asc)
         .order_by(Column::Id, Order::Asc)
+        .limit(limit)
         .all(db)
         .await?)
 }

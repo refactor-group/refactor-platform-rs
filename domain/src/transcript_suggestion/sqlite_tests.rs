@@ -107,7 +107,7 @@ async fn create_batch_inserts_every_row_and_keeps_the_proposal_json() {
 }
 
 #[tokio::test]
-async fn find_pending_by_session_skips_other_sessions_and_resolved_rows_in_created_order() {
+async fn find_by_session_skips_other_sessions_and_resolved_rows_in_created_order() {
     within_time_limit(async {
         let db = database().await;
         let (session_id, analysis_id, segment_id, user_id) = seed_parents(&db).await;
@@ -165,10 +165,16 @@ async fn find_pending_by_session_skips_other_sessions_and_resolved_rows_in_creat
         )
         .await?;
 
-        let found = find_pending_by_session(&db, session_id, Target::Action).await?;
+        let found = find_by_session(&db, session_id, Target::Action, Status::Pending, 10).await?;
         assert_eq!(
             found.iter().map(|m| m.id).collect::<Vec<_>>(),
             vec![earlier.id, later.id]
+        );
+
+        let first = find_by_session(&db, session_id, Target::Action, Status::Pending, 1).await?;
+        assert_eq!(
+            first.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![earlier.id]
         );
 
         Ok::<(), Error>(())
@@ -200,7 +206,7 @@ async fn find_by_session_lists_a_row_that_created_an_entity_only_as_accepted() {
         let ids = |status| {
             let db = &db;
             async move {
-                find_by_session(db, session_id, Target::Action, status)
+                find_by_session(db, session_id, Target::Action, status, 10)
                     .await
                     .map(|rows| rows.into_iter().map(|m| m.id).collect::<Vec<_>>())
             }

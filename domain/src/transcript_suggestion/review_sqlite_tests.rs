@@ -851,6 +851,28 @@ async fn list_returns_the_sessions_pending_suggestions_with_their_segment_and_du
 }
 
 #[tokio::test]
+async fn a_list_returns_at_most_the_cap_in_list_order() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let p = proposal(&f, "Send the org chart", vec![f.coachee.id], None, None);
+        let mut ids = vec![];
+        for _ in 0..=MAX_LISTED {
+            ids.push(suggest(&f, &p, Status::Pending, None).await.id);
+        }
+
+        let listed = list_actions(&f.db, &f.session, Status::Pending, now())
+            .await
+            .expect("the list reads");
+
+        // Every row shares one timestamp, so the order falls to the id.
+        ids.sort();
+        ids.truncate(MAX_LISTED as usize);
+        assert_eq!(listed.iter().map(|s| s.id).collect::<Vec<_>>(), ids);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_next_session_that_already_started_gives_seven_days() {
     within_time_limit(async {
         let f = fixture().await;

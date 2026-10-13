@@ -105,7 +105,7 @@ A resolved date is stored as noon in the coach's timezone so the day holds for v
 
 ## Review
 
-Routes are under `/coaching_sessions/:id/transcript_suggestions`: list (pending by default, or dismissed; oldest first), and `POST` accept, dismiss and restore. Access first goes through `CoachingSessionAccess`, and `TranscriptSuggestionAccess` also requires the suggestion to belong to the path session (otherwise 404).
+Routes are under `/coaching_sessions/:id/transcript_suggestions`: list (pending by default, or dismissed; oldest first; at most 200, with a warning logged when the cap is reached), and `POST` accept, dismiss and restore. Access first goes through `CoachingSessionAccess`, and `TranscriptSuggestionAccess` also requires the suggestion to belong to the path session (otherwise 404).
 
 - **Who may act.** Only the session's coach and coachee. The coach may act on anything. The coachee may not act on a coach-only suggestion, and may not add or remove the coach from the assignees in an edited accept. Violations are 403.
 - **Accept.** Creates one Action owned by the accepting user, with the stored body, due date, goal and assignees, or with the edits sent in the request body. Edits replace `body`, `due_by`, `goal_id` and `assignee_ids`; assignees must be the coach or coachee, the body 1 to 2000 characters, and the goal in the session's relationship (422 otherwise). The stored suggestion itself is never edited. The action insert and the `pending` to `accepted` transition commit in one transaction; a second accept finds the row no longer pending, rolls back and returns 409. The transition also refuses a row whose `created_entity_id` is already set, so one suggestion never creates two actions, even after its status is changed by hand.

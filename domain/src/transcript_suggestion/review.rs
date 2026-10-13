@@ -27,6 +27,10 @@ use crate::{
     users, Id,
 };
 
+/// Most suggestions one list returns: a database bound well above what real sessions collect (at
+/// most 50 per scan).
+pub(crate) const MAX_LISTED: u64 = 200;
+
 /// Days after the session, or after now once it has started, until a suggestion without a due
 /// date is due when no later session is scheduled.
 const FALLBACK_DUE_DAYS: i64 = 7;
@@ -245,7 +249,13 @@ pub async fn list_actions(
     status: Status,
     now: DateTime<Utc>,
 ) -> Result<Vec<ActionSuggestion>, Error> {
-    let rows = find_by_session(db, session.id, Target::Action, status).await?;
+    let rows = find_by_session(db, session.id, Target::Action, status, MAX_LISTED).await?;
+    if rows.len() as u64 == MAX_LISTED {
+        warn!(
+            "Session {} lists the first {MAX_LISTED} {status:?} suggestions; any more are not shown",
+            session.id
+        );
+    }
     if rows.is_empty() {
         return Ok(vec![]);
     }
