@@ -1,0 +1,17 @@
+# F4 commitments that change during the conversation, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coachee: I'll rewrite the job description by Friday. Actually, make that Monday, Friday is packed.
+[s2 00:16] Coach: How many of the open reqs can you review before we meet again? All five?
+[s3 00:23] Coachee: Let's say two.
+[s4 00:26] Coach: Two it is.
+[s5 00:29] Coachee: Okay, two.
+[s6 00:35] Coachee: I'll cancel the Thursday sync. Actually no, let's keep it, the team needs it.
+[s7 00:46] Coachee: I'll talk to Dana about the on-call rotation.
+[s8 00:54] Coach: How has the team been taking the new planning tool?
+[s9 01:02] Coachee: Mixed. The seniors like it, the juniors find it noisy.
+[s10 01:58] Coach: Let's recap. You're rewriting the job description by Monday, reviewing two reqs, and talking to Dana.
+[s11 02:08] Coachee: Yes, all three.
+[s12 02:13] Coachee: Oh, and the job description, I'll definitely get that done Monday.

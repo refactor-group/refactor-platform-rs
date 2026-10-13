@@ -150,3 +150,6 @@ pub(crate) fn validation(message: &str) -> Error {
 
 #[cfg(test)]
 mod sqlite_tests;
+
+#[cfg(test)]
+mod eval;

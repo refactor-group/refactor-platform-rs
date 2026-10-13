@@ -77,6 +77,7 @@ refactor-platform-rs/
 
 - **Build/Run**: `cargo build`, `cargo run`
 - **Testing**: `cargo test`
+  - **Suggested-action eval** (calls the real model, opt-in, about $2 per run): `cargo test -p domain suggestion_eval -- --ignored --nocapture`. Run it for any change to `actions_prompt.md`, the model, or suggestion verification or due-date code, and commit the updated `baseline.json` with the change. See `docs/test-plans/transcript_suggestions_eval.md`.
 - **Linting**: `cargo clippy`
 - **Formatting**: `cargo fmt`
 - **Database**: SeaORM with PostgreSQL

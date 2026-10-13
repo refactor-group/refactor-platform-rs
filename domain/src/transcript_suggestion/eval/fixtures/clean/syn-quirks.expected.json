@@ -1,0 +1,6 @@
+[
+  {"segments": ["s3", "s4", "s11"], "assignees": ["coachee"], "due_dates": ["2026-10-09"], "duplicate_of": null, "note": "split across lines + filler + repeated + recap: once"},
+  {"segments": ["s5", "s6", "s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "before next time with no next session: blank"},
+  {"segments": ["s7", "s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "talk to Dana, recapped: once"},
+  {"segments": ["s10"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "coach follow-up"}
+]

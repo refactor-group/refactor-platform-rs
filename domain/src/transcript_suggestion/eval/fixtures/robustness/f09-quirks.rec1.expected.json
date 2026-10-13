@@ -1,0 +1,4 @@
+[
+  {"segments": ["s2", "s3"], "assignees": ["coachee"], "due_dates": ["2026-10-16"], "duplicate_of": null, "note": "split sentence, by Friday"},
+  {"segments": ["s4", "s6"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "interrupted then finished"}
+]

@@ -1,0 +1,13 @@
+[
+  {"segments": ["s1", "s2"], "assignees": ["coach", "coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "shared reflection before next time: one suggestion for both"},
+  {"segments": ["s3"], "assignees": ["coach", "coachee"], "due_dates": [null, "2026-10-21"], "duplicate_of": null, "note": "each brings an example: one suggestion for both"},
+  {"segments": ["s4"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "split: coachee drafts the agenda"},
+  {"segments": ["s4"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "split: coach brings the facilitation guide"},
+  {"segments": ["s5"], "assignees": ["coachee"], "due_dates": [null, "2026-10-09"], "duplicate_of": null, "note": "conditional, condition kept in the body"},
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": [null, "2026-10-21"], "duplicate_of": null, "note": "daily habit for two weeks"},
+  {"segments": ["s7"], "assignees": ["coachee"], "due_dates": ["2026-10-30"], "duplicate_of": null, "note": "multi-step, one suggestion"},
+  {"segments": ["s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "delegation means asking Priya"},
+  {"segments": ["s9", "s10"], "assignees": ["coachee"], "due_dates": ["2026-10-09"], "duplicate_of": null, "note": "coach states it, coachee confirms"},
+  {"segments": ["s11"], "assignees": ["coachee"], "due_dates": [null, "2026-10-09"], "duplicate_of": null, "note": "I'll try counts"},
+  {"segments": ["s12"], "assignees": ["coachee"], "due_dates": ["2026-10-07"], "duplicate_of": null, "note": "self-question then commit, tonight"}
+]

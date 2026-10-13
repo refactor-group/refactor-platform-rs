@@ -1,0 +1,18 @@
+# Synthetic case syn-shapes, original wording.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Sam Lee
+[s1 00:03] Coach: Sam, you mentioned the team retro went sideways.
+[s2 00:15] Coachee: It did. People didn't speak up.
+[s3 01:10] Coach: Let's both think about what psychological safety looks like on your team before next time.
+[s4 01:16] Coachee: Yes, let's.
+[s5 02:00] Coachee: If the reorg is announced this week, I'll talk to HR about my role.
+[s6 02:45] Coachee: Every morning I'll write down my top three priorities, for the next two weeks.
+[s7 03:30] Coachee: For the board deck, I'll draft the outline, get Sam's feedback, no wait, get Lena's feedback, and then send it to the CFO by October 20th.
+[s8 04:10] Coachee: And I'll ask Priya to take over the vendor reviews.
+[s9 04:50] Coach: So Sam's going to share the retro notes with the team by Friday, right?
+[s10 04:55] Coachee: Right.
+[s11 05:30] Coachee: I'll try to say no to at least one meeting request this week.
+[s12 06:15] Coach: I'll find you a template for a team working agreement.
+[s13 06:20] Coachee: Thanks.
