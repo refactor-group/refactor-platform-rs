@@ -1,10 +1,12 @@
+use entity_api::{cost_pricing_config, meeting_recording as recording_api, platform_cost_metrics};
+use log::{debug, warn};
+use sea_orm::prelude::Decimal;
+use sea_orm::DatabaseConnection;
+
 use crate::cost_metric::Metric;
 use crate::error::Error;
 use crate::pipeline_provider::Provider;
 use crate::Id;
-use entity_api::{cost_pricing_config, meeting_recording as recording_api, platform_cost_metrics};
-use log::warn;
-use sea_orm::DatabaseConnection;
 
 /// Records the Recall.ai bot-minutes cost for a completed recording.
 ///
@@ -33,6 +35,49 @@ pub async fn record_transcription_hours(
         meeting_recording_id,
     )
     .await
+}
+
+/// Records the LLM Gateway token cost of one transcript analysis.
+///
+/// No-ops with a warning if no pricing row is configured, and skips a zero-token
+/// completion rather than writing a misleading `$0.00` row.
+pub async fn record_llm_tokens(
+    db: &DatabaseConnection,
+    transcript_analysis_id: Id,
+    coaching_session_id: Id,
+    input_tokens: u32,
+    output_tokens: u32,
+) -> Result<(), Error> {
+    let metric = Metric::LlmTokens;
+    let Some(rate) =
+        cost_pricing_config::find_current_rate(db, Provider::LlmGateway, metric).await?
+    else {
+        warn!("cost: no pricing config for (LlmGateway, {metric:?}), skipping {transcript_analysis_id}");
+        return Ok(());
+    };
+
+    let quantity = Decimal::from(input_tokens) + Decimal::from(output_tokens);
+    if quantity.is_zero() {
+        debug!("cost: no tokens used by analysis {transcript_analysis_id}, skipping");
+        return Ok(());
+    }
+
+    let costs = rate.cost_for(quantity);
+    platform_cost_metrics::create(
+        db,
+        platform_cost_metrics::CreateParams {
+            provider: Provider::LlmGateway,
+            metric,
+            coaching_session_id: Some(coaching_session_id),
+            source_record_id: transcript_analysis_id,
+            cost_low: costs.low,
+            cost_high: costs.high,
+            cost_avg: costs.avg,
+        },
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Shared cost-recording path for the duration-derived Recall.ai metrics.

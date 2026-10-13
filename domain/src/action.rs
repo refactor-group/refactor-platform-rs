@@ -12,9 +12,10 @@ use sea_orm::DatabaseConnection;
 // Mutations that emit SSE (create_with_assignees, update_with_assignees, update_status,
 // delete_by_id) are wrapped below; the rest are direct re-exports.
 pub use entity_api::action::{
-    create, find_by_coaching_relationship, find_by_id, find_by_id_with_assignees, find_by_user,
-    find_by_user_relationships, update, ActionWithAssignees, AssigneeFilter, AssigneeScope,
-    CallerVisibility, FindByRelationshipParams, FindByUserParams, Scope,
+    create, find_by_coaching_relationship, find_by_coaching_session, find_by_id,
+    find_by_id_with_assignees, find_by_user, find_by_user_relationships, update,
+    ActionWithAssignees, AssigneeFilter, AssigneeScope, CallerVisibility, FindByRelationshipParams,
+    FindByUserParams, Scope,
 };
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -79,7 +80,7 @@ async fn action_notify_user_ids(
 }
 
 /// Publishes `ActionCreated` or `ActionUpdated` carrying the full action (with assignees).
-async fn publish_action_changed(
+pub(crate) async fn publish_action_changed(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
     action: &ActionWithAssignees,

@@ -7,8 +7,9 @@ pub use entity::{
     coaching_session_images, coaching_session_topics, coaching_session_views, coaching_sessions,
     coaching_sessions_goals, cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens,
     meeting_provider, notes, oauth_connections, organizations, password_reset_attempts,
-    pipeline_provider, status, token_purpose, topic_priority, topic_status, user_invite_status,
-    user_lookup_attempts, user_role_changes, user_roles, users, users::Role, Id,
+    pipeline_provider, status, token_purpose, topic_priority, topic_status,
+    transcript_suggestion_target, user_invite_status, user_lookup_attempts, user_role_changes,
+    user_roles, users, users::Role, Id,
 };
 
 pub mod action;
@@ -37,7 +38,10 @@ pub mod password_reset_attempt;
 pub mod platform_cost_metrics;
 pub mod query;
 pub mod tiptap_metrics;
+pub mod transcript_analysis;
+pub mod transcript_participant;
 pub mod transcript_segment;
+pub mod transcript_suggestion;
 pub mod transcription;
 pub mod user;
 pub mod user_lookup_attempt;

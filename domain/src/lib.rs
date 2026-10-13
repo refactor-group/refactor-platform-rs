@@ -16,8 +16,8 @@ pub use entity_api::{
     coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
     cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens, meeting_provider, notes,
     oauth_connections, organizations, password_reset_attempts, pipeline_provider, query::QuerySort,
-    status, token_purpose, topic_priority, topic_status, user_lookup_attempts, user_role_changes,
-    user_roles, users, Id,
+    status, token_purpose, topic_priority, topic_status, transcript_suggestion_target,
+    user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
 
 pub mod action;
@@ -48,8 +48,12 @@ pub mod organization;
 pub mod password_policy;
 pub mod password_reset;
 pub mod tiptap_metrics;
+pub mod transcript_analysis;
+pub(crate) mod transcript_attribution;
 pub mod transcript_export;
+pub mod transcript_participant;
 pub mod transcript_segment;
+pub mod transcript_suggestion;
 pub mod transcription;
 pub mod user;
 pub mod user_lookup;

@@ -11,8 +11,9 @@ use entity::{
 };
 use log::*;
 use sea_orm::{
-    entity::prelude::*, sea_query::Alias, sea_query::OnConflict, Condition, DatabaseConnection,
-    DbErr, FromQueryResult, JoinType, QuerySelect, QueryTrait, Set,
+    entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict, Condition,
+    DatabaseConnection, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType, QuerySelect,
+    QueryTrait, Set,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -226,6 +227,66 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// The relationship's coach and coachee, in that order, read in one query.
+///
+/// # Errors
+///
+/// `RecordNotFound` when the relationship does not exist.
+pub async fn find_coach_and_coachee(
+    db: &impl ConnectionTrait,
+    relationship_id: Id,
+) -> Result<(users::Model, users::Model), Error> {
+    let mut select = Entity::find_by_id(relationship_id).select_only();
+    for (alias, prefix, relationship_column) in [
+        (
+            COACH_ALIAS,
+            COACH_PREFIX,
+            coaching_relationships::Column::CoachId,
+        ),
+        (
+            COACHEE_ALIAS,
+            COACHEE_PREFIX,
+            coaching_relationships::Column::CoacheeId,
+        ),
+    ] {
+        select = users::Column::iter().fold(select, |select, column| {
+            select.column_as(
+                Expr::col((Alias::new(alias), column)),
+                format!("{prefix}{}", column.to_string()),
+            )
+        });
+        QuerySelect::query(&mut select).join_as(
+            JoinType::InnerJoin,
+            users::Entity.table_ref(),
+            Alias::new(alias),
+            Expr::col((Alias::new(alias), users::Column::Id))
+                .equals((coaching_relationships::Entity, relationship_column)),
+        );
+    }
+
+    let row = db
+        .query_one(QueryTrait::query(&mut select))
+        .await?
+        .ok_or_else(not_found)?;
+
+    Ok((
+        users::Model::from_query_result(&row, COACH_PREFIX)?,
+        users::Model::from_query_result(&row, COACHEE_PREFIX)?,
+    ))
+}
+
+const COACH_ALIAS: &str = "coach";
+const COACH_PREFIX: &str = "coach_";
+const COACHEE_ALIAS: &str = "coachee";
+const COACHEE_PREFIX: &str = "coachee_";
+
+fn not_found() -> Error {
+    Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    }
 }
 
 pub async fn find_by_user(db: &DatabaseConnection, user_id: Id) -> Result<Vec<Model>, Error> {
@@ -589,6 +650,22 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_coach_and_coachee_reads_both_users_in_one_joined_statement() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+        let _ = find_coach_and_coachee(&db, Id::new_v4()).await;
+
+        let statements: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| transaction.statements().iter().map(|s| s.sql.clone()))
+            .collect();
+        assert_eq!(statements.len(), 1);
+        assert!(statements[0].contains("JOIN"), "{}", statements[0]);
+        assert!(!statements[0].contains(" OR "), "{}", statements[0]);
     }
 
     #[tokio::test]

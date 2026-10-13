@@ -12,6 +12,7 @@ sequenceDiagram
     participant BE as Axum Backend
     participant DB as PostgreSQL
     participant Recall as Recall.ai
+    participant Google as Google Meet API
 
     rect rgb(220, 235, 255)
         Note over FE,Recall: Phase 1 — Start Recording
@@ -106,9 +107,12 @@ sequenceDiagram
         Recall-->>BE: { id, status, data: { download_url } }
         BE->>Recall: GET {download_url} (pre-signed S3 URL, no auth)
         Recall-->>BE: transcript JSON [{ participant: { name, id },<br/>words: [{ text, start_timestamp: { relative },<br/>end_timestamp: { relative } }] }]
-        Note over BE: Flatten words by speaker, sort chronologically,<br/>coalesce (same speaker + gap under 1.5s = same segment)
+        Note over BE: Flatten words by participant, sort chronologically,<br/>coalesce (same participant + gap under 1.5s = same segment)
+        BE->>Recall: GET /api/v1/bot/:bot_id/ (meeting_url.meeting_id)
+        Note over BE: Attribute speakers (never fails the transcript):<br/>only if the bot recorded the session's own Meet space,<br/>coach = Recall host and/or Google attendee with the coach's account<br/>(must agree when both answer), coachee by elimination
+        BE->>Google: GET conferenceRecords + participants (coach's token, when available)
+        BE->>DB: one transaction: INSERT transcript_participants (with user_id, match_source),<br/>INSERT transcript_segments (participant_id)
         BE->>DB: update_status → Completed, set word_count
-        BE->>DB: batch INSERT transcript_segments<br/>(speaker_label, text, start_ms, end_ms)
         BE-->>FE: SSE event: transcription_updated { coaching_session_id }
     end
 
@@ -120,8 +124,8 @@ sequenceDiagram
         BE-->>FE: { status: "completed", id }
         Note over FE: SWR also invalidates transcription_segments cache
         FE->>BE: GET /coaching_sessions/:id/transcriptions/:id/transcription_segments
-        BE->>DB: list segments for transcription_id ORDER BY start_ms ASC
-        DB-->>BE: [{ speaker_label, text, start_ms, end_ms }]
+        BE->>DB: list segments + participants, label speakers (profile name / typed name / Guest N)
+        DB-->>BE: [{ speaker_label, speaker_user_id, speaker_role, text, start_ms, end_ms }]
         BE-->>FE: segments array
         FE->>FE: Render transcript (grouped bubbles, search, speaker filter)
     end

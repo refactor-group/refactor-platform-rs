@@ -6,7 +6,10 @@ use axum_login::{
     tower_sessions::{Expiry, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
-use domain::jobs::{coaching_session_image_purge, password_reset, session_reminder, Scheduler};
+use domain::jobs::{
+    coaching_session_image_purge, password_reset, session_reminder, transcript_suggestions,
+    Scheduler,
+};
 use domain::user::Backend;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower_sessions::ExpiredDeletion;
@@ -142,6 +145,15 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         None => {
             info!("Object storage is not configured — coaching note image purging disabled")
         }
+    }
+    match transcript_suggestions::Sweep::from_config(
+        &app_state.config,
+        app_state.event_publisher.as_ref().clone(),
+    ) {
+        Some(sweep) => {
+            scheduler.spawn(sweep);
+        }
+        None => info!("ASSEMBLY_AI_API_KEY not set, transcript suggestions disabled"),
     }
     let job_handles = scheduler.into_handles();
 

@@ -15,8 +15,9 @@ setup() {
     source "$SCRIPT"
 
     ROOT="$BATS_TEST_TMPDIR/repo"
-    mkdir -p "$ROOT/scripts" "$ROOT/target/debug" "$ROOT/bin"
+    mkdir -p "$ROOT/scripts/lib" "$ROOT/target/debug" "$ROOT/bin"
     cp "$SCRIPT" "$ROOT/scripts/run_backend.sh"
+    cp "$BATS_TEST_DIRNAME/../lib/dotenv.sh" "$ROOT/scripts/lib/dotenv.sh"
     LAUNCHER="$ROOT/scripts/run_backend.sh"
     CALLS="$ROOT/calls.log"
 
@@ -40,9 +41,11 @@ env | grep -E '^(DATABASE_URL|DATABASE_SCHEMA|JWT_SIGNING_KEY|MANAGEMENT_AUTH_KE
     | sed "s/^/$me env: /" >> "$CALLS"
 echo "$me started"
 # STUB_EXIT_<NAME>=<code> makes this binary exit with that code; else it idles.
+# exec so a TERM reaches the sleep (an orphaned one holds the output FIFO open);
+# -a keeps this absolute path in argv for the pgrep/pkill checks.
 var="STUB_EXIT_$(echo "$me" | tr 'a-z-' 'A-Z_')"
 if [[ -n "${!var:-}" ]]; then exit "${!var}"; fi
-sleep 30
+exec -a "$(cd "$(dirname "$0")" && pwd)/$me" sleep 30
 EOF
     done
     chmod +x "$ROOT/bin/"* "$ROOT/target/debug/"*
