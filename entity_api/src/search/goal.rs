@@ -2,18 +2,13 @@
 
 use async_trait::async_trait;
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
-use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, JoinType, Order, QueryFilter,
-    QueryOrder, QuerySelect, QueryTrait, RelationTrait,
+    ColumnTrait, DatabaseConnection, FromQueryResult, QueryFilter, QuerySelect, QueryTrait,
+    RelationTrait,
 };
 
-use super::{
-    compile_query, cursor_condition, excerpt_title, Core, FtsExpressions, GoalHit, Hit, HitType,
-    Request,
-};
+use super::{excerpt_title, Core, FtsQuery, GoalHit, Hit, HitType, Request, Source};
 use crate::error::Error;
-use entity::coaching_relationships;
 use entity::goals::{Column, Entity, Relation};
 use entity::status::Status;
 use entity::Id;
@@ -46,63 +41,33 @@ impl super::Searcher for Searcher {
     }
 
     async fn search(&self, db: &DatabaseConnection, req: &Request<'_>) -> Result<Vec<Hit>, Error> {
-        let cq = compile_query(req.q);
-        let fts = FtsExpressions::over(TEXT_EXPR);
-        let select = Entity::find()
-            .select_only()
-            .column(Column::Id)
-            .column_as(fts.score(&cq), "score")
+        let q = FtsQuery::new(
+            req,
+            Source {
+                hit_type: HitType::Goal,
+                text_expr: TEXT_EXPR,
+                id: Column::Id,
+                created_at: Column::CreatedAt,
+                updated_at: Column::UpdatedAt,
+                relationship_id: Column::CoachingRelationshipId,
+                path: vec![Relation::CoachingRelationships.def()],
+            },
+        );
+        let select = q
+            .select::<Entity>()
             .column(Column::Title)
             .column(Column::Body)
             .column(Column::Status)
             .column(Column::CreatedInSessionId)
-            .column(Column::CreatedAt)
-            .column(Column::UpdatedAt)
-            .column(Column::CoachingRelationshipId)
-            // Data join only — organization_id for the hit core, never a scope test.
-            .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-            .column(coaching_relationships::Column::OrganizationId)
-            .filter(fts.match_condition(&cq));
-
-        let select = match req.effective_relationship_ids(false) {
-            Some(ids) => select.filter(Column::CoachingRelationshipId.is_in(ids.iter().copied())),
-            None => select,
-        };
-
-        let rows = select
             // `user_id` means creator for goals.
             .apply_if(req.filters.user_id, |q, id| q.filter(Column::UserId.eq(id)))
             // `goal_id` narrows the goals type to the goal itself.
             .apply_if(req.filters.goal_id, |q, id| q.filter(Column::Id.eq(id)))
             .apply_if(req.filters.status.clone(), |q, s| {
                 q.filter(Column::Status.eq(s))
-            })
-            .apply_if(req.filters.created.from, |q, v| {
-                q.filter(Column::CreatedAt.gte(v))
-            })
-            .apply_if(req.filters.created.to_exclusive, |q, v| {
-                q.filter(Column::CreatedAt.lt(v))
-            })
-            .apply_if(req.filters.updated.from, |q, v| {
-                q.filter(Column::UpdatedAt.gte(v))
-            })
-            .apply_if(req.filters.updated.to_exclusive, |q, v| {
-                q.filter(Column::UpdatedAt.lt(v))
-            })
-            .apply_if(req.cursor, |q, c| {
-                q.filter(cursor_condition(
-                    || fts.score(&cq),
-                    Column::Id,
-                    HitType::Goal,
-                    c,
-                ))
-            })
-            .order_by(Expr::cust(r#""score""#), Order::Desc)
-            .order_by(Column::Id, Order::Asc)
-            .limit(req.fetch)
-            .into_model::<Row>()
-            .all(db)
-            .await?;
+            });
+
+        let rows = q.finish(select).into_model::<Row>().all(db).await?;
 
         Ok(rows
             .into_iter()

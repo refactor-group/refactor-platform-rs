@@ -15,11 +15,15 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use sea_orm::entity::prelude::{DateTime, DateTimeWithTimeZone};
 use sea_orm::sea_query::{Condition, Expr, IntoCondition, SimpleExpr};
-use sea_orm::{ColumnTrait, DatabaseConnection, ExprTrait, Value};
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, ExprTrait, JoinType, Order, QueryFilter,
+    QueryOrder, QuerySelect, QueryTrait, RelationDef, Select, Value,
+};
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::error::Error;
+use entity::coaching_relationships;
 use entity::coaching_relationships::Visibility;
 use entity::status::Status;
 use entity::topic_priority::Priority;
@@ -482,6 +486,108 @@ pub(crate) fn cursor_condition<C: ColumnTrait>(
             ),
         // This type sorts before the cursor's type: equal scores were already served.
         Ordering::Less => Expr::expr(score()).lt(cursor.score).into_condition(),
+    }
+}
+
+/// Where one searcher's hits come from: what the shared query skeleton needs
+/// to know about its table.
+pub(crate) struct Source<C, R> {
+    pub hit_type: HitType,
+    /// The searcher's raw-text SQL expression (its `TEXT_EXPR`).
+    pub text_expr: &'static str,
+    pub id: C,
+    pub created_at: C,
+    pub updated_at: C,
+    /// The relationship id column the visibility scope tests: the table's own
+    /// FK, or `coaching_sessions`' for session-anchored types.
+    pub relationship_id: R,
+    /// FK path from this table to `coaching_relationships` — a data join for
+    /// `organization_id`, never a scope test.
+    pub path: Vec<RelationDef>,
+}
+
+/// The query skeleton every FTS searcher shares, so a searcher only adds its
+/// own columns and type-specific filters between [`select`](Self::select) and
+/// [`finish`](Self::finish).
+pub(crate) struct FtsQuery<'r, 'a, C, R> {
+    req: &'r Request<'a>,
+    source: Source<C, R>,
+    cq: CompiledQuery,
+    fts: FtsExpressions,
+    participant_scoped: bool,
+}
+
+impl<'r, 'a, C, R> FtsQuery<'r, 'a, C, R>
+where
+    C: ColumnTrait + Copy,
+    R: ColumnTrait + Copy,
+{
+    pub(crate) fn new(req: &'r Request<'a>, source: Source<C, R>) -> Self {
+        Self {
+            req,
+            cq: compile_query(req.q),
+            fts: FtsExpressions::over(source.text_expr),
+            source,
+            participant_scoped: false,
+        }
+    }
+
+    /// Scope on the domain's participant-narrowed relationship set when the
+    /// `user_id` filter is present (it means participant, not creator).
+    pub(crate) fn participant_scoped(mut self) -> Self {
+        self.participant_scoped = true;
+        self
+    }
+
+    /// The matching rows with the columns every hit's `Core` reads: `id`,
+    /// `score`, `created_at`, `updated_at`, `coaching_relationship_id`, and
+    /// `organization_id` via the FK path.
+    pub(crate) fn select<E: EntityTrait<Column = C>>(&self) -> Select<E> {
+        let src = &self.source;
+        let select = E::find()
+            .select_only()
+            .column(src.id)
+            .column_as(self.fts.score(&self.cq), "score")
+            .column(src.created_at)
+            .column(src.updated_at)
+            .column_as(src.relationship_id, "coaching_relationship_id");
+        src.path
+            .iter()
+            .cloned()
+            .fold(select, |s, rel| s.join(JoinType::InnerJoin, rel))
+            .column(coaching_relationships::Column::OrganizationId)
+            .filter(self.fts.match_condition(&self.cq))
+    }
+
+    /// Relationship scope, created/updated windows, cursor keyset, response
+    /// ordering, and the `limit + 1` fetch.
+    pub(crate) fn finish<E: EntityTrait<Column = C>>(&self, select: Select<E>) -> Select<E> {
+        let src = &self.source;
+        let f = self.req.filters;
+        select
+            .apply_if(
+                self.req.effective_relationship_ids(self.participant_scoped),
+                |q, ids| q.filter(src.relationship_id.is_in(ids.iter().copied())),
+            )
+            .apply_if(f.created.from, |q, v| q.filter(src.created_at.gte(v)))
+            .apply_if(f.created.to_exclusive, |q, v| {
+                q.filter(src.created_at.lt(v))
+            })
+            .apply_if(f.updated.from, |q, v| q.filter(src.updated_at.gte(v)))
+            .apply_if(f.updated.to_exclusive, |q, v| {
+                q.filter(src.updated_at.lt(v))
+            })
+            .apply_if(self.req.cursor, |q, c| {
+                q.filter(cursor_condition(
+                    || self.fts.score(&self.cq),
+                    src.id,
+                    src.hit_type,
+                    c,
+                ))
+            })
+            .order_by(Expr::cust(r#""score""#), Order::Desc)
+            .order_by(src.id, Order::Asc)
+            .limit(self.req.fetch)
     }
 }
 
