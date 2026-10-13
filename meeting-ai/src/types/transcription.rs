@@ -37,10 +37,26 @@ pub struct Word {
 pub struct Segment {
     pub text: String,
     pub speaker: String,
+    /// The `provider_id` of the participant who spoke it, when known.
+    pub participant_id: Option<String>,
     pub start_ms: i64,
     pub end_ms: i64,
     pub confidence: f64,
     pub words: Vec<Word>,
+}
+
+/// A meeting participant as reported by the recording provider.
+///
+/// `provider_id` is unique within one transcription. `account_id` is the platform's stable
+/// account identifier when the platform exposes one, and `None` otherwise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Participant {
+    pub provider_id: String,
+    pub display_name: Option<String>,
+    pub is_host: Option<bool>,
+    pub platform: Option<String>,
+    pub account_id: Option<String>,
+    pub extra_data: Option<serde_json::Value>,
 }
 
 /// Auto-detected topical chapter with AI-generated summary.
@@ -93,6 +109,8 @@ pub struct Transcription {
     pub text: Option<String>,
     pub words: Vec<Word>,
     pub segments: Vec<Segment>,
+    /// Everyone who spoke, in first-appearance order.
+    pub participants: Vec<Participant>,
     pub chapters: Vec<Chapter>,
     pub sentiment_analysis: Vec<SentimentAnalysis>,
     pub confidence: Option<f64>,

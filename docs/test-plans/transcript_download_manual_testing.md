@@ -104,7 +104,7 @@ segment at 12s is absent. The 59s line reads `[0:59]`.
 dl coach text/plain "?speaker=coach"
 ```
 
-**Pass:** 200, filename ends `-filtered.txt`, header reads `Speakers: Jim H`,
+**Pass:** 200, filename is `transcript-<date>-jim-h.txt`, header reads `Speakers: Jim H`,
 no `Caleb Bourg` or `Guest` lines.
 
 ### Case 4: both roles excludes only the guest
@@ -114,7 +114,7 @@ dl coach text/plain "?speaker=coach&speaker=coachee"
 ```
 
 **Pass:** 200, header `Speakers: Jim H, Caleb Bourg`, `Guest` lines absent,
-filename ends `-filtered.txt`.
+filename is `transcript-<date>-jim-h-caleb-bourg.txt` (each filtered speaker's slug, in speaking order).
 
 ### Case 5: unknown enum value
 

@@ -11,6 +11,7 @@ pub(crate) mod organization_user_access;
 pub(crate) mod scope;
 pub(crate) mod super_admin_access;
 pub(crate) mod svix_signature;
+pub(crate) mod transcript_suggestion_access;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]

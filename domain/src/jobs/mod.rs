@@ -44,6 +44,7 @@ use crate::error::Error;
 pub mod coaching_session_image_purge;
 pub mod password_reset;
 pub mod session_reminder;
+pub mod transcript_suggestions;
 
 /// What every job is handed on each tick.
 ///

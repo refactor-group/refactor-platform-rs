@@ -20,6 +20,7 @@ pub(crate) mod goal;
 pub(crate) mod jwt;
 pub(crate) mod search;
 pub(crate) mod sort;
+pub(crate) mod transcript_suggestion;
 pub(crate) mod user;
 pub(crate) mod validation;
 

@@ -23,7 +23,10 @@ sse = { path = "sse" }
 
 clap = { version = "4.5.20", features = ["cargo", "derive", "env"] }
 log = "0.4.22"
-simplelog = { version = "0.12.2", features = ["paris"] }
 tokio = "1.44.2"
 openssl-sys = { version = "0.9.107", features = ["vendored"] }
 
+
+# Unoptimized argon2 makes every test login take seconds.
+[profile.dev.package.argon2]
+opt-level = 3

@@ -11,7 +11,7 @@ This guide covers setting up the Refactor platform for local development and pro
 - Rust toolchain (`rustup` + stable)
 - PostgreSQL 14+ (see [README.md](../README.md) for DB setup)
 - `cargo`, `sea-orm-cli` 2.0.3 (matches `sea-orm-migration`)
-- [ngrok](https://ngrok.com/) or similar tunnel (for Recall.ai webhooks)
+- [ngrok](https://ngrok.com/) with a reserved domain (for Recall.ai webhooks; see section 4)
 
 ### 1. Core Application
 
@@ -51,7 +51,7 @@ ENCRYPTION_KEY=<64-hex-char output from above>
    - Add your Google account as a **Test user** (required while the app is in "Testing" status)
 4. Navigate to **APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID**:
    - Application type: **Web application**
-   - Authorized redirect URI: `http://localhost:4000/api/auth/google/callback`
+   - Authorized redirect URI: `http://localhost:4000/oauth/google/callback`
    - Download or copy the Client ID and Client Secret
 
 #### Environment Variables
@@ -59,7 +59,7 @@ ENCRYPTION_KEY=<64-hex-char output from above>
 ```env
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
-GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
+GOOGLE_REDIRECT_URI=http://localhost:4000/oauth/google/callback
 
 # Note: this var has NO `GOOGLE_` prefix even though it's used by the Google OAuth flow.
 # A typo like `GOOGLE_OAUTH_SUCCESS_REDIRECT_URI=...` is silently ignored (the code
@@ -75,68 +75,58 @@ OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 
 ### 4. Recall.ai
 
-#### Get an API Key
+Recall.ai sends recording and transcript events to `POST /webhooks/recall_ai`, so during local development it has to reach your machine. Recall has no API for webhook endpoints, and every endpoint in a workspace receives every event in that workspace. So each developer uses **their own Recall development workspace** with one endpoint pointing at their own reserved ngrok domain. Set it up once; nothing needs editing afterwards.
 
-1. Sign up at [recall.ai](https://recall.ai) and create a workspace.
-2. In the dashboard, navigate to **API Keys** and generate a new key.
-3. Note your region — use `us-east-1` for US workspaces, `eu-west-2` for EU.
+#### One-time setup
 
-#### Configure a Webhook
+1. **Recall workspace.** In the Recall dashboard, create a development workspace for yourself (never the production one; a shared one would also deliver other developers' bot events to you). Note its region (`us-west-2` for ours).
+2. **API key and signing secret.** In that workspace, create an API key, then under **Developers > API Keys & Secrets** create the workspace secret (starts with `whsec_`).
+3. **ngrok domain.** Install [ngrok](https://ngrok.com/), run `ngrok config add-authtoken <token>`, and reserve a static domain in the ngrok dashboard (one is included on the free plan).
+4. **`.env`:**
 
-Recall.ai sends bot lifecycle events to `POST /webhooks/recall_ai`. For local development the backend must be publicly reachable — use ngrok:
+   ```env
+   NGROK_DOMAIN=<your-reserved-domain>        # e.g. jim-dev.ngrok.app
+   RECALL_AI_API_KEY=<key from your workspace>
+   RECALL_AI_REGION=us-west-2                 # your workspace's region
+   RECALL_AI_WEBHOOK_SECRET=whsec_<your workspace secret>
+   ```
 
-```bash
-# Start the backend first, then in another terminal.
+5. **Open the tunnel once** with the backend running (see Development Flow below):
 
-# Free plan (random subdomain, changes on every restart):
-ngrok http 4000
-# Copy the https URL from the output, e.g. https://abc123.ngrok-free.dev
+   ```bash
+   scripts/recall_webhook_tunnel.sh
+   ```
 
-# Paid plan (reserved domain that survives restarts):
-ngrok http 4000 --url=<your-stable-domain>.ngrok-free.dev
-```
+   It prints your endpoint URL and the events to subscribe to.
+6. **Recall endpoint.** In your workspace, **Webhooks > Add Endpoint**: paste the URL the script printed (`https://<your-domain>/webhooks/recall_ai`) and subscribe to every event it lists. The `/webhooks/recall_ai` path is required: the bare host answers POSTs with 405, because unmatched paths fall through to a static-file handler.
 
-> Note: ngrok deprecated the `--domain` flag. Use `--url` for reserved domains. Plain `ngrok http 4000` still works for free-plan ephemeral URLs.
+#### Every session
 
-In the Recall.ai dashboard:
+Start the backend, then run `scripts/recall_webhook_tunnel.sh` in another terminal and leave it running; Ctrl-C stops the tunnel. Before opening the tunnel it checks:
 
-1. Go to **Webhooks → Add Endpoint**
-2. URL: `https://<your-ngrok-url>/webhooks/recall_ai`
-3. Select events: `bot.status_change`, `recording.done`, `transcript.done`
-4. After saving, copy the **Signing Secret** (starts with `whsec_`)
+- `NGROK_DOMAIN`, `RECALL_AI_REGION`, and the `whsec_` form of `RECALL_AI_WEBHOOK_SECRET`;
+- that Recall accepts your key in that region (a key from another region or workspace is rejected here, rather than surfacing later as transcripts that never arrive);
+- that the backend answers on `http://localhost:$PORT/health` (`PORT` defaults to 4000);
+- that `GOOGLE_REDIRECT_URI` points at the local backend (a warning only).
 
-> **Important: the `/webhooks/recall_ai` path is required.**
->
-> Setting the URL to just the ngrok host (e.g. `https://abc123.ngrok-free.dev`) causes every delivery to fail with **405 Method Not Allowed**, because the Axum router falls back to a static-file handler that only accepts GET/HEAD for unmatched paths.
->
-> - Wrong: `https://abc123.ngrok-free.dev`
-> - Right: `https://abc123.ngrok-free.dev/webhooks/recall_ai`
+Once the tunnel is up it sends an unsigned `POST /webhooks/recall_ai` through it. A **401** from the handler proves the route reaches the backend; anything else is reported with what to fix. Because that check is unsigned, the backend logs one `Svix validation error ... Missing svix-id/webhook-id header` warning each time the tunnel opens. That warning is expected; real Recall deliveries always carry the signature headers. `scripts/recall_webhook_tunnel.sh --check` does all of this and then closes the tunnel, which is handy for verifying a setup.
 
-> **Note:** The ngrok URL changes every restart on the free plan. Update the Recall.ai webhook endpoint each session, or use a paid ngrok plan with a stable URL.
+If ngrok reports the domain is already online, another ngrok (often a forgotten earlier run) holds it; stop that one first.
 
-#### Verify the endpoint
+### 5. Suggested Actions (AssemblyAI LLM Gateway)
 
-Before triggering a real Recall.ai bot, send a raw POST to confirm the path resolves to the handler:
-
-```bash
-curl -i -X POST https://<your-ngrok-url>/webhooks/recall_ai
-```
-
-Interpret the response:
-
-- **401 Unauthorized** (body: `Webhook secret not configured`, `Signature validation failed`, or `Invalid signature`) means the request reached the Axum handler. This is the **expected** response for a raw curl, since it has no valid Svix signature. The URL is correct.
-- **405 Method Not Allowed** means the URL path is wrong and the request was absorbed by the static-file fallback. Re-check that the endpoint in the Recall.ai dashboard ends in `/webhooks/recall_ai`.
-- **404 Not Found** or no response means ngrok isn't tunneling to your backend, or the backend isn't running on port 4000.
-
-#### Environment Variables
+When a coaching session transcript completes, the backend sends the speaker-labelled transcript to the AssemblyAI LLM Gateway and stores the commitments it finds as suggested Actions that the coach and coachee review. Nothing becomes an Action until one of them accepts it. See [docs/architecture/transcript_suggestions.md](architecture/transcript_suggestions.md) for how it works.
 
 ```env
-RECALL_AI_API_KEY=<your-recall-ai-api-key>
-RECALL_AI_REGION=us-east-1          # or eu-west-2
-RECALL_AI_WEBHOOK_SECRET=whsec_<base64-encoded-secret>
+ASSEMBLY_AI_API_KEY=<your AssemblyAI API key>
+# These have working defaults; only set them to override:
+# ASSEMBLY_AI_LLM_MODEL=claude-sonnet-4-6
+# ASSEMBLY_AI_LLM_BASE_URL=https://llm-gateway.assemblyai.com/v1
 ```
 
-### 5. Coaching Note Images (Object Storage)
+Without `ASSEMBLY_AI_API_KEY` transcripts still complete and no suggestions are made. Surrounding whitespace, such as a trailing newline, is trimmed; a key with any other character a header cannot carry is ignored with a startup warning. Only transcripts that complete while the key is set are analyzed. To test locally, record a real session through the Recall webhook tunnel (section 4) and follow [docs/test-plans/transcript_suggestions_manual_testing.md](test-plans/transcript_suggestions_manual_testing.md).
+
+### 6. Coaching Note Images (Object Storage)
 
 Images pasted into a coaching note are uploaded to object storage; the note itself stores only an
 image id and resolves the URL at render time. `OBJECT_STORE_BACKEND` picks the backend.
@@ -184,7 +174,7 @@ the image endpoints return 503 rather than failing startup.
 To verify the whole pipeline end to end, follow
 [docs/test-plans/coaching_session_images_manual_testing.md](test-plans/coaching_session_images_manual_testing.md).
 
-### 6. Full `.env` Snippet
+### 7. Full `.env` Snippet
 
 ```env
 # ==============================
@@ -197,15 +187,23 @@ ENCRYPTION_KEY=<output of: openssl rand -hex 32>
 # ==============================
 GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<client-secret>
-GOOGLE_REDIRECT_URI=http://localhost:4000/api/auth/google/callback
+GOOGLE_REDIRECT_URI=http://localhost:4000/oauth/google/callback
 OAUTH_SUCCESS_REDIRECT_URI=http://localhost:3000/settings
 
 # ==============================
 #   Recall.ai
 # ==============================
-RECALL_AI_API_KEY=<recall-api-key>
-RECALL_AI_REGION=us-east-1
-RECALL_AI_WEBHOOK_SECRET=whsec_<signing-secret>
+NGROK_DOMAIN=<your-reserved-ngrok-domain>
+RECALL_AI_API_KEY=<key from your own Recall development workspace>
+RECALL_AI_REGION=us-west-2
+RECALL_AI_WEBHOOK_SECRET=whsec_<your workspace signing secret>
+
+# ==============================
+#   Suggested Actions (AssemblyAI LLM Gateway)
+# ==============================
+ASSEMBLY_AI_API_KEY=<your AssemblyAI API key>
+ASSEMBLY_AI_LLM_MODEL=claude-sonnet-4-6
+ASSEMBLY_AI_LLM_BASE_URL=https://llm-gateway.assemblyai.com/v1
 
 # ==============================
 #   Coaching note images
@@ -225,7 +223,7 @@ TIPTAP_AUTH_KEY=<any shared secret; the launcher passes it to both servers>
 TIPTAP_JWT_SIGNING_KEY=<any shared secret; the launcher passes it to both servers>
 ```
 
-### 7. Collaborative Notes Server (docs-collab-server)
+### 8. Collaborative Notes Server (docs-collab-server)
 
 Coaching-session notes sync through the self-hosted `docs-collab-server`, not TipTap Cloud. The frontend has no Cloud fallback: if its collab URL is set but nothing is listening, the editor opens local-only with **no error**, and notes silently never sync. So the server has to be running whenever you work on notes.
 
@@ -252,12 +250,12 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:1234/health   # 200
 
 If notes open but never sync or show presence, check that the collab server is running before anything else.
 
-### 8. Development Flow
+### 9. Development Flow
 
 1. Generate and set `ENCRYPTION_KEY`.
 2. Start the backend: `scripts/run_backend.sh` (app server plus collab server).
-3. Start an ngrok tunnel: `ngrok http 4000`.
-4. Register the ngrok URL as the Recall.ai webhook endpoint (see above).
+3. Open the Recall webhook tunnel: `scripts/recall_webhook_tunnel.sh` (one-time Recall endpoint setup in section 4).
+4. Start the frontend.
 5. In the frontend, connect Google Meet via the settings page — this triggers the OAuth flow to `GOOGLE_REDIRECT_URI`.
 6. Once connected, starting a coaching session with a Google Meet link will dispatch a Recall.ai bot. Bot events arrive at `/webhooks/recall_ai` and are verified using `RECALL_AI_WEBHOOK_SECRET`.
 
@@ -297,6 +295,7 @@ OAUTH_SUCCESS_REDIRECT_URI=https://myrefactor.com/settings
 - **Webhook URL**: Set to your production endpoint, e.g. `https://api.myrefactor.com/webhooks/recall_ai`
 - No tunnel required — the production host is directly reachable
 - Use production API keys and signing secrets, not development ones
+- **Retention**: every bot asks Recall to delete its recording (audio, video and Recall's copy of the transcript) after 7 days, which is within Recall's free retention. The platform keeps only the transcript, in its own database. Bots created before this setting keep the account's default retention; delete their media through Recall's API if that default is forever
 
 ```env
 RECALL_AI_API_KEY=<production-api-key>
@@ -304,7 +303,30 @@ RECALL_AI_REGION=us-east-1          # or eu-west-2
 RECALL_AI_WEBHOOK_SECRET=whsec_<production-signing-secret>
 ```
 
-### 4. Full Production Environment Variables
+### 4. Suggested Actions: private AssemblyAI setup
+
+Session conversations are sent to AssemblyAI and, through the LLM Gateway, to the model vendor. Walk through this checklist before setting `ASSEMBLY_AI_API_KEY` in production.
+
+- [ ] **Own account and key.** Use the platform's own AssemblyAI account on a paid plan and a production key. Set `ASSEMBLY_AI_API_KEY` as a GitHub `production` environment secret.
+- [ ] **Opt out of model training.** In the AssemblyAI dashboard, open Settings > Data Controls and turn on "Opt Out of Data Sharing for Model Improvement Program". Only an Owner or Admin can do this, it needs a paid plan, it applies going forward only, and it forgoes the program discount. Alternative: email data-opt-out@assemblyai.com from the account's address and keep the confirmation.
+- [ ] **Model vendors do not train on LLM Gateway traffic.** AssemblyAI states it has opted out of training with every LLM Gateway provider. Nothing to configure.
+- [ ] **Short retention.** In Data Controls, set **Time-to-live (TTL)** to 1 day. It covers LLM Gateway inputs and outputs as well as audio and transcripts sent to AssemblyAI directly, and deletion runs hourly once it has passed. The privacy policy promises deletion within one day, so change both together.
+- [ ] **Keep an Anthropic model.** Leave `ASSEMBLY_AI_LLM_MODEL` on an Anthropic model (default `claude-sonnet-4-6`). AssemblyAI runs Claude on Amazon Bedrock, which stores nothing, falling back to Anthropic's own API with zero-day retention. Zero data retention for every request is available for Anthropic and Google models under a signed BAA, if it is ever required.
+- [ ] **Provider toggles.** Claude runs through AWS Bedrock, which is enabled by default. In Data Controls, leave the opt-in providers (Together AI, Fireworks AI, DigitalOcean) off.
+- [ ] **Pricing row (optional, for cost tracking).** Without it, analyses still run but no cost row is recorded. Insert one rate for provider `llm_gateway`, metric `llm_tokens`: `cost_per_unit_low` is the model's input price per token, `cost_per_unit_high` its output price per token, and `cost_per_unit_avg` a blended per-token price, for example (6 x input + 1 x output) / 7 since transcripts are mostly input. As an example, claude-sonnet-4-6 on AssemblyAI's pricing page is $3 / $15 per million tokens plus a 10% regional surcharge, which is 0.0000033 / 0.0000165 per token:
+
+  ```sql
+  INSERT INTO refactor_platform.cost_pricing_config
+      (provider, metric, unit, cost_per_unit_low, cost_per_unit_high, cost_per_unit_avg, effective_from)
+  VALUES
+      ('llm_gateway', 'llm_tokens', 'tokens', 0.0000033, 0.0000165, 0.0000051857, NOW());
+  ```
+
+  The average above is (6 x 0.0000033 + 1 x 0.0000165) / 7, rounded to ten decimal places. When prices change, insert a new row with a later `effective_from` rather than editing this one.
+- [ ] **Re-check the terms.** AssemblyAI's terms change. Read their current pages before enabling: [data retention and model training](https://www.assemblyai.com/docs/data-retention-and-model-training), [data controls](https://assemblyai.com/docs/data-controls), [LLM Gateway providers](https://assemblyai.com/docs/llm-gateway/providers).
+- [ ] **Privacy policy.** The platform's privacy policy (`/privacy` in the frontend) names Recall.ai, AssemblyAI and Anthropic, and states the training opt-out, the one-day TTL and Recall's 7-day retention. Keep it in step with these settings.
+
+### 5. Full Production Environment Variables
 
 In addition to the variables in [README.md](../README.md) (database, Tiptap, Resend), add:
 
@@ -323,6 +345,11 @@ RECALL_AI_API_KEY=<production-api-key>
 RECALL_AI_REGION=us-east-1
 RECALL_AI_WEBHOOK_SECRET=whsec_<production-signing-secret>
 
+# Suggested Actions (see "Suggested Actions: private AssemblyAI setup")
+ASSEMBLY_AI_API_KEY=<production-api-key>
+ASSEMBLY_AI_LLM_MODEL=claude-sonnet-4-6
+ASSEMBLY_AI_LLM_BASE_URL=https://llm-gateway.assemblyai.com/v1
+
 # Coaching note images (see "Coaching Note Images" under Development Setup)
 OBJECT_STORE_BACKEND=spaces
 SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
@@ -336,6 +363,6 @@ COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS=168
 COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES=60
 ```
 
-### 5. Deployment
+### 6. Deployment
 
 See [docs/cicd/production-deployment.md](cicd/production-deployment.md) for the full deployment process.

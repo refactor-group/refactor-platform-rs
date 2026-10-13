@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::Utc;
+use chrono::{Utc, Weekday};
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::{
     coaching_relationship, coaching_session, mutate, query,
@@ -25,6 +25,14 @@ pub use entity_api::{
 use log::*;
 use sea_orm::IntoActiveModel;
 use sea_orm::{DatabaseConnection, TransactionTrait, Value};
+
+/// The last day of the week for anyone who has not chosen their own.
+pub const DEFAULT_WEEK_END: Weekday = Weekday::Fri;
+
+/// The last day of `user`'s week; the default until users can choose their own.
+pub fn week_end(_user: &users::Model) -> Weekday {
+    DEFAULT_WEEK_END
+}
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<users::Model>, Error>
 where

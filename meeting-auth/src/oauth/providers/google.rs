@@ -1,5 +1,7 @@
 //! Google OAuth provider implementation.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretString};
@@ -97,7 +99,11 @@ impl Provider {
         client_secret: SecretString,
         redirect_uri: String,
     ) -> Result<Self, reqwest::Error> {
-        let http_client = reqwest::Client::builder().use_rustls_tls().build()?;
+        let http_client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()?;
         Ok(Self {
             client_id,
             client_secret,

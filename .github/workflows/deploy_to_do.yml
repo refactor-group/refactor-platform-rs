@@ -231,6 +231,14 @@ jobs:
           # Recall.ai webhook signing secret (Svix whsec_... format)
           RECALL_AI_WEBHOOK_SECRET=${{ secrets.RECALL_AI_WEBHOOK_SECRET }}
 
+          # -------- Suggested Actions (AssemblyAI LLM Gateway) Config
+          # AssemblyAI API key; an empty value leaves transcript suggestions off
+          ASSEMBLY_AI_API_KEY=${{ secrets.ASSEMBLY_AI_API_KEY }}
+          # LLM Gateway model (blank uses the in-code default, claude-sonnet-4-6)
+          ASSEMBLY_AI_LLM_MODEL=${{ vars.ASSEMBLY_AI_LLM_MODEL }}
+          # LLM Gateway base URL (blank uses https://llm-gateway.assemblyai.com/v1)
+          ASSEMBLY_AI_LLM_BASE_URL=${{ vars.ASSEMBLY_AI_LLM_BASE_URL }}
+
           # -------- Coaching Note Image Storage Config
           # Hardcoded intentionally: an empty value is stripped before parsing and
           # would fall back to the "local" default, silently writing note images

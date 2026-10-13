@@ -1,4 +1,4 @@
-[![Build, Test & Push](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml) [![Production Images](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml)
+[![CI](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build-test-push.yml) [![Production Images](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml/badge.svg)](https://github.com/refactor-group/refactor-platform-rs/actions/workflows/build_and_push_production_images.yml)
 
 # Refactor Coaching & Mentoring Platform
 
