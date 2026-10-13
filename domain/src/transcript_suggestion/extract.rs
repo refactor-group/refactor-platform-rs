@@ -205,8 +205,7 @@ async fn store<S: Suggestible>(
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let completed = complete_claimed(
         &txn,
-        analysis.id,
-        analysis.attempts,
+        analysis,
         model,
         tokens.map(|(input, _)| token_count(input)),
         tokens.map(|(_, output)| token_count(output)),

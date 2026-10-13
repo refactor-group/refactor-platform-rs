@@ -11,12 +11,18 @@ use sea_orm::{
 
 use super::error::{EntityApiErrorKind, Error};
 
-/// The row `id` while it is still claimed by the worker that counted `attempts`.
-fn held(id: Id, attempts: i16) -> Condition {
+/// The row while it still holds `claimed`'s claim: same attempt and the same claim time, so
+/// neither a retaken claim nor one made after a restart reset the attempts can match.
+fn held(claimed: &Model) -> Condition {
+    let claim_time = match claimed.claimed_at {
+        Some(at) => Column::ClaimedAt.eq(at),
+        None => Column::ClaimedAt.is_null(),
+    };
     Condition::all()
-        .add(Column::Id.eq(id))
+        .add(Column::Id.eq(claimed.id))
         .add(Column::Status.eq(Status::Processing))
-        .add(Column::Attempts.eq(attempts))
+        .add(Column::Attempts.eq(claimed.attempts))
+        .add(claim_time)
 }
 
 /// Rows a worker may take: pending, or processing past `stale_before`, with attempts left.
@@ -150,13 +156,13 @@ pub async fn complete<C: ConnectionTrait>(
     .await?)
 }
 
-/// Completes an analysis only while it is still the caller's claim.
+/// Completes an analysis only while it still holds the caller's claim, `claimed` (the row
+/// `claim` returned).
 ///
-/// A worker whose claim went stale and was retaken sees a different `attempts` and gets `None`.
+/// A worker whose claim went stale and was retaken, even by a scan restarted since, gets `None`.
 pub async fn complete_claimed<C: ConnectionTrait>(
     db: &C,
-    id: Id,
-    attempts: i16,
+    claimed: &Model,
     model: String,
     input_tokens: Option<i32>,
     output_tokens: Option<i32>,
@@ -172,7 +178,7 @@ pub async fn complete_claimed<C: ConnectionTrait>(
             updated_at: Set(now),
             ..Default::default()
         })
-        .filter(held(id, attempts))
+        .filter(held(claimed))
         .exec_with_returning(db)
         .await?
         .into_iter()
@@ -186,8 +192,7 @@ pub async fn complete_claimed<C: ConnectionTrait>(
 /// undoes the other worker's result.
 pub async fn release_for_retry<C: ConnectionTrait>(
     db: &C,
-    id: Id,
-    attempts: i16,
+    claimed: &Model,
     error: String,
     now: DateTimeWithTimeZone,
 ) -> Result<Option<Model>, Error> {
@@ -199,7 +204,7 @@ pub async fn release_for_retry<C: ConnectionTrait>(
             updated_at: Set(now),
             ..Default::default()
         })
-        .filter(held(id, attempts))
+        .filter(held(claimed))
         .exec_with_returning(db)
         .await?
         .into_iter()
@@ -211,8 +216,7 @@ pub async fn release_for_retry<C: ConnectionTrait>(
 /// `None` when the claim is no longer the caller's.
 pub async fn fail<C: ConnectionTrait>(
     db: &C,
-    id: Id,
-    attempts: i16,
+    claimed: &Model,
     error: String,
     now: DateTimeWithTimeZone,
 ) -> Result<Option<Model>, Error> {
@@ -223,7 +227,7 @@ pub async fn fail<C: ConnectionTrait>(
             updated_at: Set(now),
             ..Default::default()
         })
-        .filter(held(id, attempts))
+        .filter(held(claimed))
         .exec_with_returning(db)
         .await?
         .into_iter()

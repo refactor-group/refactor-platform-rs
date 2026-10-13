@@ -227,11 +227,14 @@ async fn release_fail_and_complete_leave_the_expected_state_in_the_table() {
         let db = database().await;
 
         let released = seed_claimed(&db, 2).await;
-        assert!(
-            release_for_retry(&db, released, 2, "timeout".to_string(), at(0))
-                .await?
-                .is_some()
-        );
+        assert!(release_for_retry(
+            &db,
+            &reread(&db, released).await,
+            "timeout".to_string(),
+            at(0)
+        )
+        .await?
+        .is_some());
         let row = reread(&db, released).await;
         assert_eq!(row.status, Status::Pending);
         assert_eq!(row.claimed_at, None);
@@ -239,9 +242,14 @@ async fn release_fail_and_complete_leave_the_expected_state_in_the_table() {
         assert_eq!(row.attempts, 2);
 
         let failed = seed_claimed(&db, 3).await;
-        assert!(fail(&db, failed, 3, "gave up".to_string(), at(0))
-            .await?
-            .is_some());
+        assert!(fail(
+            &db,
+            &reread(&db, failed).await,
+            "gave up".to_string(),
+            at(0)
+        )
+        .await?
+        .is_some());
         let row = reread(&db, failed).await;
         assert_eq!(row.status, Status::Failed);
         assert_eq!(row.error_message.as_deref(), Some("gave up"));
@@ -268,12 +276,14 @@ async fn a_worker_whose_claim_was_retaken_cannot_release_or_fail_the_analysis() 
 
         // Another worker retook the claim, so the attempts no longer match.
         let retaken = seed_claimed(&db, 2).await;
-        assert!(
-            release_for_retry(&db, retaken, 1, "timeout".to_string(), at(0))
-                .await?
-                .is_none()
-        );
-        assert!(fail(&db, retaken, 1, "gave up".to_string(), at(0))
+        let stale = Model {
+            attempts: 1,
+            ..reread(&db, retaken).await
+        };
+        assert!(release_for_retry(&db, &stale, "timeout".to_string(), at(0))
+            .await?
+            .is_none());
+        assert!(fail(&db, &stale, "gave up".to_string(), at(0))
             .await?
             .is_none());
         let row = reread(&db, retaken).await;
@@ -282,13 +292,12 @@ async fn a_worker_whose_claim_was_retaken_cannot_release_or_fail_the_analysis() 
 
         // Another worker finished it, with the same attempts the caller counted.
         let finished = seed_claimed(&db, 2).await;
-        complete_claimed(&db, finished, 2, "model-x".to_string(), None, None, at(0)).await?;
-        assert!(
-            release_for_retry(&db, finished, 2, "timeout".to_string(), at(0))
-                .await?
-                .is_none()
-        );
-        assert!(fail(&db, finished, 2, "gave up".to_string(), at(0))
+        let claim = reread(&db, finished).await;
+        complete_claimed(&db, &claim, "model-x".to_string(), None, None, at(0)).await?;
+        assert!(release_for_retry(&db, &claim, "timeout".to_string(), at(0))
+            .await?
+            .is_none());
+        assert!(fail(&db, &claim, "gave up".to_string(), at(0))
             .await?
             .is_none());
         let row = reread(&db, finished).await;
@@ -395,8 +404,7 @@ async fn complete_claimed_completes_only_the_claim_with_matching_attempts() {
 
         let completed = complete_claimed(
             &db,
-            current,
-            2,
+            &reread(&db, current).await,
             "model-x".to_string(),
             Some(120),
             Some(30),
@@ -412,18 +420,61 @@ async fn complete_claimed_completes_only_the_claim_with_matching_attempts() {
         assert_eq!(row.updated_at, now);
 
         let before = reread(&db, retaken).await;
-        let superseded = complete_claimed(
-            &db,
-            retaken,
-            1,
-            "model-x".to_string(),
-            Some(120),
-            Some(30),
-            now,
-        )
-        .await?;
+        let stale = Model {
+            attempts: 1,
+            ..before.clone()
+        };
+        let superseded =
+            complete_claimed(&db, &stale, "model-x".to_string(), Some(120), Some(30), now).await?;
         assert!(superseded.is_none());
         assert_eq!(reread(&db, retaken).await, before, "the row is unchanged");
+
+        Ok::<(), Error>(())
+    })
+    .await
+    .expect("the test body succeeds");
+}
+
+#[tokio::test]
+async fn a_worker_from_before_a_restart_cannot_touch_the_restarted_scan() {
+    within_time_limit(async {
+        let db = database().await;
+        let id = seed_claimed(&db, MAX_ATTEMPTS).await;
+        let old_claim = reread(&db, id).await;
+        // The scan was failed, restarted and claimed again up to the same attempt count.
+        transcript_analysis::ActiveModel {
+            id: Set(id),
+            claimed_at: Set(Some(at(0))),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .expect("the new claim is seeded");
+        let before = reread(&db, id).await;
+        assert_eq!(before.attempts, old_claim.attempts);
+
+        assert!(
+            complete_claimed(&db, &old_claim, "old".to_string(), None, None, at(1))
+                .await?
+                .is_none()
+        );
+        assert!(release_for_retry(&db, &old_claim, "old".to_string(), at(1))
+            .await?
+            .is_none());
+        assert!(fail(&db, &old_claim, "old".to_string(), at(1))
+            .await?
+            .is_none());
+        assert_eq!(
+            reread(&db, id).await,
+            before,
+            "the restarted scan is untouched"
+        );
+
+        assert!(
+            complete_claimed(&db, &before, "new".to_string(), None, None, at(1))
+                .await?
+                .is_some()
+        );
 
         Ok::<(), Error>(())
     })

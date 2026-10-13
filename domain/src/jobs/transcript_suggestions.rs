@@ -99,9 +99,9 @@ impl Sweep {
         );
         let (db, now) = (ctx.db.as_ref(), Utc::now().fixed_offset());
         let recorded = if give_up {
-            fail(db, analysis.id, analysis.attempts, message, now).await
+            fail(db, analysis, message, now).await
         } else {
-            release_for_retry(db, analysis.id, analysis.attempts, message, now).await
+            release_for_retry(db, analysis, message, now).await
         };
         match recorded {
             Ok(Some(_)) if give_up => self.announce(ctx, analysis).await,
