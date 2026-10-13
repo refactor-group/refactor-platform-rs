@@ -302,6 +302,48 @@ async fn a_worker_whose_claim_was_retaken_cannot_release_or_fail_the_analysis() 
 }
 
 #[tokio::test]
+async fn fail_abandoned_fails_only_stale_claims_with_no_attempts_left() {
+    within_time_limit(async {
+        let db = database().await;
+        let seed = |status, attempts, claimed_at| {
+            let db = &db;
+            async move {
+                let transcription_id = seed_transcription(db, 1).await.transcription_id;
+                seed_analysis(db, transcription_id, status, attempts, claimed_at, at(-60)).await
+            }
+        };
+        let abandoned = seed(Status::Processing, MAX_ATTEMPTS, Some(at(-30))).await;
+        let still_running = seed(Status::Processing, MAX_ATTEMPTS, Some(at(-1))).await;
+        let retakeable = seed(Status::Processing, MAX_ATTEMPTS - 1, Some(at(-30))).await;
+        let pending = seed(Status::Pending, MAX_ATTEMPTS, None).await;
+        let completed = seed(Status::Completed, MAX_ATTEMPTS, Some(at(-30))).await;
+
+        let failed =
+            fail_abandoned(&db, at(-10), MAX_ATTEMPTS, "abandoned".to_string(), at(0)).await?;
+
+        assert_eq!(
+            failed.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![abandoned]
+        );
+        let row = reread(&db, abandoned).await;
+        assert_eq!(row.status, Status::Failed);
+        assert_eq!(row.error_message.as_deref(), Some("abandoned"));
+        for (id, status) in [
+            (still_running, Status::Processing),
+            (retakeable, Status::Processing),
+            (pending, Status::Pending),
+            (completed, Status::Completed),
+        ] {
+            assert_eq!(reread(&db, id).await.status, status);
+        }
+
+        Ok::<(), Error>(())
+    })
+    .await
+    .expect("the test body succeeds");
+}
+
+#[tokio::test]
 async fn complete_claimed_completes_only_the_claim_with_matching_attempts() {
     within_time_limit(async {
         let db = database().await;

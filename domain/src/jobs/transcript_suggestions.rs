@@ -21,7 +21,9 @@ use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::EventPublisher;
 use crate::gateway::assembly_ai::llm_gateway;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
-use crate::transcript_analysis::{self, claim, fail, find_claimable, release_for_retry};
+use crate::transcript_analysis::{
+    self, claim, fail, fail_abandoned, find_claimable, release_for_retry,
+};
 use crate::transcript_suggestion::extract::{self, RunError};
 use crate::transcript_suggestion::{Actions, Target};
 use crate::transcription;
@@ -34,6 +36,8 @@ const STALE_AFTER_MINUTES: i64 = 10;
 const MAX_ATTEMPTS: i16 = 3;
 /// Most analyses one tick takes; each is a model call.
 const MAX_PER_TICK: u64 = 5;
+/// Stored on an analysis whose worker stopped on its last attempt.
+const ABANDONED: &str = "worker stopped on the last attempt";
 
 /// The transcript suggestion sweep.
 pub struct Sweep {
@@ -114,6 +118,31 @@ impl Sweep {
         false
     }
 
+    /// Fails analyses whose worker stopped on the last attempt, and announces each.
+    async fn fail_abandoned(&self, ctx: &Context) {
+        let now = Utc::now().fixed_offset();
+        let abandoned = fail_abandoned(
+            ctx.db.as_ref(),
+            stale_before(now),
+            MAX_ATTEMPTS,
+            ABANDONED.to_string(),
+            now,
+        )
+        .await;
+        match abandoned {
+            Ok(rows) => {
+                for analysis in rows {
+                    warn!(
+                        "[transcript-suggestions] analysis {} was abandoned on its last attempt; failing it",
+                        analysis.id
+                    );
+                    self.announce(ctx, &analysis).await;
+                }
+            }
+            Err(e) => warn!("[transcript-suggestions] failing abandoned analyses failed: {e:?}"),
+        }
+    }
+
     /// Tells the session's participants the analysis ended; a failed lookup only skips the event.
     async fn announce(&self, ctx: &Context, analysis: &transcript_analysis::Model) {
         let db = ctx.db.as_ref();
@@ -192,6 +221,7 @@ impl Job for Sweep {
     }
 
     async fn run(&self, ctx: &Context) -> Result<Outcome, Error> {
+        self.fail_abandoned(ctx).await;
         let due = find_claimable(
             ctx.db.as_ref(),
             stale_before(Utc::now().fixed_offset()),

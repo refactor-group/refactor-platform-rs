@@ -221,6 +221,30 @@ pub async fn fail<C: ConnectionTrait>(
         .next())
 }
 
+/// Fails, in one UPDATE, every analysis whose worker stopped on its last attempt: still
+/// `processing`, with no attempts left, claimed before `stale_before`. Nothing would ever retake
+/// these, so failing them lets a user start the scan again. Returns the rows it failed.
+pub async fn fail_abandoned<C: ConnectionTrait>(
+    db: &C,
+    stale_before: DateTimeWithTimeZone,
+    max_attempts: i16,
+    error: String,
+    now: DateTimeWithTimeZone,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::update_many()
+        .set(ActiveModel {
+            status: Set(Status::Failed),
+            error_message: Set(Some(error)),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .filter(Column::Status.eq(Status::Processing))
+        .filter(Column::Attempts.gte(max_attempts))
+        .filter(Column::ClaimedAt.lt(stale_before))
+        .exec_with_returning(db)
+        .await?)
+}
+
 /// Returns a failed analysis to pending with fresh attempts, in one conditional UPDATE.
 ///
 /// `None` when the analysis is no longer failed.

@@ -420,6 +420,35 @@ async fn each_claim_is_stamped_when_it_is_made_not_when_the_tick_began() {
 }
 
 #[tokio::test]
+async fn an_analysis_abandoned_on_its_last_attempt_is_failed_and_announced() {
+    within_time_limit(async {
+        let db = database().await;
+        let (id, session_id) = seed_pending(&db, MAX_ATTEMPTS).await;
+        transcript_analysis::ActiveModel {
+            id: Set(id),
+            status: Set(Status::Processing),
+            claimed_at: Set(Some(
+                (Utc::now() - chrono::Duration::minutes(STALE_AFTER_MINUTES + 5)).fixed_offset(),
+            )),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .expect("the abandoned claim is seeded");
+        let ctx = context(db);
+        let (sweep, recorder) = recorded(Arc::new(FakeModel { fail: None }));
+
+        sweep.run(&ctx).await.expect("the tick runs");
+
+        let row = reread(&ctx, id).await;
+        assert_eq!(row.status, Status::Failed);
+        assert_eq!(row.attempts, MAX_ATTEMPTS);
+        assert_eq!(recorder.action_changes(session_id), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_run_that_stores_suggestions_announces_once() {
     within_time_limit(async {
         let db = database().await;
