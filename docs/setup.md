@@ -313,7 +313,7 @@ Session conversations are sent to AssemblyAI and, through the LLM Gateway, to th
 - [ ] **Short retention.** In Data Controls, set **Time-to-live (TTL)** to 1 day. It covers LLM Gateway inputs and outputs as well as audio and transcripts sent to AssemblyAI directly, and deletion runs hourly once it has passed. The privacy policy promises deletion within one day, so change both together.
 - [ ] **Keep an Anthropic model.** Leave `ASSEMBLY_AI_LLM_MODEL` on an Anthropic model (default `claude-sonnet-4-6`). AssemblyAI runs Claude on Amazon Bedrock, which stores nothing, falling back to Anthropic's own API with zero-day retention. Zero data retention for every request is available for Anthropic and Google models under a signed BAA, if it is ever required.
 - [ ] **Provider toggles.** Claude runs through AWS Bedrock, which is enabled by default. In Data Controls, leave the opt-in providers (Together AI, Fireworks AI, DigitalOcean) off.
-- [ ] **Pricing row (optional, for cost tracking).** Without it, analyses still run but no cost row is recorded. Insert one rate for provider `llm_gateway`, metric `llm_tokens`: `cost_per_unit_low` is the model's input price per token, `cost_per_unit_high` its output price per token, and `cost_per_unit_avg` a blended per-token price, for example (6 x input + 1 x output) / 7 since transcripts are mostly input. As an example, claude-sonnet-4-6 on AssemblyAI's pricing page is $3 / $15 per million tokens plus a 10% regional surcharge, which is 0.0000033 / 0.0000165 per token:
+- [ ] **Pricing row (optional, for cost tracking).** Without it, analyses still run but no cost row is recorded. Insert one rate for provider `llm_gateway`, metric `llm_tokens`: `cost_per_unit_low` is the model's input price per token and `cost_per_unit_high` its output price per token. Each analysis is priced exactly from its input and output token counts, so `cost_per_unit_avg` is not used for tokens; it only has to be filled in, for example with a blend of the two. claude-sonnet-4-6 on AssemblyAI is $3 / $15 per million tokens, and LLM Gateway requests are billed with its 10% regional surcharge, which is 0.0000033 / 0.0000165 per token:
 
   ```sql
   INSERT INTO refactor_platform.cost_pricing_config
@@ -322,7 +322,7 @@ Session conversations are sent to AssemblyAI and, through the LLM Gateway, to th
       ('llm_gateway', 'llm_tokens', 'tokens', 0.0000033, 0.0000165, 0.0000051857, NOW());
   ```
 
-  The average above is (6 x 0.0000033 + 1 x 0.0000165) / 7, rounded to ten decimal places. When prices change, insert a new row with a later `effective_from` rather than editing this one.
+  The average above, (6 x 0.0000033 + 1 x 0.0000165) / 7, is informational only. When prices change, insert a new row with a later `effective_from` rather than editing this one.
 - [ ] **Re-check the terms.** AssemblyAI's terms change. Read their current pages before enabling: [data retention and model training](https://www.assemblyai.com/docs/data-retention-and-model-training), [data controls](https://assemblyai.com/docs/data-controls), [LLM Gateway providers](https://assemblyai.com/docs/llm-gateway/providers).
 - [ ] **Privacy policy.** The platform's privacy policy (`/privacy` in the frontend) names Recall.ai, AssemblyAI and Anthropic, and states the training opt-out, the one-day TTL and Recall's 7-day retention. Keep it in step with these settings.
 
