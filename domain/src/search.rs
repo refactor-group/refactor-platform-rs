@@ -158,7 +158,7 @@ pub async fn search(
         .collect();
     let (mut merged, next_cursor) = merge_and_paginate(merged, spec.limit);
 
-    hydrate_session_display_titles(db, &mut merged).await?;
+    hydrate_session_titles(db, &mut merged).await?;
     hydrate_snippets(db, &spec.q_raw, &mut merged).await?;
 
     Ok(Results {
@@ -196,15 +196,12 @@ fn merge_and_paginate(mut merged: Vec<Hit>, limit: u16) -> (Vec<Hit>, Option<Str
     (merged, next_cursor)
 }
 
-/// Fill session display titles for the returned page: a `SessionHit`'s
-/// `title`/`display_title` and the `session_display_title` context on
-/// action/agreement hits. The composed title falls back to
-/// "Coaching session — YYYY-MM-DD" (naive session date, identical for every
-/// caller), so `title` is never empty by construction.
-async fn hydrate_session_display_titles(
-    db: &DatabaseConnection,
-    hits: &mut [Hit],
-) -> Result<(), Error> {
+/// Fill session titles for the returned page: a `SessionHit`'s `title`
+/// and the `session_title` context on action/agreement hits. Search-owned
+/// names, unlike the list endpoints' nullable `display_title`: the composed
+/// title falls back to "Coaching session — YYYY-MM-DD" (naive session date,
+/// identical for every caller), so neither is ever empty.
+async fn hydrate_session_titles(db: &DatabaseConnection, hits: &mut [Hit]) -> Result<(), Error> {
     let session_ids: Vec<Id> = hits
         .iter()
         .filter_map(|h| match h {
@@ -242,17 +239,16 @@ async fn hydrate_session_display_titles(
             Hit::CoachingSession(s) => {
                 if let Some(title) = titles.get(&s.core.id) {
                     s.core.title = title.clone();
-                    s.display_title = title.clone();
                 }
             }
             Hit::Action(a) => {
                 if let Some(title) = titles.get(&a.coaching_session_id) {
-                    a.session_display_title = title.clone();
+                    a.session_title = title.clone();
                 }
             }
             Hit::Agreement(a) => {
                 if let Some(title) = titles.get(&a.coaching_session_id) {
-                    a.session_display_title = title.clone();
+                    a.session_title = title.clone();
                 }
             }
             _ => {}

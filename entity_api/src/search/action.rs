@@ -143,7 +143,7 @@ impl super::Searcher for Searcher {
                     status: r.status,
                     due_by: r.due_by,
                     session_date: r.session_date,
-                    session_display_title: String::new(),
+                    session_title: String::new(),
                 })
             })
             .collect())

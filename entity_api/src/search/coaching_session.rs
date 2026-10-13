@@ -109,7 +109,6 @@ impl super::Searcher for Searcher {
                     },
                     coaching_relationship_id: r.coaching_relationship_id,
                     date: r.date,
-                    display_title: String::new(),
                 })
             })
             .collect())

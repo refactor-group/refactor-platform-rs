@@ -240,8 +240,8 @@ Logged in as Casey. `GET /search?q=kumquat`.
 | Every hit | has `type`, `id`, `score`, `title` (never empty), `created_at`, `organization_id` |
 | Hit ordering | non-increasing `score` |
 | Snippets | plain text with literal `<mark>…</mark>` markers around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
-| Session-anchored hits | carry `coaching_session_id` and `coaching_relationship_id`; action and agreement hits also carry `session_display_title` (non-empty even where the session's `title` column is NULL); topic hits do not |
-| The bare session's action hit | `session_display_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
+| Session-anchored hits | carry `coaching_session_id` and `coaching_relationship_id`; action and agreement hits also carry `session_title` (non-empty even where the session's `title` column is NULL); topic hits do not |
+| The bare session's action hit | `session_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
 
 ## 3. Scenario B: keyword semantics (feature requirements)
 

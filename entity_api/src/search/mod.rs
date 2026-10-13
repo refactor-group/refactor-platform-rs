@@ -104,9 +104,6 @@ pub struct SessionHit {
     pub coaching_relationship_id: Id,
     #[schema(value_type = String, format = DateTime)]
     pub date: DateTime,
-    /// Composed via the display-title tiers, with the dated fallback; equals
-    /// `title`. Hydrated post-merge.
-    pub display_title: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -133,7 +130,7 @@ pub struct ActionHit {
     #[schema(value_type = String, format = DateTime)]
     pub session_date: DateTime,
     /// Hydrated post-merge (dated fallback when the session composes no title).
-    pub session_display_title: String,
+    pub session_title: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -146,7 +143,7 @@ pub struct AgreementHit {
     #[schema(value_type = String, format = DateTime)]
     pub session_date: DateTime,
     /// Hydrated post-merge (dated fallback when the session composes no title).
-    pub session_display_title: String,
+    pub session_title: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

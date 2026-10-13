@@ -155,7 +155,7 @@ mod merge_tests {
             status: Status::InProgress,
             due_by: None,
             session_date: Utc::now().naive_utc(),
-            session_display_title: String::new(),
+            session_title: String::new(),
         })
     }
 

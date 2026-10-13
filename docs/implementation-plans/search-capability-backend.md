@@ -164,17 +164,17 @@ pub struct Core {
 
 | Variant | Extra fields |
 |---|---|
-| `SessionHit` | `coaching_relationship_id`, `date`, `display_title` |
-| `NoteHit` | `coaching_session_id`, `coaching_relationship_id`, `session_date`, `session_display_title`, `author_user_id` |
+| `SessionHit` | `coaching_relationship_id`, `date` |
+| `NoteHit` | `coaching_session_id`, `coaching_relationship_id`, `session_date`, `session_title`, `author_user_id` |
 | `TranscriptHit` | `transcription_id`, `coaching_session_id`, `coaching_relationship_id`, `session_date`, `start_ms`, `end_ms`, `speaker_label` — `id` is the segment row; `start_ms` is the playback deep-link offset |
 | `GoalHit` | `coaching_relationship_id`, `status`, `created_in_session_id` |
-| `ActionHit` | `coaching_session_id`, `coaching_relationship_id`, `goal_id` (nullable), `status`, `due_by`, `session_date`, `session_display_title` |
-| `AgreementHit` | `coaching_session_id`, `coaching_relationship_id`, `session_date`, `session_display_title` |
+| `ActionHit` | `coaching_session_id`, `coaching_relationship_id`, `goal_id` (nullable), `status`, `due_by`, `session_date`, `session_title` |
+| `AgreementHit` | `coaching_session_id`, `coaching_relationship_id`, `session_date`, `session_title` |
 | `TopicHit` | `coaching_session_id`, `coaching_relationship_id`, `status`, `priority` |
 | `UserHit` | `email`, `first_name`, `last_name`, `display_name`, `organization_ids` — restricted to the intersection of the user's orgs and the requester's admin scope (no membership leakage) |
 | `OrganizationHit` | `name`, `slug` |
 
-`session_display_title` is hydrated post-query via the existing `entity_api::coaching_session_display_title::batch_load_display_titles` (it is computed, not a DB column). That composition — session title → first live topic body → first goal title — returns `None` when every tier is absent or blank, so search defines a deterministic final fallback: **`Coaching session — YYYY-MM-DD`**, formatted from the session's stored `date` (naive, no timezone conversion, so the label is identical for every caller). The fallback applies wherever the composed title surfaces: a `SessionHit`'s `title`/`display_title`, the `session_display_title` context field on note/action/agreement hits, and transcript hit titles that embed it. `title` is therefore never empty by construction, and implementations must not invent their own placeholder.
+`session_title` is hydrated post-query via the existing `entity_api::coaching_session_display_title::batch_load_display_titles` (it is computed, not a DB column). That composition — session title → first live topic body → first goal title — returns `None` when every tier is absent or blank, so search defines a deterministic final fallback: **`Coaching session — YYYY-MM-DD`**, formatted from the session's stored `date` (naive, no timezone conversion, so the label is identical for every caller). The fallback applies wherever the composed title surfaces: a `SessionHit`'s `title`, the `session_title` context field on note/action/agreement hits, and transcript hit titles that embed it. `title` is therefore never empty by construction, and implementations must not invent their own placeholder. Search deliberately does not reuse the name `display_title`: on the list endpoints that field is nullable, while search's `title`/`session_title` are never empty, so one name would carry two contracts.
 
 ### Example
 
@@ -201,7 +201,7 @@ GET /search?q=quarterly%20review&types=notes,transcripts&limit=25
         "coaching_session_id": "9f3e…",
         "coaching_relationship_id": "77aa…",
         "session_date": "2026-07-02T13:00:00",
-        "session_display_title": "Career growth — Jul 2, 2026",
+        "session_title": "Career growth — Jul 2, 2026",
         "author_user_id": "c4d5…"
       },
       {
@@ -288,7 +288,7 @@ Only two searched types don't inherit the relationship rule, because they don't 
 |---|---|---|
 | `entity` | `coaching_relationships.rs` | `visible_to(visibility) -> Condition` — the participant rule's query form, defined beside `grants_access_to`. `search_chunks` entity added in the semantic phase. |
 | `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait, the `Filters` and `Request` structs it takes (see [the sketch below](#the-searcher-trait-and-its-inputs)), and the per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`, per-searcher `limit + 1` fetch, keyset predicate — **no `ts_headline` in the searcher pass**; a batched per-type snippet-hydration function beside the searchers computes headlines for merge winners only |
-| `domain` | `search.rs` | `Visibility` derivation from roles (`visibility_for`), resolving the visible relationship id set once per request via `visible_to` (super admin: `None`), compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), bounded-concurrency fan-out to searchers (2–3 in flight — see the connection-economics note in [Decisions](#decisions)), merge + rank + clamp, cursor encode/decode, post-merge hydration of `display_title` and snippets for exactly the returned page, `Results`/`Hit` types |
+| `domain` | `search.rs` | `Visibility` derivation from roles (`visibility_for`), resolving the visible relationship id set once per request via `visible_to` (super admin: `None`), compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), bounded-concurrency fan-out to searchers (2–3 in flight — see the connection-economics note in [Decisions](#decisions)), merge + rank + clamp, cursor encode/decode, post-merge hydration of session titles and snippets for exactly the returned page, `Results`/`Hit` types |
 | `web` | `extractors/search_access.rs` | `FromRequestParts` extractor wrapping `AuthenticatedUser` → compiled `Visibility`, per the access-extractor pattern (`extractors/*_access.rs`) |
 | `web` | `params/search.rs` | `IndexParams`, comma-split `types` parsing, clamps, utoipa `IntoParams`; compiles into `domain::search::Filters` |
 | `web` | `controller/search_controller.rs` | `GET /search` handler, `ApiResponse` envelope, utoipa path |
@@ -333,7 +333,7 @@ pub trait Searcher {
 
 Nine unit structs implement the trait; the domain fans out over the full set and the `types` filter skips implementations before dispatch. Layering note: the trait consumes `Filters`, so the struct is **declared in `entity_api::search` and re-exported up through `domain`'s `lib.rs`** — `entity_api` cannot import `domain` types, and web still imports it as `domain::search::Filters`, so references to that path elsewhere in this plan describe the web-visible import, not the declaration site. `Visibility` follows the same pattern, since `entity`'s `visible_to(visibility)` already consumes it below `entity_api`.
 
-**Snippets are two-pass.** `ts_headline` re-parses the raw document text per row, cannot use the GIN index, and its cost scales with document length — worst exactly where matches concentrate (notes projection, transcript text). If searchers computed it, 7 FTS searchers at limit 25 would pay ~180 headline computations to display 25 hits. So the searcher pass returns hits with `snippet: None` (ids, ranks, and per-type fields that are cheap column reads), and after the merge picks the page, the domain hydrates snippets for exactly the returned hits — one batched `ts_headline` query per entity type present in the page, each over at most a page's worth of ids, alongside the existing `display_title` hydration step. Users and organizations are untouched by this: their `ILIKE` searchers snippet from name/email fields directly. The rule carries forward: in hybrid, snippets are computed per returned page, never for the ~200-per-arm retrieval pool; in semantic mode the winning chunk's stored text is the snippet source, hydrated in the same post-merge step.
+**Snippets are two-pass.** `ts_headline` re-parses the raw document text per row, cannot use the GIN index, and its cost scales with document length — worst exactly where matches concentrate (notes projection, transcript text). If searchers computed it, 7 FTS searchers at limit 25 would pay ~180 headline computations to display 25 hits. So the searcher pass returns hits with `snippet: None` (ids, ranks, and per-type fields that are cheap column reads), and after the merge picks the page, the domain hydrates snippets for exactly the returned hits — one batched `ts_headline` query per entity type present in the page, each over at most a page's worth of ids, alongside the existing session-title hydration step. Users and organizations are untouched by this: their `ILIKE` searchers snippet from name/email fields directly. The rule carries forward: in hybrid, snippets are computed per returned page, never for the ~200-per-arm retrieval pool; in semantic mode the winning chunk's stored text is the snippet source, hydrated in the same post-merge step.
 
 ## Migrations
 

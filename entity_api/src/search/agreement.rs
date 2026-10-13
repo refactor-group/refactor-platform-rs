@@ -123,7 +123,7 @@ impl super::Searcher for Searcher {
                     coaching_session_id: r.coaching_session_id,
                     coaching_relationship_id: r.coaching_relationship_id,
                     session_date: r.session_date,
-                    session_display_title: String::new(),
+                    session_title: String::new(),
                 })
             })
             .collect())
