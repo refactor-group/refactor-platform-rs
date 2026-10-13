@@ -44,6 +44,37 @@ async fn an_org_admins_visibility_is_participant_only() {
 }
 
 #[tokio::test]
+async fn member_org_and_relationship_filters_narrow_the_visible_set_in_sql() {
+    // The filters are ANDed onto the visibility predicate, so they can only
+    // narrow it; the database returns just the matching ids.
+    let org_id = Id::new_v4();
+    let rel_id = Id::new_v4();
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![BTreeMap::from([("id", Value::from(rel_id))])]])
+        .into_connection();
+    let visibility = Visibility {
+        user_id: Id::new_v4(),
+        is_super_admin: false,
+        admin_org_ids: vec![],
+        member_org_ids: vec![org_id],
+    };
+
+    let resolved = resolve_visible_relationship_ids(&db, &visibility, Some(org_id), Some(rel_id))
+        .await
+        .expect("resolves");
+
+    assert_eq!(resolved, Some(vec![rel_id]));
+    let log = db.into_transaction_log();
+    let sql = format!("{:?}", log[0]);
+    assert!(
+        sql.contains(r#"\"coach_id\" ="#),
+        "visibility predicate kept: {sql}"
+    );
+    assert!(sql.contains(r#"\"coaching_relationships\".\"organization_id\" ="#));
+    assert!(sql.contains(r#"\"coaching_relationships\".\"id\" ="#));
+}
+
+#[tokio::test]
 async fn super_admin_relationship_filter_alone_needs_no_query() {
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
     let rel_id = Id::new_v4();

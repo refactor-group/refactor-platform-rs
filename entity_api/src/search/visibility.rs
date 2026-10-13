@@ -4,21 +4,12 @@
 //! empty result.
 
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, ExprTrait, FromQueryResult, QueryFilter,
-    QuerySelect, QueryTrait,
+    ColumnTrait, DatabaseConnection, EntityTrait, ExprTrait, QueryFilter, QuerySelect, QueryTrait,
 };
 
 use crate::error::Error;
 use entity::coaching_relationships::{self, visible_to, Visibility};
 use entity::Id;
-
-/// The org-filtered visible set narrows in Rust, so it needs each row's
-/// organization; the other queries select bare ids.
-#[derive(Debug, FromQueryResult)]
-struct RelationshipRow {
-    id: Id,
-    organization_id: Id,
-}
 
 /// Resolve the relationship id set every searcher scopes on — once per request.
 /// `None` = super admin with no narrowing filters (unrestricted). The
@@ -53,22 +44,20 @@ pub async fn resolve_visible_relationship_ids(
         });
     }
 
-    let visible = coaching_relationships::Entity::find()
-        .select_only()
-        .column(coaching_relationships::Column::Id)
-        .column(coaching_relationships::Column::OrganizationId)
-        .filter(visible_to(visibility))
-        .into_model::<RelationshipRow>()
-        .all(db)
-        .await?;
-
     Ok(Some(
-        visible
-            .into_iter()
-            .filter(|r| organization_id.is_none_or(|org| r.organization_id == org))
-            .map(|r| r.id)
-            .filter(|id| coaching_relationship_id.is_none_or(|rel| *id == rel))
-            .collect(),
+        coaching_relationships::Entity::find()
+            .select_only()
+            .column(coaching_relationships::Column::Id)
+            .filter(visible_to(visibility))
+            .apply_if(organization_id, |q, org| {
+                q.filter(coaching_relationships::Column::OrganizationId.eq(org))
+            })
+            .apply_if(coaching_relationship_id, |q, rel| {
+                q.filter(coaching_relationships::Column::Id.eq(rel))
+            })
+            .into_tuple::<Id>()
+            .all(db)
+            .await?,
     ))
 }
 
