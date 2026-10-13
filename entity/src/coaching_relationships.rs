@@ -94,11 +94,11 @@ impl Model {
     }
 }
 
-/// A caller's visibility scope, derived once per request from their preloaded
-/// roles (see `domain::search::scope_for`). Input to [`visible_to`], the
+/// A caller's relationship visibility, derived once per request from their
+/// preloaded roles (see `domain::search::visibility_for`). Input to [`visible_to`], the
 /// corpus-wide query form of [`Model::grants_access_to`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scope {
+pub struct Visibility {
     pub user_id: Id,
     /// SuperAdmin role with `organization_id` NULL — sees everything.
     pub is_super_admin: bool,
@@ -114,19 +114,19 @@ pub struct Scope {
 ///
 /// Mirrors `grants_access_to` exactly — participant (coach or coachee) AND
 /// current member of the relationship's organization. Super admins skip this condition
-/// entirely (callers must not apply it when `scope.is_super_admin`).
+/// entirely (callers must not apply it when `visibility.is_super_admin`).
 ///
 /// Kept beside `grants_access_to` deliberately: these are the two expressions
 /// of one rule, and a DB-backed equivalence test pins them together. Change one,
 /// mirror the other.
-pub fn visible_to(scope: &Scope) -> Condition {
+pub fn visible_to(visibility: &Visibility) -> Condition {
     Condition::all()
         .add(
             Column::CoachId
-                .eq(scope.user_id)
-                .or(Column::CoacheeId.eq(scope.user_id)),
+                .eq(visibility.user_id)
+                .or(Column::CoacheeId.eq(visibility.user_id)),
         )
-        .add(Column::OrganizationId.is_in(scope.member_org_ids.iter().copied()))
+        .add(Column::OrganizationId.is_in(visibility.member_org_ids.iter().copied()))
 }
 
 impl ActiveModelBehavior for ActiveModel {}

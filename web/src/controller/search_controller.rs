@@ -16,8 +16,8 @@ use crate::{AppState, Error};
 /// Search every entity type the caller may see, merged into one ranked list.
 ///
 /// Authorization is embedded in the searchers' queries via the caller's
-/// compiled `Scope` — results can never exceed what the caller could already
-/// read, and every filter intersects that scope. Disallowed or not-yet-active
+/// compiled `Visibility` — results can never exceed what the caller could
+/// already read, and every filter intersects that visibility. Disallowed or not-yet-active
 /// `types` values are silently dropped, never a 403.
 #[utoipa::path(
     get,

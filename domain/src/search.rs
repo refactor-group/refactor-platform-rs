@@ -1,4 +1,4 @@
-//! Search orchestration: scope derivation, one-per-request visibility
+//! Search orchestration: visibility derivation, one-per-request relationship
 //! resolution, bounded searcher fan-out, merge/rank/paginate, and post-merge
 //! hydration (display titles and snippets for exactly the returned page).
 
@@ -9,7 +9,7 @@ use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::coaching_relationships::Scope;
+use crate::coaching_relationships::Visibility;
 use crate::coaching_sessions;
 use crate::error::Error;
 use crate::users::{self, Role};
@@ -67,10 +67,10 @@ pub struct Results {
     pub next_cursor: Option<String>,
 }
 
-/// Derive the caller's visibility scope from their preloaded roles.
+/// Derive the caller's relationship visibility from their preloaded roles.
 /// Zero queries — roles arrive on `AuthenticatedUser`.
-pub fn scope_for(user: &users::Model) -> Scope {
-    Scope {
+pub fn visibility_for(user: &users::Model) -> Visibility {
+    Visibility {
         user_id: user.id,
         is_super_admin: user
             .roles
@@ -93,10 +93,14 @@ pub fn scope_for(user: &users::Model) -> Scope {
 /// Run a keyword search for the caller: resolve visibility once, fan out to the
 /// selected searchers under bounded concurrency, merge by rank, paginate, and
 /// hydrate the returned page.
-pub async fn search(db: &DatabaseConnection, scope: &Scope, spec: Spec) -> Result<Results, Error> {
+pub async fn search(
+    db: &DatabaseConnection,
+    visibility: &Visibility,
+    spec: Spec,
+) -> Result<Results, Error> {
     let visible = resolve_visible_relationship_ids(
         db,
-        scope,
+        visibility,
         spec.filters.organization_id,
         spec.coaching_relationship_id,
     )
@@ -120,7 +124,7 @@ pub async fn search(db: &DatabaseConnection, scope: &Scope, spec: Spec) -> Resul
 
     let request = Request {
         q: &spec.q_raw,
-        scope,
+        visibility,
         visible_relationship_ids: visible.as_deref(),
         filters: &filters,
         cursor: spec.cursor.as_ref(),

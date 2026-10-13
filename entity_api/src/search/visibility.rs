@@ -9,7 +9,7 @@ use sea_orm::{
 };
 
 use crate::error::Error;
-use entity::coaching_relationships::{self, visible_to, Scope};
+use entity::coaching_relationships::{self, visible_to, Visibility};
 use entity::Id;
 
 #[derive(Debug, FromQueryResult)]
@@ -24,11 +24,11 @@ struct RelationshipRow {
 /// they can never widen access, and searchers never see them.
 pub async fn resolve_visible_relationship_ids(
     db: &DatabaseConnection,
-    scope: &Scope,
+    visibility: &Visibility,
     organization_id: Option<Id>,
     coaching_relationship_id: Option<Id>,
 ) -> Result<Option<Vec<Id>>, Error> {
-    if scope.is_super_admin {
+    if visibility.is_super_admin {
         return Ok(match (coaching_relationship_id, organization_id) {
             // Intersect-only: a bogus id yields an empty result, never an error.
             (Some(rel_id), None) => Some(vec![rel_id]),
@@ -59,7 +59,7 @@ pub async fn resolve_visible_relationship_ids(
         .select_only()
         .column(coaching_relationships::Column::Id)
         .column(coaching_relationships::Column::OrganizationId)
-        .filter(visible_to(scope))
+        .filter(visible_to(visibility))
         .into_model::<RelationshipRow>()
         .all(db)
         .await?;

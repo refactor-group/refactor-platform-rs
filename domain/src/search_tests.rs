@@ -5,7 +5,7 @@ use chrono::Utc;
 fn user_with_roles(roles: Vec<user_roles::Model>) -> users::Model {
     users::Model {
         id: Id::new_v4(),
-        email: "search-scope@test.dev".to_string(),
+        email: "search-visibility@test.dev".to_string(),
         first_name: "Scope".to_string(),
         last_name: "Test".to_string(),
         display_name: None,
@@ -33,28 +33,28 @@ fn role(role: Role, organization_id: Option<Id>) -> user_roles::Model {
 }
 
 #[test]
-fn scope_for_a_regular_member_has_membership_but_no_admin_orgs() {
+fn visibility_for_a_regular_member_has_membership_but_no_admin_orgs() {
     let org = Id::new_v4();
     let user = user_with_roles(vec![role(Role::User, Some(org))]);
-    let scope = scope_for(&user);
-    assert_eq!(scope.user_id, user.id);
-    assert!(!scope.is_super_admin);
-    assert!(scope.admin_org_ids.is_empty());
-    assert_eq!(scope.member_org_ids, vec![org]);
+    let visibility = visibility_for(&user);
+    assert_eq!(visibility.user_id, user.id);
+    assert!(!visibility.is_super_admin);
+    assert!(visibility.admin_org_ids.is_empty());
+    assert_eq!(visibility.member_org_ids, vec![org]);
 }
 
 #[test]
-fn scope_for_an_org_admin_is_both_admin_and_member_of_that_org() {
+fn visibility_for_an_org_admin_is_both_admin_and_member_of_that_org() {
     let admin_org = Id::new_v4();
     let member_org = Id::new_v4();
     let user = user_with_roles(vec![
         role(Role::Admin, Some(admin_org)),
         role(Role::User, Some(member_org)),
     ]);
-    let scope = scope_for(&user);
-    assert!(!scope.is_super_admin);
-    assert_eq!(scope.admin_org_ids, vec![admin_org]);
-    assert_eq!(scope.member_org_ids, vec![admin_org, member_org]);
+    let visibility = visibility_for(&user);
+    assert!(!visibility.is_super_admin);
+    assert_eq!(visibility.admin_org_ids, vec![admin_org]);
+    assert_eq!(visibility.member_org_ids, vec![admin_org, member_org]);
 }
 
 #[cfg(feature = "mock")]
@@ -73,7 +73,7 @@ mod mock_tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![Vec::<coaching_relationships::Model>::new()])
             .into_connection();
-        let scope = Scope {
+        let visibility = Visibility {
             user_id: Id::new_v4(),
             is_super_admin: false,
             admin_org_ids: vec![],
@@ -95,7 +95,7 @@ mod mock_tests {
             cursor: None,
         };
 
-        let results = search(&db, &scope, spec).await.expect("searches");
+        let results = search(&db, &visibility, spec).await.expect("searches");
 
         assert!(results.hits.is_empty());
         assert!(results.next_cursor.is_none());
@@ -108,14 +108,14 @@ mod mock_tests {
 }
 
 #[test]
-fn scope_for_super_admin_requires_the_global_role_row() {
+fn visibility_for_super_admin_requires_the_global_role_row() {
     let org = Id::new_v4();
     // An org-scoped SuperAdmin row is not the global role.
     let scoped = user_with_roles(vec![role(Role::SuperAdmin, Some(org))]);
-    assert!(!scope_for(&scoped).is_super_admin);
+    assert!(!visibility_for(&scoped).is_super_admin);
 
     let global = user_with_roles(vec![role(Role::SuperAdmin, None)]);
-    assert!(scope_for(&global).is_super_admin);
+    assert!(visibility_for(&global).is_super_admin);
 }
 
 // --- merge_and_paginate: the cross-searcher response sort and page cut --------

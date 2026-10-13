@@ -2,8 +2,8 @@ use super::*;
 use chrono::Utc;
 use sea_orm::{DatabaseBackend, MockDatabase};
 
-fn super_admin_scope() -> Scope {
-    Scope {
+fn super_admin_visibility() -> Visibility {
+    Visibility {
         user_id: Id::new_v4(),
         is_super_admin: true,
         admin_org_ids: vec![],
@@ -32,14 +32,14 @@ async fn an_org_admins_visibility_is_participant_only() {
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results(vec![Vec::<coaching_relationships::Model>::new()])
         .into_connection();
-    let scope = Scope {
+    let visibility = Visibility {
         user_id: Id::new_v4(),
         is_super_admin: false,
         admin_org_ids: vec![org_id],
         member_org_ids: vec![org_id],
     };
 
-    let resolved = resolve_visible_relationship_ids(&db, &scope, None, None)
+    let resolved = resolve_visible_relationship_ids(&db, &visibility, None, None)
         .await
         .expect("resolves");
 
@@ -60,9 +60,10 @@ async fn super_admin_relationship_filter_alone_needs_no_query() {
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
     let rel_id = Id::new_v4();
 
-    let resolved = resolve_visible_relationship_ids(&db, &super_admin_scope(), None, Some(rel_id))
-        .await
-        .expect("resolves");
+    let resolved =
+        resolve_visible_relationship_ids(&db, &super_admin_visibility(), None, Some(rel_id))
+            .await
+            .expect("resolves");
 
     assert_eq!(resolved, Some(vec![rel_id]));
     assert!(db.into_transaction_log().is_empty());
@@ -76,10 +77,14 @@ async fn super_admin_org_and_relationship_filters_intersect() {
         .append_query_results(vec![vec![relationship(rel_id, org_id)]])
         .into_connection();
 
-    let resolved =
-        resolve_visible_relationship_ids(&db, &super_admin_scope(), Some(org_id), Some(rel_id))
-            .await
-            .expect("resolves");
+    let resolved = resolve_visible_relationship_ids(
+        &db,
+        &super_admin_visibility(),
+        Some(org_id),
+        Some(rel_id),
+    )
+    .await
+    .expect("resolves");
 
     assert_eq!(resolved, Some(vec![rel_id]));
     let log = db.into_transaction_log();
@@ -97,7 +102,7 @@ async fn super_admin_relationship_outside_the_requested_org_resolves_to_nothing(
 
     let resolved = resolve_visible_relationship_ids(
         &db,
-        &super_admin_scope(),
+        &super_admin_visibility(),
         Some(Id::new_v4()),
         Some(Id::new_v4()),
     )

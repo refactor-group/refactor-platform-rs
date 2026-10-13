@@ -20,7 +20,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::error::Error;
-use entity::coaching_relationships::Scope;
+use entity::coaching_relationships::Visibility;
 use entity::status::Status;
 use entity::topic_priority::Priority;
 use entity::topic_status::Status as TopicStatus;
@@ -265,7 +265,7 @@ pub struct Request<'a> {
     /// Reserved for searchers that scope by something other than relationships
     /// (users/organizations, later PRs). Relationship-anchored searchers use
     /// `visible_relationship_ids` only.
-    pub scope: &'a Scope,
+    pub visibility: &'a Visibility,
     /// `None` = super admin, unrestricted. `Some` may be empty (no visible
     /// relationships), which every searcher must treat as "no rows".
     pub visible_relationship_ids: Option<&'a [Id]>,

@@ -159,8 +159,8 @@ mod mock_tests {
     use sea_orm::{DatabaseBackend, MockDatabase};
     use std::collections::BTreeMap;
 
-    fn scope() -> Scope {
-        Scope {
+    fn visibility() -> Visibility {
+        Visibility {
             user_id: Id::new_v4(),
             is_super_admin: false,
             admin_org_ids: vec![],
@@ -181,14 +181,14 @@ mod mock_tests {
     }
 
     fn request<'a>(
-        scope: &'a Scope,
+        visibility: &'a Visibility,
         visible: Option<&'a [Id]>,
         filters: &'a Filters,
         cursor: Option<&'a Cursor>,
     ) -> Request<'a> {
         Request {
             q: "quarterly review",
-            scope,
+            visibility,
             visible_relationship_ids: visible,
             filters,
             cursor,
@@ -198,14 +198,14 @@ mod mock_tests {
 
     #[tokio::test]
     async fn every_searcher_scopes_by_the_resolved_relationship_set() {
-        let scope = scope();
+        let visibility = visibility();
         let rel_id = Id::new_v4();
         let visible = [rel_id];
         let filters = Filters::default();
         for searcher in searchers() {
             let sql = sql_of(
                 searcher.as_ref(),
-                &request(&scope, Some(&visible), &filters, None),
+                &request(&visibility, Some(&visible), &filters, None),
             )
             .await;
             assert!(
@@ -233,16 +233,20 @@ mod mock_tests {
 
     #[tokio::test]
     async fn every_searcher_is_unrestricted_for_a_super_admin() {
-        let scope = Scope {
+        let visibility = Visibility {
             is_super_admin: true,
-            ..scope()
+            ..visibility()
         };
         let filters = Filters::default();
         for searcher in searchers() {
-            let sql = sql_of(searcher.as_ref(), &request(&scope, None, &filters, None)).await;
+            let sql = sql_of(
+                searcher.as_ref(),
+                &request(&visibility, None, &filters, None),
+            )
+            .await;
             assert!(
                 !sql.contains(r#"\"coaching_relationship_id\" IN"#),
-                "{:?} applied a scope predicate to a super admin: {sql}",
+                "{:?} applied a visibility predicate to a super admin: {sql}",
                 searcher.hit_type()
             );
         }
@@ -250,9 +254,13 @@ mod mock_tests {
 
     #[tokio::test]
     async fn the_topic_searcher_excludes_soft_deleted_topics() {
-        let scope = scope();
+        let visibility = visibility();
         let filters = Filters::default();
-        let sql = sql_of(&topic::Searcher, &request(&scope, None, &filters, None)).await;
+        let sql = sql_of(
+            &topic::Searcher,
+            &request(&visibility, None, &filters, None),
+        )
+        .await;
         assert!(
             sql.contains(r#"\"deleted_at\" IS NULL"#),
             "missing soft-delete guard: {sql}"
@@ -261,7 +269,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn the_user_filter_means_participant_for_sessions_and_creator_elsewhere() {
-        let scope = scope();
+        let visibility = visibility();
         let participant_rel = Id::new_v4();
         let visible_rel = Id::new_v4();
         let visible = [visible_rel];
@@ -270,7 +278,7 @@ mod mock_tests {
             participant_relationship_ids: Some(vec![participant_rel]),
             ..Filters::default()
         };
-        let req = request(&scope, Some(&visible), &filters, None);
+        let req = request(&visibility, Some(&visible), &filters, None);
 
         // Sessions scope on the participant-narrowed set and never touch the
         // creator column (sessions have none).
@@ -288,7 +296,7 @@ mod mock_tests {
 
     #[tokio::test]
     async fn content_filters_compile_into_column_predicates() {
-        let scope = scope();
+        let visibility = visibility();
 
         let filters = Filters {
             status: Some(Status::InProgress),
@@ -302,7 +310,7 @@ mod mock_tests {
             },
             ..Filters::default()
         };
-        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, None)).await;
+        let sql = sql_of(&goal::Searcher, &request(&visibility, None, &filters, None)).await;
         assert!(sql.contains(r#"\"status\" ="#), "{sql}");
         assert!(sql.contains(r#"\"created_at\" >="#), "{sql}");
         assert!(sql.contains(r#"\"created_at\" <"#), "{sql}");
@@ -314,7 +322,11 @@ mod mock_tests {
             goal_filter: GoalFilter::Unlinked,
             ..Filters::default()
         };
-        let sql = sql_of(&action::Searcher, &request(&scope, None, &filters, None)).await;
+        let sql = sql_of(
+            &action::Searcher,
+            &request(&visibility, None, &filters, None),
+        )
+        .await;
         assert!(sql.contains(r#"\"coaching_session_id\" ="#), "{sql}");
         assert!(sql.contains(r#"\"goal_id\" IS NULL"#), "{sql}");
 
@@ -322,13 +334,17 @@ mod mock_tests {
             topic_status: Some(TopicStatus::Discussed),
             ..Filters::default()
         };
-        let sql = sql_of(&topic::Searcher, &request(&scope, None, &filters, None)).await;
+        let sql = sql_of(
+            &topic::Searcher,
+            &request(&visibility, None, &filters, None),
+        )
+        .await;
         assert!(sql.contains(r#"\"status\" ="#), "{sql}");
     }
 
     #[tokio::test]
     async fn the_cursor_keyset_depends_on_the_type_ordering() {
-        let scope = scope();
+        let visibility = visibility();
         let filters = Filters::default();
         let cursor = |hit_type| Cursor {
             score: 0.5,
@@ -338,19 +354,31 @@ mod mock_tests {
 
         // Goal sorts after Action: equal-score goal rows are still due (<=).
         let c = cursor(HitType::Action);
-        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, Some(&c))).await;
+        let sql = sql_of(
+            &goal::Searcher,
+            &request(&visibility, None, &filters, Some(&c)),
+        )
+        .await;
         assert!(sql.contains("<="), "{sql}");
         assert!(!sql.contains(r#"\"id\" >"#), "{sql}");
 
         // Same type: strict-less OR (equal AND id greater).
         let c = cursor(HitType::Goal);
-        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, Some(&c))).await;
+        let sql = sql_of(
+            &goal::Searcher,
+            &request(&visibility, None, &filters, Some(&c)),
+        )
+        .await;
         assert!(sql.contains(" OR "), "{sql}");
         assert!(sql.contains(r#"\"id\" >"#), "{sql}");
 
         // Goal sorts before Topic: equal scores were already served (<).
         let c = cursor(HitType::Topic);
-        let sql = sql_of(&goal::Searcher, &request(&scope, None, &filters, Some(&c))).await;
+        let sql = sql_of(
+            &goal::Searcher,
+            &request(&visibility, None, &filters, Some(&c)),
+        )
+        .await;
         assert!(!sql.contains("<="), "{sql}");
         assert!(!sql.contains(r#"\"id\" >"#), "{sql}");
         assert!(sql.contains("< $"), "{sql}");

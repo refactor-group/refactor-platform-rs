@@ -480,17 +480,18 @@ a hit on another relationship's note content is a leak like any other.
 | Hybrid latency ≈ semantic + keyword latencies summed | the hybrid arms run sequentially — the keyword retrieval should fire in parallel with the embedding call (see the latency-budget bullet in the implementation plan) |
 | As-you-type feels dead — zero hits until a word is fully typed | final-token prefix matching missing, or the server trims the query before inspecting the raw tail for the trailing-whitespace opt-out |
 
-## 16. Results — PR 1 (scenarios A–H), 2026-09-28
+## 16. Results — PR 1 (scenarios A–H), 2026-10-13
 
 Full re-run against the local backend on `feat/search-keyword-core` after the
-org-admin visibility change (search now mirrors `grants_access_to`; the admin
-tier is gone), with freshly reseeded 1.2 + 1.3 fixtures (48 visible `kumquat`
-rows for R1 participants, including the volume and tie groups). Supersedes the
-2026-09-24 pass, which recorded the pre-decision Scenario F behavior.
+`coaching_relationships::Scope` → `Visibility` rename (no behavior change
+intended; this run confirms none), with freshly reseeded 1.2 + 1.3 fixtures
+(48 visible `kumquat` rows for R1 participants, including the volume and tie
+groups). Supersedes the 2026-09-28 pass, which first recorded the
+participant-only Scenario F behavior.
 
 | Scenario | Result | Notes |
 |---|---|---|
-| A — response contract | PASS* | envelope, hit fields, ordering, `<mark>` markers in raw JSON, bare-session fallback title `Coaching session — 2026-09-24`. *FE rendering of `<mark>` as highlights still needs a browser check. |
+| A — response contract | PASS* | envelope, hit fields, ordering, `<mark>` markers in raw JSON, bare-session fallback title `Coaching session — 2026-10-13`. *FE rendering of `<mark>` as highlights still needs a browser check. |
 | B — keyword semantics | PASS (one deviation) | stemming, prefix (`kumq`), trailing-space opt-out, phrase order, negation, truncation at 256, limit clamp to 100, all five 400 discriminators, full cursor walk (10 pages, 48/48 unique, incl. cap-vs-cursor and tie-breaker regressions). Deviation: see below. |
 | C — filters | PASS | all 12 rows, incl. tz date window, contradictory-params 400, foreign `goal_id` → empty 200 |
 | D — regular-user leaks | PASS | every probe an ordinary empty 200; no snippet leaks; Robin's multi-org rows correct |
