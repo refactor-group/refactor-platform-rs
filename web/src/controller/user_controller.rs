@@ -48,10 +48,11 @@ pub async fn index(
         return Err(Error::Web(WebErrorKind::Input));
     }
 
-    let administers_any_organization = authenticated_user.roles.iter().any(|role| {
-        (role.role == Role::Admin && role.organization_id.is_some())
-            || (role.role == Role::SuperAdmin && role.organization_id.is_none())
-    });
+    let administers_any_organization = authenticated_user.is_super_admin()
+        || authenticated_user
+            .roles
+            .iter()
+            .any(|role| role.role == Role::Admin && role.organization_id.is_some());
 
     if !administers_any_organization {
         return Err(Error::Web(WebErrorKind::Forbidden));

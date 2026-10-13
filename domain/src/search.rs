@@ -72,10 +72,7 @@ pub struct Results {
 pub fn visibility_for(user: &users::Model) -> Visibility {
     Visibility {
         user_id: user.id,
-        is_super_admin: user
-            .roles
-            .iter()
-            .any(|r| r.role == Role::SuperAdmin && r.organization_id.is_none()),
+        is_super_admin: user.is_super_admin(),
         admin_org_ids: user
             .roles
             .iter()

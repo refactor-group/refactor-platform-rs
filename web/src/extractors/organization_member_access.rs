@@ -78,11 +78,7 @@ where
         }
 
         // SuperAdmins have access to all organizations
-        if authenticated_user
-            .roles
-            .iter()
-            .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
-        {
+        if authenticated_user.is_super_admin() {
             return Ok(OrganizationMemberAccess(organization_id));
         }
 
