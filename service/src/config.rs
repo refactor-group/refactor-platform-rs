@@ -1151,14 +1151,17 @@ impl Config {
 
     // AssemblyAI accessors
 
+    /// The trimmed AssemblyAI key, or `None` when unset or not sendable; suggestions are off then.
     pub fn assembly_ai_api_key(&self) -> Option<String> {
         self.assembly_ai_api_key.clone()
     }
 
+    /// The model the AssemblyAI LLM Gateway runs for transcript suggestions.
     pub fn assembly_ai_llm_model(&self) -> &str {
         &self.assembly_ai_llm_model
     }
 
+    /// The AssemblyAI LLM Gateway base URL.
     pub fn assembly_ai_llm_base_url(&self) -> &str {
         &self.assembly_ai_llm_base_url
     }

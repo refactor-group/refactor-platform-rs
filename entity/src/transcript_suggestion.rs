@@ -36,6 +36,8 @@ pub enum Status {
     Dismissed,
 }
 
+/// One item the model proposed from a transcript: the proposal, its source quote and its review
+/// state.
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::transcript_suggestion::Model)]

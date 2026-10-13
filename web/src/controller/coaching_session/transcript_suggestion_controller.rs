@@ -1,11 +1,3 @@
-use crate::controller::ApiResponse;
-use crate::error::WebErrorKind;
-use crate::extractors::{
-    authenticated_user::AuthenticatedUser, coaching_session_access::CoachingSessionAccess,
-    compare_api_version::CompareApiVersion,
-    transcript_suggestion_access::TranscriptSuggestionAccess,
-};
-use crate::{AppState, Error};
 use axum::async_trait;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, Query, Request, State};
@@ -18,22 +10,20 @@ use domain::transcript_suggestion::review::{self, ActionEdits, Scan};
 use domain::transcript_suggestion::Status;
 use log::*;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use service::config::ApiVersion;
+
+use crate::controller::ApiResponse;
+use crate::error::WebErrorKind;
+use crate::extractors::{
+    authenticated_user::AuthenticatedUser, coaching_session_access::CoachingSessionAccess,
+    compare_api_version::CompareApiVersion,
+    transcript_suggestion_access::TranscriptSuggestionAccess,
+};
+use crate::params::transcript_suggestion::{IndexParams, ScanParams};
+use crate::{AppState, Error};
 
 /// Only suggested Actions exist so far.
 const ACTION_TARGET: &str = "action";
-
-#[derive(Debug, Deserialize)]
-pub struct IndexParams {
-    target: Option<String>,
-    status: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ScanParams {
-    target: Option<String>,
-}
 
 /// GET a coaching session's suggested Actions
 ///
@@ -45,12 +35,12 @@ pub struct ScanParams {
     params(
         ApiVersion,
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
-        ("target" = Option<String>, Query, description = "Kind of suggestion to list; only `action` (the default) is supported"),
-        ("status" = Option<String>, Query, description = "pending (default) or dismissed"),
+        IndexParams,
     ),
     responses(
         (status = 200, description = "Suggestions in the requested status retrieved", body = [domain::transcript_suggestion::review::ActionSuggestion]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Not the session's coach or coachee"),
         (status = 404, description = "Coaching session not found"),
         (status = 422, description = "Unsupported target or status"),
     ),
@@ -84,7 +74,7 @@ pub async fn index(
     params(
         ApiVersion,
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
-        ("target" = Option<String>, Query, description = "Kind of suggestion; only `action` (the default) is supported"),
+        ScanParams,
     ),
     responses(
         (status = 200, description = "Scan state retrieved", body = domain::transcript_suggestion::review::Scan),
@@ -122,7 +112,7 @@ pub async fn scan(
     params(
         ApiVersion,
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
-        ("target" = Option<String>, Query, description = "Kind of suggestion; only `action` (the default) is supported"),
+        ScanParams,
     ),
     responses(
         (status = 202, description = "Scan queued", body = domain::transcript_suggestion::review::Scan),

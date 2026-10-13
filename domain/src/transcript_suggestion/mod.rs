@@ -86,7 +86,9 @@ pub trait Suggestible {
     /// What accept will create: the real entity's create input plus reviewer-only hints.
     type Proposal: Serialize + DeserializeOwned;
 
+    /// The system prompt: what to extract and how to write each item.
     fn instructions() -> &'static str;
+    /// Name of the structured-output schema sent with the request.
     fn schema_name() -> &'static str;
     /// JSON schema of the whole model answer: `{"suggestions": [Candidate, ...]}`.
     fn output_schema() -> serde_json::Value;
@@ -138,6 +140,7 @@ pub fn verify_output<S: Suggestible>(
     Ok(verified)
 }
 
+/// A validation error (422 at the edge) carrying `message`.
 pub(crate) fn validation(message: &str) -> Error {
     Error {
         source: None,

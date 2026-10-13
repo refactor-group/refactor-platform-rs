@@ -29,6 +29,7 @@ pub async fn create_batch<C: ConnectionTrait>(
     Ok(inserted)
 }
 
+/// The suggestion with `id`; a `RecordNotFound` error when there is none.
 pub async fn find_by_id<C: ConnectionTrait>(db: &C, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,

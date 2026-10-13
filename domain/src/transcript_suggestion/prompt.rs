@@ -18,6 +18,7 @@ pub struct Refs {
 }
 
 impl Refs {
+    /// Numbers the session's segments and existing actions in order, from 1.
     pub fn new(session: &Session) -> Self {
         Self {
             segments: session.segments.iter().map(|s| s.id).collect(),

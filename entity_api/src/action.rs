@@ -45,6 +45,7 @@ impl ActionWithAssignees {
     }
 }
 
+/// Inserts an action owned by `user_id` from `action_model`'s fields, with fresh timestamps.
 pub async fn create<C: ConnectionTrait>(
     db: &C,
     action_model: Model,

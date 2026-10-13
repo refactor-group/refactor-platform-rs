@@ -38,6 +38,7 @@ pub enum Status {
     Failed,
 }
 
+/// One model run over a transcription for one target; at most one per pair.
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, ToSchema)]
 #[schema(as = entity::transcript_analysis::Model)]

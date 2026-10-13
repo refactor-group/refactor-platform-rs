@@ -154,6 +154,30 @@ fn the_transcript_download_operation_is_served_with_its_schemas() {
 /// Every `$ref` in the spec must point at a schema that is actually defined.
 /// utoipa 4 silently emitted refs to unregistered types; this guards the regression.
 #[test]
+fn the_suggestion_list_and_scan_operations_declare_their_query_parameters() {
+    let spec = spec();
+    let query_names = |path: &str, method: &str| -> Vec<String> {
+        spec["paths"][path][method]["parameters"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{method} {path} must declare parameters"))
+            .iter()
+            .filter(|p| p["in"] == "query")
+            .filter_map(|p| p["name"].as_str().map(str::to_string))
+            .collect()
+    };
+    let list = "/coaching_sessions/{coaching_session_id}/transcript_suggestions";
+    let scan = "/coaching_sessions/{coaching_session_id}/transcript_suggestions/scan";
+
+    assert_eq!(query_names(list, "get"), ["target", "status"]);
+    assert_eq!(query_names(scan, "get"), ["target"]);
+    assert_eq!(query_names(scan, "post"), ["target"]);
+    assert!(
+        spec["paths"][list]["get"]["responses"].get("403").is_some(),
+        "the list must document the 403 its access check returns"
+    );
+}
+
+#[test]
 fn openapi_spec_has_no_dangling_refs() {
     let spec = ApiDoc::openapi().to_pretty_json().expect("spec serializes");
     let defined: Vec<String> = serde_json::from_str::<serde_json::Value>(&spec)
