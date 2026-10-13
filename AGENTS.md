@@ -13,7 +13,6 @@ Claude Code additionally reads `.claude/CLAUDE.md`, which layers on Claude-Code-
 ### Tests
 - The mock-gated suite (SeaORM `MockDatabase`-backed tests) needs its own invocation: `cargo test -p entity_api -p domain -p web --features "domain/mock,web/mock"`. The gating is historical (SeaORM 1.1's `mock` feature removed `DatabaseConnection: Clone`; 2.x does not) and its removal is tracked in #426.
 - **SQLite tier**: default to the mock suite. When correctness depends on which rows a query selects or what a write leaves in the table, the mock cannot see it; add a `sqlite_tests` module (in-memory SQLite, runs in plain `cargo test`) after reading `docs/test-plans/sqlite_integration_testing.md`.
-- Suggested-action eval (real model, opt-in, costs about $2): `cargo test -p domain suggestion_eval -- --ignored --nocapture`. Run it for any change to `actions_prompt.md`, the model, or suggestion verification/due-date code; see `docs/test-plans/transcript_suggestions_eval.md`.
 - Single test: `cargo test -p <crate> <test_name>` (add the `--features` flag above if the test lives behind `#[cfg(feature = "mock")]`)
 - `cargo test --release` — the slower path CI runs before production image builds
 
