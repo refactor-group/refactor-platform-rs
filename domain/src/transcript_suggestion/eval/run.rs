@@ -39,6 +39,7 @@ async fn suggestion_eval() {
         .assembly_ai_api_key()
         .expect("set ASSEMBLY_AI_API_KEY in the environment or .env");
     let runs = setting("SUGGESTION_EVAL_RUNS", DEFAULT_RUNS);
+    assert!(runs > 0, "SUGGESTION_EVAL_RUNS must be at least 1");
     let concurrency = setting("SUGGESTION_EVAL_CONCURRENCY", DEFAULT_CONCURRENCY);
     let filters: Vec<String> = env::var("SUGGESTION_EVAL_CASES")
         .unwrap_or_default()
@@ -86,25 +87,48 @@ async fn suggestion_eval() {
                 (variants.clone(), provider.clone(), permits.clone());
             tasks.spawn(async move {
                 let _permit = permits.acquire_owned().await.expect("semaphore open");
-                let (scored, raw) = run_once(&provider, &variants[index]).await;
-                (index, run, scored, raw)
+                let answered = run_once(&provider, &variants[index]).await;
+                (index, run, answered)
             });
         }
     }
-    let mut results: Vec<(usize, usize, Run, Option<serde_json::Value>)> = Vec::new();
+    let mut results = Vec::new();
     while let Some(joined) = tasks.join_next().await {
         results.push(joined.expect("eval task finished"));
     }
-    results.sort_by_key(|(index, run, _, _)| (*index, *run));
+    results.sort_by_key(|(index, run, _)| (*index, *run));
 
-    for (index, run, _, raw) in &results {
-        if let Some(raw) = raw {
-            let path = out_dir.join(format!("{}.run{}.json", variants[*index].id(), run + 1));
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&path, serde_json::to_string_pretty(raw).unwrap_or_default());
+    // A call that never got an answer measured nothing, so the run stops before it can pass or
+    // touch the baseline.
+    let failed: Vec<String> = results
+        .iter()
+        .filter_map(|(index, run, answered)| {
+            answered
+                .as_ref()
+                .err()
+                .map(|e| format!("{} run {}: {e}", variants[*index].id(), run + 1))
+        })
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "{} of {} model calls failed after retries; nothing was scored:\n{}",
+        failed.len(),
+        results.len(),
+        failed.join("\n")
+    );
+
+    let answers: Vec<(usize, usize, Run, serde_json::Value)> = results
+        .into_iter()
+        .filter_map(|(index, run, answered)| {
+            answered.ok().map(|(scored, raw)| (index, run, scored, raw))
+        })
+        .collect();
+    for (index, run, _, raw) in &answers {
+        let path = out_dir.join(format!("{}.run{}.json", variants[*index].id(), run + 1));
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
         }
+        let _ = fs::write(&path, serde_json::to_string_pretty(raw).unwrap_or_default());
     }
 
     let mut outcomes: Vec<Outcome> = variants
@@ -116,7 +140,7 @@ async fn suggestion_eval() {
             runs: Vec::new(),
         })
         .collect();
-    for (index, _, scored, _) in results {
+    for (index, _, scored, _) in answers {
         outcomes[index].runs.push(scored);
     }
 
@@ -144,27 +168,19 @@ async fn suggestion_eval() {
     );
 }
 
-/// One model call for one variant, scored, with the model's raw answer.
+/// One model call for one variant, scored, with the model's raw answer; `Err` when no answer came.
 async fn run_once(
     provider: &llm_gateway::Provider,
     variant: &Variant,
-) -> (Run, Option<serde_json::Value>) {
+) -> Result<(Run, serde_json::Value), String> {
     let transcript = &variant.transcript;
     let input = transcript.input();
     let session = transcript.session(&input);
     let refs = Refs::new(&session);
 
-    let completion = match complete(provider, request::<Actions>(&session)).await {
-        Ok(completion) => completion,
-        Err(e) => {
-            let run = Run {
-                result: Err(format!("model call failed: {e:?}")),
-                input_tokens: 0,
-                output_tokens: 0,
-            };
-            return (run, None);
-        }
-    };
+    let completion = complete(provider, request::<Actions>(&session))
+        .await
+        .map_err(|e| format!("model call failed: {e:?}"))?;
     let result = verify_output::<Actions>(&completion.output, &session, &refs)
         .map_err(|e| format!("verification failed: {e:?}"))
         .map(|verified| {
@@ -204,7 +220,7 @@ async fn run_once(
         input_tokens: completion.usage.input_tokens,
         output_tokens: completion.usage.output_tokens,
     };
-    (run, Some(completion.output))
+    Ok((run, completion.output))
 }
 
 /// One completion, waiting out the gateway's rate limit up to `RATE_LIMIT_RETRIES` times.

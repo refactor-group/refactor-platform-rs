@@ -16,7 +16,7 @@ pub(super) const BASELINE: &str = "baseline.json";
 /// One model call and how it scored.
 #[derive(Debug)]
 pub(super) struct Run {
-    /// Findings, or why the call or verification failed.
+    /// Findings, or why the model's answer failed verification.
     pub result: Result<Vec<Finding>, String>,
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -85,7 +85,7 @@ impl TryFrom<String> for Rate {
                     runs: runs.trim().parse().ok()?,
                 })
             })
-            .filter(|rate| rate.passed <= rate.runs)
+            .filter(|rate| rate.runs > 0 && rate.passed <= rate.runs)
             .ok_or_else(|| format!("{value:?} is not a pass rate like \"2/3\""))
     }
 }

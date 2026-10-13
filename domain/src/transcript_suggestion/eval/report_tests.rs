@@ -31,9 +31,9 @@ fn rate(passed: usize, runs: usize) -> Rate {
 }
 
 #[test]
-fn a_failed_call_never_passes() {
+fn an_answer_that_fails_verification_never_passes() {
     let failed = Run {
-        result: Err("model call failed".into()),
+        result: Err("verification failed".into()),
         input_tokens: 0,
         output_tokens: 0,
     };
@@ -67,6 +67,7 @@ fn baseline_rates_read_and_write_as_fractions() {
         r#"{"clean/f05.v1":"2/3"}"#
     );
     assert!(serde_json::from_str::<Baseline>(r#"{"x": "4/3"}"#).is_err());
+    assert!(serde_json::from_str::<Baseline>(r#"{"x": "0/0"}"#).is_err());
 }
 
 #[test]

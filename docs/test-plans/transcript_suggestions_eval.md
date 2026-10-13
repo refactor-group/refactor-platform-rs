@@ -49,7 +49,9 @@ A full run makes about 140 calls (47 transcripts, 3 runs each) and takes about 4
 | `SUGGESTION_EVAL_INPUT_USD_PER_MTOK` | `3.0` | Input price used for the cost estimate |
 | `SUGGESTION_EVAL_OUTPUT_USD_PER_MTOK` | `15.0` | Output price used for the cost estimate |
 
-Rate-limited calls wait as long as the gateway asks and are retried. When iterating on one
+Rate-limited calls wait as long as the gateway asks and are retried. A call that still gets no
+answer (a bad key, the network down) stops the run with a list of the failed calls: nothing is
+scored, the run does not pass, and the baseline is left alone. When iterating on one
 behavior, run only its cases, for example `SUGGESTION_EVAL_CASES=f06,syn-dates`.
 
 ## Reading the report
@@ -74,7 +76,7 @@ clean/f12-later-deadlines          1/3
   - `MISS`: an expected suggestion that never came.
   - `NOTE`: the action text reads like a note or placeholder (brackets, a question mark,
     "unclear", "TBD", "not specified"). Wording quality otherwise stays a human review.
-  - `ERROR`: the call or verification failed.
+  - `ERROR`: the model answered, but its answer failed verification (for example, no suggestions list).
 - Against the baseline, each variant shows `new`, nothing (unchanged), `improved from`,
   `dipped from` or `REGRESSED from`.
 
