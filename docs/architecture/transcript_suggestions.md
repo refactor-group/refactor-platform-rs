@@ -2,7 +2,7 @@
 
 When a coaching session transcript completes, the backend asks a language model which actions the coach and coachee committed to, and shows the answers as suggestions they review. Nothing becomes an Action until one of them accepts it. Only suggested Actions exist today; the design leaves room for other targets such as agreements and topics.
 
-The work runs as a periodic sweep (see [background_jobs.md](background_jobs.md) for why), and it is off unless `ASSEMBLY_AI_API_KEY` is set.
+The work runs as a periodic sweep (see [background_jobs.md](background_jobs.md) for why), and it is off unless `ASSEMBLY_AI_API_KEY` is set. The key is trimmed when the config loads; one that still holds characters an HTTP header cannot carry logs a warning and reads as unset, so transcript completion, the scan status and the sweep always agree on whether suggestions are on.
 
 ## Flow
 

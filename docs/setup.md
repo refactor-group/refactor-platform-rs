@@ -124,7 +124,7 @@ ASSEMBLY_AI_API_KEY=<your AssemblyAI API key>
 # ASSEMBLY_AI_LLM_BASE_URL=https://llm-gateway.assemblyai.com/v1
 ```
 
-Without `ASSEMBLY_AI_API_KEY` transcripts still complete and no suggestions are made. Only transcripts that complete while the key is set are analyzed. To test locally, record a real session through the Recall webhook tunnel (section 4) and follow [docs/test-plans/transcript_suggestions_manual_testing.md](test-plans/transcript_suggestions_manual_testing.md).
+Without `ASSEMBLY_AI_API_KEY` transcripts still complete and no suggestions are made. Surrounding whitespace, such as a trailing newline, is trimmed; a key with any other character a header cannot carry is ignored with a startup warning. Only transcripts that complete while the key is set are analyzed. To test locally, record a real session through the Recall webhook tunnel (section 4) and follow [docs/test-plans/transcript_suggestions_manual_testing.md](test-plans/transcript_suggestions_manual_testing.md).
 
 ### 6. Coaching Note Images (Object Storage)
 

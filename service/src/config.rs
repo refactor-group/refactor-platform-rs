@@ -586,6 +586,7 @@ impl Config {
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
         config.capture_value_sources(&matches);
+        config.normalize_assembly_ai_api_key();
         Self::warn_untracked_fields(&matches);
         Self::warn_on_shared_template_ids(&matches);
 
@@ -610,8 +611,28 @@ impl Config {
             Config::from_arg_matches(&matches).expect("Failed to build Config from arg matches");
 
         config.capture_value_sources(&matches);
+        config.normalize_assembly_ai_api_key();
 
         config
+    }
+
+    /// Trims the AssemblyAI key and drops one an HTTP header cannot carry.
+    ///
+    /// Every check of whether transcript suggestions are on reads this key, and the sweep that
+    /// runs them sends it as a header, so a key the header would reject must read as unset
+    /// rather than leave scans queued that nothing processes.
+    fn normalize_assembly_ai_api_key(&mut self) {
+        self.assembly_ai_api_key = self.assembly_ai_api_key.take().and_then(|key| {
+            let key = key.trim().to_string();
+            let sendable = key.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b));
+            if !sendable {
+                warn!(
+                    "ASSEMBLY_AI_API_KEY contains characters an HTTP header cannot carry; \
+                     transcript suggestions are disabled"
+                );
+            }
+            Some(key).filter(|k| sendable && !k.is_empty())
+        });
     }
 
     /// Unset any process env var that clap is configured to read (via
@@ -1316,6 +1337,23 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+
+    #[test]
+    fn the_assembly_ai_key_is_trimmed_and_an_unsendable_one_reads_as_unset() {
+        let key = |value: &str| {
+            Config::from_args(["test_binary", &format!("--assembly-ai-api-key={value}")])
+                .assembly_ai_api_key()
+        };
+
+        assert_eq!(key("sk-test-123\n"), Some("sk-test-123".to_string()));
+        assert_eq!(key("  sk-test-123  "), Some("sk-test-123".to_string()));
+        assert_eq!(key("sk-test\n123"), None);
+        assert_eq!(key("sk-test-\u{e9}"), None);
+        assert_eq!(
+            Config::from_args(["test_binary"]).assembly_ai_api_key(),
+            None
+        );
+    }
 
     #[test]
     fn unset_field_shows_default_value_and_suffix() {

@@ -441,6 +441,13 @@ async fn a_run_that_stores_suggestions_announces_once() {
 }
 
 #[test]
+fn a_key_pasted_with_a_trailing_newline_still_runs_the_sweep() {
+    let config = Config::from_args(["test", "--assembly-ai-api-key=sk-test-123\n"]);
+    assert!(Sweep::from_config(&config, EventPublisher::new()).is_some());
+    assert!(Sweep::from_config(&Config::from_args(["test"]), EventPublisher::new()).is_none());
+}
+
+#[test]
 fn only_bad_credentials_and_missing_records_are_permanent() {
     let domain = |kind| {
         RunError::Domain(Error {
