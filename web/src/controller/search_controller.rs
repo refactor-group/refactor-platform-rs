@@ -9,7 +9,7 @@ use log::*;
 use service::config::ApiVersion;
 
 use crate::controller::ApiResponse;
-use crate::extractors::{compare_api_version::CompareApiVersion, scope::Scope};
+use crate::extractors::{compare_api_version::CompareApiVersion, search_access::SearchAccess};
 use crate::params::search::IndexParams;
 use crate::{AppState, Error};
 
@@ -37,12 +37,12 @@ use crate::{AppState, Error};
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    Scope(scope): Scope,
+    SearchAccess(visibility): SearchAccess,
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET /search params: {params:?}");
     let spec = params.compile()?;
-    let results = SearchApi::search(app_state.db_conn_ref(), &scope, spec).await?;
+    let results = SearchApi::search(app_state.db_conn_ref(), &visibility, spec).await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), results)))
 }

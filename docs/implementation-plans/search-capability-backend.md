@@ -73,7 +73,7 @@ This also stays correct now that the platform has moved from Tiptap Cloud to the
 GET /search
 ```
 
-Standard extractors: `CompareApiVersion` (`X-Version` header), `AuthenticatedUser` (roles preloaded), cookie session auth, plus a search-specific `Scope` extractor (see [Authorization scoping](#authorization-scoping)). Registered in `web/src/router.rs` with utoipa path + schema registration, behind `require_auth` and a new `ThrottlePolicy::SEARCH_ENDPOINT` per-IP throttle (burst headroom for search-as-you-type; roughly `period_secs: 1, burst: 10`).
+Standard extractors: `CompareApiVersion` (`X-Version` header), `AuthenticatedUser` (roles preloaded), cookie session auth, plus a search-specific `SearchAccess` extractor (see [Authorization scoping](#authorization-scoping)). Registered in `web/src/router.rs` with utoipa path + schema registration, behind `require_auth` and a new `ThrottlePolicy::SEARCH_ENDPOINT` per-IP throttle (burst headroom for search-as-you-type; roughly `period_secs: 1, burst: 10`).
 
 ### Request parameters (`web/src/params/search.rs::IndexParams`)
 
@@ -289,7 +289,7 @@ Only two searched types don't inherit the relationship rule, because they don't 
 | `entity` | `coaching_relationships.rs` | `visible_to(visibility) -> Condition` — the participant rule's query form, defined beside `grants_access_to`. `search_chunks` entity added in the semantic phase. |
 | `entity_api` | `search/mod.rs` + `search/{coaching_session,goal,action,agreement,topic,note,transcript,user,organization}.rs` | The `Searcher` trait, the `Filters` and `Request` structs it takes (see [the sketch below](#the-searcher-trait-and-its-inputs)), and the per-entity implementations: FTS expression constants (shared with index DDL), scope-aware WHERE clauses, `ts_rank`, per-searcher `limit + 1` fetch, keyset predicate — **no `ts_headline` in the searcher pass**; a batched per-type snippet-hydration function beside the searchers computes headlines for merge winners only |
 | `domain` | `search.rs` | `Visibility` derivation from roles (`visibility_for`), resolving the visible relationship id set once per request via `visible_to` (super admin: `None`), compiling `IndexParams` into `Filters` (declared in `entity_api::search`, re-exported here per the type re-export boundary), bounded-concurrency fan-out to searchers (2–3 in flight — see the connection-economics note in [Decisions](#decisions)), merge + rank + clamp, cursor encode/decode, post-merge hydration of `display_title` and snippets for exactly the returned page, `Results`/`Hit` types |
-| `web` | `extractors/scope.rs` | `FromRequestParts` extractor wrapping `AuthenticatedUser` → compiled `Visibility`, per the access-extractor pattern (`extractors/*_access.rs`) |
+| `web` | `extractors/search_access.rs` | `FromRequestParts` extractor wrapping `AuthenticatedUser` → compiled `Visibility`, per the access-extractor pattern (`extractors/*_access.rs`) |
 | `web` | `params/search.rs` | `IndexParams`, comma-split `types` parsing, clamps, utoipa `IntoParams`; compiles into `domain::search::Filters` |
 | `web` | `controller/search_controller.rs` | `GET /search` handler, `ApiResponse` envelope, utoipa path |
 | `web` | `router.rs` | Route + OpenAPI registration + `ThrottlePolicy::SEARCH_ENDPOINT` layer |

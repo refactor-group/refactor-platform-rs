@@ -1,4 +1,4 @@
-//! Search visibility-scope extractor.
+//! Search access extractor.
 //!
 //! `/search` has no resource id in its path, so the per-resource access
 //! extractors don't apply; authorization is embedded in the search queries
@@ -13,10 +13,10 @@ use domain::search::visibility_for;
 
 use crate::extractors::{authenticated_user::AuthenticatedUser, RejectionType};
 
-pub(crate) struct Scope(pub Visibility);
+pub(crate) struct SearchAccess(pub Visibility);
 
 #[async_trait]
-impl<S> FromRequestParts<S> for Scope
+impl<S> FromRequestParts<S> for SearchAccess
 where
     S: Send + Sync,
 {
@@ -24,6 +24,6 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, state).await?;
-        Ok(Scope(visibility_for(&user)))
+        Ok(SearchAccess(visibility_for(&user)))
     }
 }
