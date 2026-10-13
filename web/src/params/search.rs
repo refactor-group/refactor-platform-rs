@@ -201,13 +201,7 @@ fn parse_type_token(token: &str) -> Result<Option<HitType>, Error> {
 /// legitimately end up empty (every token dropped) and then searches nothing.
 fn resolve_types(raw: Option<&str>) -> Result<Vec<HitType>, Error> {
     let Some(raw) = raw else {
-        return Ok(vec![
-            HitType::Action,
-            HitType::Agreement,
-            HitType::CoachingSession,
-            HitType::Goal,
-            HitType::Topic,
-        ]);
+        return Ok(HitType::ALL.to_vec());
     };
     let mut types: Vec<HitType> = raw
         .split(',')

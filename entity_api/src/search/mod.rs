@@ -55,6 +55,16 @@ pub enum HitType {
 }
 
 impl HitType {
+    /// Every searchable type, in merge (type-ascending) order. The single list
+    /// that fan-out, snippet hydration, and the default `types` filter draw from.
+    pub const ALL: [HitType; 5] = [
+        HitType::Action,
+        HitType::Agreement,
+        HitType::CoachingSession,
+        HitType::Goal,
+        HitType::Topic,
+    ];
+
     /// Stable wire code for cursor payloads. Never renumber: new types take the
     /// next free code regardless of where they sort, so old cursors stay valid.
     fn code(self) -> u8 {
@@ -68,14 +78,7 @@ impl HitType {
     }
 
     fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(HitType::CoachingSession),
-            2 => Some(HitType::Goal),
-            3 => Some(HitType::Action),
-            4 => Some(HitType::Agreement),
-            5 => Some(HitType::Topic),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|t| t.code() == code)
     }
 }
 
@@ -301,13 +304,17 @@ pub trait Searcher: Send + Sync {
 
 /// The five phase-1 searchers, in merge (type-ascending) order.
 pub fn searchers() -> Vec<Box<dyn Searcher>> {
-    vec![
-        Box::new(action::Searcher),
-        Box::new(agreement::Searcher),
-        Box::new(coaching_session::Searcher),
-        Box::new(goal::Searcher),
-        Box::new(topic::Searcher),
-    ]
+    HitType::ALL.into_iter().map(searcher).collect()
+}
+
+fn searcher(hit_type: HitType) -> Box<dyn Searcher> {
+    match hit_type {
+        HitType::Action => Box::new(action::Searcher),
+        HitType::Agreement => Box::new(agreement::Searcher),
+        HitType::CoachingSession => Box::new(coaching_session::Searcher),
+        HitType::Goal => Box::new(goal::Searcher),
+        HitType::Topic => Box::new(topic::Searcher),
+    }
 }
 
 // ---------------------------------------------------------------------------

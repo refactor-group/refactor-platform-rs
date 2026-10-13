@@ -36,13 +36,7 @@ pub async fn hydrate_snippets(
 ) -> Result<(), Error> {
     let cq = compile_query(raw_q);
 
-    for hit_type in [
-        HitType::Action,
-        HitType::Agreement,
-        HitType::CoachingSession,
-        HitType::Goal,
-        HitType::Topic,
-    ] {
+    for hit_type in HitType::ALL {
         let ids: Vec<Id> = hits
             .iter()
             .filter(|h| h.hit_type() == hit_type)

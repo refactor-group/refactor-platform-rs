@@ -146,6 +146,22 @@ fn hit_type_order_is_alphabetical_by_wire_name() {
     );
 }
 
+#[test]
+fn all_is_in_merge_order_and_every_type_round_trips_its_cursor_code() {
+    let mut sorted = HitType::ALL;
+    sorted.sort();
+    assert_eq!(sorted, HitType::ALL);
+    for t in HitType::ALL {
+        assert_eq!(HitType::from_code(t.code()), Some(t));
+    }
+}
+
+#[test]
+fn searchers_follow_all() {
+    let types: Vec<HitType> = searchers().iter().map(|s| s.hit_type()).collect();
+    assert_eq!(types, HitType::ALL);
+}
+
 // --- Searcher SQL contracts (MockDatabase transaction-log pins) ---------------
 //
 // Real FTS matching needs a live Postgres, but the *shape* of every searcher's
