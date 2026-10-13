@@ -602,14 +602,12 @@ async fn segments_of(
     rows: &[Model],
 ) -> Result<HashMap<Id, LabeledSegment>, Error> {
     let analysis_ids: HashSet<Id> = rows.iter().map(|r| r.transcript_analysis_id).collect();
-    let mut transcription_ids = HashSet::new();
-    for analysis_id in analysis_ids {
-        transcription_ids.insert(
-            transcript_analysis::find_by_id(db, analysis_id)
-                .await?
-                .transcription_id,
-        );
-    }
+    let transcription_ids: HashSet<Id> =
+        transcript_analysis::find_by_ids(db, analysis_ids.into_iter().collect())
+            .await?
+            .into_iter()
+            .map(|a| a.transcription_id)
+            .collect();
 
     let mut segments = HashMap::new();
     for transcription_id in transcription_ids {

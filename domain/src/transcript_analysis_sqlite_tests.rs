@@ -344,6 +344,31 @@ async fn fail_abandoned_fails_only_stale_claims_with_no_attempts_left() {
 }
 
 #[tokio::test]
+async fn find_by_ids_returns_the_requested_analyses_in_one_query() {
+    within_time_limit(async {
+        let db = database().await;
+        let first = seed_claimed(&db, 1).await;
+        let second = seed_claimed(&db, 1).await;
+        seed_claimed(&db, 1).await;
+
+        let mut found: Vec<Id> = find_by_ids(&db, vec![first, second, Id::new_v4()])
+            .await?
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        found.sort();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(found, expected);
+        assert!(find_by_ids(&db, vec![]).await?.is_empty());
+
+        Ok::<(), Error>(())
+    })
+    .await
+    .expect("the test body succeeds");
+}
+
+#[tokio::test]
 async fn complete_claimed_completes_only_the_claim_with_matching_attempts() {
     within_time_limit(async {
         let db = database().await;

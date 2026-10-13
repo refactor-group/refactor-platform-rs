@@ -32,6 +32,14 @@ fn claimable(stale_before: DateTimeWithTimeZone, max_attempts: i16) -> Condition
     )
 }
 
+/// The analyses with these ids, in one query; ids with no analysis are skipped.
+pub async fn find_by_ids<C: ConnectionTrait>(db: &C, ids: Vec<Id>) -> Result<Vec<Model>, Error> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    Ok(Entity::find().filter(Column::Id.is_in(ids)).all(db).await?)
+}
+
 /// The analysis with `id`; a `RecordNotFound` error when there is none.
 pub async fn find_by_id<C: ConnectionTrait>(db: &C, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
