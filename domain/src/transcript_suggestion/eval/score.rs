@@ -18,6 +18,12 @@ const NOTE_WORDS: [&str; 6] = [
     "placeholder",
 ];
 
+/// Cost of leaving a suggestion or an expectation unpaired; above any pairing's problem count, so a
+/// suggestion on an expected line is always paired with one.
+const UNPAIRED: i64 = 10;
+/// Cost of pairing a suggestion with an expectation on another line; never chosen.
+const FORBIDDEN: i64 = 1_000;
+
 /// One verified suggestion in fixture terms.
 #[derive(Debug, Clone)]
 pub(super) struct Got {
@@ -75,14 +81,14 @@ impl fmt::Display for Finding {
 
 /// Every finding for one run, in the model's order then the misses.
 pub(super) fn score(expected: &[Expected], got: &[Got], transcript: &Transcript) -> Vec<Finding> {
-    let mut open: Vec<&Expected> = expected.iter().collect();
+    let pairs = pair(expected, got, transcript);
     let mut findings: Vec<Finding> = got
         .iter()
-        .flat_map(|g| {
-            let matched = best_match(&open, g).map(|index| open.remove(index));
-            let finding = match matched {
+        .zip(&pairs)
+        .flat_map(|(g, paired)| {
+            let finding = match paired {
                 None => Finding::Extra(describe(g)),
-                Some(e) => match problems(e, g, transcript) {
+                Some(index) => match problems(&expected[*index], g, transcript) {
                     problems if problems.is_empty() => Finding::Ok(describe(g)),
                     problems => Finding::Wrong(describe(g), problems),
                 },
@@ -92,22 +98,96 @@ pub(super) fn score(expected: &[Expected], got: &[Got], transcript: &Transcript)
         })
         .collect();
     findings.extend(
-        open.into_iter()
-            .map(|e| Finding::Miss(format!("{:?} {}", e.segments, e.note))),
+        expected
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !pairs.contains(&Some(*index)))
+            .map(|(_, e)| Finding::Miss(format!("{:?} {}", e.segments, e.note))),
     );
     findings
 }
 
-/// The open expectation `got` matches best: same line, people and date; then line and people;
-/// then line alone, which is then reported as wrong.
-fn best_match(open: &[&Expected], got: &Got) -> Option<usize> {
-    let on_line = |e: &&Expected| e.segments.contains(&got.segment);
-    let people = |e: &&Expected| any_people(e, &got.assignees);
-    let date = |e: &&Expected| e.due_dates.contains(&got.due);
-    open.iter()
-        .position(|e| on_line(e) && people(e) && date(e))
-        .or_else(|| open.iter().position(|e| on_line(e) && people(e)))
-        .or_else(|| open.iter().position(on_line))
+/// For each suggestion, the expectation it answers, if any.
+///
+/// A suggestion pairs only with an expectation that allows its line. Of all such pairings, this is
+/// the one with the fewest errors, so the order the model lists suggestions in never changes a score.
+fn pair(expected: &[Expected], got: &[Got], transcript: &Transcript) -> Vec<Option<usize>> {
+    let (rows, cols) = (got.len(), expected.len());
+    let on_line = |row: usize, col: usize| expected[col].segments.contains(&got[row].segment);
+    // Suggestions then one placeholder per expectation (a miss), by expectations then one
+    // placeholder per suggestion (an extra).
+    let cost: Vec<Vec<i64>> = (0..rows + cols)
+        .map(|row| {
+            (0..rows + cols)
+                .map(|col| match (row < rows, col < cols) {
+                    (true, true) if on_line(row, col) => {
+                        problems(&expected[col], &got[row], transcript).len() as i64
+                    }
+                    (true, true) => FORBIDDEN,
+                    (true, false) | (false, true) => UNPAIRED,
+                    (false, false) => 0,
+                })
+                .collect()
+        })
+        .collect();
+    let assignment = min_cost_assignment(&cost);
+    (0..rows)
+        .map(|row| Some(assignment[row]).filter(|&col| col < cols && on_line(row, col)))
+        .collect()
+}
+
+/// For each row of a square cost matrix, its column in the assignment with the lowest total cost.
+///
+/// The Hungarian algorithm, O(n³); kept imperative because that is how it reads best.
+fn min_cost_assignment(cost: &[Vec<i64>]) -> Vec<usize> {
+    let n = cost.len();
+    // 1-based potentials and matches; column 0 is the algorithm's sentinel.
+    let (mut u, mut v) = (vec![0i64; n + 1], vec![0i64; n + 1]);
+    let (mut row_of, mut way) = (vec![0usize; n + 1], vec![0usize; n + 1]);
+    for row in 1..=n {
+        row_of[0] = row;
+        let mut col0 = 0;
+        let mut min_slack = vec![i64::MAX; n + 1];
+        let mut used = vec![false; n + 1];
+        loop {
+            used[col0] = true;
+            let row0 = row_of[col0];
+            let (mut delta, mut col1) = (i64::MAX, 0);
+            for col in (1..=n).filter(|&c| !used[c]) {
+                let slack = cost[row0 - 1][col - 1] - u[row0] - v[col];
+                if slack < min_slack[col] {
+                    min_slack[col] = slack;
+                    way[col] = col0;
+                }
+                if min_slack[col] < delta {
+                    delta = min_slack[col];
+                    col1 = col;
+                }
+            }
+            for col in 0..=n {
+                if used[col] {
+                    u[row_of[col]] += delta;
+                    v[col] -= delta;
+                } else {
+                    min_slack[col] -= delta;
+                }
+            }
+            col0 = col1;
+            if row_of[col0] == 0 {
+                break;
+            }
+        }
+        while col0 != 0 {
+            let previous = way[col0];
+            row_of[col0] = row_of[previous];
+            col0 = previous;
+        }
+    }
+    let mut column_of = vec![0; n];
+    for col in 1..=n {
+        column_of[row_of[col] - 1] = col - 1;
+    }
+    column_of
 }
 
 fn problems(expected: &Expected, got: &Got, transcript: &Transcript) -> Vec<String> {

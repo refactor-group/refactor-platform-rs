@@ -173,6 +173,92 @@ fn accepts_any_listed_assignee_set() {
 }
 
 #[test]
+fn the_model_order_never_changes_the_score() {
+    let t = parse_transcript(
+        "# session: 2026-10-07\n# next_session: none\n# coach: A\n# coachee: B\n\
+         [s6 00:01] Coachee: I'll do the stakeholder map before next time.\n\
+         [s7 00:02] Coachee: And I'll talk to Dana about the on-call rotation.\n\
+         [s8 00:03] Coach: Recap: the stakeholder map, and talking to Dana.\n",
+    )
+    .expect("parses");
+    let expect = |segments: &[&str], note: &str| Expected {
+        segments: segments.iter().map(|s| s.to_string()).collect(),
+        assignees: vec![vec![Role::Coachee]],
+        due_dates: vec![None],
+        duplicate_of: None,
+        note: note.into(),
+    };
+    let expected = [
+        expect(&["s6", "s8"], "stakeholder map"),
+        expect(&["s7", "s8"], "Dana"),
+    ];
+    let dana = got(
+        "s8",
+        vec![Role::Coachee],
+        None,
+        "talking to Dana",
+        "Talk to Dana",
+    );
+    let map = got(
+        "s6",
+        vec![Role::Coachee],
+        None,
+        "the stakeholder map",
+        "Do the stakeholder map",
+    );
+
+    for answer in [[dana.clone(), map.clone()], [map, dana]] {
+        assert_eq!(errors(&score(&expected, &answer, &t)), 0);
+    }
+}
+
+#[test]
+fn pairs_for_the_fewest_problems() {
+    // Undated first, it could take the dated expectation; the best pairing gives each its own.
+    let answer = [
+        got(
+            "s1",
+            vec![Role::Coachee],
+            None,
+            "call the vendor",
+            "Call the vendor",
+        ),
+        got(
+            "s1",
+            vec![Role::Coachee],
+            date(12),
+            "draft the hiring plan",
+            "Draft the hiring plan",
+        ),
+    ];
+
+    let findings = score(&expected()[..2], &answer, &transcript());
+
+    assert_eq!(errors(&findings), 0, "{findings:?}");
+}
+
+#[test]
+fn a_lone_answer_pairs_with_its_line_among_many_expectations() {
+    let mut many = expected();
+    many.extend(expected());
+    let answer = [got(
+        "s3",
+        vec![Role::Coach],
+        date(9),
+        "send you the article",
+        "Send the article",
+    )];
+
+    let findings = score(&many, &answer, &transcript());
+
+    assert!(
+        matches!(&findings[0], Finding::Wrong(_, p) if p.len() == 1),
+        "{findings:?}"
+    );
+    assert_eq!(errors(&findings), 1 + 5);
+}
+
+#[test]
 fn checks_the_duplicate_flag() {
     let mut item = got(
         "s3",
