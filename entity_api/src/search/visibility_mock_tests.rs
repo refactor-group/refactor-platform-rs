@@ -1,6 +1,6 @@
 use super::*;
-use chrono::Utc;
-use sea_orm::{DatabaseBackend, MockDatabase};
+use sea_orm::{DatabaseBackend, MockDatabase, Value};
+use std::collections::BTreeMap;
 
 fn super_admin_visibility() -> Visibility {
     Visibility {
@@ -8,18 +8,6 @@ fn super_admin_visibility() -> Visibility {
         is_super_admin: true,
         admin_org_ids: vec![],
         member_org_ids: vec![],
-    }
-}
-
-fn relationship(id: Id, organization_id: Id) -> coaching_relationships::Model {
-    coaching_relationships::Model {
-        id,
-        organization_id,
-        coach_id: Id::new_v4(),
-        coachee_id: Id::new_v4(),
-        slug: "coach-coachee".to_string(),
-        created_at: Utc::now().into(),
-        updated_at: Utc::now().into(),
     }
 }
 
@@ -73,8 +61,9 @@ async fn super_admin_relationship_filter_alone_needs_no_query() {
 async fn super_admin_org_and_relationship_filters_intersect() {
     let rel_id = Id::new_v4();
     let org_id = Id::new_v4();
+    // The query selects bare ids, so the mock row carries only `id`.
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results(vec![vec![relationship(rel_id, org_id)]])
+        .append_query_results(vec![vec![BTreeMap::from([("id", Value::from(rel_id))])]])
         .into_connection();
 
     let resolved = resolve_visible_relationship_ids(

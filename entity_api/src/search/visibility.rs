@@ -12,6 +12,8 @@ use crate::error::Error;
 use entity::coaching_relationships::{self, visible_to, Visibility};
 use entity::Id;
 
+/// The org-filtered visible set narrows in Rust, so it needs each row's
+/// organization; the other queries select bare ids.
 #[derive(Debug, FromQueryResult)]
 struct RelationshipRow {
     id: Id,
@@ -40,17 +42,13 @@ pub async fn resolve_visible_relationship_ids(
                 coaching_relationships::Entity::find()
                     .select_only()
                     .column(coaching_relationships::Column::Id)
-                    .column(coaching_relationships::Column::OrganizationId)
                     .filter(coaching_relationships::Column::OrganizationId.eq(org_id))
                     .apply_if(rel_id, |q, rel| {
                         q.filter(coaching_relationships::Column::Id.eq(rel))
                     })
-                    .into_model::<RelationshipRow>()
+                    .into_tuple::<Id>()
                     .all(db)
-                    .await?
-                    .into_iter()
-                    .map(|r| r.id)
-                    .collect(),
+                    .await?,
             ),
         });
     }
@@ -81,10 +79,9 @@ pub async fn resolve_participant_relationship_ids(
     user_id: Id,
     visible: Option<&[Id]>,
 ) -> Result<Vec<Id>, Error> {
-    let rows = coaching_relationships::Entity::find()
+    Ok(coaching_relationships::Entity::find()
         .select_only()
         .column(coaching_relationships::Column::Id)
-        .column(coaching_relationships::Column::OrganizationId)
         .filter(
             coaching_relationships::Column::CoachId
                 .eq(user_id)
@@ -93,10 +90,9 @@ pub async fn resolve_participant_relationship_ids(
         .apply_if(visible, |q, ids| {
             q.filter(coaching_relationships::Column::Id.is_in(ids.iter().copied()))
         })
-        .into_model::<RelationshipRow>()
+        .into_tuple::<Id>()
         .all(db)
-        .await?;
-    Ok(rows.into_iter().map(|r| r.id).collect())
+        .await?)
 }
 
 #[cfg(all(test, feature = "mock"))]
