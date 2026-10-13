@@ -1,11 +1,12 @@
-use crate::cost_metric::Metric;
-use crate::error::Error;
-use crate::pipeline_provider::Provider;
-use crate::Id;
 use entity_api::{cost_pricing_config, meeting_recording as recording_api, platform_cost_metrics};
 use log::{debug, warn};
 use sea_orm::prelude::Decimal;
 use sea_orm::DatabaseConnection;
+
+use crate::cost_metric::Metric;
+use crate::error::Error;
+use crate::pipeline_provider::Provider;
+use crate::Id;
 
 /// Records the Recall.ai bot-minutes cost for a completed recording.
 ///

@@ -1,8 +1,9 @@
 //! Analysis provider trait.
 
+use async_trait::async_trait;
+
 use crate::types::analysis::{Completion, Request};
 use crate::Error;
-use async_trait::async_trait;
 
 /// Abstraction for LLM services that return structured JSON output.
 ///

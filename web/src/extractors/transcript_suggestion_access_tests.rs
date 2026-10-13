@@ -1,8 +1,5 @@
 use std::sync::Arc;
 
-use crate::middleware::auth::require_auth;
-
-use super::*;
 use axum::{body::Body, middleware::from_fn};
 use axum::{extract::Request, http::StatusCode, routing::get, Router};
 use axum_login::{
@@ -19,6 +16,9 @@ use service::config::Config;
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
+
+use super::*;
+use crate::middleware::auth::require_auth;
 
 fn create_test_user() -> users::Model {
     let now = Utc::now();
