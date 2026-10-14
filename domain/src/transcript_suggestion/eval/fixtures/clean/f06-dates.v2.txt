@@ -1,0 +1,29 @@
+# F6 due dates on a Wednesday session, reworded around the same deadline phrases.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coachee: Today I'll get the status update out to the team.
+[s2 00:10] Coachee: Tonight I'll drop the recruiter an email.
+[s3 00:15] Coachee: You'll have the numbers from me by end of day.
+[s4 00:20] Coachee: The dashboard bug, I'll fix it tomorrow.
+[s5 00:25] Coachee: Monday I'll get the contract over to Maria.
+[s6 00:30] Coachee: The slides, I'll have them finished this Friday.
+[s7 00:35] Coachee: By next Friday I'll have the offsite venue booked.
+[s8 00:40] Coachee: Next Monday I'll give the landlord a call.
+[s9 00:45] Coachee: In two weeks I'll have the security review finished.
+[s10 00:50] Coachee: Two weeks from this Wednesday, I'll get the pricing memo out the door.
+[s11 00:56] Coachee: A week from Friday I'll send you the draft.
+[s12 01:01] Coachee: By the end of the week I'll have updated the interview rubric.
+[s13 01:06] Coachee: The hiring plan, I'll wrap it up by the end of next week.
+[s14 01:11] Coachee: This weekend I'll read that leadership book.
+[s15 01:16] Coachee: By the end of the month I'll close out all the expense reports.
+[s16 01:21] Coachee: The proposal I'll submit by November 20th.
+[s17 01:26] Coachee: By 11/18 I'll file the form.
+[s18 01:31] Coachee: Before our next session, I'll come up with three questions.
+[s19 01:36] Coachee: Soon I'll reach out to the new VP.
+[s20 01:41] Coachee: The onboarding checklist, I'll fix it ASAP.
+[s21 01:46] Coachee: At some point I'll get the mentoring program set up.
+[s22 01:51] Coachee: Next week I'll look into the training budget.
+[s23 01:57] Coach: After our call I'll send you that article feedback.
+[s24 02:03] Coachee: Later today I'll send out the recap.

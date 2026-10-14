@@ -1,0 +1,8 @@
+[
+  {"segments": ["s3", "s4"], "assignees": ["coachee"], "due_dates": [null, "2026-10-12"], "duplicate_of": null, "note": "2 accepted request (starting Monday is a start, not a due date)"},
+  {"segments": ["s5", "s6"], "assignees": ["coachee"], "due_dates": [null, "2026-10-21"], "duplicate_of": null, "note": "3 homework accepted with Okay"},
+  {"segments": ["s10"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "5 let me ... get back to you"},
+  {"segments": ["s11"], "assignees": ["coachee"], "due_dates": ["2026-10-07"], "duplicate_of": null, "note": "16 self-question then commit, tonight"},
+  {"segments": ["s12"], "assignees": ["coachee"], "due_dates": ["2026-10-12"], "duplicate_of": null, "note": "12 corrected to Monday"},
+  {"segments": ["s13", "s14", "s16"], "assignees": ["coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "13 narrowed to two, before we meet again"}
+]

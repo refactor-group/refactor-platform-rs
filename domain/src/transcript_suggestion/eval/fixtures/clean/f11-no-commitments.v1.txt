@@ -1,0 +1,11 @@
+# F11 a session with no commitments, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: How are you arriving today?
+[s2 00:10] Coachee: Tired, honestly. It's been a heavy week.
+[s3 00:17] Coach: What's been the heaviest part?
+[s4 00:22] Coachee: Feeling like I'm letting my team down. I keep saying yes to everything.
+[s5 00:34] Coach: Maybe we just sit with that today rather than solve it.
+[s6 00:41] Coachee: I'd like that. I could think about it more, but I don't want homework this week.

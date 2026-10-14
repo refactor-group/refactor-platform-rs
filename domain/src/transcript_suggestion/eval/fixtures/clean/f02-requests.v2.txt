@@ -1,0 +1,16 @@
+# F2 requests and agreement, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: Would it work to set aside two hours a week on your calendar just for interview feedback?
+[s2 00:13] Coachee: Sure, I'll start doing that on Monday.
+[s3 00:21] Coach: Between now and our next session, aim to get your feedback in within a day of every interview.
+[s4 00:30] Coachee: Will do.
+[s5 00:36] Coach: How would you feel about mentoring the two new team leads this month?
+[s6 00:44] Coachee: Honestly, I can't take that on right now.
+[s7 00:50] Coach: Understood.
+[s8 00:55] Coachee: Would you mind connecting me with Maria from finance?
+[s9 01:01] Coach: Happy to. I'll do that this week.
+[s10 01:10] Coach: You might find a decision log useful.
+[s11 01:16] Coachee: Maybe. Not sure yet.

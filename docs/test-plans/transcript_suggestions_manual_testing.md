@@ -159,6 +159,13 @@ prompt is meant to handle. Each group below is one short recording (about 3 to 6
 small wording changes are fine as long as the meaning stays the same. Lines in *italics* are stage
 directions, not spoken.
 
+**Prefer the eval for prompt changes.** Every group below also exists as text transcripts in the
+suggested-action eval (`transcript_suggestions_eval.md`), which runs them against the real model
+several times each and compares the pass rates with a checked-in baseline. Run the eval for any
+change to the prompt, the model, verification or due-date resolution. Record these groups when you
+need an end-to-end check that includes recording and transcription, and turn a recording that
+shows a new kind of miss into a robustness case.
+
 ### How to run a group
 
 1. Do the group's **Setup** in the app (existing actions, next session).

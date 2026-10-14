@@ -1,0 +1,14 @@
+# F12 deadlines said after the commitment, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: I'll find you a template for the project chart
+[s2 00:10] Coach: and I will commit to giving you that by our next session.
+[s3 00:18] Coachee: I'll update the team wiki with the new process.
+[s4 00:24] Coach: When by?
+[s5 00:27] Coachee: Let's say by Friday.
+[s6 00:33] Coachee: I'll call the vendor about the renewal. And I'll draft the hiring plan.
+[s7 00:41] Coachee: The hiring plan by Monday.
+[s8 00:48] Coachee: I'll prep the board slides.
+[s9 00:53] Coach: And I'll review your draft by Thursday.

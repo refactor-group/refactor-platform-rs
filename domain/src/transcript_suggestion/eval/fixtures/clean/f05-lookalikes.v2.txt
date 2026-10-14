@@ -1,0 +1,24 @@
+# F5 look-alikes that must not become actions, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: I'll pull up your goals on screen so we can both see them.
+[s2 00:13] Coachee: I ought to get more exercise. It'd be great to start running again one of these days.
+[s3 00:22] Coachee: A reading group might be fun. Perhaps I'll see if anyone's interested.
+[s4 00:31] Coachee: The numbers for finance are still on my plate, the quarterly ones.
+[s5 00:39] Coachee: The offsite agenda already went out last week, that one's finished.
+[s6 00:47] Coachee: I'm roughly halfway through the quarterly plan.
+[s7 00:53] Coach: How about we kick off every session with one win from your week?
+[s8 01:01] Coachee: Love it, let's make that a habit.
+[s9 01:06] Coach: Let's rehearse. I'll play your director. Whenever you're ready.
+[s10 01:13] Coachee: Alright. "You'll have the revised forecast Friday, and the hiring plan is mine."
+[s11 01:25] Coach: Nice. What was that like?
+[s12 01:31] Coachee: My boss told me, "I'll sort out the budget issue myself," so it's his problem now.
+[s13 01:41] Coachee: The reorg list is coming from my manager next week.
+[s14 01:48] Coachee: Next week I'm flying to Denver for my sister's wedding.
+[s15 01:56] Coachee: Oh sure, I'll just walk out and go farm llamas, ha.
+[s16 02:04] Coachee: Let me jot that down right now before I forget it.
+[s17 02:11] Coachee: I keep saying I should call the vendor. I will, by Friday.
+[s18 02:19] Coach: Same time two weeks from now?
+[s19 02:23] Coachee: Works for me. I'll end the recording.

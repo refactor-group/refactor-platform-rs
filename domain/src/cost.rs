@@ -39,8 +39,9 @@ pub async fn record_transcription_hours(
 
 /// Records the LLM Gateway token cost of one transcript analysis.
 ///
-/// No-ops with a warning if no pricing row is configured, and skips a zero-token
-/// completion rather than writing a misleading `$0.00` row.
+/// Input tokens are priced at the rate's low (input) price and output tokens at its high
+/// (output) price, so the row holds the exact cost. No-ops with a warning if no pricing row
+/// is configured, and skips a zero-token completion rather than writing a misleading `$0.00` row.
 pub async fn record_llm_tokens(
     db: &DatabaseConnection,
     transcript_analysis_id: Id,
@@ -56,13 +57,12 @@ pub async fn record_llm_tokens(
         return Ok(());
     };
 
-    let quantity = Decimal::from(input_tokens) + Decimal::from(output_tokens);
-    if quantity.is_zero() {
+    if input_tokens == 0 && output_tokens == 0 {
         debug!("cost: no tokens used by analysis {transcript_analysis_id}, skipping");
         return Ok(());
     }
 
-    let costs = rate.cost_for(quantity);
+    let costs = rate.cost_for_tokens(Decimal::from(input_tokens), Decimal::from(output_tokens));
     platform_cost_metrics::create(
         db,
         platform_cost_metrics::CreateParams {
@@ -199,6 +199,29 @@ mod tests {
             cost_avg: Decimal::new(15, 3),
             created_at: chrono::Utc::now().fixed_offset(),
         }
+    }
+
+    #[tokio::test]
+    async fn record_llm_tokens_writes_the_exact_cost_of_input_and_output_tokens() {
+        let mut rate = test_rate(Metric::LlmTokens);
+        rate.provider = Provider::LlmGateway;
+        rate.cost_per_unit_low = Decimal::new(33, 7);
+        rate.cost_per_unit_high = Decimal::new(165, 7);
+        rate.cost_per_unit_avg = Decimal::new(51857, 10);
+        let session_id = Id::new_v4();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![rate]])
+            .append_query_results(vec![vec![test_cost_metric(session_id)]])
+            .into_connection();
+
+        super::record_llm_tokens(&db, Id::new_v4(), session_id, 29_020, 400)
+            .await
+            .unwrap();
+
+        // 29,020 x 0.0000033 + 400 x 0.0000165, not 29,420 tokens at the blended 0.0000051857.
+        let insert = format!("{:?}", db.into_transaction_log().last().unwrap());
+        assert_eq!(insert.matches("0.102366").count(), 3, "{insert}");
+        assert!(!insert.contains("0.1525"), "{insert}");
     }
 
     #[tokio::test]
