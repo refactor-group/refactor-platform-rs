@@ -405,6 +405,7 @@ Using Casey's PAT against `POST /mcp` (`search` tool):
 | Probe | Expected |
 |---|---|
 | `keyword: "kumquat"` | R1 hits; no `score` field, no `<mark>` markers, each session-anchored hit carries a `session_url` |
+| A matching row whose text contains `&` or `<` | its snippet shows the literal `&` / `<`, never `&amp;` / `&lt;` |
 | `keyword: "tamarind"` | zero hits |
 | `types: ["users"]` | dropped/absent — users and organizations are not MCP-searchable in MVP |
 | limit | default 10, values above 25 clamped |
