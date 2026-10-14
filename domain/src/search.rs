@@ -257,3 +257,7 @@ async fn hydrate_session_titles(db: &DatabaseConnection, hits: &mut [Hit]) -> Re
 #[cfg(test)]
 #[path = "search_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "search_sqlite_tests.rs"]
+mod sqlite_tests;

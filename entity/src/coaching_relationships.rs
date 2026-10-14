@@ -117,8 +117,10 @@ pub struct Visibility {
 /// entirely (callers must not apply it when `visibility.is_super_admin`).
 ///
 /// Kept beside `grants_access_to` deliberately: these are the two expressions
-/// of one rule, and a DB-backed equivalence test pins them together. Change one,
-/// mirror the other.
+/// of one rule, and `domain/src/search_sqlite_tests.rs` pins them together over
+/// an access matrix. Change one, mirror the other. The equivalence holds for
+/// every caller except super admins, who skip this condition and search every
+/// relationship.
 pub fn visible_to(visibility: &Visibility) -> Condition {
     Condition::all()
         .add(
