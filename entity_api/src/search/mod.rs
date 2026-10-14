@@ -373,15 +373,21 @@ impl Cursor {
 // ---------------------------------------------------------------------------
 
 /// The tsquery a searcher runs: `websearch_to_tsquery` over the whole input,
-/// optionally AND-ed with a `to_tsquery('<lexeme>:*')` prefix branch for the
-/// final plain word (search-as-you-type).
+/// optionally AND-ed with a `<lexeme>:*` prefix branch for the final plain word
+/// (search-as-you-type).
+///
+/// The prefix branch ORs the `english` and `simple` parses of the lexeme.
+/// `english` stems (`running:*` → `run:*`) but drops stop words, so a partial
+/// word that happens to be one (`for` on the way to "forecast") would compile to
+/// an empty query and match nothing; `simple` keeps it verbatim. Both match the
+/// same `english` tsvector, so the GIN index still serves the query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CompiledQuery {
     /// `websearch_to_tsquery('english', $1)`
     Plain(String),
-    /// `to_tsquery('english', $1)` — a single sanitized `<lexeme>:*` term.
+    /// The prefix branch over `$1` — a single sanitized `<lexeme>:*` term.
     Prefix(String),
-    /// `websearch_to_tsquery('english', $1) && to_tsquery('english', $2)`
+    /// `websearch_to_tsquery('english', $1) &&` the prefix branch over `$2`.
     HeadAndPrefix(String, String),
 }
 
@@ -425,12 +431,20 @@ impl CompiledQuery {
                 "websearch_to_tsquery('english', $1)",
                 vec![q.clone().into()],
             ),
-            CompiledQuery::Prefix(lexeme) => {
-                ("to_tsquery('english', $1)", vec![lexeme.clone().into()])
-            }
+            // SeaQuery numbers placeholders by position, so each parse of the
+            // lexeme gets its own bind rather than sharing one `$n`.
+            CompiledQuery::Prefix(lexeme) => (
+                "(to_tsquery('english', $1) || to_tsquery('simple', $2))",
+                vec![lexeme.clone().into(), lexeme.clone().into()],
+            ),
             CompiledQuery::HeadAndPrefix(head, lexeme) => (
-                "(websearch_to_tsquery('english', $1) && to_tsquery('english', $2))",
-                vec![head.clone().into(), lexeme.clone().into()],
+                "(websearch_to_tsquery('english', $1) \
+                 && (to_tsquery('english', $2) || to_tsquery('simple', $3)))",
+                vec![
+                    head.clone().into(),
+                    lexeme.clone().into(),
+                    lexeme.clone().into(),
+                ],
             ),
         }
     }

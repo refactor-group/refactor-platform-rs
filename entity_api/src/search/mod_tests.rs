@@ -67,6 +67,45 @@ fn symbol_only_final_token_falls_back_to_plain() {
     );
 }
 
+/// Renders the match condition for `raw` as Postgres SQL plus its bind values.
+fn match_sql(raw: &str) -> (String, Vec<sea_orm::Value>) {
+    let statement = entity::goals::Entity::find()
+        .select_only()
+        .filter(FtsExpressions::over("txt").match_condition(&compile_query(raw)))
+        .build(sea_orm::DbBackend::Postgres);
+    (
+        statement.sql,
+        statement.values.map(|v| v.0).unwrap_or_default(),
+    )
+}
+
+#[test]
+fn prefix_branch_keeps_stop_words_through_the_simple_parse() {
+    // `english` drops a stop word like `for` to an empty query; the `simple`
+    // parse keeps it, so typing "for" on the way to "forecast" still matches.
+    let (sql, values) = match_sql("for");
+    assert!(
+        sql.contains("(to_tsquery('english', $1) || to_tsquery('simple', $2))"),
+        "{sql}"
+    );
+    assert_eq!(values, vec!["for:*".into(), "for:*".into()]);
+}
+
+#[test]
+fn head_and_prefix_binds_the_lexeme_for_each_parse() {
+    // Every placeholder needs its own value: a shared `$n` would be renumbered
+    // by SeaQuery and leave a parameter unbound at execution.
+    let (sql, values) = match_sql("q3 for");
+    assert!(
+        sql.contains(
+            "(websearch_to_tsquery('english', $1) \
+             && (to_tsquery('english', $2) || to_tsquery('simple', $3)))"
+        ),
+        "{sql}"
+    );
+    assert_eq!(values, vec!["q3".into(), "for:*".into(), "for:*".into()]);
+}
+
 // --- Cursor: bit-exact round trip -------------------------------------------
 
 #[test]
