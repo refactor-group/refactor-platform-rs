@@ -1,0 +1,8 @@
+# F10 a third person in the meeting, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: Priya, glad you could sit in with us.
+[s2 00:10] Priya Shah: Of course. Once we're done I'll get the org chart over to Casey.
+[s3 00:18] Coachee: Great, I'll go through it by Thursday.

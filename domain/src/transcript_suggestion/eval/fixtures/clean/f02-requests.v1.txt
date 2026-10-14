@@ -1,0 +1,16 @@
+# F2 requests and agreement, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: Could you block two hours on your calendar each week for interview feedback?
+[s2 00:12] Coachee: Yes, I'll do that starting Monday.
+[s3 00:20] Coach: For next time, try giving feedback within a day of each interview.
+[s4 00:27] Coachee: Okay.
+[s5 00:33] Coach: Would you be willing to mentor the two new team leads this month?
+[s6 00:41] Coachee: I don't think I can take that on right now, honestly.
+[s7 00:48] Coach: That's fair.
+[s8 00:53] Coachee: Could you introduce me to Maria in finance?
+[s9 00:59] Coach: Sure, I can do that this week.
+[s10 01:08] Coach: It might help to keep a decision log.
+[s11 01:14] Coachee: Hmm. Maybe.

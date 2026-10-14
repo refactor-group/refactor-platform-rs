@@ -1,0 +1,14 @@
+# Synthetic case syn-empty, original wording.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Alex Rivera
+[s1 00:03] Coach: How are you arriving today?
+[s2 00:08] Coachee: Tired, honestly. It's been a heavy week.
+[s3 00:40] Coach: What's been the heaviest part?
+[s4 00:46] Coachee: Feeling like I'm letting my team down. I keep saying yes to everything.
+[s5 01:30] Coach: What do you notice when you say yes?
+[s6 01:38] Coachee: Relief, for a minute. Then dread.
+[s7 02:20] Coach: Maybe we just sit with that today rather than solve it.
+[s8 02:26] Coachee: I'd like that. I could think about it more, but I don't want homework this week.
+[s9 03:10] Coach: That's completely fine.

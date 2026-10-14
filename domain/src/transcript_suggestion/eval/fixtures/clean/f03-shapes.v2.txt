@@ -1,0 +1,17 @@
+# F3 shapes of a commitment, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: Before we meet again, how about we both reflect on what psychological safety means for your team?
+[s2 00:15] Coachee: I'm in.
+[s3 00:21] Coach: And you and I will each come with one example of a difficult conversation that turned out well.
+[s4 00:33] Coach: On the offsite, the agenda is yours to draft, and the facilitation guide is mine to bring.
+[s5 00:45] Coachee: Should the reorg get announced this week, I'll go talk to HR about where my role lands.
+[s6 00:57] Coachee: For the next two weeks I'll start every morning by writing down my three top priorities.
+[s7 01:09] Coachee: On the board deck: I'll outline it, run it past Lena for feedback, then get it to the CFO by October 30th.
+[s8 01:24] Coachee: I'll also ask Priya if she'll take over the vendor reviews.
+[s9 01:32] Coach: So the retro notes go out to your team from you by Friday, yes?
+[s10 01:39] Coachee: Yep.
+[s11 01:45] Coachee: This week I'll try turning down at least one meeting request.
+[s12 01:55] Coachee: Maybe I should email the recruiter tonight about the backlog. Actually yes, I'll do it.

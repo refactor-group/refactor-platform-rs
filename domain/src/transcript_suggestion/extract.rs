@@ -127,13 +127,7 @@ async fn analyze<S: Suggestible>(
     let refs = Refs::new(&input);
 
     let completion = provider
-        .complete(Request {
-            instructions: S::instructions().to_string(),
-            content: render(&input),
-            schema_name: S::schema_name().to_string(),
-            output_schema: S::output_schema(),
-            max_output_tokens: MAX_OUTPUT_TOKENS,
-        })
+        .complete(request::<S>(&input))
         .await
         .map_err(RunError::Provider)?;
     let verified =
@@ -165,6 +159,17 @@ async fn analyze<S: Suggestible>(
     }
 
     Ok((outcome, session.id))
+}
+
+/// The model request for one session.
+pub(super) fn request<S: Suggestible>(session: &Session) -> Request {
+    Request {
+        instructions: S::instructions().to_string(),
+        content: render(session),
+        schema_name: S::schema_name().to_string(),
+        output_schema: S::output_schema(),
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+    }
 }
 
 /// Completes the claim and stores the verified rows in one transaction, or neither.

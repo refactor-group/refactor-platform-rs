@@ -1,0 +1,23 @@
+# Synthetic case syn-requests, original wording.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Alex Rivera
+[s1 00:04] Coach: So where do you want to start today?
+[s2 00:10] Coachee: The hiring loop. It's dragging and I'm the bottleneck.
+[s3 01:02] Coach: Could you block two hours on your calendar for interview feedback each week?
+[s4 01:09] Coachee: Yes. I'll do that starting Monday.
+[s5 01:45] Coach: For next time, try giving feedback within 24 hours of each interview.
+[s6 01:52] Coachee: Okay.
+[s7 02:30] Coach: Would you also be willing to mentor the two new leads this month?
+[s8 02:38] Coachee: I don't think I can take that on right now, honestly.
+[s9 02:44] Coach: That's fair.
+[s10 03:20] Coachee: Let me check with HR on the headcount numbers and get back to you.
+[s11 04:05] Coachee: Should I just email the recruiter tonight about the backlog? Yeah, I'll do that.
+[s12 04:50] Coachee: I'll rewrite the job description by Friday. Actually, make that Monday, Friday is packed.
+[s13 05:30] Coach: How many of the open reqs can you review before we meet again? All five?
+[s14 05:36] Coachee: Let's say two.
+[s15 05:39] Coach: Two it is.
+[s16 05:41] Coachee: Okay, two.
+[s17 06:20] Coachee: I'll also cancel the Thursday sync. Actually no, let's keep it, the team needs it.
+[s18 07:00] Coach: Great work today.

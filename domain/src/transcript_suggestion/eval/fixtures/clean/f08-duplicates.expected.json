@@ -1,0 +1,5 @@
+[
+  {"segments": ["s1"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": "a1", "note": "repeats the hiring plan action"},
+  {"segments": ["s2"], "assignees": ["coachee"], "due_dates": [null, "2026-10-09"], "duplicate_of": "a2", "note": "repeats the onboarding doc action, this week"},
+  {"segments": ["s3"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "related but a different task"}
+]
