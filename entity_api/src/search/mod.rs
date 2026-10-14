@@ -394,18 +394,26 @@ pub(crate) enum CompiledQuery {
 /// Compile the raw (length-clamped, untrimmed) query text.
 ///
 /// The final token is prefix-matched unless the caller opted out with trailing
-/// whitespace, the token is negated or touches a quoted phrase, or nothing
-/// survives sanitization. The prefix lexeme is reduced to alphanumerics before
+/// whitespace, the token is negated, follows `or`, or touches a quoted phrase,
+/// or nothing survives sanitization. The prefix lexeme is reduced to alphanumerics before
 /// reaching `to_tsquery`, preserving the never-throws guarantee —
 /// `websearch_to_tsquery` never sees anything but raw user text (safe), and
 /// `to_tsquery` never sees raw user text at all.
 pub(crate) fn compile_query(raw: &str) -> CompiledQuery {
     let trimmed = raw.trim();
     let opted_out = raw.ends_with(char::is_whitespace);
-    let last = trimmed.split_whitespace().next_back().unwrap_or("");
+    let mut tokens = trimmed.split_whitespace().rev();
+    let last = tokens.next().unwrap_or("");
+    // Splitting off the final word would strand `or` at the end of the head,
+    // where websearch_to_tsquery drops it and the AND-ed prefix turns the
+    // disjunction into a conjunction.
+    let after_or = tokens.next().is_some_and(|t| t.eq_ignore_ascii_case("or"));
     let unbalanced_quotes = trimmed.matches('"').count() % 2 == 1;
-    let prefixable =
-        !opted_out && !last.starts_with('-') && !last.contains('"') && !unbalanced_quotes;
+    let prefixable = !opted_out
+        && !last.starts_with('-')
+        && !last.contains('"')
+        && !unbalanced_quotes
+        && !after_or;
 
     if !prefixable {
         return CompiledQuery::Plain(trimmed.to_string());

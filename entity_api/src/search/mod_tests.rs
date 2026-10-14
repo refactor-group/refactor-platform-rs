@@ -35,6 +35,23 @@ fn negated_final_token_is_never_prefixed() {
 }
 
 #[test]
+fn final_token_after_or_is_never_prefixed() {
+    // Prefixing would strand `or` at the end of the head, where it is dropped,
+    // and AND the two words together.
+    for raw in ["dogs or cat", "dogs OR cat"] {
+        assert_eq!(compile_query(raw), CompiledQuery::Plain(raw.to_string()));
+    }
+}
+
+#[test]
+fn or_inside_a_word_does_not_disable_prefixing() {
+    assert_eq!(
+        compile_query("door cat"),
+        CompiledQuery::HeadAndPrefix("door".to_string(), "cat:*".to_string())
+    );
+}
+
+#[test]
 fn quoted_final_token_is_never_prefixed() {
     assert_eq!(
         compile_query(r#"prep "quarterly review""#),

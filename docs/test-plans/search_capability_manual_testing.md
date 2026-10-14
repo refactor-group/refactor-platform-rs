@@ -480,34 +480,27 @@ a hit on another relationship's note content is a leak like any other.
 | Hybrid latency ≈ semantic + keyword latencies summed | the hybrid arms run sequentially — the keyword retrieval should fire in parallel with the embedding call (see the latency-budget bullet in the implementation plan) |
 | As-you-type feels dead — zero hits until a word is fully typed | final-token prefix matching missing, or the server trims the query before inspecting the raw tail for the trailing-whitespace opt-out |
 
-## 16. Results — PR 1 (scenarios A–H), 2026-10-13
+## 16. Results — PR 1 (scenarios A–H), 2026-10-14
 
 Full re-run against the local backend on `feat/search-keyword-core` after the
-`coaching_relationships::Scope` → `Visibility` rename (no behavior change
-intended; this run confirms none), with freshly reseeded 1.2 + 1.3 fixtures
-(48 visible `kumquat` rows for R1 participants, including the volume and tie
-groups). Supersedes the 2026-09-28 pass, which first recorded the
-participant-only Scenario F behavior.
+review fixes (shared FTS query skeleton, `users::Model::is_super_admin`,
+relationship ids resolved in SQL, stop-word prefix fallback, no prefix after
+`or`), with freshly reseeded 1.2 + 1.3 fixtures (48 visible `kumquat` rows for
+R1 participants, including the volume and tie groups). Scripted: 108 checks,
+all passing. Supersedes the 2026-10-13 pass.
 
 | Scenario | Result | Notes |
 |---|---|---|
-| A — response contract | PASS* | envelope, hit fields, ordering, `<mark>` markers in raw JSON, bare-session fallback title `Coaching session — 2026-10-13`. *FE rendering of `<mark>` as highlights still needs a browser check. |
-| B — keyword semantics | PASS (one deviation) | stemming, prefix (`kumq`), trailing-space opt-out, phrase order, negation, truncation at 256, limit clamp to 100, all five 400 discriminators, full cursor walk (10 pages, 48/48 unique, incl. cap-vs-cursor and tie-breaker regressions). Deviation: see below. |
+| A — response contract | PASS* | envelope, hit fields, ordering, `<mark>` markers in raw JSON, `session_title` on action/agreement hits only, bare-session fallback `Coaching session — 2026-10-14`. *FE rendering of `<mark>` as highlights still needs a browser check. |
+| B — keyword semantics | PASS | stemming, prefix (`kumq`), trailing-space opt-out, phrase order, negation, `or`/`OR` now identical to `q=kumquat`, truncation at 256, limit clamp to 100, all 400 discriminators, full cursor walk (10 pages at `limit=5`, 48/48 unique, incl. cap-vs-cursor and tie-breaker regressions). Stop-word prefix: `q=we` finds the two "weekly" rows. |
 | C — filters | PASS | all 12 rows, incl. tz date window, contradictory-params 400, foreign `goal_id` → empty 200 |
-| D — regular-user leaks | PASS | every probe an ordinary empty 200; no snippet leaks; Robin's multi-org rows correct |
+| D — regular-user leaks | PASS | every probe an ordinary empty 200 with the same shape as a no-match search; no `tamarind` snippet via `or`; Robin's multi-org rows correct; latency indistinguishable (20–30 ms) |
 | E — soft-delete | PASS | soft-deleted topic absent from `types=topics` (archived-org row is PR 3+) |
 | F — org admins get no relationship visibility | PASS | Alex: zero hits for `kumquat`, `tamarind`, `yuzu`, and `types=organizations` — every response an ordinary empty 200 |
-| G — removal revokes | PASS | role delete → 0 hits for Robin (plain 200), data intact for Casey, access restored on re-add; Alex (org admin) can still perform the removal — the change touched search visibility only |
-| H — super-admin tier | PASS | Sam sees all three sentinels; hit shape identical to a participant's; discriminating relationship-filter narrowing (moved here from F) passes |
+| G — removal revokes | PASS | role delete (by Alex) → 0 hits for Robin (plain 200), data intact for Casey, access restored on re-add |
+| H — super-admin tier | PASS | Sam's `kumquat` hits a superset of Casey's with identical per-type field sets; `tamarind`/`yuzu` visible; relationship-filter narrowing discriminates |
 | Throttle | PASS | 15 rapid requests: 11×200 then 429s (burst 10 + refill) |
 
-**Deviation (Scenario B, `or` row):** `q=kumquat or tamarind` returns **0
-hits**, not the expected "identical to `q=kumquat`". The final-token prefix
-rule compiles it as `websearch_to_tsquery('kumquat or') &&
-to_tsquery('tamarind:*')` — the dangling `or` is dropped and the prefix branch
-is ANDed, so the query demands both words. Confirmed by the trailing-space
-opt-out (`q=kumquat or tamarind ` → the full 48, correct OR semantics). Fails
-closed (fewer rows, no leak); the D5 leak row itself passes (no `tamarind`
-snippet either way). Open question for the PR: teach `compile_query` to skip
-prefixing when the preceding token is `or`, or accept the as-you-type
-behavior and document it.
+The 2026-10-13 run's one deviation (`q=kumquat or tamarind` returning 0 hits,
+because the prefix split dropped the `or` and ANDed the words) is fixed:
+`compile_query` no longer prefix-matches a final word that follows `or`.
