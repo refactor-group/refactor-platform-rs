@@ -396,10 +396,10 @@ pub(crate) enum CompiledQuery {
 ///
 /// The final token is prefix-matched unless the caller opted out with trailing
 /// whitespace, the token is negated, follows `or`, or touches a quoted phrase,
-/// or nothing survives sanitization. The prefix lexeme is reduced to alphanumerics before
-/// reaching `to_tsquery`, preserving the never-throws guarantee —
-/// `websearch_to_tsquery` never sees anything but raw user text (safe), and
-/// `to_tsquery` never sees raw user text at all.
+/// or nothing survives sanitization. The prefix lexeme is reduced to
+/// alphanumerics before reaching `to_tsquery`, preserving the never-throws
+/// guarantee — `websearch_to_tsquery` never sees anything but raw user text
+/// (safe), and `to_tsquery` never sees raw user text at all.
 pub(crate) fn compile_query(raw: &str) -> CompiledQuery {
     let trimmed = raw.trim();
     let opted_out = raw.ends_with(char::is_whitespace);
