@@ -17,8 +17,11 @@ use super::{CompiledQuery, Hit, HitType};
 use crate::error::Error;
 use entity::{actions, agreements, coaching_session_topics, coaching_sessions, goals, Id};
 
-/// `<mark>` markers are plain-text delimiters for the FE to split on, not HTML.
-const HEADLINE_OPTIONS: &str = "StartSel=<mark>, StopSel=</mark>";
+/// Control-character markers that stored text can never contain (they are
+/// stripped from the document first), so a match is never forgeable.
+const START_SEL: char = '\u{2}';
+const STOP_SEL: char = '\u{3}';
+const HEADLINE_OPTIONS: &str = "StartSel=\u{2}, StopSel=\u{3}";
 
 #[derive(Debug, FromQueryResult)]
 struct SnippetRow {
@@ -102,7 +105,28 @@ async fn load_snippets(
             .await?
         }
     };
-    Ok(rows.into_iter().map(|r| (r.id, r.snippet)).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.id, to_marked_html(&r.snippet)))
+        .collect())
+}
+
+/// HTML-escape a raw headline and swap its control markers for
+/// `<mark>…</mark>`, so the only tags in a snippet are the ones we add.
+fn to_marked_html(headline: &str) -> String {
+    headline
+        .chars()
+        .fold(String::with_capacity(headline.len()), |mut out, c| {
+            match c {
+                START_SEL => out.push_str("<mark>"),
+                STOP_SEL => out.push_str("</mark>"),
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                c => out.push(c),
+            }
+            out
+        })
 }
 
 fn select_snippets<E: EntityTrait>(
@@ -114,8 +138,12 @@ fn select_snippets<E: EntityTrait>(
     let (query_sql, mut binds) = cq.sql_and_binds();
     let options_placeholder = binds.len() + 1;
     binds.push(HEADLINE_OPTIONS.into());
+    // Strip the marker characters from the document so stored text can't fake them.
     let headline = Expr::cust_with_values(
-        format!("ts_headline('english', {text_expr}, {query_sql}, ${options_placeholder})"),
+        format!(
+            "ts_headline('english', translate({text_expr}, chr(2) || chr(3), ''), \
+             {query_sql}, ${options_placeholder})"
+        ),
         binds,
     );
     E::find()
@@ -125,3 +153,7 @@ fn select_snippets<E: EntityTrait>(
         .filter(id_column.is_in(ids.iter().copied()))
         .into_model::<SnippetRow>()
 }
+
+#[cfg(test)]
+#[path = "snippet_tests.rs"]
+mod tests;

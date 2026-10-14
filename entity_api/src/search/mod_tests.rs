@@ -511,11 +511,11 @@ mod mock_tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![snippet_row(
                 action_id,
-                "the <mark>quarterly</mark> action",
+                "the \u{2}quarterly\u{3} action",
             )]])
             .append_query_results(vec![vec![snippet_row(
                 goal_a,
-                "the <mark>quarterly</mark> goal",
+                "the \u{2}quarterly\u{3} goal",
             )]])
             .into_connection();
 
@@ -537,10 +537,8 @@ mod mock_tests {
         assert_eq!(log.len(), 2, "one batched query per type present");
         let first = format!("{:?}", log[0]);
         assert!(first.contains("ts_headline"), "{first}");
-        assert!(
-            first.contains("StartSel=<mark>, StopSel=</mark>"),
-            "{first}"
-        );
+        // Debug-formatting escapes the control-character markers.
+        assert!(first.contains(r"StartSel=\u{2}, StopSel=\u{3}"), "{first}");
         // Both goal ids travel in the second (goal) batch.
         let second = format!("{:?}", log[1]);
         assert!(second.contains(&goal_a.to_string()) && second.contains(&goal_b.to_string()));

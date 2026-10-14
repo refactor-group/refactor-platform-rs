@@ -93,8 +93,9 @@ pub struct Core {
     /// post-merge hydration has run (sessions fall back to
     /// "Coaching session — YYYY-MM-DD").
     pub title: String,
-    /// Plain-text excerpt with `<mark>…</mark>` markers, hydrated post-merge
-    /// for the returned page only — searchers always produce `None`.
+    /// HTML-escaped excerpt whose only tags are `<mark>…</mark>` around
+    /// matches (stored text can't forge them), hydrated post-merge for the
+    /// returned page only — searchers always produce `None`.
     pub snippet: Option<String>,
     #[schema(value_type = String, format = DateTime)]
     pub created_at: DateTimeWithTimeZone,

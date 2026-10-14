@@ -239,7 +239,8 @@ Logged in as Casey. `GET /search?q=kumquat`.
 | Body shape | `data.query`, `data.limit`, `data.hits[]`, `data.next_cursor` |
 | Every hit | has `type`, `id`, `score`, `title` (never empty), `created_at`, `organization_id` |
 | Hit ordering | non-increasing `score` |
-| Snippets | plain text with literal `<mark>…</mark>` markers around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
+| Snippets | HTML-escaped text whose only tags are `<mark>…</mark>` around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
+| Forged highlights | edit a matching goal's title to `Kumquat <mark=>forged & a<b` plus `\x02fake\x03` (via SQL `E'…'`), search `q=forged`: only `forged` is wrapped in `<mark>`; `&`/`<` come back as `&amp;`/`&lt;`; `fake` is not highlighted; the FE shows the literal `&` and `<`. Restore the title afterwards |
 | Session-anchored hits | carry `coaching_session_id` and `coaching_relationship_id`; action and agreement hits also carry `session_title` (non-empty even where the session's `title` column is NULL); topic hits do not |
 | The bare session's action hit | `session_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
 

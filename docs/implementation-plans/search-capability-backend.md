@@ -150,8 +150,12 @@ pub struct Core {
     /// composed display_title, with a deterministic final fallback of
     /// "Coaching session — YYYY-MM-DD" (defined below the variant table).
     pub title: String,
-    /// Plain-text excerpt via ts_headline; matched terms wrapped in
-    /// <mark>…</mark> markers. Not HTML — the FE splits on the markers and
+    /// HTML-escaped excerpt via ts_headline; matched terms wrapped in
+    /// <mark>…</mark>, the only tags it ever contains. ts_headline runs with
+    /// control-character markers over the document with those characters
+    /// stripped, then the backend escapes &, <, > and swaps the markers for
+    /// <mark> tags, so stored text can never forge a highlight. The FE
+    /// splits on the markers, unescapes &amp;/&lt;/&gt; in each piece, and
     /// renders text nodes (no dangerouslySetInnerHTML). Hydrated post-merge
     /// for the returned page only, never computed by the searchers — see
     /// the two-pass note under the Searcher trait.
