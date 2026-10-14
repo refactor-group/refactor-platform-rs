@@ -486,13 +486,14 @@ a hit on another relationship's note content is a leak like any other.
 Full re-run against the local backend on `feat/search-keyword-core` after the
 review fixes (shared FTS query skeleton, `users::Model::is_super_admin`,
 relationship ids resolved in SQL, stop-word prefix fallback, no prefix after
-`or`), with freshly reseeded 1.2 + 1.3 fixtures (48 visible `kumquat` rows for
-R1 participants, including the volume and tie groups). Scripted: 108 checks,
-all passing. Supersedes the 2026-10-13 pass.
+`or`, unforgeable snippet highlights), with freshly reseeded 1.2 + 1.3 fixtures
+(48 visible `kumquat` rows for R1 participants, including the volume and tie
+groups). Scripted: 108 checks, all passing; re-run after the snippet fix with
+the same result. Supersedes the 2026-10-13 pass.
 
 | Scenario | Result | Notes |
 |---|---|---|
-| A — response contract | PASS* | envelope, hit fields, ordering, `<mark>` markers in raw JSON, `session_title` on action/agreement hits only, bare-session fallback `Coaching session — 2026-10-14`. *FE rendering of `<mark>` as highlights still needs a browser check. |
+| A — response contract | PASS* | envelope, hit fields, ordering, `<mark>` markers in raw JSON, `session_title` on action/agreement hits only, bare-session fallback `Coaching session — 2026-10-14`. Forged highlights: only `forged` is wrapped, `&`/`<` come back as `&amp;`/`&lt;`, the planted `\x02fake\x03` is not highlighted. *FE rendering of `<mark>` as highlights still needs a browser check. |
 | B — keyword semantics | PASS | stemming, prefix (`kumq`), trailing-space opt-out, phrase order, negation, `or`/`OR` now identical to `q=kumquat`, truncation at 256, limit clamp to 100, all 400 discriminators, full cursor walk (10 pages at `limit=5`, 48/48 unique, incl. cap-vs-cursor and tie-breaker regressions). Stop-word prefix: `q=we` finds the two "weekly" rows. |
 | C — filters | PASS | all 12 rows, incl. tz date window, contradictory-params 400, foreign `goal_id` → empty 200 |
 | D — regular-user leaks | PASS | every probe an ordinary empty 200 with the same shape as a no-match search; no `tamarind` snippet via `or`; Robin's multi-org rows correct; latency indistinguishable (20–30 ms) |
