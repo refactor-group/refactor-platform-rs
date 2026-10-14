@@ -21,34 +21,21 @@ pub async fn resolve_visible_relationship_ids(
     organization_id: Option<Id>,
     coaching_relationship_id: Option<Id>,
 ) -> Result<Option<Vec<Id>>, Error> {
-    if visibility.is_super_admin {
-        return Ok(match (coaching_relationship_id, organization_id) {
-            // Intersect-only: a bogus id yields an empty result, never an error.
-            (Some(rel_id), None) => Some(vec![rel_id]),
-            (None, None) => None,
-            // Any org filter hits the DB once; a present relationship filter
-            // intersects — the relationship is kept only if it belongs to the
-            // requested organization.
-            (rel_id, Some(org_id)) => Some(
-                coaching_relationships::Entity::find()
-                    .select_only()
-                    .column(coaching_relationships::Column::Id)
-                    .filter(coaching_relationships::Column::OrganizationId.eq(org_id))
-                    .apply_if(rel_id, |q, rel| {
-                        q.filter(coaching_relationships::Column::Id.eq(rel))
-                    })
-                    .into_tuple::<Id>()
-                    .all(db)
-                    .await?,
-            ),
-        });
+    // A super admin without an org filter needs no query: unrestricted, or the
+    // one requested relationship (a bogus id yields an empty result, never an error).
+    if visibility.is_super_admin && organization_id.is_none() {
+        return Ok(coaching_relationship_id.map(|rel_id| vec![rel_id]));
     }
 
+    // Super admins skip `visible_to`; otherwise the two paths are one query.
     Ok(Some(
         coaching_relationships::Entity::find()
             .select_only()
             .column(coaching_relationships::Column::Id)
-            .filter(visible_to(visibility))
+            .apply_if(
+                (!visibility.is_super_admin).then(|| visible_to(visibility)),
+                |q, condition| q.filter(condition),
+            )
             .apply_if(organization_id, |q, org| {
                 q.filter(coaching_relationships::Column::OrganizationId.eq(org))
             })
