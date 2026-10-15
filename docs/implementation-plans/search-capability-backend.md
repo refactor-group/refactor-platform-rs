@@ -35,7 +35,7 @@ This plan defines the search API contract, the authorization model, and a phased
 
 1. **Regular user**: only entities reachable through coaching relationships they participate in *and* whose organization they are currently a member of — the exact rule in `coaching_relationships::Model::grants_access_to` (`entity/src/coaching_relationships.rs`). A user removed from an org loses access to history they took part in.
 2. **Organization admin**: tier 1 only. The `Admin` role adds **no** relationship visibility: direct access (`grants_access_to`) requires participation, so an admin tier would surface hits the caller gets a 403 opening. Search mirrors direct access and fails closed (decided; the alternative — widening `grants_access_to` to org admins — is a product-level authorization expansion that can be revisited separately). Admins keep the members search below, which matches their real direct access.
-3. **Super admin** (global role, `organization_id IS NULL`): everything.
+3. **Super admin** (global role, `organization_id IS NULL`): everything. Defaulting to their own relationships, with an opt-in to search all, is tracked in #451.
 
 **Filters**: `created_at`/`updated_at` date ranges (timezone-aware), by user, by organization, by coaching session, by status, by entity type, and by goal linkage for actions (linked to a particular goal, linked to any goal, or linked to none).
 
