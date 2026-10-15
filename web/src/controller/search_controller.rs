@@ -25,7 +25,7 @@ use crate::{AppState, Error};
     params(ApiVersion, IndexParams),
     responses(
         (status = 200, description = "Ranked search results", body = domain::search::Results),
-        (status = 400, description = "Bad Request — structured body with a stable `error` discriminator: `query_too_short`, `unknown_type`, `contradictory_params`, `malformed_cursor`, `mode_unavailable`, `keyword_weight_out_of_range`, `invalid_timezone`"),
+        (status = 400, description = "Bad Request — structured body with a stable `error` discriminator: `query_too_short`, `unknown_type`, `contradictory_params`, `malformed_cursor`, `mode_unavailable`, `keyword_weight_out_of_range`; plus `invalid_timezone`, shared with every endpoint that takes `tz`"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 429, description = "Too many requests (per-IP throttle)"),

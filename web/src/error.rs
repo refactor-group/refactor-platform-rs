@@ -39,7 +39,8 @@ pub enum WebErrorKind {
     /// Boundary-validation 400 with a stable discriminator the FE can branch
     /// on — the generalization of what `InvalidTimezone` hard-codes. `error`
     /// is the machine-readable discriminator (e.g. `query_too_short`),
-    /// `message` the human-readable detail.
+    /// `message` the human-readable detail. `InvalidTimezone` and
+    /// `InvalidSpeaker` are candidates to fold into it.
     InvalidParam {
         error: &'static str,
         message: String,

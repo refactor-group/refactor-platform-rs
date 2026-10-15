@@ -134,6 +134,8 @@ impl IndexParams {
 
         let types = resolve_types(self.types.as_deref())?;
 
+        // The shared `InvalidTimezone`, not `InvalidParam`, so every `tz` endpoint
+        // has one source for `invalid_timezone`.
         let tz = match self.tz.as_deref() {
             Some(raw) => Tz::from_str(raw)
                 .map_err(|_| Error::Web(WebErrorKind::InvalidTimezone(raw.to_string())))?,
