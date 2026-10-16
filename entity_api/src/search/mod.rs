@@ -34,10 +34,12 @@ pub mod action;
 pub mod agreement;
 pub mod coaching_session;
 pub mod goal;
+mod session_title;
 mod snippet;
 pub mod topic;
 mod visibility;
 
+pub use session_title::resolve_session_titles;
 pub use snippet::hydrate_snippets;
 pub use visibility::{resolve_participant_relationship_ids, resolve_visible_relationship_ids};
 

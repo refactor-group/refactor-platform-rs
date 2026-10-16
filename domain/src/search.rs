@@ -2,22 +2,18 @@
 //! resolution, bounded searcher fan-out, merge/rank/paginate, and post-merge
 //! hydration (display titles and snippets for exactly the returned page).
 
-use std::collections::HashMap;
-
 use futures::stream::{self, StreamExt};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::coaching_relationships::Visibility;
-use crate::coaching_sessions;
 use crate::error::Error;
 use crate::users::{self, Role};
 use crate::Id;
-use entity_api::coaching_session_display_title::batch_load_display_titles;
 use entity_api::search::{
-    hydrate_snippets, resolve_participant_relationship_ids, resolve_visible_relationship_ids,
-    searchers, Request,
+    hydrate_snippets, resolve_participant_relationship_ids, resolve_session_titles,
+    resolve_visible_relationship_ids, searchers, Request,
 };
 
 pub use entity_api::search::{
@@ -194,10 +190,8 @@ fn merge_and_paginate(mut merged: Vec<Hit>, limit: u16) -> (Vec<Hit>, Option<Str
 }
 
 /// Fill session titles for the returned page: a `SessionHit`'s `title`
-/// and the `session_title` context on action/agreement hits. Search-owned
-/// names, unlike the list endpoints' nullable `display_title`: the composed
-/// title falls back to "Coaching session — YYYY-MM-DD" (naive session date,
-/// identical for every caller), so neither is ever empty.
+/// and the `session_title` context on action/agreement hits. Titles come from
+/// [`resolve_session_titles`], whose date fallback keeps both never empty.
 async fn hydrate_session_titles(db: &DatabaseConnection, hits: &mut [Hit]) -> Result<(), Error> {
     let session_ids: Vec<Id> = hits
         .iter()
@@ -208,28 +202,7 @@ async fn hydrate_session_titles(db: &DatabaseConnection, hits: &mut [Hit]) -> Re
             _ => None,
         })
         .collect();
-    if session_ids.is_empty() {
-        return Ok(());
-    }
-
-    let sessions = coaching_sessions::Entity::find()
-        .filter(coaching_sessions::Column::Id.is_in(session_ids))
-        .all(db)
-        .await
-        .map_err(entity_api::error::Error::from)?;
-    let composed = batch_load_display_titles(db, &sessions).await?;
-
-    let titles: HashMap<Id, String> = sessions
-        .iter()
-        .map(|s| {
-            let title = composed
-                .get(&s.id)
-                .cloned()
-                .flatten()
-                .unwrap_or_else(|| format!("Coaching session — {}", s.date.format("%Y-%m-%d")));
-            (s.id, title)
-        })
-        .collect();
+    let titles = resolve_session_titles(db, &session_ids).await?;
 
     for hit in hits.iter_mut() {
         match hit {
