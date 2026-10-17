@@ -172,12 +172,14 @@ INSERT INTO agreements (id, coaching_session_id, user_id, body, created_at, upda
   ('1a000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000003', 'Tamarind sourcing details stay confidential.', now(), now()),
   ('1a000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000007', 'Yuzu pricing is agreed quarterly.', now(), now());
 
--- Topics: one live and one soft-deleted kumquat topic in S1 (Scenario E).
+-- Topics: one live and one soft-deleted kumquat topic in S1 (Scenario E), and
+-- a hyphenated `check-in` topic in S1 (Scenario B's punctuated final word).
 INSERT INTO coaching_session_topics (id, coaching_session_id, user_id, body, display_order, status, deleted_at, created_at, updated_at) VALUES
   ('1b000000-0000-4000-a000-000000000001', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Discuss kumquat grafting techniques.', 1, 'open', NULL,  now(), now()),
   ('1b000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Old kumquat pruning notes.',          2, 'open', now(), now(), now()),
   ('1b000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000004', 'Tamarind fermentation timing.',       1, 'open', NULL,  now(), now()),
-  ('1b000000-0000-4000-a000-000000000004', '0d000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000008', 'Yuzu harvest window.',                1, 'open', NULL,  now(), now());
+  ('1b000000-0000-4000-a000-000000000004', '0d000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000008', 'Yuzu harvest window.',                1, 'open', NULL,  now(), now()),
+  ('1b000000-0000-4000-a000-000000000005', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Monthly check-in cadence.',           3, 'open', NULL,  now(), now());
 
 COMMIT;
 SQL
@@ -256,6 +258,8 @@ Still Casey. All against R1 content.
 | `q="kumquat harvest"` where only "harvest kumquat" exists | no phrase match (quoted phrases are order-sensitive) |
 | `q=kumquat -goal` (word `goal` present in the goal body) | goal hit disappears, others remain |
 | `q=kumquat or tamarind` | identical to `q=kumquat` — the `or` arm matches nothing *visible*; see D |
+| `q=kumquat or tamarind weekly` (an `or` earlier in the query) | identical to `q=kumquat` — the query keeps its precedence, `kumquat \| (tamarind & weekly)`. A regression splits off the final word and regroups it as `(kumquat \| tamarind) & weekly:*`, returning only the two "weekly" kumquat rows |
+| `q=check-in&types=topics` (punctuated final word) | exactly the "Monthly check-in cadence" topic — the word is matched as typed. A regression strips the hyphen into `checkin:*`, which matches neither indexed lexeme (`check-in`, `check`), and returns zero hits |
 | `q=` or `q=k` | 400 (min length 2 after trim) |
 | `q=` + 300 chars | 200; `data.query` shows the truncated (≤256) string |
 | `types=goals,actions` | only those hit types |
@@ -507,3 +511,14 @@ the same result. Supersedes the 2026-10-13 pass.
 The 2026-10-13 run's one deviation (`q=kumquat or tamarind` returning 0 hits,
 because the prefix split dropped the `or` and ANDed the words) is fixed:
 `compile_query` no longer prefix-matches a final word that follows `or`.
+
+### Re-run, 2026-10-17
+
+After session-title resolution moved into `entity_api` (#431) and two more
+`compile_query` review fixes: any `or` in the query disables prefixing, and
+only a plain alphanumeric final word is prefixed. Scenario B gained a row for
+each fix, plus the `check-in` topic in the 1.2 fixture. Scripted: 110 checks,
+all passing; the original 108 are identical line-for-line to the previous run.
+Against the fixture text, the pre-fix query forms reproduce both regressions:
+`kumquat or tamarind weekly` matched 2 of the 46 kumquat action, agreement,
+and topic rows instead of all 46, and `checkin:*` missed the `check-in` topic.

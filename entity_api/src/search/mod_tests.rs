@@ -75,11 +75,12 @@ fn unbalanced_quote_disables_prefixing() {
 }
 
 #[test]
-fn prefix_lexeme_is_sanitized_to_alphanumerics() {
-    assert_eq!(
-        compile_query("review q3!"),
-        CompiledQuery::HeadAndPrefix("review".to_string(), "q3:*".to_string())
-    );
+fn punctuated_final_token_is_never_prefixed() {
+    // The parser indexes `check-in` as `check-in` and `check`; stripping the
+    // punctuation would yield `checkin:*`, which matches neither.
+    for raw in ["review check-in", "review q3!", "coach's"] {
+        assert_eq!(compile_query(raw), CompiledQuery::Plain(raw.to_string()));
+    }
 }
 
 #[test]

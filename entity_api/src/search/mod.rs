@@ -388,7 +388,7 @@ impl Cursor {
 pub(crate) enum CompiledQuery {
     /// `websearch_to_tsquery('english', $1)`
     Plain(String),
-    /// The prefix branch over `$1` — a single sanitized `<lexeme>:*` term.
+    /// The prefix branch over `$1` — a single alphanumeric `<lexeme>:*` term.
     Prefix(String),
     /// `websearch_to_tsquery('english', $1) &&` the prefix branch over `$2`.
     HeadAndPrefix(String, String),
@@ -396,12 +396,14 @@ pub(crate) enum CompiledQuery {
 
 /// Compile the raw (length-clamped, untrimmed) query text.
 ///
-/// The final token is prefix-matched unless the caller opted out with trailing
-/// whitespace, the token is negated or touches a quoted phrase, the query
-/// contains an `or` operator, or nothing survives sanitization. The prefix lexeme is reduced to
-/// alphanumerics before reaching `to_tsquery`, preserving the never-throws
-/// guarantee — `websearch_to_tsquery` never sees anything but raw user text
-/// (safe), and `to_tsquery` never sees raw user text at all.
+/// The final token is prefix-matched only when it is a plain alphanumeric word,
+/// the caller didn't opt out with trailing whitespace, it isn't inside an open
+/// quoted phrase, and the query contains no `or` operator. Punctuation
+/// disqualifies: the parser indexes `check-in` as `check-in` and `check`, so
+/// any lexeme we derived (`checkin:*`) would miss. The alphanumeric rule also
+/// preserves the never-throws guarantee — `websearch_to_tsquery` never sees
+/// anything but raw user text (safe), and `to_tsquery` only ever sees a bare
+/// alphanumeric word.
 pub(crate) fn compile_query(raw: &str) -> CompiledQuery {
     let trimmed = raw.trim();
     let opted_out = raw.ends_with(char::is_whitespace);
@@ -413,23 +415,19 @@ pub(crate) fn compile_query(raw: &str) -> CompiledQuery {
     let has_or = tokens.any(|t| t.eq_ignore_ascii_case("or"));
     let unbalanced_quotes = trimmed.matches('"').count() % 2 == 1;
     let prefixable = !opted_out
-        && !last.starts_with('-')
-        && !last.contains('"')
         && !unbalanced_quotes
-        && !has_or;
+        && !has_or
+        && !last.is_empty()
+        && last.chars().all(char::is_alphanumeric);
 
     if !prefixable {
         return CompiledQuery::Plain(trimmed.to_string());
     }
-    let lexeme: String = last.chars().filter(|c| c.is_alphanumeric()).collect();
-    if lexeme.is_empty() {
-        return CompiledQuery::Plain(trimmed.to_string());
-    }
     let head = trimmed[..trimmed.len() - last.len()].trim_end();
     if head.is_empty() {
-        CompiledQuery::Prefix(format!("{lexeme}:*"))
+        CompiledQuery::Prefix(format!("{last}:*"))
     } else {
-        CompiledQuery::HeadAndPrefix(head.to_string(), format!("{lexeme}:*"))
+        CompiledQuery::HeadAndPrefix(head.to_string(), format!("{last}:*"))
     }
 }
 
