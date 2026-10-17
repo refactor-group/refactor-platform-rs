@@ -397,8 +397,8 @@ pub(crate) enum CompiledQuery {
 /// Compile the raw (length-clamped, untrimmed) query text.
 ///
 /// The final token is prefix-matched unless the caller opted out with trailing
-/// whitespace, the token is negated, follows `or`, or touches a quoted phrase,
-/// or nothing survives sanitization. The prefix lexeme is reduced to
+/// whitespace, the token is negated or touches a quoted phrase, the query
+/// contains an `or` operator, or nothing survives sanitization. The prefix lexeme is reduced to
 /// alphanumerics before reaching `to_tsquery`, preserving the never-throws
 /// guarantee — `websearch_to_tsquery` never sees anything but raw user text
 /// (safe), and `to_tsquery` never sees raw user text at all.
@@ -407,16 +407,16 @@ pub(crate) fn compile_query(raw: &str) -> CompiledQuery {
     let opted_out = raw.ends_with(char::is_whitespace);
     let mut tokens = trimmed.split_whitespace().rev();
     let last = tokens.next().unwrap_or("");
-    // Splitting off the final word would strand `or` at the end of the head,
-    // where websearch_to_tsquery drops it and the AND-ed prefix turns the
-    // disjunction into a conjunction.
-    let after_or = tokens.next().is_some_and(|t| t.eq_ignore_ascii_case("or"));
+    // Splitting off the final word regroups any `or` in the head: `a or b c`
+    // means `a | (b & c)`, but the AND-ed prefix makes it `(a | b) & c:*`.
+    // A trailing `or` is worse — websearch_to_tsquery drops it outright.
+    let has_or = tokens.any(|t| t.eq_ignore_ascii_case("or"));
     let unbalanced_quotes = trimmed.matches('"').count() % 2 == 1;
     let prefixable = !opted_out
         && !last.starts_with('-')
         && !last.contains('"')
         && !unbalanced_quotes
-        && !after_or;
+        && !has_or;
 
     if !prefixable {
         return CompiledQuery::Plain(trimmed.to_string());

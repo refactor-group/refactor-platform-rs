@@ -35,10 +35,16 @@ fn negated_final_token_is_never_prefixed() {
 }
 
 #[test]
-fn final_token_after_or_is_never_prefixed() {
-    // Prefixing would strand `or` at the end of the head, where it is dropped,
-    // and AND the two words together.
-    for raw in ["dogs or cat", "dogs OR cat"] {
+fn any_or_operator_disables_prefixing() {
+    // Adjacent: prefixing would strand `or` at the end of the head, where it
+    // is dropped. Earlier: the AND-ed prefix would regroup `a | (b & c)` as
+    // `(a | b) & c:*`, dropping documents that match only `a`.
+    for raw in [
+        "dogs or cat",
+        "dogs OR cat",
+        "alpha or beta gam",
+        "alpha OR beta gam",
+    ] {
         assert_eq!(compile_query(raw), CompiledQuery::Plain(raw.to_string()));
     }
 }
