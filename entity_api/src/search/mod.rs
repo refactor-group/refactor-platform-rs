@@ -182,6 +182,7 @@ pub enum Hit {
 }
 
 impl Hit {
+    /// The entity type of this hit; matches the serialized `type` tag.
     pub fn hit_type(&self) -> HitType {
         match self {
             Hit::Action(_) => HitType::Action,
@@ -192,6 +193,7 @@ impl Hit {
         }
     }
 
+    /// The fields every hit carries, whatever its variant.
     pub fn core(&self) -> &Core {
         match self {
             Hit::Action(h) => &h.core,
@@ -202,6 +204,8 @@ impl Hit {
         }
     }
 
+    /// Mutable access to the shared fields, so post-processing (e.g. snippet
+    /// hydration) can fill them in.
     pub fn core_mut(&mut self) -> &mut Core {
         match self {
             Hit::Action(h) => &mut h.core,
@@ -232,6 +236,7 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
+    /// True when neither bound is set, so the filter adds no predicate.
     pub fn is_unbounded(&self) -> bool {
         self.from.is_none() && self.to_exclusive.is_none()
     }
@@ -346,6 +351,7 @@ const CURSOR_VERSION_KEYWORD: u8 = 1;
 pub struct CursorDecodeError;
 
 impl Cursor {
+    /// The opaque, URL-safe wire form handed to clients as `next_cursor`.
     pub fn encode(&self) -> String {
         let mut bytes = Vec::with_capacity(22);
         bytes.push(CURSOR_VERSION_KEYWORD);
@@ -355,6 +361,12 @@ impl Cursor {
         URL_SAFE_NO_PAD.encode(bytes)
     }
 
+    /// Parses a client-supplied `cursor` param.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CursorDecodeError` if the input is not valid base64, has the
+    /// wrong length or version, or names an unknown hit type.
     pub fn decode(raw: &str) -> Result<Self, CursorDecodeError> {
         let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| CursorDecodeError)?;
         if bytes.len() != 22 || bytes[0] != CURSOR_VERSION_KEYWORD {
