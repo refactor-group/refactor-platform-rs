@@ -38,15 +38,27 @@ fn negated_final_token_is_never_prefixed() {
 fn any_or_operator_disables_prefixing() {
     // Adjacent: prefixing would strand `or` at the end of the head, where it
     // is dropped. Earlier: the AND-ed prefix would regroup `a | (b & c)` as
-    // `(a | b) & c:*`, dropping documents that match only `a`.
+    // `(a | b) & c:*`, dropping documents that match only `a`. Trailing:
+    // `alpha & or:*` would drop documents that match only `alpha`.
     for raw in [
         "dogs or cat",
         "dogs OR cat",
         "alpha or beta gam",
         "alpha OR beta gam",
+        "alpha or",
+        "alpha OR",
     ] {
         assert_eq!(compile_query(raw), CompiledQuery::Plain(raw.to_string()));
     }
+}
+
+#[test]
+fn a_lone_or_is_still_prefix_matched() {
+    // No left operand, so it is a partial word ("organization"), not an operator.
+    assert_eq!(
+        compile_query("or"),
+        CompiledQuery::Prefix("or:*".to_string())
+    );
 }
 
 #[test]

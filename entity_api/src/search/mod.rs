@@ -411,8 +411,11 @@ pub(crate) fn compile_query(raw: &str) -> CompiledQuery {
     let last = tokens.next().unwrap_or("");
     // Splitting off the final word regroups any `or` in the head: `a or b c`
     // means `a | (b & c)`, but the AND-ed prefix makes it `(a | b) & c:*`.
-    // A trailing `or` is worse — websearch_to_tsquery drops it outright.
-    let has_or = tokens.any(|t| t.eq_ignore_ascii_case("or"));
+    // A trailing `or` is worse — websearch_to_tsquery drops it outright. A
+    // lone `or` has no left operand, so it stays a prefix.
+    let head = trimmed[..trimmed.len() - last.len()].trim_end();
+    let has_or = tokens.any(|t| t.eq_ignore_ascii_case("or"))
+        || (!head.is_empty() && last.eq_ignore_ascii_case("or"));
     let unbalanced_quotes = trimmed.matches('"').count() % 2 == 1;
     let prefixable = !opted_out
         && !unbalanced_quotes
@@ -423,7 +426,6 @@ pub(crate) fn compile_query(raw: &str) -> CompiledQuery {
     if !prefixable {
         return CompiledQuery::Plain(trimmed.to_string());
     }
-    let head = trimmed[..trimmed.len() - last.len()].trim_end();
     if head.is_empty() {
         CompiledQuery::Prefix(format!("{last}:*"))
     } else {
