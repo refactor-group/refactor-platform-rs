@@ -38,7 +38,7 @@ even if the full record is never returned.
 | *Casey* | coach in **Acme**, relationship **R1** with Robin | the regular-user searcher |
 | *Robin* | coachee in R1; also a plain member of **Globex** | multi-org regular user; later the removal subject |
 | *Jordan* + *Morgan* | coach/coachee of relationship **R2** in Acme (no overlap with Casey) | the leak target inside the same org |
-| *Alex* | **Admin** of Acme only; participates in no relationship | the org-admin tier |
+| *Alex* | **Admin** of Acme only; participates in no relationship | proves the `Admin` role grants **no** relationship visibility |
 | *Sam* | global **SuperAdmin** | the unrestricted tier |
 | *Pat* | coach of relationship **G1** in Globex | the cross-org leak target |
 
@@ -58,17 +58,178 @@ even if the full record is never returned.
   display-title fallback, since a titleless session has no text of its own to
   match.
 
-Record before starting:
+### 1.1 Helpers
 
-| Thing | Where to find it |
+```sh
+BASE=http://localhost:4000
+VER='x-version: 1.0.0'
+
+# Log in and keep a per-persona cookie jar. $1 = jar name, $2 = email, $3 = password.
+login() { curl -s -c "/tmp/$1.jar" -X POST "$BASE/login" \
+  -H 'content-type: application/x-www-form-urlencoded' \
+  --data-urlencode "email=$2" --data-urlencode "password=$3" -o /dev/null -w '%{http_code}\n'; }
+
+# Search as a persona. $1 = jar, $2 = raw query string (URL-encode yourself:
+# %20 for spaces — needed for the trailing-space prefix opt-out checks).
+search() { curl -s -b "/tmp/$1.jar" -H "$VER" "$BASE/search?$2"; }
+
+for p in casey robin jordan morgan alex sam pat quinn; do
+  login "$p" "$p@search.test" password
+done
+```
+
+### 1.2 SQL fixture
+
+Builds the entire persona/sentinel corpus from section 1 on top of a seeded
+local database (`./scripts/rebuild_db.sh`, migrations, `cargo run --bin
+seed_db` — the seed must run first: every persona's password hash is copied
+from a seeded user, so they all log in with `password`). Every id is fixed, so
+the requests in the scenarios can be written once; the script deletes and
+recreates its own rows, so it is safe to rerun.
+
+```sh
+psql postgres://refactor:password@localhost:5432/refactor <<'SQL'
+BEGIN;
+SET search_path TO refactor_platform;
+
+-- Cleanup (children first; the optional 1.3 volume rows are caught via parent ids).
+DELETE FROM coaching_session_topics WHERE coaching_session_id::text LIKE '0d000000-%';
+DELETE FROM agreements              WHERE coaching_session_id::text LIKE '0d000000-%';
+DELETE FROM actions                 WHERE coaching_session_id::text LIKE '0d000000-%';
+DELETE FROM goals                   WHERE coaching_relationship_id::text LIKE '0c000000-%';
+DELETE FROM coaching_sessions       WHERE coaching_relationship_id::text LIKE '0c000000-%';
+DELETE FROM coaching_relationships  WHERE id::text LIKE '0c000000-%';
+DELETE FROM user_roles              WHERE user_id::text LIKE '0b000000-%';
+DELETE FROM users                   WHERE id::text LIKE '0b000000-%';
+DELETE FROM organizations           WHERE id::text LIKE '0a000000-%';
+
+-- Organizations. Initech is archived (Scenario E / PR 3+).
+INSERT INTO organizations (id, name, slug, created_at, updated_at, archived_at) VALUES
+  ('0a000000-0000-4000-a000-000000000001', 'Search Acme',    'search-acme',    now(), now(), NULL),
+  ('0a000000-0000-4000-a000-000000000002', 'Search Globex',  'search-globex',  now(), now(), NULL),
+  ('0a000000-0000-4000-a000-000000000003', 'Search Initech', 'search-initech', now(), now(), now());
+
+-- Personas. Gale is G1's coachee (Robin must stay a non-participant in Globex);
+-- Quinn is the Acme member with no relationship (Scenario J).
+INSERT INTO users (id, email, first_name, last_name, display_name, password, created_at, updated_at)
+SELECT v.id::uuid, v.email, v.fn, v.ln, v.fn, s.password, now(), now()
+FROM (VALUES
+  ('0b000000-0000-4000-a000-000000000001', 'casey@search.test',  'Casey',  'Searcher'),
+  ('0b000000-0000-4000-a000-000000000002', 'robin@search.test',  'Robin',  'Multiorg'),
+  ('0b000000-0000-4000-a000-000000000003', 'jordan@search.test', 'Jordan', 'Leaktarget'),
+  ('0b000000-0000-4000-a000-000000000004', 'morgan@search.test', 'Morgan', 'Leaktarget'),
+  ('0b000000-0000-4000-a000-000000000005', 'alex@search.test',   'Alex',   'Orgadmin'),
+  ('0b000000-0000-4000-a000-000000000006', 'sam@search.test',    'Sam',    'Superadmin'),
+  ('0b000000-0000-4000-a000-000000000007', 'pat@search.test',    'Pat',    'Crossorg'),
+  ('0b000000-0000-4000-a000-000000000008', 'gale@search.test',   'Gale',   'Crossorg'),
+  ('0b000000-0000-4000-a000-000000000009', 'quinn@search.test',  'Quinn',  'Norelationship')
+) AS v(id, email, fn, ln)
+CROSS JOIN (SELECT password FROM users WHERE email = 'james.hodapp@gmail.com') s;
+
+INSERT INTO user_roles (id, role, organization_id, user_id, created_at, updated_at) VALUES
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000001', now(), now()), -- Casey @ Acme
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', now(), now()), -- Robin @ Acme
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000002', now(), now()), -- Robin @ Globex
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000003', now(), now()), -- Jordan @ Acme
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000004', now(), now()), -- Morgan @ Acme
+  (gen_random_uuid(), 'admin', '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000005', now(), now()), -- Alex admin @ Acme
+  (gen_random_uuid(), 'super_admin', NULL,                             '0b000000-0000-4000-a000-000000000006', now(), now()), -- Sam
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000007', now(), now()), -- Pat @ Globex
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000008', now(), now()), -- Gale @ Globex
+  (gen_random_uuid(), 'user',  '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000009', now(), now()); -- Quinn @ Acme
+
+-- Relationships: R1 (Casey→Robin, Acme), R2 (Jordan→Morgan, Acme), G1 (Pat→Gale, Globex).
+INSERT INTO coaching_relationships (id, organization_id, coach_id, coachee_id, slug, created_at, updated_at) VALUES
+  ('0c000000-0000-4000-a000-000000000001', '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'search-r1', now(), now()),
+  ('0c000000-0000-4000-a000-000000000002', '0a000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000004', 'search-r2', now(), now()),
+  ('0c000000-0000-4000-a000-000000000003', '0a000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000007', '0b000000-0000-4000-a000-000000000008', 'search-g1', now(), now());
+
+-- Sessions: S1 (R1, titled), SB (R1, the bare titleless session), S2 (R2), SG (G1).
+-- S1's title has "harvest kumquat" in that order, so q="kumquat harvest" proves phrase order-sensitivity.
+INSERT INTO coaching_sessions (id, coaching_relationship_id, date, duration_minutes, title, created_at, updated_at) VALUES
+  ('0d000000-0000-4000-a000-000000000001', '0c000000-0000-4000-a000-000000000001', now()::timestamp, 60, 'Planning the harvest kumquat review', now(), now()),
+  ('0d000000-0000-4000-a000-000000000002', '0c000000-0000-4000-a000-000000000002', now()::timestamp, 60, 'Tamarind tasting session', now(), now()),
+  ('0d000000-0000-4000-a000-000000000003', '0c000000-0000-4000-a000-000000000003', now()::timestamp, 60, 'Yuzu strategy session', now(), now()),
+  ('0d000000-0000-4000-a000-000000000004', '0c000000-0000-4000-a000-000000000001', now()::timestamp, 60, NULL, now(), now());
+
+-- Goals. R1's body contains the word "goal" (Scenario B's negation check).
+INSERT INTO goals (id, coaching_relationship_id, user_id, title, body, status, created_at, updated_at) VALUES
+  ('0e000000-0000-4000-a000-000000000001', '0c000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Kumquat orchard', 'Grow a kumquat orchard as this year''s stretch goal.', 'in_progress', now(), now()),
+  ('0e000000-0000-4000-a000-000000000002', '0c000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000004', 'Tamarind supply', 'Secure a reliable tamarind supply chain.', 'in_progress', now(), now()),
+  ('0e000000-0000-4000-a000-000000000003', '0c000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000008', 'Yuzu expansion', 'Expand yuzu production to a second grove.', 'in_progress', now(), now());
+
+-- Actions. One R1 action linked to the goal, the bare session's unlinked one
+-- created a day earlier (Scenario C's date-window discriminator).
+INSERT INTO actions (id, coaching_session_id, goal_id, user_id, body, status, status_changed_at, created_at, updated_at) VALUES
+  ('0f000000-0000-4000-a000-000000000001', '0d000000-0000-4000-a000-000000000001', '0e000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Water the kumquat seedlings weekly.', 'not_started', now(), now(), now()),
+  ('0f000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000004', NULL, '0b000000-0000-4000-a000-000000000002', 'Order kumquat fertilizer for the new beds.', 'not_started', now(), now() - interval '1 day', now() - interval '1 day'),
+  ('0f000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000002', '0e000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000004', 'Sample three tamarind paste suppliers.', 'not_started', now(), now(), now()),
+  ('0f000000-0000-4000-a000-000000000004', '0d000000-0000-4000-a000-000000000003', NULL, '0b000000-0000-4000-a000-000000000008', 'Press the first yuzu batch.', 'not_started', now(), now(), now());
+
+-- Agreements (one per session — the column is unique).
+INSERT INTO agreements (id, coaching_session_id, user_id, body, created_at, updated_at) VALUES
+  ('1a000000-0000-4000-a000-000000000001', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000001', 'We agree to review kumquat progress weekly.', now(), now()),
+  ('1a000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000003', 'Tamarind sourcing details stay confidential.', now(), now()),
+  ('1a000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000007', 'Yuzu pricing is agreed quarterly.', now(), now());
+
+-- Topics: one live and one soft-deleted kumquat topic in S1 (Scenario E), and
+-- a hyphenated `check-in` topic in S1 (Scenario B's punctuated final word).
+INSERT INTO coaching_session_topics (id, coaching_session_id, user_id, body, display_order, status, deleted_at, created_at, updated_at) VALUES
+  ('1b000000-0000-4000-a000-000000000001', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Discuss kumquat grafting techniques.', 1, 'open', NULL,  now(), now()),
+  ('1b000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Old kumquat pruning notes.',          2, 'open', now(), now(), now()),
+  ('1b000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000002', '0b000000-0000-4000-a000-000000000004', 'Tamarind fermentation timing.',       1, 'open', NULL,  now(), now()),
+  ('1b000000-0000-4000-a000-000000000004', '0d000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000008', 'Yuzu harvest window.',                1, 'open', NULL,  now(), now()),
+  ('1b000000-0000-4000-a000-000000000005', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Monthly check-in cadence.',           3, 'open', NULL,  now(), now());
+
+COMMIT;
+SQL
+```
+
+### 1.3 Volume fixture (optional — Scenario B's pagination regressions)
+
+Run after 1.2 when executing the cap-vs-cursor and tie-breaker rows of
+Scenario B; 1.2's cleanup removes these too (they hang off the fixed session).
+
+```sh
+psql postgres://refactor:password@localhost:5432/refactor <<'SQL'
+BEGIN;
+SET search_path TO refactor_platform;
+
+-- 30+ kumquat actions: one type with more matches than the page size.
+INSERT INTO actions (id, coaching_session_id, user_id, body, status, status_changed_at, created_at, updated_at)
+SELECT gen_random_uuid(), '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002',
+       'Overflow kumquat chore number ' || n, 'not_started', now(), now(), now()
+FROM generate_series(1, 30) n;
+
+-- Tie group: identical text (identical scores) across two types.
+INSERT INTO actions (id, coaching_session_id, user_id, body, status, status_changed_at, created_at, updated_at)
+SELECT gen_random_uuid(), '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002',
+       'Identical kumquat tie sentence.', 'not_started', now(), now(), now()
+FROM generate_series(1, 6);
+
+INSERT INTO coaching_session_topics (id, coaching_session_id, user_id, body, display_order, status, created_at, updated_at)
+SELECT gen_random_uuid(), '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002',
+       'Identical kumquat tie sentence.', 10 + n, 'open', now(), now()
+FROM generate_series(1, 6) n;
+
+COMMIT;
+SQL
+```
+
+### 1.4 Fixed ids
+
+The fixture pins every id the scenarios reference:
+
+| Thing | Fixed fixture id |
 |---|---|
-| `organization_id` (Acme, Globex) | URL of each org page |
-| `coaching_relationship_id` (R1, R2, G1) | Network tab on the sessions list |
-| `coaching_session_id` (one per relationship) | URL of the session page |
-| a R2 `coaching_session_id` | needed for the probing checks in D |
+| Acme / Globex / Initech `organization_id` | `0a000000-0000-4000-a000-00000000000{1,2,3}` |
+| R1 / R2 / G1 `coaching_relationship_id` | `0c000000-0000-4000-a000-00000000000{1,2,3}` |
+| S1 (R1) / S2 (R2) / SG (G1) / bare SB (R1) `coaching_session_id` | `0d000000-0000-4000-a000-00000000000{1,2,3,4}` |
+| R1 / R2 / G1 goal ids | `0e000000-0000-4000-a000-00000000000{1,2,3}` |
+| Casey…Quinn `user_id` | `0b000000-0000-4000-a000-000000000001` … `…009` (fixture order) |
 
 All example requests below elide the host and auth; append params to
-`GET /search`.
+`GET /search` (or use the `search` helper from 1.1).
 
 ## 2. Scenario A: response contract and envelope
 
@@ -80,9 +241,10 @@ Logged in as Casey. `GET /search?q=kumquat`.
 | Body shape | `data.query`, `data.limit`, `data.hits[]`, `data.next_cursor` |
 | Every hit | has `type`, `id`, `score`, `title` (never empty), `created_at`, `organization_id` |
 | Hit ordering | non-increasing `score` |
-| Snippets | plain text with literal `<mark>…</mark>` markers around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
-| Session-anchored hits | carry `coaching_session_id`, `coaching_relationship_id`, `session_display_title` (non-empty even where the session's `title` column is NULL) |
-| The bare session's action hit | `session_display_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
+| Snippets | HTML-escaped text whose only tags are `<mark>…</mark>` around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
+| Forged highlights | edit a matching goal's title to `Kumquat <mark=>forged & a<b` plus `\x02fake\x03` (via SQL `E'…'`), search `q=forged`: only `forged` is wrapped in `<mark>`; `&`/`<` come back as `&amp;`/`&lt;`; `fake` is not highlighted; the FE shows the literal `&` and `<`. Restore the title afterwards |
+| Session-anchored hits | carry `coaching_session_id` and `coaching_relationship_id`; action and agreement hits also carry `session_title` (non-empty even where the session's `title` column is NULL); topic hits do not |
+| The bare session's action hit | `session_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
 
 ## 3. Scenario B: keyword semantics (feature requirements)
 
@@ -96,6 +258,8 @@ Still Casey. All against R1 content.
 | `q="kumquat harvest"` where only "harvest kumquat" exists | no phrase match (quoted phrases are order-sensitive) |
 | `q=kumquat -goal` (word `goal` present in the goal body) | goal hit disappears, others remain |
 | `q=kumquat or tamarind` | identical to `q=kumquat` — the `or` arm matches nothing *visible*; see D |
+| `q=kumquat or tamarind weekly` (an `or` earlier in the query) | identical to `q=kumquat` — the query keeps its precedence, `kumquat \| (tamarind & weekly)`. A regression splits off the final word and regroups it as `(kumquat \| tamarind) & weekly:*`, returning only the two "weekly" kumquat rows |
+| `q=check-in&types=topics` (punctuated final word) | exactly the "Monthly check-in cadence" topic — the word is matched as typed. A regression strips the hyphen into `checkin:*`, which matches neither indexed lexeme (`check-in`, `check`), and returns zero hits |
 | `q=` or `q=k` | 400 (min length 2 after trim) |
 | `q=` + 300 chars | 200; `data.query` shows the truncated (≤256) string |
 | `types=goals,actions` | only those hit types |
@@ -121,7 +285,7 @@ plus one `kumquat` action **linked to the R1 goal** and one **unlinked**
 | `tz=Not/AZone` | 400 with `"error": "invalid_timezone"` |
 | `user_id=<Robin>` | only R1 content Robin authored (notes/goals/actions/agreements/topics) or participates in (sessions/transcripts) |
 | `coaching_relationship_id=<R1>` | identical to the unfiltered search — Casey's scope is exactly R1, so this only proves the filter doesn't drop in-scope content; the discriminating narrowing check runs as Alex in F, and the foreign-id probe as Casey in D |
-| `coaching_session_id=<R1 session>` | only content of that session plus the session itself |
+| `coaching_session_id=<R1 session>` | session-anchored types narrowed to that session's content, plus the session itself; goal hits are unaffected (goals are relationship-anchored — the filter is ignored for them, like `goal_id` for non-linkable types) |
 | `organization_id=<Acme>` | unchanged (Casey's scope is already Acme-only) |
 | `q=kumquat&types=actions&goal_id=<R1 goal>` | only the linked action; the unlinked one absent; each hit's `goal_id` equals the filter |
 | `q=kumquat&types=actions&goal_filter=unlinked` | only the unlinked action (`goal_id` null on every hit) |
@@ -164,17 +328,22 @@ participant only in R1).
 | Deleted topic | Casey: `q=kumquat&types=topics` | only the **live** topic; the soft-deleted one absent |
 | Archived org (PR 3+) | Sam: `q=Initech&types=organizations` | zero hits (`archived_at IS NULL` filter) |
 
-## 7. Scenario F: org-admin tier
+## 7. Scenario F: org admins get no relationship visibility
 
-Logged in as **Alex** (Acme admin, participant in nothing).
+Logged in as **Alex** (Acme admin, participant in nothing). Search mirrors
+direct access (`grants_access_to`): the `Admin` role grants no relationship
+visibility, so search never surfaces a session Alex would get a 403 opening.
 
 | Probe | Expected |
 |---|---|
-| `q=kumquat` | full R1 hit set — admin sees relationships they're not part of |
-| `q=tamarind` | full R2 hit set |
-| `q=kumquat&coaching_relationship_id=<R1>` | full R1 hit set; `q=tamarind&coaching_relationship_id=<R1>` → zero hits — Alex sees both R1 and R2, so this is the discriminating narrowing check for the relationship filter (Scenario C's version is degenerate) |
-| `q=yuzu` | **zero hits** — Alex administers Acme, not Globex |
+| `q=kumquat` | **zero hits** — admin of the org, but not a participant of R1 |
+| `q=tamarind` | **zero hits** — same for R2 |
+| `q=yuzu` | **zero hits** — not even a member of Globex |
 | `q=kumquat&types=organizations` | zero hits, silently dropped — organizations remain super-admin-only |
+
+Every empty result is an ordinary 200, indistinguishable from a no-match
+search. (Members search, PR 3+, is the membership-based exception — Scenario J
+still expects Alex to find Acme members.)
 
 ## 8. Scenario G: removal revokes search access
 
@@ -202,6 +371,7 @@ Logged in as **Sam**.
 | Probe | Expected |
 |---|---|
 | `q=kumquat`, `q=tamarind`, `q=yuzu` | all return their full hit sets |
+| `q=kumquat&coaching_relationship_id=<R1>` | full R1 hit set; `q=tamarind&coaching_relationship_id=<R1>` → zero hits — Sam sees every relationship, so this is the discriminating narrowing check for the relationship filter (Scenario C's version is degenerate) |
 | `q=<org name>&types=organizations` (PR 3+) | active organizations only |
 | Sanity | Sam's hits for `q=kumquat` are a superset of Casey's, and each individual hit is identical in shape/fields to what a participant sees |
 
@@ -215,7 +385,7 @@ different speakers, and `tamarind` in an R2 transcript.
 | Casey: `q=kumquat&types=transcripts` | grouped hits: at most **3 segments per transcription**, each with `transcription_id`, `start_ms`, `end_ms`, `speaker_label` |
 | Deep link | opening the session at `start_ms` lands playback at the matched utterance |
 | Casey: `q=tamarind&types=transcripts` | zero hits — transcripts are the richest corpus and the most damaging leak |
-| Alex | sees both relationships' transcript hits; Globex transcripts never |
+| Alex: `q=kumquat&types=transcripts` | zero hits — the Admin role grants no relationship visibility (Scenario F) |
 
 ## 11. Scenario J: members search (PR 3+)
 
@@ -239,6 +409,7 @@ Using Casey's PAT against `POST /mcp` (`search` tool):
 | Probe | Expected |
 |---|---|
 | `keyword: "kumquat"` | R1 hits; no `score` field, no `<mark>` markers, each session-anchored hit carries a `session_url` |
+| A matching row whose text contains `&` or `<` | its snippet shows the literal `&` / `<`, never `&amp;` / `&lt;` |
 | `keyword: "tamarind"` | zero hits |
 | `types: ["users"]` | dropped/absent — users and organizations are not MCP-searchable in MVP |
 | limit | default 10, values above 25 clamped |
@@ -314,3 +485,40 @@ a hit on another relationship's note content is a leak like any other.
 | Repeated queries return garbage relevance right after an embedding-model swap, novel queries are fine | embedding cache key is missing `embedding_model` — cached old-model vectors are being compared against the new-model index |
 | Hybrid latency ≈ semantic + keyword latencies summed | the hybrid arms run sequentially — the keyword retrieval should fire in parallel with the embedding call (see the latency-budget bullet in the implementation plan) |
 | As-you-type feels dead — zero hits until a word is fully typed | final-token prefix matching missing, or the server trims the query before inspecting the raw tail for the trailing-whitespace opt-out |
+
+## 16. Results — PR 1 (scenarios A–H), 2026-10-14
+
+Full re-run against the local backend on `feat/search-keyword-core` after the
+review fixes (shared FTS query skeleton, `users::Model::is_super_admin`,
+relationship ids resolved in SQL, stop-word prefix fallback, no prefix after
+`or`, unforgeable snippet highlights), with freshly reseeded 1.2 + 1.3 fixtures
+(48 visible `kumquat` rows for R1 participants, including the volume and tie
+groups). Scripted: 108 checks, all passing; re-run after the snippet fix with
+the same result. Supersedes the 2026-10-13 pass.
+
+| Scenario | Result | Notes |
+|---|---|---|
+| A — response contract | PASS* | envelope, hit fields, ordering, `<mark>` markers in raw JSON, `session_title` on action/agreement hits only, bare-session fallback `Coaching session — 2026-10-14`. Forged highlights: only `forged` is wrapped, `&`/`<` come back as `&amp;`/`&lt;`, the planted `\x02fake\x03` is not highlighted. *FE rendering of `<mark>` as highlights still needs a browser check. |
+| B — keyword semantics | PASS | stemming, prefix (`kumq`), trailing-space opt-out, phrase order, negation, `or`/`OR` now identical to `q=kumquat`, truncation at 256, limit clamp to 100, all 400 discriminators, full cursor walk (10 pages at `limit=5`, 48/48 unique, incl. cap-vs-cursor and tie-breaker regressions). Stop-word prefix: `q=we` finds the two "weekly" rows. |
+| C — filters | PASS | all 12 rows, incl. tz date window, contradictory-params 400, foreign `goal_id` → empty 200 |
+| D — regular-user leaks | PASS | every probe an ordinary empty 200 with the same shape as a no-match search; no `tamarind` snippet via `or`; Robin's multi-org rows correct; latency indistinguishable (20–30 ms) |
+| E — soft-delete | PASS | soft-deleted topic absent from `types=topics` (archived-org row is PR 3+) |
+| F — org admins get no relationship visibility | PASS | Alex: zero hits for `kumquat`, `tamarind`, `yuzu`, and `types=organizations` — every response an ordinary empty 200 |
+| G — removal revokes | PASS | role delete (by Alex) → 0 hits for Robin (plain 200), data intact for Casey, access restored on re-add |
+| H — super-admin tier | PASS | Sam's `kumquat` hits a superset of Casey's with identical per-type field sets; `tamarind`/`yuzu` visible; relationship-filter narrowing discriminates |
+| Throttle | PASS | 15 rapid requests: 11×200 then 429s (burst 10 + refill) |
+
+The 2026-10-13 run's one deviation (`q=kumquat or tamarind` returning 0 hits,
+because the prefix split dropped the `or` and ANDed the words) is fixed:
+`compile_query` no longer prefix-matches a final word that follows `or`.
+
+### Re-run, 2026-10-17
+
+After session-title resolution moved into `entity_api` (#431) and two more
+`compile_query` review fixes: any `or` in the query disables prefixing, and
+only a plain alphanumeric final word is prefixed. Scenario B gained a row for
+each fix, plus the `check-in` topic in the 1.2 fixture. Scripted: 110 checks,
+all passing; the original 108 are identical line-for-line to the previous run.
+Against the fixture text, the pre-fix query forms reproduce both regressions:
+`kumquat or tamarind weekly` matched 2 of the 46 kumquat action, agreement,
+and topic rows instead of all 46, and `checkin:*` missed the `check-in` topic.
