@@ -1398,7 +1398,7 @@ mod tests {
     use super::*;
     use entity::meeting_provider::Provider;
     use entity::Id;
-    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Statement, Transaction, Value};
 
     /// The claim has to select and write in one statement, and the conflict clause has
     /// to skip rows already current. If a refactor split it into a SELECT followed by an
@@ -1939,8 +1939,9 @@ mod tests {
     #[tokio::test]
     async fn raise_series_ical_sequence_uses_greatest() -> Result<(), Error> {
         let series_id = Id::new_v4();
+        let floor = 7;
         let raised = Model {
-            ical_sequence: 4,
+            ical_sequence: floor,
             ..series_session(Some(series_id), naive("2026-06-01 10:00:00"))
         };
 
@@ -1948,21 +1949,24 @@ mod tests {
             .append_query_results(vec![vec![raised.clone()]])
             .into_connection();
 
-        let result = raise_series_ical_sequence(&db, series_id, 4).await?;
+        let result = raise_series_ical_sequence(&db, series_id, floor).await?;
         assert_eq!(result, vec![raised]);
 
-        let statements: Vec<String> = db
+        let statements: Vec<Statement> = db
             .into_transaction_log()
             .iter()
             .flat_map(|txn| txn.statements())
-            .map(|stmt| stmt.sql.clone())
+            .cloned()
             .collect();
         assert_eq!(statements.len(), 1, "{statements:?}");
-        let sql = &statements[0];
+        let sql = &statements[0].sql;
         assert!(sql.starts_with("UPDATE"), "{sql}");
         assert!(sql.contains(r#""coaching_sessions""#), "{sql}");
         assert!(sql.contains("GREATEST"), "{sql}");
         assert!(sql.contains(r#""coaching_session_series_id" = "#), "{sql}");
+        let values = &statements[0].values.as_ref().expect("bound values").0;
+        assert!(values.contains(&Value::from(floor)), "{values:?}");
+        assert!(values.contains(&Value::from(series_id)), "{values:?}");
         Ok(())
     }
 

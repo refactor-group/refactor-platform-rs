@@ -1679,9 +1679,18 @@ fn build_series_snapshot_ics(
         ..base()
     };
 
+    let master_url = master.location_url.clone();
     let overrides = slotted.iter().filter_map(|(slot, member)| {
         member
-            .filter(|m| m.date != *slot || m.duration_minutes != rule.duration_minutes)
+            .filter(|m| {
+                // Zoom-style per-session links must not inherit another session's URL; an
+                // unassigned URL keeps the series' one.
+                let own_url = m
+                    .meeting_url
+                    .as_deref()
+                    .is_some_and(|url| Some(url) != master_url.as_deref());
+                m.date != *slot || m.duration_minutes != rule.duration_minutes || own_url
+            })
             .map(|m| ical::IcsInvite {
                 // Google drops an override whose SEQUENCE trails its master.
                 sequence: m.ical_sequence.max(series.ical_sequence),

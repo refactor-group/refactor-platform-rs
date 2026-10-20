@@ -2611,6 +2611,32 @@ fn snapshot_override_sequence_is_at_least_the_master() {
     assert_snapshot(&leading, (FIRST, 3), &[], &[moved(5)]);
 }
 
+/// The snapshot with slot `index` unmoved but carrying `meeting_url`.
+fn snapshot_with_url(index: usize, meeting_url: Option<&str>) -> String {
+    let series = snapshot_series(snapshot_start(), 1);
+    let mut members = snapshot_members(&series);
+    members[index].meeting_url = meeting_url.map(Into::into);
+    snapshot(&series, &members)
+}
+
+#[test]
+fn snapshot_unmoved_member_with_own_url_becomes_override() {
+    let ics = snapshot_with_url(2, Some("https://meet.example/own"));
+    let unmoved = ("20260929T140000", "20260929T140000", 1);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[unmoved]);
+    let override_event = &ics[ics.rfind("BEGIN:VEVENT").unwrap()..];
+    assert!(
+        override_event.contains("LOCATION:https://meet.example/own"),
+        "{ics}"
+    );
+}
+
+#[test]
+fn snapshot_unmoved_member_without_url_inherits_master() {
+    let ics = snapshot_with_url(2, None);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[]);
+}
+
 #[test]
 fn snapshot_ignores_non_slot_and_null_members() {
     let series = snapshot_series(snapshot_start(), 1);

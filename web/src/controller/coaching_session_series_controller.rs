@@ -224,6 +224,7 @@ pub async fn delete(
     ),
     responses(
         (status = 204, description = "Invite resent"),
+        (status = 400, description = "Missing or unsupported API version header"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — not the coach on the relationship"),
         (status = 404, description = "Not found"),

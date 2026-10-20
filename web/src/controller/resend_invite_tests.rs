@@ -11,18 +11,19 @@ use axum_login::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{NaiveDateTime, Utc};
+use mockito::{Mock, Server, ServerGuard};
+use password_auth::generate_hash;
+use sea_orm::{prelude::DateTimeWithTimeZone, DatabaseBackend, MockDatabase};
+use time::Duration;
+use tower::ServiceExt;
+use tower_sessions::Expiry;
+
 use domain::user::Backend;
 use domain::{
     actions, coaching_relationships, coaching_session_series, coaching_session_topics,
     coaching_sessions, goals, organizations, user_roles, users, Id,
 };
-use mockito::{Mock, Server, ServerGuard};
-use password_auth::generate_hash;
-use sea_orm::{prelude::DateTimeWithTimeZone, DatabaseBackend, MockDatabase};
 use service::config::Config;
-use time::Duration;
-use tower::ServiceExt;
-use tower_sessions::Expiry;
 
 use crate::controller::user_session_controller;
 use crate::router::{coaching_session_series_routes, coaching_sessions_routes};
@@ -43,9 +44,10 @@ fn start_in(days: i64) -> NaiveDateTime {
         .unwrap()
 }
 
-/// One resend `POST`: who logs in, where it goes, and the loads it will make.
+/// One resend `POST`: who logs in (`None` sends no cookie), where it goes, and the loads
+/// it will make.
 struct Call {
-    caller: String,
+    caller: Option<String>,
     path: String,
     db: MockDatabase,
 }
@@ -179,9 +181,18 @@ impl Fixture {
             .append_query_results([vec![row.clone()]])
             .append_query_results([vec![row]]);
         Call {
-            caller: caller.email.clone(),
+            caller: Some(caller.email.clone()),
             path,
             db,
+        }
+    }
+
+    /// No login, so no loads.
+    fn anonymous(path: String) -> Call {
+        Call {
+            caller: None,
+            path,
+            db: MockDatabase::new(DatabaseBackend::Postgres),
         }
     }
 
@@ -351,17 +362,17 @@ async fn resend(call: Call, coachee_status: Option<usize>) -> Outcome {
         .merge(coaching_session_series_routes(app_state))
         .layer(AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build());
 
-    let form = format!("email={}&password=password123", call.caller);
-    let login = Request::post("/login")
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(Body::from(form))
-        .unwrap();
-    let login = app.clone().oneshot(login).await.unwrap();
-    let request = Request::post(call.path)
-        .header("cookie", login.headers()["set-cookie"].clone())
-        .header("x-version", "1.0.0")
-        .body(Body::empty())
-        .unwrap();
+    let mut request = Request::post(call.path).header("x-version", "1.0.0");
+    if let Some(caller) = call.caller {
+        let form = format!("email={caller}&password=password123");
+        let login = Request::post("/login")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(form))
+            .unwrap();
+        let login = app.clone().oneshot(login).await.unwrap();
+        request = request.header("cookie", login.headers()["set-cookie"].clone());
+    }
+    let request = request.body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
 
     let status = response.status();
@@ -423,6 +434,42 @@ async fn refusals_send_nothing_and_bump_nothing() {
         let out = resend(call, None).await;
         assert_eq!(out.status, status, "case {case}");
         assert_eq!(out.reason.as_deref(), reason, "case {case}");
+        assert!(out.sequence_updates.is_empty(), "case {case}");
+    }
+}
+
+/// No cookie is a 401 and an unknown id a 404; neither sends nor bumps.
+#[tokio::test]
+async fn unauthenticated_and_unknown_send_nothing_and_bump_nothing() {
+    let f = Fixture::new();
+    let series_path = format!("/coaching_session_series/{}/resend_invite", Id::new_v4());
+    let session_path = format!("/coaching_sessions/{}/resend_invite", Id::new_v4());
+
+    let cases = [
+        (
+            Fixture::anonymous(series_path.clone()),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Fixture::anonymous(session_path.clone()),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            f.login(&f.coach, series_path)
+                .then(|db| db.append_query_results([Vec::<Series>::new()])),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            f.login(&f.coach, session_path).then(|db| {
+                db.append_query_results([Vec::<(Session, coaching_relationships::Model)>::new()])
+            }),
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+
+    for (case, (call, status)) in cases.into_iter().enumerate() {
+        let out = resend(call, None).await;
+        assert_eq!(out.status, status, "case {case}");
         assert!(out.sequence_updates.is_empty(), "case {case}");
     }
 }
