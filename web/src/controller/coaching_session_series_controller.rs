@@ -213,6 +213,36 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /coaching_session_series/:id/resend_invite` — resend the series invite to both
+/// participants as it stands today. Synchronous, so the answer says whether it went.
+#[utoipa::path(
+    post,
+    path = "/coaching_session_series/{id}/resend_invite",
+    params(
+        ApiVersion,
+        ("id" = Uuid, Path, description = "Series ID")
+    ),
+    responses(
+        (status = 204, description = "Invite resent"),
+        (status = 400, description = "Missing or unsupported API version header"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden — not the coach on the relationship"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions` or `legacy_series`"),
+        (status = 502, description = "The invite did not reach the coachee")
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn resend_invite(
+    CompareApiVersion(_v): CompareApiVersion,
+    State(app_state): State<AppState>,
+    CoachingSessionSeriesCoachAccess(series): CoachingSessionSeriesCoachAccess,
+) -> Result<impl IntoResponse, Error> {
+    CoachingSessionSeriesApi::resend_invite(app_state.db_conn_ref(), &app_state.config, series.id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
