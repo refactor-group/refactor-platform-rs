@@ -2,7 +2,9 @@ use super::*;
 use crate::{coaching_sessions, organizations, users, Id};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::{DurationRound, NaiveDate};
+#[cfg(feature = "mock")]
+use chrono::DurationRound;
+use chrono::NaiveDate;
 use mockito::{Server, ServerGuard};
 #[cfg(feature = "mock")]
 use sea_orm::{DatabaseBackend, MockDatabase};
