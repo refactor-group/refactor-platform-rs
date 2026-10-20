@@ -332,6 +332,51 @@ pub async fn delete_with_future_sessions(
     Ok(())
 }
 
+/// Resend a series' invite to both participants as it stands today, under a bumped
+/// SEQUENCE so calendars replace the recurring event they hold. Refused when nothing is
+/// left to attend, or when an upcoming member predates `ical_recurrence_id`: such a series
+/// was never published as one, so a snapshot would not line up with what calendars hold.
+pub async fn resend_invite(
+    db: &DatabaseConnection,
+    config: &Config,
+    series_id: Id,
+) -> Result<(), Error> {
+    let series = coaching_session_series::find_by_id(db, series_id).await?;
+    let rows = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
+    let now = chrono::Utc::now().naive_utc();
+    let mut upcoming: Vec<coaching_sessions::Model> =
+        rows.iter().filter(|s| s.date > now).cloned().collect();
+    upcoming.sort_by_key(|s| s.date);
+
+    if upcoming.is_empty() {
+        return Err(coaching_session::resend_refused(
+            "This series has no upcoming sessions.",
+            "no_upcoming_sessions",
+        ));
+    }
+    if upcoming.iter().any(|s| s.ical_recurrence_id.is_none()) {
+        return Err(coaching_session::resend_refused(
+            "This series predates resendable invites.",
+            "legacy_series",
+        ));
+    }
+
+    // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
+    let bumped = coaching_session_series::increment_ical_sequence(db, series.id).await?;
+    let parties = emails::InviteParties::load(db, bumped.coaching_relationship_id).await?;
+    let delivered = emails::send_series_invite_resend(
+        db,
+        config,
+        &bumped,
+        &parties.participants(),
+        &upcoming,
+        &rows,
+        &parties.organization,
+    )
+    .await?;
+    coaching_session::ensure_coachee_reached(&delivered)
+}
+
 async fn cleanup_orphaned_docs(
     config: &Config,
     series_id: Id,

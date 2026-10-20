@@ -1872,8 +1872,6 @@ async fn send_recurring_sessions_scheduled_email(
 /// Resend a series' invite as it stands today. `series` must already carry the bumped
 /// `ical_sequence`. `upcoming` is what the email lists; `rows` is every session linked
 /// to the series, which the snapshot is built from.
-// No caller until the resend endpoint lands.
-#[allow(dead_code)]
 pub(crate) async fn send_series_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -1899,6 +1897,52 @@ pub(crate) async fn send_series_invite_resend(
         },
     )
     .await
+}
+
+/// Resend a session's invite as it stands today. `session` must already carry the bumped
+/// `ical_sequence`.
+pub(crate) async fn send_session_invite_resend(
+    db: &DatabaseConnection,
+    config: &Config,
+    participants: &Participants<'_>,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+) -> Result<Delivered, Error> {
+    send_single_session_invite_email::<SessionScheduled>(
+        db,
+        config,
+        participants.coach,
+        participants.coachee,
+        session,
+        organization,
+        None,
+    )
+    .await
+}
+
+/// Who an invite for a relationship goes to, and the organization it names.
+pub(crate) struct InviteParties {
+    coach: users::Model,
+    coachee: users::Model,
+    pub(crate) organization: organizations::Model,
+}
+
+impl InviteParties {
+    pub(crate) async fn load(db: &DatabaseConnection, relationship_id: Id) -> Result<Self, Error> {
+        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
+        Ok(Self {
+            coach: user::find_by_id_without_roles(db, relationship.coach_id).await?,
+            coachee: user::find_by_id_without_roles(db, relationship.coachee_id).await?,
+            organization: organization::find_by_id(db, relationship.organization_id).await?,
+        })
+    }
+
+    pub(crate) fn participants(&self) -> Participants<'_> {
+        Participants {
+            coach: &self.coach,
+            coachee: &self.coachee,
+        }
+    }
 }
 
 /// Send series reschedule notification emails to both coach and coachee. `series` must

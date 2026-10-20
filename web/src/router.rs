@@ -57,11 +57,13 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_controller::update,
             coaching_session_controller::update_title,
             coaching_session_controller::delete,
+            coaching_session_controller::resend_invite,
             coaching_session_series_controller::create,
             coaching_session_series_controller::read,
             coaching_session_series_controller::index,
             coaching_session_series_controller::update,
             coaching_session_series_controller::delete,
+            coaching_session_series_controller::resend_invite,
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
@@ -402,6 +404,18 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                     protect::coaching_sessions::delete,
                 )),
         )
+        .merge(
+            // POST /coaching_sessions/:id/resend_invite
+            Router::new()
+                .route(
+                    "/coaching_sessions/:id/resend_invite",
+                    post(coaching_session_controller::resend_invite),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_sessions::resend_invite,
+                )),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -428,6 +442,10 @@ pub fn coaching_session_series_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_session_series/:id",
             delete(coaching_session_series_controller::delete),
+        )
+        .route(
+            "/coaching_session_series/:id/resend_invite",
+            post(coaching_session_series_controller::resend_invite),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

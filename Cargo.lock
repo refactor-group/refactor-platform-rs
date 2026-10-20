@@ -6108,6 +6108,7 @@ dependencies = [
  "log",
  "meeting-ai",
  "meeting-auth",
+ "mockito",
  "password-auth",
  "regex",
  "reqwest",

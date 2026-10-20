@@ -3,11 +3,11 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::Next,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 
-use domain::{coaching_relationship, coaching_session, Id};
+use domain::{coaching_relationship, coaching_session, users, Id};
 
 use log::{debug, error, warn};
 #[derive(Debug, Deserialize)]
@@ -55,35 +55,7 @@ pub(crate) async fn update(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    let (_coaching_session, coaching_relationship) =
-        match coaching_session::find_by_id_with_coaching_relationship(
-            app_state.db_conn_ref(),
-            coaching_session_id,
-        )
-        .await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                error!(
-                    "Error resolving coaching session {coaching_session_id} for authorization: {e:?}"
-                );
-                return crate::error::domain_error_into_response(e);
-            }
-        };
-
-    if coaching_relationship.coach_id == user.id && coaching_relationship.grants_access_to(&user) {
-        debug!(
-            "PUT auth passed: coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
-            coaching_relationship.id, user.id
-        );
-        next.run(request).await
-    } else {
-        warn!(
-            "PUT auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
-            coaching_relationship.id, user.id
-        );
-        (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
-    }
+    require_coach(&app_state, &user, coaching_session_id, "PUT", request, next).await
 }
 
 /// Checks that coaching session record referenced by `coaching_session_id`
@@ -98,6 +70,46 @@ pub(crate) async fn delete(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
+    require_coach(
+        &app_state,
+        &user,
+        coaching_session_id,
+        "DELETE",
+        request,
+        next,
+    )
+    .await
+}
+
+/// The coach-only gate `delete` applies, for `POST /coaching_sessions/:id/resend_invite`.
+pub(crate) async fn resend_invite(
+    State(app_state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(coaching_session_id): Path<Id>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    require_coach(
+        &app_state,
+        &user,
+        coaching_session_id,
+        "POST resend_invite",
+        request,
+        next,
+    )
+    .await
+}
+
+/// Runs `next` only when `user` is the coach of the session's relationship and still has
+/// access to it. `operation` labels the log lines.
+async fn require_coach(
+    app_state: &AppState,
+    user: &users::Model,
+    coaching_session_id: Id,
+    operation: &str,
+    request: Request,
+    next: Next,
+) -> Response {
     let (_coaching_session, coaching_relationship) =
         match coaching_session::find_by_id_with_coaching_relationship(
             app_state.db_conn_ref(),
@@ -114,15 +126,15 @@ pub(crate) async fn delete(
             }
         };
 
-    if coaching_relationship.coach_id == user.id && coaching_relationship.grants_access_to(&user) {
+    if coaching_relationship.coach_id == user.id && coaching_relationship.grants_access_to(user) {
         debug!(
-            "DELETE auth passed: coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
+            "{operation} auth passed: coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
         next.run(request).await
     } else {
         warn!(
-            "DELETE auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
+            "{operation} auth denied (not coach): coaching_session_id={coaching_session_id} relationship_id={} user_id={}",
             coaching_relationship.id, user.id
         );
         (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
