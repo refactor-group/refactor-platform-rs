@@ -2447,44 +2447,57 @@ fn test_build_series_invite_ics_carries_bumped_sequence() {
 // ── Series Snapshot Tests ──────────────────────────────────────────
 
 /// A weekly, six-occurrence series starting at `start_at` (a Tuesday, UTC).
-fn snapshot_series(start_at: NaiveDateTime) -> coaching_session_series::Model {
+fn snapshot_series(start_at: NaiveDateTime, ical_sequence: i32) -> coaching_session_series::Model {
     coaching_session_series::Model {
         rule: serde_json::json!({
             "start_at": start_at,
             "recurrence": { "frequency": "weekly", "interval": 1, "count": 6 },
             "duration_minutes": 60,
         }),
-        ical_sequence: 1,
+        ical_sequence,
         ..create_test_series()
     }
 }
 
-/// Tuesday Sep 15 2026, 19:00 UTC: 14:00 in Chicago (CDT) for all six weeks.
-fn snapshot_start() -> NaiveDateTime {
-    NaiveDate::from_ymd_opt(2026, 9, 15)
-        .unwrap()
-        .and_hms_opt(19, 0, 0)
-        .unwrap()
+fn at(year: i32, month: u32, day: u32, hour: u32) -> NaiveDateTime {
+    let date = NaiveDate::from_ymd_opt(year, month, day).unwrap();
+    date.and_hms_opt(hour, 0, 0).unwrap()
 }
 
-/// The six weekly slots from `start_at`.
-fn snapshot_slots(start_at: NaiveDateTime) -> Vec<NaiveDateTime> {
-    (0..6)
-        .map(|week| start_at + chrono::Duration::weeks(week))
-        .collect()
+/// Tuesday Sep 15 2026, 19:00 UTC: 14:00 in Chicago (CDT) for all six weeks.
+fn snapshot_start() -> NaiveDateTime {
+    at(2026, 9, 15, 19)
 }
 
 /// One unmoved member per slot.
 fn snapshot_members(series: &coaching_session_series::Model) -> Vec<coaching_sessions::Model> {
     let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
-    snapshot_slots(rule.start_at)
-        .into_iter()
+    (0..6)
+        .map(|week| rule.start_at + chrono::Duration::weeks(week))
         .map(|slot| coaching_sessions::Model {
             duration_minutes: 60,
             meeting_url: Some("https://meet.example/series".into()),
             ..create_test_series_session(series.id, slot)
         })
         .collect()
+}
+
+/// The members with each `(slot, sequence)` in `moved` a day later at that sequence, and
+/// the `deleted` slots gone.
+fn edit_members(
+    series: &coaching_session_series::Model,
+    deleted: &[usize],
+    moved: &[(usize, i32)],
+) -> Vec<coaching_sessions::Model> {
+    let mut members = snapshot_members(series);
+    for &(slot, sequence) in moved {
+        members[slot].date += chrono::Duration::days(1);
+        members[slot].ical_sequence = sequence;
+    }
+    deleted.iter().rev().for_each(|&slot| {
+        members.remove(slot);
+    });
+    members
 }
 
 /// The unfolded snapshot for a Chicago coach.
@@ -2494,172 +2507,127 @@ fn snapshot(
 ) -> String {
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
-        .unwrap()
-        .and_hms_opt(12, 0, 0)
-        .unwrap();
+    let dtstamp = at(2026, 9, 1, 12);
     let ics = build_series_snapshot_ics(&coach, &coachee, series, members, "desc".into(), dtstamp)
         .unwrap();
     unfold(&ics)
 }
 
-/// Every VEVENT span, in order.
-fn vevents(ics: &str) -> Vec<&str> {
-    ics.match_indices("BEGIN:VEVENT")
-        .map(|(start, _)| {
-            let end = start + ics[start..].find("END:VEVENT").unwrap();
-            &ics[start..end]
-        })
-        .collect()
+/// The snapshot of the series from `start` at `sequence`, edited as [`edit_members`] does.
+fn edited_snapshot(
+    start: NaiveDateTime,
+    sequence: i32,
+    deleted: &[usize],
+    moved: &[(usize, i32)],
+) -> String {
+    let series = snapshot_series(start, sequence);
+    snapshot(&series, &edit_members(&series, deleted, moved))
 }
+
+/// Asserts the master (Chicago local `dtstart`, `sequence`), exactly `exdates`, then one
+/// override per `(recurrence_id, dtstart, sequence)`, in order.
+fn assert_snapshot(
+    ics: &str,
+    (dtstart, sequence): (&str, i32),
+    exdates: &[&str],
+    overrides: &[(&str, &str, i32)],
+) {
+    let tz = "TZID=America/Chicago";
+    let events: Vec<&str> = ics
+        .match_indices("BEGIN:VEVENT")
+        .map(|(start, _)| &ics[start..start + ics[start..].find("END:VEVENT").unwrap()])
+        .collect();
+    assert_eq!(events.len(), 1 + overrides.len(), "{ics}");
+    let master = events[0];
+    assert!(master.contains(&format!("DTSTART;{tz}:{dtstart}")), "{ics}");
+    assert!(master.contains("RRULE:FREQ=WEEKLY;COUNT=6"), "{ics}");
+    assert!(master.contains(&format!("SEQUENCE:{sequence}")), "{ics}");
+    assert!(master.contains("LOCATION:https://meet.example/series"));
+    assert_eq!(ics.matches("EXDATE").count(), exdates.len(), "{ics}");
+    for exdate in exdates {
+        assert!(ics.contains(&format!("EXDATE;{tz}:{exdate}")), "{ics}");
+    }
+    for (event, (recurrence_id, dtstart, sequence)) in events[1..].iter().zip(overrides) {
+        assert!(event.contains(&format!("RECURRENCE-ID;{tz}:{recurrence_id}")));
+        assert!(
+            event.contains(&format!("DTSTART;{tz}:{dtstart}")),
+            "{event}"
+        );
+        assert!(event.contains(&format!("SEQUENCE:{sequence}")), "{event}");
+        assert!(!event.contains("RRULE"), "{event}");
+    }
+}
+
+const FIRST: &str = "20260915T140000";
 
 #[test]
 fn snapshot_untouched_series_is_master_only() {
-    let series = snapshot_series(snapshot_start());
-    let ics = snapshot(&series, &snapshot_members(&series));
-
-    let events = vevents(&ics);
-    assert_eq!(events.len(), 1);
-    assert_eq!(ics.matches("EXDATE").count(), 0);
-    assert!(events[0].contains("RRULE:FREQ=WEEKLY;COUNT=6"));
-    assert!(events[0].contains("SEQUENCE:1"));
-    assert!(events[0].contains("LOCATION:https://meet.example/series"));
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[]);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[]);
 }
 
 #[test]
 fn snapshot_deleted_slot_becomes_exdate() {
-    let series = snapshot_series(snapshot_start());
-    let mut members = snapshot_members(&series);
-    members.remove(3);
-    let ics = snapshot(&series, &members);
-
-    assert_eq!(ics.matches("EXDATE").count(), 1);
-    assert!(ics.contains("EXDATE;TZID=America/Chicago:20261006T140000"));
-    assert_eq!(vevents(&ics).len(), 1);
+    let ics = edited_snapshot(snapshot_start(), 1, &[3], &[]);
+    assert_snapshot(&ics, (FIRST, 1), &["20261006T140000"], &[]);
 }
 
 #[test]
 fn snapshot_moved_slot_becomes_override() {
-    let series = snapshot_series(snapshot_start());
-    let mut members = snapshot_members(&series);
-    members[2].date += chrono::Duration::days(1);
-    members[2].ical_sequence = 4;
-    let ics = snapshot(&series, &members);
-
-    let events = vevents(&ics);
-    assert_eq!(events.len(), 2);
-    let moved = events[1];
-    assert!(moved.contains("RECURRENCE-ID;TZID=America/Chicago:20260929T140000"));
-    assert!(moved.contains("DTSTART;TZID=America/Chicago:20260930T140000"));
-    assert!(moved.contains("SEQUENCE:4"));
-    assert!(!moved.contains("RRULE"));
-    assert!(events[0].contains("SEQUENCE:1"));
-}
-
-#[test]
-fn snapshot_override_sequence_never_trails_master() {
-    let series = coaching_session_series::Model {
-        ical_sequence: 3,
-        ..snapshot_series(snapshot_start())
-    };
-    let mut members = snapshot_members(&series);
-    members[3].date += chrono::Duration::days(1);
-    members[3].ical_sequence = 1;
-    let ics = snapshot(&series, &members);
-
-    let events = vevents(&ics);
-    assert_eq!(events.len(), 2);
-    assert!(events[0].contains("SEQUENCE:3"));
-    assert!(events[1].contains("SEQUENCE:3"));
-}
-
-#[test]
-fn snapshot_override_keeps_a_higher_member_sequence() {
-    let series = coaching_session_series::Model {
-        ical_sequence: 3,
-        ..snapshot_series(snapshot_start())
-    };
-    let mut members = snapshot_members(&series);
-    members[3].date += chrono::Duration::days(1);
-    members[3].ical_sequence = 5;
-    let ics = snapshot(&series, &members);
-
-    let events = vevents(&ics);
-    assert_eq!(events.len(), 2);
-    assert!(events[1].contains("SEQUENCE:5"));
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[(2, 4)]);
+    let moved = ("20260929T140000", "20260930T140000", 4);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[moved]);
 }
 
 #[test]
 fn snapshot_deleted_and_moved_together() {
-    let series = snapshot_series(snapshot_start());
-    let mut members = snapshot_members(&series);
-    members[2].date += chrono::Duration::days(1);
-    members.remove(3);
-    let ics = snapshot(&series, &members);
-
-    assert_eq!(ics.matches("EXDATE").count(), 1);
-    assert!(ics.contains("EXDATE;TZID=America/Chicago:20261006T140000"));
-    assert_eq!(vevents(&ics).len(), 2);
+    let ics = edited_snapshot(snapshot_start(), 1, &[3], &[(2, 1)]);
+    let moved = ("20260929T140000", "20260930T140000", 1);
+    assert_snapshot(&ics, (FIRST, 1), &["20261006T140000"], &[moved]);
 }
 
 /// Nothing is filtered by `now`: a moved past occurrence still needs its override.
 #[test]
 fn snapshot_past_moved_member_kept() {
     // Tuesday Jan 7 2025, 19:00 UTC: 13:00 in Chicago (CST).
-    let start = NaiveDate::from_ymd_opt(2025, 1, 7)
-        .unwrap()
-        .and_hms_opt(19, 0, 0)
-        .unwrap();
-    let series = snapshot_series(start);
-    let mut members = snapshot_members(&series);
-    members[0].date += chrono::Duration::days(1);
-    let ics = snapshot(&series, &members);
+    let ics = edited_snapshot(at(2025, 1, 7, 19), 1, &[], &[(0, 1)]);
+    let moved = ("20250107T130000", "20250108T130000", 1);
+    assert_snapshot(&ics, ("20250107T130000", 1), &[], &[moved]);
+}
 
-    let events = vevents(&ics);
-    assert_eq!(events.len(), 2);
-    assert!(events[1].contains("RECURRENCE-ID;TZID=America/Chicago:20250107T130000"));
-    assert!(events[1].contains("DTSTART;TZID=America/Chicago:20250108T130000"));
+#[test]
+fn snapshot_master_dtstart_is_rule_start_even_if_first_moved() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[(0, 1)]);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[(FIRST, "20260916T140000", 1)]);
+}
+
+/// Google drops an override whose SEQUENCE trails its master; a higher one is kept.
+#[test]
+fn snapshot_override_sequence_is_at_least_the_master() {
+    let trailing = edited_snapshot(snapshot_start(), 3, &[], &[(3, 1)]);
+    let leading = edited_snapshot(snapshot_start(), 3, &[], &[(3, 5)]);
+    let moved = |sequence| ("20261006T140000", "20261007T140000", sequence);
+    assert_snapshot(&trailing, (FIRST, 3), &[], &[moved(3)]);
+    assert_snapshot(&leading, (FIRST, 3), &[], &[moved(5)]);
 }
 
 #[test]
 fn snapshot_ignores_non_slot_and_null_members() {
-    let series = snapshot_series(snapshot_start());
+    let series = snapshot_series(snapshot_start(), 1);
     let members = snapshot_members(&series);
-    let baseline = snapshot(&series, &members);
-
-    let early = NaiveDate::from_ymd_opt(2026, 9, 1)
-        .unwrap()
-        .and_hms_opt(19, 0, 0)
-        .unwrap();
     let stray = |recurrence_id| coaching_sessions::Model {
         coaching_session_series_id: Some(series.id),
         ical_recurrence_id: recurrence_id,
-        date: early,
+        date: snapshot_start() - chrono::Duration::weeks(2),
         duration_minutes: 30,
         meeting_url: Some("https://meet.example/stray".into()),
         ical_sequence: 9,
         ..create_test_session()
     };
-    let mut with_strays = members.clone();
-    with_strays.push(stray(None));
-    with_strays.push(stray(Some(snapshot_start() + chrono::Duration::hours(1))));
+    let off_slot = snapshot_start() + chrono::Duration::hours(1);
+    let with_strays = [members.clone(), vec![stray(None), stray(Some(off_slot))]].concat();
 
-    assert_eq!(snapshot(&series, &with_strays), baseline);
-}
-
-#[test]
-fn snapshot_master_dtstart_is_rule_start_even_if_first_moved() {
-    let series = snapshot_series(snapshot_start());
-    let mut members = snapshot_members(&series);
-    members[0].date += chrono::Duration::days(1);
-    let ics = snapshot(&series, &members);
-
-    let events = vevents(&ics);
-    assert_eq!(events.len(), 2);
-    assert!(events[0].contains("DTSTART;TZID=America/Chicago:20260915T140000"));
-    assert!(events[0].contains("RRULE:"));
-    assert!(events[1].contains("RECURRENCE-ID;TZID=America/Chicago:20260915T140000"));
-    assert!(events[1].contains("DTSTART;TZID=America/Chicago:20260916T140000"));
+    assert_eq!(snapshot(&series, &with_strays), snapshot(&series, &members));
 }
 
 #[cfg(feature = "mock")]
@@ -3369,84 +3337,76 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
     );
 }
 
-/// Loader for the series `.ics` description: the first session's in-progress goals.
+/// The two invites a series sends.
 #[cfg(feature = "mock")]
-fn mock_series_description_loader() -> DatabaseConnection {
-    MockDatabase::new(DatabaseBackend::Postgres)
+enum SeriesSend {
+    Resend,
+    Scheduled,
+}
+
+/// Sends a series with slot 4 deleted and slot 3 moved, the coachee's send answered with
+/// `coachee_status`. Returns the resend's outcome, if any, and the last send's attachments.
+#[cfg(feature = "mock")]
+async fn send_edited_series(
+    send: SeriesSend,
+    coachee_status: usize,
+) -> (Option<Delivered>, Vec<(String, String)>) {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let (series, org) = (
+        snapshot_series(snapshot_start(), 1),
+        create_test_organization(),
+    );
+    let rows = edit_members(&series, &[3], &[(2, 1)]);
+    // Loader for the series `.ics` description: the first session's in-progress goals.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-        .into_connection()
-}
+        .into_connection();
 
-/// A series with slot 4 deleted and slot 3 moved a day later.
-#[cfg(feature = "mock")]
-fn edited_series_rows(series: &coaching_session_series::Model) -> Vec<coaching_sessions::Model> {
-    let mut rows = snapshot_members(series);
-    rows[2].date += chrono::Duration::days(1);
-    rows.remove(3);
-    rows
-}
+    let mut mocks = Vec::new();
+    for (email, status) in [("jane@", coachee_status), ("alex@", 200)] {
+        let to = mockito::Matcher::Regex(format!(r#""to":\[[^\]]*{email}"#));
+        let mock = server.mock("POST", "/emails").match_body(to);
+        let mock = mock.match_request(capture.recorder()).with_status(status);
+        let mock = mock.with_body(r#"{"id":"e"}"#).expect(1);
+        mocks.push(mock.create_async().await);
+    }
 
-/// Mocks one recipient's send, told apart by the `to` address.
-#[cfg(feature = "mock")]
-async fn mock_send_to(
-    server: &mut ServerGuard,
-    email: &str,
-    status: usize,
-    capture: &AttachmentsCapture,
-) -> mockito::Mock {
-    server
-        .mock("POST", "/emails")
-        .match_body(mockito::Matcher::Regex(format!(r#""to":\[[^\]]*{email}"#)))
-        .match_request(capture.recorder())
-        .with_status(status)
-        .with_body(r#"{"id":"email_test"}"#)
-        .expect(1)
-        .create_async()
-        .await
+    let delivered = match send {
+        SeriesSend::Resend => {
+            let participants = Participants {
+                coach: &coach,
+                coachee: &coachee,
+            };
+            let delivered =
+                send_series_invite_resend(&db, &config, &series, &participants, &rows, &rows, &org);
+            Some(delivered.await.unwrap())
+        }
+        SeriesSend::Scheduled => {
+            send_recurring_sessions_scheduled_email(
+                &db, &config, &series, &coach, &coachee, &rows, &org,
+            )
+            .await
+            .unwrap();
+            None
+        }
+    };
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+    (delivered, capture.captured())
 }
 
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn series_resend_attaches_snapshot() {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-    let capture = AttachmentsCapture::default();
+    let (delivered, attachments) = send_edited_series(SeriesSend::Resend, 200).await;
 
-    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
-    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let org = create_test_organization();
-    let series = snapshot_series(snapshot_start());
-    let rows = edited_series_rows(&series);
-
-    let mock_coachee = mock_send_to(&mut server, "jane@example.com", 200, &capture).await;
-    let mock_coach = mock_send_to(&mut server, "alex@example.com", 200, &capture).await;
-
-    let delivered = send_series_invite_resend(
-        &mock_series_description_loader(),
-        &config,
-        &series,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
-        },
-        &rows,
-        &rows,
-        &org,
-    )
-    .await
-    .unwrap();
-
-    mock_coachee.assert_async().await;
-    mock_coach.assert_async().await;
-    assert_eq!(
-        delivered,
-        Delivered {
-            coachee: true,
-            coach: true
-        }
-    );
-
-    let attachments = capture.captured();
+    let delivered = delivered.unwrap();
+    assert_eq!((delivered.coachee, delivered.coach), (true, true));
     assert_eq!(attachments.len(), 1);
     let ics = &attachments[0].1;
     assert!(ics.contains("METHOD:REQUEST"));
@@ -3458,85 +3418,20 @@ async fn series_resend_attaches_snapshot() {
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn series_resend_reports_coachee_failure() {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-    let capture = AttachmentsCapture::default();
+    let (delivered, _) = send_edited_series(SeriesSend::Resend, 400).await;
 
-    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
-    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let org = create_test_organization();
-    let series = snapshot_series(snapshot_start());
-    let rows = edited_series_rows(&series);
-
-    let mock_coachee = mock_send_to(&mut server, "jane@example.com", 400, &capture).await;
-    let mock_coach = mock_send_to(&mut server, "alex@example.com", 200, &capture).await;
-
-    let delivered = send_series_invite_resend(
-        &mock_series_description_loader(),
-        &config,
-        &series,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
-        },
-        &rows,
-        &rows,
-        &org,
-    )
-    .await
-    .unwrap();
-
-    mock_coachee.assert_async().await;
-    mock_coach.assert_async().await;
-    assert_eq!(
-        delivered,
-        Delivered {
-            coachee: false,
-            coach: true
-        }
-    );
+    let delivered = delivered.unwrap();
+    assert_eq!((delivered.coachee, delivered.coach), (false, true));
 }
 
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn series_scheduled_still_master_only() {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-    let capture = AttachmentsCapture::default();
+    let (_, attachments) = send_edited_series(SeriesSend::Scheduled, 200).await;
 
-    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
-    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let org = create_test_organization();
-    let series = snapshot_series(snapshot_start());
-    let rows = edited_series_rows(&series);
-
-    let mock = server
-        .mock("POST", "/emails")
-        .match_request(capture.recorder())
-        .with_status(200)
-        .with_body(r#"{"id":"email_test"}"#)
-        .expect(2)
-        .create_async()
-        .await;
-
-    let result = send_recurring_sessions_scheduled_email(
-        &mock_series_description_loader(),
-        &config,
-        &series,
-        &coach,
-        &coachee,
-        &rows,
-        &org,
-    )
-    .await;
-    assert!(result.is_ok());
-    mock.assert_async().await;
-
-    let attachments = capture.captured();
     assert_eq!(attachments.len(), 1);
-    let ics = &attachments[0].1;
-    assert_eq!(ics.matches("EXDATE").count(), 0);
-    assert_eq!(ics.matches("BEGIN:VEVENT").count(), 1);
+    assert_eq!(attachments[0].1.matches("EXDATE").count(), 0);
+    assert_eq!(attachments[0].1.matches("BEGIN:VEVENT").count(), 1);
 }
 
 /// A reschedule can legitimately leave no future occurrences. There is then no series

@@ -1938,27 +1938,10 @@ mod tests {
 
     #[tokio::test]
     async fn raise_series_ical_sequence_uses_greatest() -> Result<(), Error> {
-        let now = chrono::Utc::now();
         let series_id = Id::new_v4();
         let raised = Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: Id::new_v4(),
-            coaching_session_series_id: Some(series_id),
             ical_sequence: 4,
-            ical_recurrence_id: None,
-            collab_document_name: None,
-            date: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
-                .unwrap()
-                .and_hms_opt(10, 0, 0)
-                .unwrap(),
-            duration_minutes: crate::duration::Duration::default_minutes(),
-            title: None,
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: None,
-            notice_given_at: now.into(),
+            ..series_session(Some(series_id), naive("2026-06-01 10:00:00"))
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
