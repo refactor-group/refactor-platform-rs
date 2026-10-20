@@ -782,6 +782,17 @@ pub struct EnrichedSession {
     pub display_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<coaching_session_topics::Model>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series: Option<SeriesSummary>,
+}
+
+/// The parts of a session's series the list view needs, without loading the series row.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[schema(as = domain::coaching_session::SeriesSummary)]
+pub struct SeriesSummary {
+    pub id: Id,
+    /// Latest `date` across every session linked to the series.
+    pub last_session_date: NaiveDateTime,
 }
 
 /// Configuration for which related resources to include when fetching coaching sessions.
@@ -825,6 +836,7 @@ pub struct IncludeOptions {
     pub goal: bool,
     pub agreements: bool,
     pub topics: bool,
+    pub series: bool,
 }
 
 impl IncludeOptions {
@@ -839,6 +851,7 @@ impl IncludeOptions {
             goal: false,
             agreements: false,
             topics: false,
+            series: false,
         }
     }
 
@@ -1022,6 +1035,7 @@ struct RelatedData {
     goals: HashMap<Id, Vec<goals::Model>>,
     agreements: HashMap<Id, agreements::Model>,
     topics: HashMap<Id, Vec<coaching_session_topics::Model>>,
+    series_last_dates: HashMap<Id, NaiveDateTime>,
 }
 
 /// Load all requested related data in efficient batches
@@ -1076,6 +1090,17 @@ async fn load_related_data(
     // Load topics by session_id
     if includes.topics {
         data.topics = batch_load_topics(db, &session_ids).await?;
+    }
+
+    // Load each series' latest session date by series_id
+    if includes.series {
+        let mut series_ids: Vec<Id> = sessions
+            .iter()
+            .filter_map(|s| s.coaching_session_series_id)
+            .collect();
+        series_ids.sort_unstable();
+        series_ids.dedup();
+        data.series_last_dates = batch_load_series_summaries(db, &series_ids).await?;
     }
 
     Ok(data)
@@ -1231,6 +1256,35 @@ async fn batch_load_topics(
     Ok(map)
 }
 
+#[derive(Debug, FromQueryResult)]
+struct SeriesLastDate {
+    coaching_session_series_id: Id,
+    last_session_date: NaiveDateTime,
+}
+
+/// Batch load the latest session date of each series (series_id -> MAX(date)).
+async fn batch_load_series_summaries(
+    db: &impl ConnectionTrait,
+    series_ids: &[Id],
+) -> Result<HashMap<Id, NaiveDateTime>, Error> {
+    if series_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    Ok(Entity::find()
+        .select_only()
+        .column(Column::CoachingSessionSeriesId)
+        .column_as(Column::Date.max(), "last_session_date")
+        .filter(Column::CoachingSessionSeriesId.is_in(series_ids.iter().copied()))
+        .group_by(Column::CoachingSessionSeriesId)
+        .into_model::<SeriesLastDate>()
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|r| (r.coaching_session_series_id, r.last_session_date))
+        .collect())
+}
+
 /// Assemble an enriched session from base session and related data.
 ///
 /// `includes` is needed to distinguish "not requested" (`None`) from
@@ -1280,6 +1334,19 @@ fn assemble_enriched_session(
         None
     };
 
+    let series = session
+        .coaching_session_series_id
+        .filter(|_| includes.series)
+        .and_then(|id| {
+            related
+                .series_last_dates
+                .get(&id)
+                .map(|&last_session_date| SeriesSummary {
+                    id,
+                    last_session_date,
+                })
+        });
+
     EnrichedSession {
         session,
         relationship,
@@ -1291,6 +1358,7 @@ fn assemble_enriched_session(
         viewer_last_viewed_at,
         display_title,
         topics,
+        series,
     }
 }
 
@@ -2611,6 +2679,7 @@ mod tests {
             goal: false,
             agreements: false,
             topics: false,
+            series: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -2623,6 +2692,7 @@ mod tests {
             goal: false,
             agreements: false,
             topics: false,
+            series: false,
         };
         assert!(includes.validate().is_err());
     }
@@ -2635,6 +2705,7 @@ mod tests {
             goal: true,
             agreements: false,
             topics: false,
+            series: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -2647,6 +2718,7 @@ mod tests {
             goal: true,
             agreements: true,
             topics: true,
+            series: false,
         };
         assert!(includes.validate().is_ok());
     }
@@ -2802,5 +2874,144 @@ mod tests {
             "batch_load_topics must exclude soft-deleted rows; SQL was: {}",
             topic_select.sql
         );
+    }
+
+    fn series_session(series_id: Option<Id>, date: NaiveDateTime) -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: series_id,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            date,
+            collab_document_name: None,
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+            notice_given_at: now.into(),
+        }
+    }
+
+    fn naive(s: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    #[tokio::test]
+    async fn include_series_attaches_last_session_date() -> Result<(), Error> {
+        let series_id = Id::new_v4();
+        let d1 = naive("2026-11-02 15:00:00");
+        let d2 = naive("2026-11-09 15:00:00");
+        // The MAX the mock returns; deliberately later than d2 to prove it comes from the query.
+        let last = naive("2027-03-01 15:00:00");
+        let first = series_session(Some(series_id), d1);
+        let second = series_session(Some(series_id), d2);
+        let one_off = series_session(None, d1);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![first.clone(), second.clone(), one_off.clone()]])
+            .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![vec![std::collections::BTreeMap::from([
+                (
+                    "coaching_session_series_id".to_string(),
+                    Value::from(series_id),
+                ),
+                ("last_session_date".to_string(), Value::from(last)),
+            ])]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let includes = IncludeOptions {
+            series: true,
+            ..IncludeOptions::none()
+        };
+        let results =
+            find_by_user_with_includes(&db, Id::new_v4(), SessionQueryOptions::default(), includes)
+                .await?;
+
+        assert_eq!(results.len(), 3);
+        for enriched in &results[..2] {
+            let series = enriched
+                .series
+                .as_ref()
+                .expect("series session has a summary");
+            assert_eq!(series.id, series_id);
+            assert_eq!(series.last_session_date, last);
+        }
+        assert!(results[2].series.is_none());
+        // Exactly one series query: sessions, views, series, then display-title topics and goals.
+        assert_eq!(db.into_transaction_log().len(), 5);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn include_series_off_by_default() -> Result<(), Error> {
+        let series_id = Id::new_v4();
+        let session = series_session(Some(series_id), naive("2026-11-02 15:00:00"));
+
+        // No series result is queued: a series query would consume the topics result and fail.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results::<coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let results = find_by_user_with_includes(
+            &db,
+            Id::new_v4(),
+            SessionQueryOptions::default(),
+            IncludeOptions::default(),
+        )
+        .await?;
+
+        assert!(results.iter().all(|r| r.series.is_none()));
+        assert_eq!(db.into_transaction_log().len(), 4);
+
+        Ok(())
+    }
+
+    #[test]
+    fn series_key_is_omitted_without_a_series_and_present_with_one() {
+        let series_id = Id::new_v4();
+        let last = naive("2027-03-01 15:00:00");
+        let related = RelatedData {
+            series_last_dates: HashMap::from([(series_id, last)]),
+            ..RelatedData::default()
+        };
+        let includes = IncludeOptions {
+            series: true,
+            ..IncludeOptions::none()
+        };
+        let enrich = |session| {
+            serde_json::to_value(assemble_enriched_session(
+                session,
+                &related,
+                includes,
+                &HashMap::new(),
+                &HashMap::new(),
+            ))
+            .unwrap()
+        };
+
+        let one_off = enrich(series_session(None, last));
+        assert!(one_off.get("series").is_none());
+
+        let in_series = enrich(series_session(Some(series_id), last));
+        assert_eq!(
+            in_series["series"],
+            serde_json::json!({
+                "id": series_id,
+                "last_session_date": serde_json::to_value(last).unwrap(),
+            })
+        );
+        // Same wire format as the session's own `date`.
+        assert_eq!(in_series["series"]["last_session_date"], in_series["date"]);
     }
 }
