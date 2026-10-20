@@ -425,20 +425,29 @@ async fn series_resend_refuses_a_legacy_series() {
 }
 
 /// The series loads up to the send: the series twice (gate, then domain), its rows, the
-/// bump, the parties, then the in-progress goals the description lists.
+/// bump, the rows raised to the bump, the parties, then the in-progress goals the
+/// description lists.
 fn series_send_db(
     fixture: &Fixture,
     series: &coaching_session_series::Model,
     rows: Vec<coaching_sessions::Model>,
     bumped: &coaching_session_series::Model,
 ) -> Arc<DatabaseConnection> {
+    let raised: Vec<coaching_sessions::Model> = rows
+        .iter()
+        .map(|row| coaching_sessions::Model {
+            ical_sequence: row.ical_sequence.max(bumped.ical_sequence),
+            ..row.clone()
+        })
+        .collect();
     let db = fixture
         .logged_in_as(&fixture.coach)
         .append_query_results(vec![vec![series.clone()]])
         .append_query_results(vec![vec![fixture.relationship.clone()]])
         .append_query_results(vec![vec![series.clone()]])
         .append_query_results(vec![rows])
-        .append_query_results(vec![vec![bumped.clone()]]);
+        .append_query_results(vec![vec![bumped.clone()]])
+        .append_query_results(vec![raised]);
     Arc::new(
         fixture
             .with_parties(db)
@@ -480,6 +489,61 @@ async fn series_resend_sends_the_snapshot_under_the_next_sequence() {
     }
     let db = Arc::try_unwrap(db).expect("the app has been dropped");
     assert!(bumped_sequence_of(db, "coaching_session_series"));
+}
+
+/// Google drops an override whose SEQUENCE trails its master, so members rise with the bump.
+#[tokio::test]
+async fn series_resend_raises_moved_members_to_the_master_sequence() {
+    let mut server = Server::new_async().await;
+    let fixture = Fixture::new();
+    let series = fixture.series(upcoming_start(), 3);
+    let bumped = coaching_session_series::Model {
+        ical_sequence: 4,
+        ..series.clone()
+    };
+    let mut rows = fixture.members(&series);
+    rows[1].date += chrono::Duration::days(1);
+    rows[1].ical_sequence = 1;
+    let received = Received::default();
+    let to_coachee = mock_send_to(&mut server, COACHEE_EMAIL, 200, &received).await;
+    let to_coach = mock_send_to(&mut server, COACH_EMAIL, 200, &received).await;
+
+    let db = series_send_db(&fixture, &series, rows, &bumped);
+    let response = post_resend(
+        db.clone(),
+        config(&server.url()),
+        COACH_EMAIL,
+        format!("/coaching_session_series/{}/resend_invite", series.id),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    to_coachee.assert_async().await;
+    to_coach.assert_async().await;
+    for ics in &received.all() {
+        let master = master_vevent(ics);
+        let moved = ics
+            .split("BEGIN:VEVENT")
+            .skip(1)
+            .find(|event| event.contains("RECURRENCE-ID"))
+            .expect("the snapshot has an override VEVENT");
+        assert!(master.contains("SEQUENCE:4"), "{ics}");
+        assert!(moved.contains("SEQUENCE:4"), "{ics}");
+    }
+    let db = Arc::try_unwrap(db).expect("the app has been dropped");
+    let raised_members = db
+        .into_transaction_log()
+        .iter()
+        .flat_map(|txn| txn.statements())
+        .any(|stmt| {
+            stmt.sql
+                .contains(r#"UPDATE "refactor_platform"."coaching_sessions""#)
+                && stmt.sql.contains("GREATEST")
+        });
+    assert!(
+        raised_members,
+        "members must be raised to the series SEQUENCE"
+    );
 }
 
 #[tokio::test]

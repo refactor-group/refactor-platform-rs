@@ -1683,7 +1683,8 @@ fn build_series_snapshot_ics(
         member
             .filter(|m| m.date != *slot || m.duration_minutes != rule.duration_minutes)
             .map(|m| ical::IcsInvite {
-                sequence: m.ical_sequence,
+                // Google drops an override whose SEQUENCE trails its master.
+                sequence: m.ical_sequence.max(series.ical_sequence),
                 start: m.date,
                 duration_minutes: m.duration_minutes,
                 location_url: m.meeting_url.clone(),

@@ -362,7 +362,21 @@ pub async fn resend_invite(
     }
 
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
-    let bumped = coaching_session_series::increment_ical_sequence(db, series.id).await?;
+    // Members are raised with the series because Google drops an override whose SEQUENCE
+    // trails its master.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let bumped = coaching_session_series::increment_ical_sequence(&txn, series.id).await?;
+    let rows = entity_api::coaching_session::raise_series_ical_sequence(
+        &txn,
+        series.id,
+        bumped.ical_sequence,
+    )
+    .await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    let mut upcoming: Vec<coaching_sessions::Model> =
+        rows.iter().filter(|s| s.date > now).cloned().collect();
+    upcoming.sort_by_key(|s| s.date);
     let parties = emails::InviteParties::load(db, bumped.coaching_relationship_id).await?;
     let delivered = emails::send_series_invite_resend(
         db,

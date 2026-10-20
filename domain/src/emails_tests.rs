@@ -2557,6 +2557,39 @@ fn snapshot_moved_slot_becomes_override() {
 }
 
 #[test]
+fn snapshot_override_sequence_never_trails_master() {
+    let series = coaching_session_series::Model {
+        ical_sequence: 3,
+        ..snapshot_series(snapshot_start())
+    };
+    let mut members = snapshot_members(&series);
+    members[3].date += chrono::Duration::days(1);
+    members[3].ical_sequence = 1;
+    let ics = snapshot(&series, &members);
+
+    let events = vevents(&ics);
+    assert_eq!(events.len(), 2);
+    assert!(events[0].contains("SEQUENCE:3"));
+    assert!(events[1].contains("SEQUENCE:3"));
+}
+
+#[test]
+fn snapshot_override_keeps_a_higher_member_sequence() {
+    let series = coaching_session_series::Model {
+        ical_sequence: 3,
+        ..snapshot_series(snapshot_start())
+    };
+    let mut members = snapshot_members(&series);
+    members[3].date += chrono::Duration::days(1);
+    members[3].ical_sequence = 5;
+    let ics = snapshot(&series, &members);
+
+    let events = vevents(&ics);
+    assert_eq!(events.len(), 2);
+    assert!(events[1].contains("SEQUENCE:5"));
+}
+
+#[test]
 fn snapshot_deleted_and_moved_together() {
     let series = snapshot_series(snapshot_start());
     let mut members = snapshot_members(&series);

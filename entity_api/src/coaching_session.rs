@@ -12,9 +12,11 @@ use entity::{
 };
 use log::debug;
 use sea_orm::{
-    entity::prelude::*, sea_query::Expr, ActiveValue::Unchanged, ConnectionTrait, DatabaseBackend,
-    DatabaseConnection, ExprTrait, FromQueryResult, JoinType, Order, QueryOrder, QuerySelect,
-    QueryTrait, Select, Set, Statement, TryIntoModel, Value,
+    entity::prelude::*,
+    sea_query::{Expr, Func},
+    ActiveValue::Unchanged,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
+    Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -620,6 +622,25 @@ pub async fn increment_ical_sequence(db: &impl ConnectionTrait, id: Id) -> Resul
             source: None,
             error_kind: EntityApiErrorKind::RecordNotFound,
         })
+}
+
+/// Raise every session in a series to at least `floor`.
+///
+/// Google drops an override whose SEQUENCE trails its master, so a series bump
+/// must lift its members with it.
+pub async fn raise_series_ical_sequence(
+    db: &impl ConnectionTrait,
+    series_id: Id,
+    floor: i32,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::update_many()
+        .col_expr(
+            Column::IcalSequence,
+            Func::greatest([Expr::col(Column::IcalSequence), Expr::val(floor)]).into(),
+        )
+        .filter(Column::CoachingSessionSeriesId.eq(series_id))
+        .exec_with_returning(db)
+        .await?)
 }
 
 /// Find the most recent meeting URL for a coaching relationship and provider.
@@ -1912,6 +1933,53 @@ mod tests {
             "SEQUENCE must be incremented in SQL: {}",
             statements[0]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn raise_series_ical_sequence_uses_greatest() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let series_id = Id::new_v4();
+        let raised = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 4,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: now.into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![raised.clone()]])
+            .into_connection();
+
+        let result = raise_series_ical_sequence(&db, series_id, 4).await?;
+        assert_eq!(result, vec![raised]);
+
+        let statements: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert_eq!(statements.len(), 1, "{statements:?}");
+        let sql = &statements[0];
+        assert!(sql.starts_with("UPDATE"), "{sql}");
+        assert!(sql.contains(r#""coaching_sessions""#), "{sql}");
+        assert!(sql.contains("GREATEST"), "{sql}");
+        assert!(sql.contains(r#""coaching_session_series_id" = "#), "{sql}");
         Ok(())
     }
 
