@@ -4405,3 +4405,53 @@ fn snapshot_across_dst_uses_the_stored_series_zone() {
     assert_eq!(ics.matches("RECURRENCE-ID").count(), 1, "{ics}");
     assert!(!ics.contains("America/New_York"), "{ics}");
 }
+
+/// A monthly series on the 31st, stored before new series were limited to day 28, can
+/// still be resent: its snapshot skips the months without a 31st, as calendars do.
+#[test]
+fn snapshot_of_a_stored_late_month_series_still_builds() {
+    let series = coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": "2026-12-31T16:00:00",
+            "recurrence": { "frequency": "monthly", "interval": 1, "count": 4 },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ..create_test_series()
+    };
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    let slots = rule.slots().unwrap();
+    assert_eq!(
+        slots,
+        vec![
+            at(2026, 12, 31, 16),
+            at(2027, 1, 31, 16),
+            at(2027, 3, 31, 15),
+            at(2027, 5, 31, 15),
+        ]
+    );
+
+    let members: Vec<coaching_sessions::Model> = slots
+        .iter()
+        .map(|slot| coaching_sessions::Model {
+            duration_minutes: 60,
+            ..create_test_series_session(series.id, *slot)
+        })
+        .collect();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &relocated_coach(),
+            &coachee,
+            &series,
+            &members,
+            "desc".into(),
+            at(2026, 12, 1, 12),
+        )
+        .unwrap(),
+    );
+
+    assert!(ics.contains("RRULE:FREQ=MONTHLY;WKST=MO;COUNT=4"), "{ics}");
+    assert!(!ics.contains("EXDATE"), "{ics}");
+    assert!(!ics.contains("RECURRENCE-ID"), "{ics}");
+}

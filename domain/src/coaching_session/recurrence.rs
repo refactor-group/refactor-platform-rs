@@ -184,13 +184,9 @@ impl RecurrenceError {
     }
 }
 
-/// Validate the structural correctness of a [`Recurrence`] rule against the series'
-/// local start. Does not enforce the occurrence/span caps — those are applied in
-/// [`expand_recurrence`] after generation.
-fn validate_recurrence(
-    local_start: NaiveDateTime,
-    rule: &Recurrence,
-) -> Result<(), RecurrenceError> {
+/// The checks a rule needs to be expanded at all. Does not enforce the occurrence/span
+/// caps; those are applied after generation.
+fn validate_structure(rule: &Recurrence) -> Result<(), RecurrenceError> {
     if rule.interval < 1 {
         return Err(RecurrenceError::InvalidInterval);
     }
@@ -205,9 +201,23 @@ fn validate_recurrence(
         if weekdays.is_empty() {
             return Err(RecurrenceError::EmptyByWeekdays);
         }
-        if !weekdays.contains(&local_start.weekday()) {
-            return Err(RecurrenceError::StartWeekdayMismatch);
-        }
+    }
+    Ok(())
+}
+
+/// Validate a rule about to be published against the series' local start: its
+/// structure, plus the rules that keep a new series rendering alike in every client.
+fn validate_recurrence(
+    local_start: NaiveDateTime,
+    rule: &Recurrence,
+) -> Result<(), RecurrenceError> {
+    validate_structure(rule)?;
+    if rule
+        .by_weekdays
+        .as_ref()
+        .is_some_and(|weekdays| !weekdays.contains(&local_start.weekday()))
+    {
+        return Err(RecurrenceError::StartWeekdayMismatch);
     }
     if rule.frequency == Frequency::Monthly && local_start.day() > MAX_MONTHLY_START_DAY {
         return Err(RecurrenceError::MonthlyStartDayTooLate);
@@ -239,7 +249,8 @@ fn offset_before_gap(zone: Tz, local: NaiveDateTime) -> Duration {
     Duration::seconds(seconds.into())
 }
 
-/// Expand the rule into concrete occurrence datetimes (UTC), in chronological order.
+/// Expand a rule about to be published into concrete occurrence datetimes (UTC), in
+/// chronological order.
 ///
 /// Steps run on local wall time in `zone`, so every slot keeps the start's local time of
 /// day across DST, and weekdays and month days are the ones the coach sees. `until` is
@@ -258,7 +269,29 @@ pub fn expand_recurrence(
     if to_utc(zone, local_start) != start_at {
         return Err(RecurrenceError::AmbiguousStartAt);
     }
+    generate(local_start, rule, zone)
+}
 
+/// Expand a rule that is already published, into the instances its invite produced.
+///
+/// Skips the checks only a new rule must pass (start weekday, monthly start day, a start
+/// in a repeated hour): a series stored before they existed still has to resolve, the
+/// way a calendar resolves its `RRULE`, or it could never be resent.
+pub(crate) fn expand_published(
+    start_at: NaiveDateTime,
+    rule: &Recurrence,
+    zone: Tz,
+) -> Result<Vec<NaiveDateTime>, RecurrenceError> {
+    validate_structure(rule)?;
+    generate(to_local(zone, start_at), rule, zone)
+}
+
+/// Generate the slots from the local start, then enforce the occurrence and span caps.
+fn generate(
+    local_start: NaiveDateTime,
+    rule: &Recurrence,
+    zone: Tz,
+) -> Result<Vec<NaiveDateTime>, RecurrenceError> {
     let bounds = Bounds {
         resolve: |local| to_utc(zone, local),
         until: rule.until,
@@ -369,8 +402,9 @@ fn generate_weekly_with_weekdays<F: Fn(NaiveDateTime) -> NaiveDateTime>(
         .collect()
 }
 
-/// Monthly recurrence on the start's day of the month. Validation keeps that day at or
-/// below [`MAX_MONTHLY_START_DAY`], so `checked_add_months` never has to clamp.
+/// Monthly recurrence on the start's day of the month. A month without that day is
+/// skipped, as RFC 5545 skips it; only a stored rule can reach one, since new rules
+/// start on day [`MAX_MONTHLY_START_DAY`] or earlier.
 fn generate_monthly<F: Fn(NaiveDateTime) -> NaiveDateTime>(
     local_start: NaiveDateTime,
     interval: u32,
@@ -381,6 +415,8 @@ fn generate_monthly<F: Fn(NaiveDateTime) -> NaiveDateTime>(
             i.checked_mul(interval)
                 .and_then(|months| local_start.checked_add_months(Months::new(months)))
         })
+        // `checked_add_months` clamps to the month's end; a clamped day is no occurrence.
+        .filter(|local| local.day() == local_start.day())
         .map_while(|local| bounds.admit(local))
         .take(bounds.limit)
         .collect()

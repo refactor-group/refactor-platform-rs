@@ -2,14 +2,16 @@
 //! invite. An independent RFC 5545 implementation reads the exact `DTSTART` and `RRULE`
 //! this builder emits, and must produce the same instants `expand_recurrence` does.
 
-use super::*;
-use crate::coaching_session::{expand_recurrence, Frequency, Recurrence};
 use chrono::{NaiveDate, Weekday};
 use chrono_tz::America::Chicago;
 use chrono_tz::Asia::{Kolkata, Tokyo};
 use chrono_tz::Australia::Sydney;
 use chrono_tz::Europe::London;
 use rrule::RRuleSet;
+
+use super::*;
+use crate::coaching_session::recurrence::expand_published;
+use crate::coaching_session::{expand_recurrence, Frequency, Recurrence};
 
 fn wall(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
     NaiveDate::from_ymd_opt(y, m, d)
@@ -195,6 +197,41 @@ fn series_slots_equal_the_instances_a_client_expands() {
     for (zone, local_start, recurrence) in cases {
         let start = at(zone, local_start);
         let slots = expand_recurrence(start, &recurrence, zone).unwrap();
+        assert_eq!(
+            slots,
+            client_instances(zone, start, &recurrence),
+            "{zone} from {local_start}: {recurrence:?}"
+        );
+    }
+}
+
+/// Stored rules that new series can no longer have still expand to what a client holds.
+#[test]
+fn stored_slots_equal_the_instances_a_client_expands() {
+    let cases: Vec<(chrono_tz::Tz, NaiveDateTime, Recurrence)> = vec![
+        (
+            chrono_tz::UTC,
+            wall(2026, 1, 31, 10, 0),
+            rule(Frequency::Monthly, 6),
+        ),
+        (
+            Chicago,
+            wall(2026, 10, 30, 19, 0),
+            rule(Frequency::Monthly, 6),
+        ),
+        (
+            Chicago,
+            wall(2026, 12, 31, 9, 0),
+            Recurrence {
+                interval: 2,
+                ..rule(Frequency::Monthly, 3)
+            },
+        ),
+    ];
+
+    for (zone, local_start, recurrence) in cases {
+        let start = at(zone, local_start);
+        let slots = expand_published(start, &recurrence, zone).unwrap();
         assert_eq!(
             slots,
             client_instances(zone, start, &recurrence),

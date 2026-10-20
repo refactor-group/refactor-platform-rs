@@ -1,13 +1,14 @@
 //! Expansion in the series' zone: wall time held across DST, weekdays and month days
 //! read locally, and the RFC 5545 rules for skipped and repeated local times.
 
-use super::*;
 use chrono::{Days, NaiveDate};
 use chrono_tz::America::Chicago;
 use chrono_tz::Asia::{Kolkata, Tokyo};
 use chrono_tz::Australia::Sydney;
 use chrono_tz::Europe::London;
 use chrono_tz::UTC;
+
+use super::*;
 
 fn wall(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
     NaiveDate::from_ymd_opt(y, m, d)
@@ -298,5 +299,59 @@ fn utc_expansion_is_plain_stepping() {
         (0..4)
             .map(|k| start + Duration::weeks(k))
             .collect::<Vec<_>>()
+    );
+}
+
+/// A stored rule from before the 29-31 rule still expands, the way a client reads it:
+/// months without the start day are skipped, never clamped to the month's end.
+#[test]
+fn stored_late_month_rule_skips_short_months() {
+    let start = utc(2026, 1, 31, 10, 0);
+    let r = counted(Frequency::Monthly, 4);
+
+    assert_eq!(
+        expand_recurrence(start, &r, UTC).unwrap_err(),
+        RecurrenceError::MonthlyStartDayTooLate
+    );
+    assert_eq!(
+        expand_published(start, &r, UTC).unwrap(),
+        vec![
+            utc(2026, 1, 31, 10, 0),
+            utc(2026, 3, 31, 10, 0),
+            utc(2026, 5, 31, 10, 0),
+            utc(2026, 7, 31, 10, 0),
+        ]
+    );
+}
+
+/// A stored start in the second pass of a repeated hour resolves as its `DTSTART;TZID`
+/// does, to the first pass, instead of failing.
+#[test]
+fn stored_start_in_a_repeated_hour_resolves_to_the_first_pass() {
+    let second_pass = utc(2026, 11, 1, 7, 30);
+    let slots = expand_published(second_pass, &counted(Frequency::Weekly, 2), Chicago).unwrap();
+    assert_eq!(
+        slots,
+        vec![utc(2026, 11, 1, 6, 30), utc(2026, 11, 8, 7, 30)]
+    );
+}
+
+/// A stored evening rule accepted under the old UTC weekday check, whose local start
+/// day is not listed, still expands instead of failing.
+#[test]
+fn stored_rule_whose_local_start_weekday_is_unlisted_still_expands() {
+    let start = at(Chicago, 2026, 10, 22, 19, 0);
+    let rule = on(&[Weekday::Fri], Frequency::Weekly, 2);
+
+    assert_eq!(
+        expand_recurrence(start, &rule, Chicago).unwrap_err(),
+        RecurrenceError::StartWeekdayMismatch
+    );
+    assert_eq!(
+        expand_published(start, &rule, Chicago).unwrap(),
+        vec![
+            at(Chicago, 2026, 10, 23, 19, 0),
+            at(Chicago, 2026, 10, 30, 19, 0),
+        ]
     );
 }
