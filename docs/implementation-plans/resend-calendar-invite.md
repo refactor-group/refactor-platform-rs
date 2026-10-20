@@ -33,11 +33,13 @@ Both POSTs take no body. A 409 body carries a machine-readable reason (`legacy_s
 
 ## Phases
 
-- [ ] B1: `ical.rs` gains EXDATE and multi-VEVENT support; a pure `series_snapshot` builder
-- [ ] B2: `send_series_invite_email` returns `Delivered`
-- [ ] B3: both `resend_invite` endpoints
-- [ ] B4: `include=series` with `last_session_date`
+- [x] B1 (`f46499a3`): `ical.rs` gains EXDATE and multi-VEVENT support; a pure `series_snapshot` builder
+- [x] B2 (`6ba8f08f`): `send_series_invite_email` returns `Delivered`
+- [x] B3 (`ec624919`): both `resend_invite` endpoints
+- [x] B4 (`f6017cdb`): `include=series` with `last_session_date`
 
 ## Follow-ups
+
+- A resend that fails before any send (missing API key or template id) returns 500, not 502. Only a send the provider refuses maps to 502. The frontend shows the same toast for both.
 
 - EXDATE and RECURRENCE-ID values are rendered in the coach's zone from UTC slots. If a series spans a DST change, a client that expands the RRULE in local time can place a slot one hour away from our stored UTC slot. This was already true for the existing RECURRENCE-ID path; it isn't new here.
