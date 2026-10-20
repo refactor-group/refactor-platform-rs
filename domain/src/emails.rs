@@ -539,9 +539,9 @@ pub fn affects_schedule(old: &coaching_sessions::Model, new: &coaching_sessions:
 /// The two people on a coaching session, carried as one named value rather than as an
 /// adjacent pair of `&users::Model`. A transposed pair still type-checks and would swap
 /// every "your coach" / "your coachee" phrase in the copy without failing a build.
-struct Participants<'a> {
-    coach: &'a users::Model,
-    coachee: &'a users::Model,
+pub(crate) struct Participants<'a> {
+    pub(crate) coach: &'a users::Model,
+    pub(crate) coachee: &'a users::Model,
 }
 
 /// One addressee of a per-recipient send, plus the other party as that recipient sees them.
@@ -1619,7 +1619,6 @@ fn build_series_invite_ics(
 /// deleted slot, plus an override VEVENT per moved or resized member. A member is a row
 /// whose `ical_recurrence_id` is one of the rule's slots; every other row is ignored.
 /// Pure: `dtstamp` injected.
-#[allow(dead_code)]
 fn build_series_snapshot_ics(
     coach: &users::Model,
     coachee: &users::Model,
@@ -1697,6 +1696,21 @@ fn build_series_snapshot_ics(
     ical::build_calendar(&invites)
 }
 
+/// Which `.ics` a series email carries.
+enum SeriesInviteShape<'a> {
+    /// The master VEVENT only (create and reschedule).
+    Master,
+    /// The series as it stands today, built from every row linked to the series.
+    Snapshot(&'a [coaching_sessions::Model]),
+}
+
+/// What kind of series email this is: the reschedule template variables, if any, and
+/// which `.ics` it carries.
+struct SeriesInviteKind<'a> {
+    reschedule: Option<&'a RescheduleVars>,
+    shape: SeriesInviteShape<'a>,
+}
+
 /// Send series invite emails to both coach and coachee. Generic over the notification
 /// type `N` so the scheduled and reschedule flows share one body; they differ only by
 /// template (via `N`) and the `session_or_series` template variable. A reschedule passes
@@ -1709,9 +1723,10 @@ async fn send_series_invite_email<N: EmailNotification>(
     participants: &Participants<'_>,
     sessions: &SeriesSessions<'_>,
     organization: &organizations::Model,
-    reschedule: Option<&RescheduleVars>,
-) -> Result<(), Error> {
+    kind: SeriesInviteKind<'_>,
+) -> Result<Delivered, Error> {
     let Participants { coach, coachee } = *participants;
+    let SeriesInviteKind { reschedule, shape } = kind;
     let SeriesSessions {
         current: sessions,
         replaced,
@@ -1756,17 +1771,24 @@ async fn send_series_invite_email<N: EmailNotification>(
     });
 
     let dtstamp = chrono::Utc::now().naive_utc();
-    let ics = SeriesIcs {
-        body: build_series_invite_ics(coach, coachee, first, series, description, dtstamp)?,
-        // The replaced rows are gone from the database, but any standalone events they put
-        // on calendars outlive them and are addressed by nothing the new series carries.
-        orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
+    let ics = match shape {
+        SeriesInviteShape::Master => SeriesIcs {
+            body: build_series_invite_ics(coach, coachee, first, series, description, dtstamp)?,
+            // The replaced rows are gone from the database, but any standalone events they
+            // put on calendars outlive them and are addressed by nothing the new series carries.
+            orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
+        },
+        SeriesInviteShape::Snapshot(rows) => SeriesIcs {
+            body: build_series_snapshot_ics(coach, coachee, series, rows, description, dtstamp)?,
+            orphan_cancels: Vec::new(),
+        },
     };
 
     // Timezone-independent, so it is computed once rather than per recipient.
     let current_rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
     let recurrence_summary = current_rule.recurrence.summary();
 
+    let mut delivered = Delivered::default();
     if let Err(e) = send_recurring_series_email_to_recipient(
         &email_config,
         &Recipient {
@@ -1787,6 +1809,8 @@ async fn send_series_invite_email<N: EmailNotification>(
             N::notification_name(),
             coachee.email
         );
+    } else {
+        delivered.coachee = true;
     }
 
     if let Err(e) = send_recurring_series_email_to_recipient(
@@ -1809,9 +1833,11 @@ async fn send_series_invite_email<N: EmailNotification>(
             N::notification_name(),
             coach.email
         );
+    } else {
+        delivered.coach = true;
     }
 
-    Ok(())
+    Ok(delivered)
 }
 
 /// Send recurring-sessions-scheduled notification emails to both coach and coachee.
@@ -1834,7 +1860,43 @@ async fn send_recurring_sessions_scheduled_email(
             replaced: &[],
         },
         organization,
-        None,
+        SeriesInviteKind {
+            reschedule: None,
+            shape: SeriesInviteShape::Master,
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Resend a series' invite as it stands today. `series` must already carry the bumped
+/// `ical_sequence`. `upcoming` is what the email lists; `rows` is every session linked
+/// to the series, which the snapshot is built from.
+// No caller until the resend endpoint lands.
+#[allow(dead_code)]
+pub(crate) async fn send_series_invite_resend(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    participants: &Participants<'_>,
+    upcoming: &[coaching_sessions::Model],
+    rows: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+) -> Result<Delivered, Error> {
+    send_series_invite_email::<RecurringSessionsScheduled>(
+        db,
+        config,
+        series,
+        participants,
+        &SeriesSessions {
+            current: upcoming,
+            replaced: &[],
+        },
+        organization,
+        SeriesInviteKind {
+            reschedule: None,
+            shape: SeriesInviteShape::Snapshot(rows),
+        },
     )
     .await
 }
@@ -1862,13 +1924,17 @@ async fn send_recurring_sessions_rescheduled_email(
         participants,
         sessions,
         organization,
-        Some(&RescheduleVars {
-            session_or_series: "series",
-            previous_start: previous_rule.start_at,
-            previous_recurrence_summary: Some(previous_rule.recurrence.summary()),
-        }),
+        SeriesInviteKind {
+            reschedule: Some(&RescheduleVars {
+                session_or_series: "series",
+                previous_start: previous_rule.start_at,
+                previous_recurrence_summary: Some(previous_rule.recurrence.summary()),
+            }),
+            shape: SeriesInviteShape::Master,
+        },
     )
     .await
+    .map(|_| ())
 }
 
 /// Orchestrate sending recurring-sessions-scheduled emails (best-effort).

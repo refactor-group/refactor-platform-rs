@@ -3336,6 +3336,176 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
     );
 }
 
+/// Loader for the series `.ics` description: the first session's in-progress goals.
+#[cfg(feature = "mock")]
+fn mock_series_description_loader() -> DatabaseConnection {
+    MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection()
+}
+
+/// A series with slot 4 deleted and slot 3 moved a day later.
+#[cfg(feature = "mock")]
+fn edited_series_rows(series: &coaching_session_series::Model) -> Vec<coaching_sessions::Model> {
+    let mut rows = snapshot_members(series);
+    rows[2].date += chrono::Duration::days(1);
+    rows.remove(3);
+    rows
+}
+
+/// Mocks one recipient's send, told apart by the `to` address.
+#[cfg(feature = "mock")]
+async fn mock_send_to(
+    server: &mut ServerGuard,
+    email: &str,
+    status: usize,
+    capture: &AttachmentsCapture,
+) -> mockito::Mock {
+    server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::Regex(format!(r#""to":\[[^\]]*{email}"#)))
+        .match_request(capture.recorder())
+        .with_status(status)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_resend_attaches_snapshot() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = snapshot_series(snapshot_start());
+    let rows = edited_series_rows(&series);
+
+    let mock_coachee = mock_send_to(&mut server, "jane@example.com", 200, &capture).await;
+    let mock_coach = mock_send_to(&mut server, "alex@example.com", 200, &capture).await;
+
+    let delivered = send_series_invite_resend(
+        &mock_series_description_loader(),
+        &config,
+        &series,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
+        &rows,
+        &rows,
+        &org,
+    )
+    .await
+    .unwrap();
+
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+    assert_eq!(
+        delivered,
+        Delivered {
+            coachee: true,
+            coach: true
+        }
+    );
+
+    let attachments = capture.captured();
+    assert_eq!(attachments.len(), 1);
+    let ics = &attachments[0].1;
+    assert!(ics.contains("METHOD:REQUEST"));
+    assert_eq!(ics.matches("EXDATE").count(), 1);
+    assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2);
+    assert!(ics.contains("RECURRENCE-ID"));
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_resend_reports_coachee_failure() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = snapshot_series(snapshot_start());
+    let rows = edited_series_rows(&series);
+
+    let mock_coachee = mock_send_to(&mut server, "jane@example.com", 400, &capture).await;
+    let mock_coach = mock_send_to(&mut server, "alex@example.com", 200, &capture).await;
+
+    let delivered = send_series_invite_resend(
+        &mock_series_description_loader(),
+        &config,
+        &series,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
+        &rows,
+        &rows,
+        &org,
+    )
+    .await
+    .unwrap();
+
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+    assert_eq!(
+        delivered,
+        Delivered {
+            coachee: false,
+            coach: true
+        }
+    );
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_scheduled_still_master_only() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = snapshot_series(snapshot_start());
+    let rows = edited_series_rows(&series);
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_scheduled_email(
+        &mock_series_description_loader(),
+        &config,
+        &series,
+        &coach,
+        &coachee,
+        &rows,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    let attachments = capture.captured();
+    assert_eq!(attachments.len(), 1);
+    let ics = &attachments[0].1;
+    assert_eq!(ics.matches("EXDATE").count(), 0);
+    assert_eq!(ics.matches("BEGIN:VEVENT").count(), 1);
+}
+
 /// A reschedule can legitimately leave no future occurrences. There is then no series
 /// invite to attach anything to, but the rows it replaced are still deleted, and any
 /// standalone event they left is addressed by nothing else. Returning early here strands
