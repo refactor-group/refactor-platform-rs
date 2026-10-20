@@ -187,8 +187,9 @@ pub async fn bulk_create_recurring(
 pub(crate) fn series_slots(
     start_at: NaiveDateTime,
     recurrence: &Recurrence,
+    zone: chrono_tz::Tz,
 ) -> Result<Vec<NaiveDateTime>, Error> {
-    expand_recurrence(start_at, recurrence)?
+    expand_recurrence(start_at, recurrence, zone)?
         .into_iter()
         .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
         .collect()

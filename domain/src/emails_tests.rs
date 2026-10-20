@@ -2,7 +2,7 @@ use super::*;
 use crate::{coaching_sessions, organizations, users, Id};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::NaiveDate;
+use chrono::{DurationRound, NaiveDate};
 use mockito::{Server, ServerGuard};
 #[cfg(feature = "mock")]
 use sea_orm::{DatabaseBackend, MockDatabase};
@@ -821,6 +821,17 @@ fn mock_description_loaders() -> DatabaseConnection {
         .into_connection()
 }
 
+/// The description loaders, then the series an occurrence invite reads its zone from.
+#[cfg(feature = "mock")]
+fn mock_occurrence_loaders(series: coaching_session_series::Model) -> DatabaseConnection {
+    MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+        .append_query_results(vec![vec![series]])
+        .into_connection()
+}
+
 /// mockito has no negative body matcher, so absence of a template variable rides on
 /// `match_request`. An unreadable or unparsable body fails the match.
 fn reject_template_variables(keys: &'static [&'static str]) -> impl Fn(&mockito::Request) -> bool {
@@ -1178,12 +1189,13 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
 async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
-    let db = mock_description_loaders();
+    let series = create_test_series();
+    let series_id = series.id;
+    let db = mock_occurrence_loaders(series);
     let capture = IcsCapture::default();
 
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let series_id = Id::new_v4();
     let original_start = NaiveDate::from_ymd_opt(2026, 3, 4)
         .unwrap()
         .and_hms_opt(15, 0, 0)
@@ -1428,7 +1440,9 @@ async fn test_send_session_cancelled_email() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
 
     // The send swallows errors, so the mock assertions are what give this test teeth.
@@ -1487,7 +1501,9 @@ async fn test_send_session_cancelled_email_omits_when_variables() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
 
     mock.assert_async().await;
@@ -1528,6 +1544,7 @@ fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
         &coachee,
         &session,
         series_id,
+        chrono_tz::America::New_York,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
     )
@@ -1570,6 +1587,7 @@ fn test_build_occurrence_reschedule_ics_keeps_original_recurrence_id() {
         &coachee,
         &session,
         series_id,
+        chrono_tz::America::New_York,
         "Join this session: https://app/x".into(),
         dtstamp,
     )
@@ -1644,7 +1662,9 @@ async fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
     mock.assert_async().await;
 
@@ -1931,7 +1951,9 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
 
     // The send swallows errors, so the mock assertions are what give this test teeth.
@@ -2359,6 +2381,7 @@ fn create_test_series() -> coaching_session_series::Model {
             "start_at": "2026-09-15T15:00:00",
             "recurrence": { "frequency": "weekly", "interval": 1 },
             "duration_minutes": 60,
+            "timezone": "America/New_York",
         }),
         ical_sequence: 0,
         created_by_user_id: Id::new_v4(),
@@ -2453,6 +2476,7 @@ fn snapshot_series(start_at: NaiveDateTime, ical_sequence: i32) -> coaching_sess
             "start_at": start_at,
             "recurrence": { "frequency": "weekly", "interval": 1, "count": 6 },
             "duration_minutes": 60,
+            "timezone": "America/Chicago",
         }),
         ical_sequence,
         ..create_test_series()
@@ -2540,7 +2564,10 @@ fn assert_snapshot(
     assert_eq!(events.len(), 1 + overrides.len(), "{ics}");
     let master = events[0];
     assert!(master.contains(&format!("DTSTART;{tz}:{dtstart}")), "{ics}");
-    assert!(master.contains("RRULE:FREQ=WEEKLY;COUNT=6"), "{ics}");
+    assert!(
+        master.contains("RRULE:FREQ=WEEKLY;WKST=MO;COUNT=6"),
+        "{ics}"
+    );
     assert!(master.contains(&format!("SEQUENCE:{sequence}")), "{ics}");
     assert!(master.contains("LOCATION:https://meet.example/series"));
     assert_eq!(ics.matches("EXDATE").count(), exdates.len(), "{ics}");
@@ -4144,4 +4171,235 @@ async fn test_session_reminder_missing_template_id() {
         DomainErrorKind::Internal(InternalErrorKind::Config) => {}
         other => panic!("Expected Config error, got: {other:?}"),
     }
+}
+
+// ───── stored series zone vs the coach's current zone ─────
+
+/// Weekly Thursdays at 11:00 Chicago, published before its coach moved to New York.
+fn chicago_series() -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": "2026-09-10T16:00:00",
+            "recurrence": {
+                "frequency": "weekly",
+                "interval": 1,
+                "by_weekdays": ["Thu"],
+                "until": "2027-01-01T05:59:59",
+            },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ..create_test_series()
+    }
+}
+
+fn relocated_coach() -> users::Model {
+    create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York")
+}
+
+/// An occurrence reads its zone from the series; anything else keeps the coach's, and
+/// a legacy member has no occurrence to address, so it reads nothing.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn invite_zone_is_the_series_zone_for_an_occurrence_only() {
+    let coach = relocated_coach();
+    let series = chicago_series();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![series.clone()]])
+        .into_connection();
+    let member = create_test_series_session(series.id, at(2026, 11, 5, 17));
+    assert_eq!(
+        invite_zone(&db, &member, &coach).await.unwrap(),
+        chrono_tz::America::Chicago
+    );
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    let legacy = coaching_sessions::Model {
+        ical_recurrence_id: None,
+        ..member.clone()
+    };
+    assert_eq!(
+        invite_zone(&db, &legacy, &coach).await.unwrap(),
+        chrono_tz::America::New_York
+    );
+    assert_eq!(
+        invite_zone(&db, &create_test_session(), &coach)
+            .await
+            .unwrap(),
+        chrono_tz::America::New_York
+    );
+    assert!(db.into_transaction_log().is_empty());
+}
+
+/// Moving one post-DST occurrence names the slot in the zone the calendar expanded the
+/// series in, not the coach's new one: 11:00 Chicago on Nov 5 is 17:00Z.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn occurrence_reschedule_uses_the_stored_series_zone() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = chicago_series();
+    let capture = IcsCapture::default();
+    let coach = relocated_coach();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let slot = at(2026, 11, 5, 17);
+    let session = coaching_sessions::Model {
+        date: at(2026, 11, 5, 19),
+        ..create_test_series_session(series.id, slot)
+    };
+    let db = mock_occurrence_loaders(series);
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    send_session_rescheduled_email(
+        &db,
+        &config,
+        &coach,
+        &coachee,
+        &session,
+        &create_test_organization(),
+        slot,
+    )
+    .await
+    .unwrap();
+    mock.assert_async().await;
+
+    let ics = capture.ics();
+    assert!(
+        ics.contains("RECURRENCE-ID;TZID=America/Chicago:20261105T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("DTSTART;TZID=America/Chicago:20261105T130000"),
+        "{ics}"
+    );
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// Cancelling an occurrence addresses it in the stored zone too, through the same
+/// lookup the send path uses.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn occurrence_cancel_uses_the_stored_series_zone() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = chicago_series();
+    let capture = IcsCapture::default();
+    let coach = relocated_coach();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    // Upcoming, or the notifier treats the delete as housekeeping.
+    let slot = (chrono::Utc::now() + chrono::Duration::days(30))
+        .naive_utc()
+        .duration_trunc(chrono::TimeDelta::hours(1))
+        .unwrap();
+    let session = create_test_series_session(series.id, slot);
+    let relationship = coaching_relationships::Model {
+        id: session.coaching_relationship_id,
+        organization_id: org.id,
+        coach_id: coach.id,
+        coachee_id: coachee.id,
+        slug: "test".into(),
+        created_at: chrono::Utc::now().into(),
+        updated_at: chrono::Utc::now().into(),
+    };
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![relationship]])
+        .append_query_results(vec![vec![coach.clone()]])
+        .append_query_results(vec![vec![coachee]])
+        .append_query_results(vec![vec![org]])
+        .append_query_results(vec![vec![series]])
+        .into_connection();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    notify_session_cancelled(&db, &config, &session).await;
+    mock.assert_async().await;
+
+    let local = Utc
+        .from_utc_datetime(&slot)
+        .with_timezone(&chrono_tz::America::Chicago)
+        .format("%Y%m%dT%H%M%S");
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("RECURRENCE-ID;TZID=America/Chicago:{local}")),
+        "{ics}"
+    );
+    assert!(ics.contains("METHOD:CANCEL"), "{ics}");
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// The snapshot of a Chicago series across Nov 1, built for a coach now in New York:
+/// the master, its EXDATE and its override all sit at 11:00 Chicago on both sides of the
+/// change, which is where the calendar holds every instance.
+#[test]
+fn snapshot_across_dst_uses_the_stored_series_zone() {
+    let series = chicago_series();
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    let slots = rule.slots().unwrap();
+    let nov_5 = slots
+        .iter()
+        .position(|s| *s == at(2026, 11, 5, 17))
+        .unwrap();
+    let nov_12 = slots
+        .iter()
+        .position(|s| *s == at(2026, 11, 12, 17))
+        .unwrap();
+
+    let members: Vec<coaching_sessions::Model> = slots
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != nov_12)
+        .map(|(i, slot)| coaching_sessions::Model {
+            duration_minutes: 60,
+            date: match i == nov_5 {
+                true => at(2026, 11, 5, 19),
+                false => *slot,
+            },
+            ..create_test_series_session(series.id, *slot)
+        })
+        .collect();
+
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &relocated_coach(),
+            &coachee,
+            &series,
+            &members,
+            "desc".into(),
+            at(2026, 10, 20, 12),
+        )
+        .unwrap(),
+    );
+
+    assert!(
+        ics.contains("DTSTART;TZID=America/Chicago:20260910T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("EXDATE;TZID=America/Chicago:20261112T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("RECURRENCE-ID;TZID=America/Chicago:20261105T110000"),
+        "{ics}"
+    );
+    assert_eq!(ics.matches("RECURRENCE-ID").count(), 1, "{ics}");
+    assert!(!ics.contains("America/New_York"), "{ics}");
 }

@@ -93,7 +93,7 @@ fn recurring_biweekly_rrule() {
         Some(rule),
     ))
     .unwrap();
-    assert!(out.contains("RRULE:FREQ=WEEKLY;INTERVAL=2"));
+    assert!(out.contains("RRULE:FREQ=WEEKLY;WKST=MO;INTERVAL=2"));
 }
 
 #[test]

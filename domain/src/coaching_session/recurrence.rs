@@ -11,11 +11,12 @@
 //! - [`MAX_RECURRING_SPAN_DAYS`] caps the calendar span from the first to the last
 //!   event (covers leap-year monthly).
 //!
-//! Times are operated on as [`NaiveDateTime`]; recurrence expansion in naive time
-//! can drift up to an hour across DST transitions, which matches how
-//! `coaching_sessions.date` is stored today.
+//! Expansion runs on local wall time in the series' zone and resolves each slot to UTC,
+//! the way RFC 5545 clients expand the `DTSTART;TZID` + `RRULE` the invite carries, so
+//! the stored sessions and the calendar's instances stay the same instants across DST.
 
-use chrono::{Datelike, Duration, Months, NaiveDateTime, Weekday};
+use chrono::{Datelike, Duration, Months, NaiveDateTime, Offset, TimeZone, Weekday};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -26,6 +27,13 @@ const MAX_RECURRING_OCCURRENCES: usize = 365;
 
 /// Maximum calendar span (in days) from the first occurrence to the last.
 const MAX_RECURRING_SPAN_DAYS: i64 = 366;
+
+/// Latest day of the month a monthly series may start on. Clients skip months without
+/// the start day while some clamp to the month's end, so later days cannot render alike.
+const MAX_MONTHLY_START_DAY: u32 = 28;
+
+/// How far back to look for the offset in effect before a spring-forward gap.
+const GAP_LOOKBACK_HOURS: i64 = 3;
 
 /// How often the rule repeats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -122,6 +130,8 @@ pub enum RecurrenceError {
     ByWeekdaysOnNonWeekly,
     EmptyByWeekdays,
     StartWeekdayMismatch,
+    MonthlyStartDayTooLate,
+    AmbiguousStartAt,
     TooManyOccurrences { count: usize },
     SpanTooLong { days: i64 },
     NoOccurrencesGenerated,
@@ -153,6 +163,13 @@ impl RecurrenceError {
             Self::StartWeekdayMismatch => {
                 "`start_at`'s weekday must be included in `by_weekdays`".into()
             }
+            Self::MonthlyStartDayTooLate => format!(
+                "Monthly series must start on day {MAX_MONTHLY_START_DAY} or earlier in the coach's timezone."
+            ),
+            Self::AmbiguousStartAt => {
+                "`start_at` is the repeated hour of a daylight saving change; choose another time"
+                    .into()
+            }
             Self::TooManyOccurrences { count } => format!(
                 "recurrence would produce {count} occurrences (max {MAX_RECURRING_OCCURRENCES})"
             ),
@@ -167,10 +184,13 @@ impl RecurrenceError {
     }
 }
 
-/// Validate the structural correctness of a [`Recurrence`] rule against the
-/// given `start_at`. Does not enforce the occurrence/span caps — those are
-/// applied in [`expand_recurrence`] after generation.
-fn validate_recurrence(start_at: NaiveDateTime, rule: &Recurrence) -> Result<(), RecurrenceError> {
+/// Validate the structural correctness of a [`Recurrence`] rule against the series'
+/// local start. Does not enforce the occurrence/span caps — those are applied in
+/// [`expand_recurrence`] after generation.
+fn validate_recurrence(
+    local_start: NaiveDateTime,
+    rule: &Recurrence,
+) -> Result<(), RecurrenceError> {
     if rule.interval < 1 {
         return Err(RecurrenceError::InvalidInterval);
     }
@@ -185,201 +205,196 @@ fn validate_recurrence(start_at: NaiveDateTime, rule: &Recurrence) -> Result<(),
         if weekdays.is_empty() {
             return Err(RecurrenceError::EmptyByWeekdays);
         }
-        if !weekdays.contains(&start_at.weekday()) {
+        if !weekdays.contains(&local_start.weekday()) {
             return Err(RecurrenceError::StartWeekdayMismatch);
         }
+    }
+    if rule.frequency == Frequency::Monthly && local_start.day() > MAX_MONTHLY_START_DAY {
+        return Err(RecurrenceError::MonthlyStartDayTooLate);
     }
     Ok(())
 }
 
-/// Expand the rule into concrete occurrence datetimes, in chronological order.
+/// The wall time `utc` shows in `zone`.
+fn to_local(zone: Tz, utc: NaiveDateTime) -> NaiveDateTime {
+    zone.from_utc_datetime(&utc).naive_local()
+}
+
+/// The UTC instant of a local wall time, resolved as RFC 5545 §3.3.5 does: a repeated
+/// time is its first occurrence, and a skipped time uses the offset before the gap.
+fn to_utc(zone: Tz, local: NaiveDateTime) -> NaiveDateTime {
+    zone.from_local_datetime(&local)
+        .earliest()
+        .map(|resolved| resolved.naive_utc())
+        .unwrap_or_else(|| local - offset_before_gap(zone, local))
+}
+
+/// The UTC offset in effect just before the gap that swallowed `local`.
+fn offset_before_gap(zone: Tz, local: NaiveDateTime) -> Duration {
+    let before = local - Duration::hours(GAP_LOOKBACK_HOURS);
+    let seconds = zone
+        .from_local_datetime(&before)
+        .earliest()
+        .map_or(0, |resolved| resolved.offset().fix().local_minus_utc());
+    Duration::seconds(seconds.into())
+}
+
+/// Expand the rule into concrete occurrence datetimes (UTC), in chronological order.
 ///
-/// Validates the rule, generates events according to the frequency, then enforces
-/// [`MAX_RECURRING_OCCURRENCES`] and [`MAX_RECURRING_SPAN_DAYS`]. The first
-/// occurrence is always equal to `start_at`.
+/// Steps run on local wall time in `zone`, so every slot keeps the start's local time of
+/// day across DST, and weekdays and month days are the ones the coach sees. `until` is
+/// compared against each resolved instant, as a client reads `UNTIL`. Validates the rule,
+/// generates events according to the frequency, then enforces
+/// [`MAX_RECURRING_OCCURRENCES`] and [`MAX_RECURRING_SPAN_DAYS`]. The first occurrence
+/// is always equal to `start_at`.
 pub fn expand_recurrence(
     start_at: NaiveDateTime,
     rule: &Recurrence,
+    zone: Tz,
 ) -> Result<Vec<NaiveDateTime>, RecurrenceError> {
-    validate_recurrence(start_at, rule)?;
+    let local_start = to_local(zone, start_at);
+    validate_recurrence(local_start, rule)?;
+    // The second pass through a repeated hour: the invite's `DTSTART;TZID` would name the first.
+    if to_utc(zone, local_start) != start_at {
+        return Err(RecurrenceError::AmbiguousStartAt);
+    }
 
-    let target_count = rule.count.map(|c| c as usize);
-    let until = rule.until;
-
-    // Generation cap: one past the limit so the outer check below sees overflow.
-    let gen_cap = MAX_RECURRING_OCCURRENCES + 1;
-
-    let week_interval = match rule.frequency {
-        Frequency::Biweekly => 2 * rule.interval,
-        _ => rule.interval,
+    let bounds = Bounds {
+        resolve: |local| to_utc(zone, local),
+        until: rule.until,
+        // One past the limit so the outer check below sees overflow.
+        limit: rule
+            .count
+            .map_or(MAX_RECURRING_OCCURRENCES + 1, |c| c as usize)
+            .min(MAX_RECURRING_OCCURRENCES + 1),
     };
 
     let occurrences = match rule.frequency {
-        Frequency::Daily => generate_stepped(
-            start_at,
-            Duration::days(rule.interval as i64),
-            target_count,
-            until,
-            gen_cap,
-        ),
+        Frequency::Daily => {
+            generate_stepped(local_start, Duration::days(rule.interval as i64), &bounds)
+        }
         Frequency::Weekly | Frequency::Biweekly => match &rule.by_weekdays {
             Some(weekdays) => generate_weekly_with_weekdays(
-                start_at,
-                week_interval,
+                local_start,
+                rule.effective_interval(),
                 weekdays,
-                target_count,
-                until,
-                gen_cap,
+                &bounds,
             ),
             None => generate_stepped(
-                start_at,
-                Duration::weeks(week_interval as i64),
-                target_count,
-                until,
-                gen_cap,
+                local_start,
+                Duration::weeks(rule.effective_interval() as i64),
+                &bounds,
             ),
         },
-        Frequency::Monthly => {
-            generate_monthly(start_at, rule.interval, target_count, until, gen_cap)
-        }
+        Frequency::Monthly => generate_monthly(local_start, rule.interval, &bounds),
     };
 
-    if occurrences.is_empty() {
+    let (Some(first), Some(last)) = (occurrences.first(), occurrences.last()) else {
         return Err(RecurrenceError::NoOccurrencesGenerated);
-    }
+    };
     if occurrences.len() > MAX_RECURRING_OCCURRENCES {
         return Err(RecurrenceError::TooManyOccurrences {
             count: occurrences.len(),
         });
     }
-    let span = occurrences
-        .last()
-        .unwrap()
-        .signed_duration_since(*occurrences.first().unwrap());
-    if span.num_days() > MAX_RECURRING_SPAN_DAYS {
-        return Err(RecurrenceError::SpanTooLong {
-            days: span.num_days(),
-        });
+    let span_days = last.signed_duration_since(*first).num_days();
+    if span_days > MAX_RECURRING_SPAN_DAYS {
+        return Err(RecurrenceError::SpanTooLong { days: span_days });
     }
     Ok(occurrences)
 }
 
-/// Generic stepped generator for `daily` and `weekly`-without-`by_weekdays`.
-fn generate_stepped(
-    start_at: NaiveDateTime,
-    step: Duration,
-    target_count: Option<usize>,
+/// Shared limits for the generators: how a local slot becomes an instant, the `until`
+/// instant it must not pass, and how many slots to emit at most.
+struct Bounds<F: Fn(NaiveDateTime) -> NaiveDateTime> {
+    resolve: F,
     until: Option<NaiveDateTime>,
-    gen_cap: usize,
-) -> Vec<NaiveDateTime> {
-    let mut out = Vec::new();
-    let mut current = start_at;
-    let limit = target_count.unwrap_or(gen_cap).min(gen_cap);
-    while out.len() < limit {
-        if let Some(end) = until {
-            if current > end {
-                break;
-            }
-        }
-        out.push(current);
-        current = match current.checked_add_signed(step) {
-            Some(next) => next,
-            None => break,
-        };
+    limit: usize,
+}
+
+impl<F: Fn(NaiveDateTime) -> NaiveDateTime> Bounds<F> {
+    /// The slot's instant, or `None` once it is past `until`.
+    fn admit(&self, local: NaiveDateTime) -> Option<NaiveDateTime> {
+        let instant = (self.resolve)(local);
+        self.until
+            .is_none_or(|end| instant <= end)
+            .then_some(instant)
     }
-    out
+}
+
+/// Generic stepped generator for `daily` and `weekly`-without-`by_weekdays`.
+fn generate_stepped<F: Fn(NaiveDateTime) -> NaiveDateTime>(
+    local_start: NaiveDateTime,
+    step: Duration,
+    bounds: &Bounds<F>,
+) -> Vec<NaiveDateTime> {
+    std::iter::successors(Some(local_start), |local| local.checked_add_signed(step))
+        .map_while(|local| bounds.admit(local))
+        .take(bounds.limit)
+        .collect()
 }
 
 /// Weekly recurrence with explicit weekdays. Walks `week_interval`-aligned weeks
-/// starting from the Monday of `start_at`'s week and emits each listed weekday
-/// (skipping any occurrence that falls before `start_at` itself).
-fn generate_weekly_with_weekdays(
-    start_at: NaiveDateTime,
+/// starting from the Monday of the start's week (RFC 5545 `WKST=MO`) and emits each
+/// listed weekday, skipping any occurrence that falls before the start itself.
+fn generate_weekly_with_weekdays<F: Fn(NaiveDateTime) -> NaiveDateTime>(
+    local_start: NaiveDateTime,
     week_interval: u32,
     weekdays: &[Weekday],
-    target_count: Option<usize>,
-    until: Option<NaiveDateTime>,
-    gen_cap: usize,
+    bounds: &Bounds<F>,
 ) -> Vec<NaiveDateTime> {
     let mut sorted: Vec<Weekday> = weekdays.to_vec();
     sorted.sort_by_key(|w| w.num_days_from_monday());
     sorted.dedup();
 
-    let time_of_day = start_at.time();
+    let time_of_day = local_start.time();
     let monday_of_start_week =
-        start_at.date() - Duration::days(start_at.weekday().num_days_from_monday() as i64);
+        local_start.date() - Duration::days(local_start.weekday().num_days_from_monday() as i64);
+    // Bounds worst-case work when `until` is far out and the weekday filter hits rarely.
+    let max_weeks = (bounds.limit as i64) + 8;
 
-    let mut out = Vec::new();
-    let limit = target_count.unwrap_or(gen_cap).min(gen_cap);
-    let mut week_offset: i64 = 0;
-    // Safety cap on outer loop iterations to bound worst-case work even when
-    // `until` is far in the future and weekday filters mean few hits per week.
-    let max_weeks = (gen_cap as i64) + 8;
-    while out.len() < limit && week_offset < max_weeks * (week_interval as i64) {
-        let week_monday =
-            match monday_of_start_week.checked_add_signed(Duration::days(week_offset * 7)) {
-                Some(d) => d,
-                None => break,
-            };
-        for wd in &sorted {
-            let date = match week_monday
-                .checked_add_signed(Duration::days(wd.num_days_from_monday() as i64))
-            {
-                Some(d) => d,
-                None => return out,
-            };
-            let dt = date.and_time(time_of_day);
-            if dt < start_at {
-                continue;
-            }
-            if let Some(end) = until {
-                if dt > end {
-                    return out;
-                }
-            }
-            out.push(dt);
-            if out.len() >= limit {
-                return out;
-            }
-        }
-        week_offset += week_interval as i64;
-    }
-    out
+    (0..max_weeks)
+        .map_while(|week| {
+            monday_of_start_week.checked_add_signed(Duration::weeks(week * week_interval as i64))
+        })
+        .flat_map(|monday| {
+            sorted.iter().filter_map(move |wd| {
+                monday.checked_add_signed(Duration::days(wd.num_days_from_monday() as i64))
+            })
+        })
+        .map(|date| date.and_time(time_of_day))
+        .filter(|local| *local >= local_start)
+        .map_while(|local| bounds.admit(local))
+        .take(bounds.limit)
+        .collect()
 }
 
-/// Monthly recurrence. Day-of-month is taken from `start_at`; chrono's
-/// `checked_add_months` automatically clamps to the last day of the target
-/// month when the day doesn't exist (e.g. Jan 31 + 1 month → Feb 28).
-fn generate_monthly(
-    start_at: NaiveDateTime,
+/// Monthly recurrence on the start's day of the month. Validation keeps that day at or
+/// below [`MAX_MONTHLY_START_DAY`], so `checked_add_months` never has to clamp.
+fn generate_monthly<F: Fn(NaiveDateTime) -> NaiveDateTime>(
+    local_start: NaiveDateTime,
     interval: u32,
-    target_count: Option<usize>,
-    until: Option<NaiveDateTime>,
-    gen_cap: usize,
+    bounds: &Bounds<F>,
 ) -> Vec<NaiveDateTime> {
-    let mut out = Vec::new();
-    let limit = target_count.unwrap_or(gen_cap).min(gen_cap);
-    let mut i: u32 = 0;
-    while out.len() < limit {
-        let candidate = match start_at.checked_add_months(Months::new(i * interval)) {
-            Some(dt) => dt,
-            None => break,
-        };
-        if let Some(end) = until {
-            if candidate > end {
-                break;
-            }
-        }
-        out.push(candidate);
-        i += 1;
-    }
-    out
+    (0u32..)
+        .map_while(|i| {
+            i.checked_mul(interval)
+                .and_then(|months| local_start.checked_add_months(Months::new(months)))
+        })
+        .map_while(|local| bounds.admit(local))
+        .take(bounds.limit)
+        .collect()
 }
+
+#[cfg(test)]
+#[path = "recurrence_dst_tests.rs"]
+mod dst_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{NaiveDate, NaiveTime};
+    use chrono_tz::UTC;
 
     fn dt(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(y, m, d)
@@ -574,7 +589,7 @@ mod tests {
             count: Some(4),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -596,7 +611,7 @@ mod tests {
             count: Some(3),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -617,7 +632,7 @@ mod tests {
             count: None,
             until: Some(dt(2026, 6, 3, 9, 0)),
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(occ.len(), 3);
         assert_eq!(occ.last().unwrap(), &dt(2026, 6, 3, 9, 0));
     }
@@ -634,7 +649,7 @@ mod tests {
             count: Some(3),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -655,7 +670,7 @@ mod tests {
             count: Some(3),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -679,7 +694,7 @@ mod tests {
             count: Some(6),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -704,7 +719,7 @@ mod tests {
             count: Some(5),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -728,7 +743,7 @@ mod tests {
             count: Some(4),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -752,7 +767,7 @@ mod tests {
             count: Some(3),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        let occ = expand_recurrence(start, &r, UTC).unwrap();
         assert_eq!(
             occ,
             vec![
@@ -763,10 +778,9 @@ mod tests {
         );
     }
 
+    /// Clients disagree on months without the start day, so such a series cannot exist.
     #[test]
-    fn expand_monthly_clamps_day_for_short_months() {
-        // Jan 31 → Feb 28 (2026 is not a leap year) → Mar 31 → Apr 30.
-        let start = dt(2026, 1, 31, 10, 0);
+    fn expand_monthly_rejects_start_days_after_28() {
         let r = Recurrence {
             frequency: Frequency::Monthly,
             interval: 1,
@@ -774,14 +788,17 @@ mod tests {
             count: Some(4),
             until: None,
         };
-        let occ = expand_recurrence(start, &r).unwrap();
+        [29, 30, 31].into_iter().for_each(|day| {
+            let err = expand_recurrence(dt(2026, 1, day, 10, 0), &r, UTC).unwrap_err();
+            assert_eq!(err, RecurrenceError::MonthlyStartDayTooLate, "day {day}");
+        });
         assert_eq!(
-            occ,
+            expand_recurrence(dt(2026, 1, 28, 10, 0), &r, UTC).unwrap(),
             vec![
-                dt(2026, 1, 31, 10, 0),
+                dt(2026, 1, 28, 10, 0),
                 dt(2026, 2, 28, 10, 0),
-                dt(2026, 3, 31, 10, 0),
-                dt(2026, 4, 30, 10, 0),
+                dt(2026, 3, 28, 10, 0),
+                dt(2026, 4, 28, 10, 0),
             ]
         );
     }
@@ -798,7 +815,7 @@ mod tests {
             count: Some((MAX_RECURRING_OCCURRENCES as u32) + 5),
             until: None,
         };
-        let err = expand_recurrence(start, &r).unwrap_err();
+        let err = expand_recurrence(start, &r, UTC).unwrap_err();
         assert!(matches!(err, RecurrenceError::TooManyOccurrences { .. }));
     }
 
@@ -813,7 +830,7 @@ mod tests {
             count: Some(60),
             until: None,
         };
-        let err = expand_recurrence(start, &r).unwrap_err();
+        let err = expand_recurrence(start, &r, UTC).unwrap_err();
         assert!(matches!(err, RecurrenceError::SpanTooLong { .. }));
     }
 
@@ -830,7 +847,7 @@ mod tests {
             count: None,
             until: Some(dt(2027, 3, 1, 10, 0)),
         };
-        let err = expand_recurrence(start, &r).unwrap_err();
+        let err = expand_recurrence(start, &r, UTC).unwrap_err();
         assert!(matches!(err, RecurrenceError::SpanTooLong { .. }));
     }
 
@@ -844,7 +861,7 @@ mod tests {
             count: None,
             until: Some(dt(2026, 5, 1, 10, 0)),
         };
-        let err = expand_recurrence(start, &r).unwrap_err();
+        let err = expand_recurrence(start, &r, UTC).unwrap_err();
         assert_eq!(err, RecurrenceError::NoOccurrencesGenerated);
     }
 }

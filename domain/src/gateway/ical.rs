@@ -15,6 +15,10 @@ use vtimezones_rs::VTIMEZONES;
 #[path = "ical_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "ical_oracle_tests.rs"]
+mod oracle_tests;
+
 /// VCALENDAR-level `METHOD`.
 #[derive(PartialEq, Eq)]
 pub enum Method {
@@ -106,6 +110,15 @@ fn vtimezone_block(tz: chrono_tz::Tz) -> Option<String> {
     Some(inner.replace("\r\n", "\n").replace('\n', "\r\n"))
 }
 
+/// The zone an invite anchored to `tz` is actually written in: `tz` itself, or UTC when
+/// no `VTIMEZONE` block exists for it. Series expansion must use this same zone.
+pub fn emitted_zone(tz: chrono_tz::Tz) -> chrono_tz::Tz {
+    match tz == chrono_tz::UTC || vtimezone_block(tz).is_some() {
+        true => tz,
+        false => chrono_tz::UTC,
+    }
+}
+
 /// Insert the `VTIMEZONE` block immediately before the first `BEGIN:VEVENT`.
 fn splice_vtimezone(serialized: &str, block: &str) -> Result<String, Error> {
     let marker = "BEGIN:VEVENT";
@@ -139,6 +152,8 @@ fn rrule_value(rule: &Recurrence) -> String {
     let effective_interval = rule.effective_interval();
 
     let mut parts = vec![format!("FREQ={freq}")];
+    // Explicit, so every client aligns multi-week steps on Monday as the expander does.
+    parts.push("WKST=MO".to_string());
     if effective_interval > 1 {
         parts.push(format!("INTERVAL={effective_interval}"));
     }

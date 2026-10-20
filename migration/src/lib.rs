@@ -56,6 +56,7 @@ mod m20260922_000000_create_coaching_session_images;
 mod m20261005_000000_add_transcript_participants;
 mod m20261009_000000_index_transcript_participant_links;
 mod m20261010_000000_add_transcript_suggestions;
+mod m20261021_000000_add_timezone_to_series_rules;
 
 pub struct Migrator;
 
@@ -121,6 +122,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261005_000000_add_transcript_participants::Migration),
             Box::new(m20261009_000000_index_transcript_participant_links::Migration),
             Box::new(m20261010_000000_add_transcript_suggestions::Migration),
+            Box::new(m20261021_000000_add_timezone_to_series_rules::Migration),
         ]
     }
 }

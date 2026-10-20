@@ -1264,6 +1264,7 @@ dependencies = [
  "mockito",
  "rand 0.8.6",
  "reqwest",
+ "rrule",
  "rusty-s3",
  "sea-orm",
  "secrecy",
