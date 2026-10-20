@@ -2444,6 +2444,191 @@ fn test_build_series_invite_ics_carries_bumped_sequence() {
     assert!(ics.contains("STATUS:CONFIRMED"));
 }
 
+// ── Series Snapshot Tests ──────────────────────────────────────────
+
+/// A weekly, six-occurrence series starting at `start_at` (a Tuesday, UTC).
+fn snapshot_series(start_at: NaiveDateTime) -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": start_at,
+            "recurrence": { "frequency": "weekly", "interval": 1, "count": 6 },
+            "duration_minutes": 60,
+        }),
+        ical_sequence: 1,
+        ..create_test_series()
+    }
+}
+
+/// Tuesday Sep 15 2026, 19:00 UTC: 14:00 in Chicago (CDT) for all six weeks.
+fn snapshot_start() -> NaiveDateTime {
+    NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap()
+}
+
+/// The six weekly slots from `start_at`.
+fn snapshot_slots(start_at: NaiveDateTime) -> Vec<NaiveDateTime> {
+    (0..6)
+        .map(|week| start_at + chrono::Duration::weeks(week))
+        .collect()
+}
+
+/// One unmoved member per slot.
+fn snapshot_members(series: &coaching_session_series::Model) -> Vec<coaching_sessions::Model> {
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    snapshot_slots(rule.start_at)
+        .into_iter()
+        .map(|slot| coaching_sessions::Model {
+            duration_minutes: 60,
+            meeting_url: Some("https://meet.example/series".into()),
+            ..create_test_series_session(series.id, slot)
+        })
+        .collect()
+}
+
+/// The unfolded snapshot for a Chicago coach.
+fn snapshot(
+    series: &coaching_session_series::Model,
+    members: &[coaching_sessions::Model],
+) -> String {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let ics = build_series_snapshot_ics(&coach, &coachee, series, members, "desc".into(), dtstamp)
+        .unwrap();
+    unfold(&ics)
+}
+
+/// Every VEVENT span, in order.
+fn vevents(ics: &str) -> Vec<&str> {
+    ics.match_indices("BEGIN:VEVENT")
+        .map(|(start, _)| {
+            let end = start + ics[start..].find("END:VEVENT").unwrap();
+            &ics[start..end]
+        })
+        .collect()
+}
+
+#[test]
+fn snapshot_untouched_series_is_master_only() {
+    let series = snapshot_series(snapshot_start());
+    let ics = snapshot(&series, &snapshot_members(&series));
+
+    let events = vevents(&ics);
+    assert_eq!(events.len(), 1);
+    assert_eq!(ics.matches("EXDATE").count(), 0);
+    assert!(events[0].contains("RRULE:FREQ=WEEKLY;COUNT=6"));
+    assert!(events[0].contains("SEQUENCE:1"));
+    assert!(events[0].contains("LOCATION:https://meet.example/series"));
+}
+
+#[test]
+fn snapshot_deleted_slot_becomes_exdate() {
+    let series = snapshot_series(snapshot_start());
+    let mut members = snapshot_members(&series);
+    members.remove(3);
+    let ics = snapshot(&series, &members);
+
+    assert_eq!(ics.matches("EXDATE").count(), 1);
+    assert!(ics.contains("EXDATE;TZID=America/Chicago:20261006T140000"));
+    assert_eq!(vevents(&ics).len(), 1);
+}
+
+#[test]
+fn snapshot_moved_slot_becomes_override() {
+    let series = snapshot_series(snapshot_start());
+    let mut members = snapshot_members(&series);
+    members[2].date += chrono::Duration::days(1);
+    members[2].ical_sequence = 4;
+    let ics = snapshot(&series, &members);
+
+    let events = vevents(&ics);
+    assert_eq!(events.len(), 2);
+    let moved = events[1];
+    assert!(moved.contains("RECURRENCE-ID;TZID=America/Chicago:20260929T140000"));
+    assert!(moved.contains("DTSTART;TZID=America/Chicago:20260930T140000"));
+    assert!(moved.contains("SEQUENCE:4"));
+    assert!(!moved.contains("RRULE"));
+    assert!(events[0].contains("SEQUENCE:1"));
+}
+
+#[test]
+fn snapshot_deleted_and_moved_together() {
+    let series = snapshot_series(snapshot_start());
+    let mut members = snapshot_members(&series);
+    members[2].date += chrono::Duration::days(1);
+    members.remove(3);
+    let ics = snapshot(&series, &members);
+
+    assert_eq!(ics.matches("EXDATE").count(), 1);
+    assert!(ics.contains("EXDATE;TZID=America/Chicago:20261006T140000"));
+    assert_eq!(vevents(&ics).len(), 2);
+}
+
+/// Nothing is filtered by `now`: a moved past occurrence still needs its override.
+#[test]
+fn snapshot_past_moved_member_kept() {
+    // Tuesday Jan 7 2025, 19:00 UTC: 13:00 in Chicago (CST).
+    let start = NaiveDate::from_ymd_opt(2025, 1, 7)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    let series = snapshot_series(start);
+    let mut members = snapshot_members(&series);
+    members[0].date += chrono::Duration::days(1);
+    let ics = snapshot(&series, &members);
+
+    let events = vevents(&ics);
+    assert_eq!(events.len(), 2);
+    assert!(events[1].contains("RECURRENCE-ID;TZID=America/Chicago:20250107T130000"));
+    assert!(events[1].contains("DTSTART;TZID=America/Chicago:20250108T130000"));
+}
+
+#[test]
+fn snapshot_ignores_non_slot_and_null_members() {
+    let series = snapshot_series(snapshot_start());
+    let members = snapshot_members(&series);
+    let baseline = snapshot(&series, &members);
+
+    let early = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    let stray = |recurrence_id| coaching_sessions::Model {
+        coaching_session_series_id: Some(series.id),
+        ical_recurrence_id: recurrence_id,
+        date: early,
+        duration_minutes: 30,
+        meeting_url: Some("https://meet.example/stray".into()),
+        ical_sequence: 9,
+        ..create_test_session()
+    };
+    let mut with_strays = members.clone();
+    with_strays.push(stray(None));
+    with_strays.push(stray(Some(snapshot_start() + chrono::Duration::hours(1))));
+
+    assert_eq!(snapshot(&series, &with_strays), baseline);
+}
+
+#[test]
+fn snapshot_master_dtstart_is_rule_start_even_if_first_moved() {
+    let series = snapshot_series(snapshot_start());
+    let mut members = snapshot_members(&series);
+    members[0].date += chrono::Duration::days(1);
+    let ics = snapshot(&series, &members);
+
+    let events = vevents(&ics);
+    assert_eq!(events.len(), 2);
+    assert!(events[0].contains("DTSTART;TZID=America/Chicago:20260915T140000"));
+    assert!(events[0].contains("RRULE:"));
+    assert!(events[1].contains("RECURRENCE-ID;TZID=America/Chicago:20260915T140000"));
+    assert!(events[1].contains("DTSTART;TZID=America/Chicago:20260916T140000"));
+}
+
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_recurring_sessions_scheduled_email_personalization() {

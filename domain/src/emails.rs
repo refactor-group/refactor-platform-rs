@@ -768,6 +768,7 @@ fn build_session_invite_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: None,
+        exdates: Vec::new(),
     };
     ical::build(&invite)
 }
@@ -802,6 +803,7 @@ fn build_occurrence_reschedule_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: session.ical_recurrence_id,
+        exdates: Vec::new(),
     };
     ical::build(&invite)
 }
@@ -1325,6 +1327,7 @@ fn build_session_cancel_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: None,
+        exdates: Vec::new(),
     };
     ical::build(&invite)
 }
@@ -1359,6 +1362,7 @@ fn build_occurrence_cancel_ics(
         location_url: session.meeting_url.clone(),
         recurrence: None,
         recurrence_id: session.ical_recurrence_id,
+        exdates: Vec::new(),
     };
     ical::build(&invite)
 }
@@ -1606,8 +1610,91 @@ fn build_series_invite_ics(
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
         recurrence_id: None,
+        exdates: Vec::new(),
     };
     ical::build(&invite)
+}
+
+/// Build the series `.ics` as it stands today: the master (RRULE) with an EXDATE per
+/// deleted slot, plus an override VEVENT per moved or resized member. A member is a row
+/// whose `ical_recurrence_id` is one of the rule's slots; every other row is ignored.
+/// Pure: `dtstamp` injected.
+#[allow(dead_code)]
+fn build_series_snapshot_ics(
+    coach: &users::Model,
+    coachee: &users::Model,
+    series: &coaching_session_series::Model,
+    members: &[coaching_sessions::Model],
+    description: String,
+    dtstamp: chrono::NaiveDateTime,
+) -> Result<String, Error> {
+    let anchor_tz = anchor_tz(coach);
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
+    let slots = coaching_session::series_slots(rule.start_at, &rule.recurrence)?;
+    let start = *slots.first().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            "Cannot build series snapshot: rule produced no slots".to_string(),
+        )),
+    })?;
+
+    let slotted: Vec<(NaiveDateTime, Option<&coaching_sessions::Model>)> = slots
+        .iter()
+        .map(|slot| {
+            let member = members.iter().find(|m| m.ical_recurrence_id == Some(*slot));
+            (*slot, member)
+        })
+        .collect();
+
+    let base = || ical::IcsInvite {
+        uid: ics_uid(series.id),
+        sequence: series.ical_sequence,
+        method: ical::Method::Request,
+        status: ical::EventStatus::Confirmed,
+        summary: session_summary(coach, coachee),
+        description: description.clone(),
+        anchor_tz,
+        dtstamp,
+        start,
+        duration_minutes: rule.duration_minutes,
+        organizer: platform_organizer(),
+        attendees: session_attendees(coach, coachee),
+        location_url: None,
+        recurrence: None,
+        recurrence_id: None,
+        exdates: Vec::new(),
+    };
+
+    let master = ical::IcsInvite {
+        location_url: slotted
+            .iter()
+            .filter_map(|(_, member)| *member)
+            .min_by_key(|member| member.date)
+            .and_then(|member| member.meeting_url.clone()),
+        recurrence: Some(rule.recurrence.clone()),
+        exdates: slotted
+            .iter()
+            .filter(|(_, member)| member.is_none())
+            .map(|(slot, _)| *slot)
+            .collect(),
+        ..base()
+    };
+
+    let overrides = slotted.iter().filter_map(|(slot, member)| {
+        member
+            .filter(|m| m.date != *slot || m.duration_minutes != rule.duration_minutes)
+            .map(|m| ical::IcsInvite {
+                sequence: m.ical_sequence,
+                start: m.date,
+                duration_minutes: m.duration_minutes,
+                location_url: m.meeting_url.clone(),
+                recurrence_id: Some(*slot),
+                ..base()
+            })
+    });
+
+    let invites: Vec<ical::IcsInvite> = std::iter::once(master).chain(overrides).collect();
+    ical::build_calendar(&invites)
 }
 
 /// Send series invite emails to both coach and coachee. Generic over the notification
@@ -1916,6 +2003,7 @@ fn build_series_cancel_ics(
         location_url: first_session.meeting_url.clone(),
         recurrence: Some(rule.recurrence),
         recurrence_id: None,
+        exdates: Vec::new(),
     };
     ical::build(&invite)
 }

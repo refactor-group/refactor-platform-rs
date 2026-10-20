@@ -41,6 +41,7 @@ fn invite<'a>(
         location_url: None,
         recurrence,
         recurrence_id: None,
+        exdates: Vec::new(),
     }
 }
 
@@ -254,6 +255,90 @@ fn override_instance_never_carries_an_rrule() {
     let end = out.find("END:VEVENT").unwrap();
     assert!(!out[start..end].contains("RRULE"));
     assert!(out.contains("RECURRENCE-ID;TZID=America/New_York:20260908T150000"));
+}
+
+fn weekly_count(count: u32) -> Recurrence {
+    Recurrence {
+        frequency: Frequency::Weekly,
+        interval: 1,
+        by_weekdays: None,
+        count: Some(count),
+        until: None,
+    }
+}
+
+/// Clients match an EXDATE against DTSTART, so it must use the same zoned or `Z` form.
+#[test]
+fn exdate_matches_dtstart_timezone_form() {
+    let mut zoned = invite(
+        person(COACH),
+        person(COACHEE),
+        chrono_tz::America::Chicago,
+        Some(weekly_count(6)),
+    );
+    zoned.exdates = vec![dt(2026, 9, 22, 19, 0), dt(2026, 10, 6, 19, 0)];
+    let out = build(&zoned).unwrap();
+    assert_eq!(out.matches("EXDATE;TZID=America/Chicago:").count(), 2);
+    assert!(out.contains("EXDATE;TZID=America/Chicago:20260922T140000"));
+    assert!(out.contains("EXDATE;TZID=America/Chicago:20261006T140000"));
+
+    let mut utc = invite(
+        person(COACH),
+        person(COACHEE),
+        chrono_tz::UTC,
+        Some(weekly_count(6)),
+    );
+    utc.exdates = vec![dt(2026, 9, 22, 19, 0)];
+    let out = build(&utc).unwrap();
+    assert!(out.contains("EXDATE:20260922T190000Z"));
+}
+
+/// EXDATEs only mean something against an RRULE, which an override never carries.
+#[test]
+fn exdates_dropped_without_rrule() {
+    let mut inv = invite(
+        person(COACH),
+        person(COACHEE),
+        New_York,
+        Some(weekly_count(6)),
+    );
+    inv.recurrence_id = Some(dt(2026, 9, 8, 19, 0));
+    inv.exdates = vec![dt(2026, 9, 22, 19, 0)];
+    let out = build(&inv).unwrap();
+    assert!(!out.contains("EXDATE"));
+}
+
+#[test]
+fn build_calendar_multiple_events_single_vtimezone() {
+    let master = invite(
+        person(COACH),
+        person(COACHEE),
+        New_York,
+        Some(weekly_count(6)),
+    );
+    let mut moved = invite(person(COACH), person(COACHEE), New_York, None);
+    moved.recurrence_id = Some(dt(2026, 9, 22, 19, 0));
+    moved.start = dt(2026, 9, 23, 19, 0);
+    let out = build_calendar(&[master, moved]).unwrap();
+
+    assert_eq!(out.matches("BEGIN:VEVENT").count(), 2);
+    assert_eq!(out.matches("BEGIN:VTIMEZONE").count(), 1);
+    assert!(out.find("BEGIN:VTIMEZONE").unwrap() < out.find("BEGIN:VEVENT").unwrap());
+    assert_eq!(out.matches("METHOD:REQUEST").count(), 1);
+}
+
+#[test]
+fn build_calendar_rejects_empty_and_mixed_zones() {
+    assert!(build_calendar(&[]).is_err());
+
+    let ny = invite(person(COACH), person(COACHEE), New_York, None);
+    let chicago = invite(
+        person(COACH),
+        person(COACHEE),
+        chrono_tz::America::Chicago,
+        None,
+    );
+    assert!(build_calendar(&[ny, chicago]).is_err());
 }
 
 /// RFC 5545 line unfolding: remove the CRLF followed by a leading space/tab.
