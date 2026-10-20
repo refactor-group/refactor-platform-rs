@@ -28,7 +28,7 @@ Both POSTs take no body. A 409 body carries a machine-readable reason (`legacy_s
 - Slots = `expand_recurrence(rule.start_at, &rule.recurrence)`, each truncated with `SessionDate`, exactly as `bulk_create_recurring` stores them in `ical_recurrence_id`.
 - Members = sessions whose `coaching_session_series_id` is this series and whose `ical_recurrence_id` is one of the slots. A member whose recurrence id is not a slot (for example a past session left over from before a series reschedule) is ignored.
 - Master: DTSTART = `rule.start_at`, duration = `rule.duration_minutes`, RRULE from `rule.recurrence`, SEQUENCE = `series.ical_sequence`, and EXDATE for every slot that has no member.
-- Overrides: one per member where `date != ical_recurrence_id` or `duration_minutes != rule.duration_minutes`. RECURRENCE-ID is the slot, DTSTART is `date`, SEQUENCE is the session's `ical_sequence`.
+- Overrides: one per member where `date != ical_recurrence_id` or `duration_minutes != rule.duration_minutes`. RECURRENCE-ID is the slot, DTSTART is `date`, and SEQUENCE is `max(session.ical_sequence, series.ical_sequence)`. The resend first raises every member to the bumped series value in the same transaction.
 - Everything goes in one VCALENDAR with `METHOD:REQUEST` and a single VTIMEZONE block.
 
 ## Phases
@@ -37,8 +37,13 @@ Both POSTs take no body. A 409 body carries a machine-readable reason (`legacy_s
 - [x] B2 (`6ba8f08f`): `send_series_invite_email` returns `Delivered`
 - [x] B3 (`ec624919`): both `resend_invite` endpoints
 - [x] B4 (`f6017cdb`): `include=series` with `last_session_date`
+- [x] B5 (`ff05caa4`): a series resend raises every member's `ical_sequence` to at least the series' value, and overrides never trail the master. Google Calendar drops an override whose SEQUENCE is lower than its master's; this was found in the live run.
 
 ## Follow-ups
+
+- Series dates are spread out in UTC, and the `.ics` is anchored to the coach's profile zone. For a coach in a DST zone, the calendar keeps the local wall time across DST while the app keeps the UTC time, so the two drift by an hour. This predates this feature.
+- After two or more series reschedules, recreated sessions start at `ical_sequence` 0 while the series is at 2 or more. A later single-occurrence reschedule can then send an override below its master, which Google drops. A resend now repairs this, but reschedule should seed new sessions at the series value. This predates this feature.
+- The "recurring sessions scheduled" email tells the coach that the coachee scheduled the series (`other_user_role`). This predates this feature; the resend inherits it.
 
 - A resend that fails before any send (missing API key or template id) returns 500, not 502. Only a send the provider refuses maps to 502. The frontend shows the same toast for both.
 
