@@ -43,6 +43,9 @@ features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
 
 [dev-dependencies]
 mockito = "1.6"
+# RFC 5545 expander used as an oracle: series slots must equal what a client expands
+# from the exact DTSTART;TZID + RRULE the invite carries.
+rrule = "0.14"
 # In-memory SQLite: executes the purge's real queries in-process, which the mock cannot.
 sea-orm = { version = "2.0.3", features = ["sqlx-sqlite", "schema-sync"] }
 # `test-util` (not part of `full`) provides the paused clock the job-scheduler tests

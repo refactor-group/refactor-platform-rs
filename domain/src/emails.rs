@@ -591,6 +591,35 @@ fn anchor_tz(coach: &users::Model) -> chrono_tz::Tz {
     coach.timezone.parse().unwrap_or(chrono_tz::UTC)
 }
 
+/// The zone a series this coach publishes now is written in, after the `VTIMEZONE`
+/// fallback, so expansion and the emitted `DTSTART;TZID` always agree.
+pub(crate) fn publication_zone(coach: &users::Model) -> Tz {
+    ical::emitted_zone(anchor_tz(coach))
+}
+
+/// The zone a series' invites are written in: the one it was published in.
+fn series_zone(series: &coaching_session_series::Model) -> Result<Tz, Error> {
+    Ok(serde_json::from_value::<SeriesRule>(series.rule.clone())?.zone())
+}
+
+/// The zone for an invite about `session`: its series' when it is an occurrence of one,
+/// so `RECURRENCE-ID` names an instance in the zone the calendar expanded.
+async fn invite_zone(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    coach: &users::Model,
+) -> Result<Tz, Error> {
+    match (
+        session.coaching_session_series_id,
+        session.ical_recurrence_id,
+    ) {
+        (Some(series_id), Some(_)) => {
+            series_zone(&coaching_session_series::find_by_id(db, series_id).await?)
+        }
+        _ => Ok(anchor_tz(coach)),
+    }
+}
+
 /// A globally unique, stable `UID` for a calendar event. Stability is the whole
 /// mechanism: a client matches an update to the event it supersedes by `UID`.
 fn ics_uid(id: Id) -> String {
@@ -782,10 +811,10 @@ fn build_occurrence_reschedule_ics(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
+    series_zone: Tz,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(series_id),
         sequence: session.ical_sequence,
@@ -793,7 +822,7 @@ fn build_occurrence_reschedule_ics(
         status: ical::EventStatus::Confirmed,
         summary: session_summary(coach, coachee),
         description,
-        anchor_tz,
+        anchor_tz: series_zone,
         dtstamp,
         // The NEW start; `recurrence_id` keeps addressing the original slot.
         start: session.date,
@@ -880,6 +909,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     });
 
     let dtstamp = chrono::Utc::now().naive_utc();
+    let series_zone = invite_zone(db, session, coach).await?;
     // A session inside a series is addressed as an override of its occurrence; one that
     // predates `ical_recurrence_id` goes out self-contained under its own `UID`.
     let ics_body = build_session_ics(
@@ -891,6 +921,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
                 coachee,
                 session,
                 series_id,
+                series_zone,
                 description,
                 dtstamp,
             )
@@ -1340,10 +1371,10 @@ fn build_occurrence_cancel_ics(
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     series_id: Id,
+    series_zone: Tz,
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(series_id),
         // Already bumped by the caller inside the delete transaction, so the cancellation
@@ -1353,7 +1384,7 @@ fn build_occurrence_cancel_ics(
         status: ical::EventStatus::Cancelled,
         summary: session_summary(coach, coachee),
         description,
-        anchor_tz,
+        anchor_tz: series_zone,
         dtstamp,
         start: session.date,
         duration_minutes: session.duration_minutes,
@@ -1401,13 +1432,15 @@ async fn send_session_cancelled_email_to_recipient(
 }
 
 /// Send session-cancelled emails to both coach and coachee. Takes no database handle:
-/// a cancellation loads no topics, goals, or actions.
+/// a cancellation loads no topics, goals, or actions. `series_zone` is the zone from
+/// [`invite_zone`], resolved by the caller.
 async fn send_session_cancelled_email(
     config: &Config,
     coach: &users::Model,
     coachee: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
+    series_zone: Tz,
 ) -> Result<(), Error> {
     info!(
         "Initiating session cancelled emails for session: {} (coach: {}, coachee: {})",
@@ -1422,7 +1455,15 @@ async fn send_session_cancelled_email(
         session,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         |series_id, description| {
-            build_occurrence_cancel_ics(coach, coachee, session, series_id, description, dtstamp)
+            build_occurrence_cancel_ics(
+                coach,
+                coachee,
+                session,
+                series_id,
+                series_zone,
+                description,
+                dtstamp,
+            )
         },
         |description| {
             build_session_cancel_ics(
@@ -1497,7 +1538,8 @@ pub async fn notify_session_cancelled(
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_session_cancelled_email(config, &coach, &coachee, session, &org).await
+        let series_zone = invite_zone(db, session, &coach).await?;
+        send_session_cancelled_email(config, &coach, &coachee, session, &org, series_zone).await
     }
     .await;
 
@@ -1592,7 +1634,6 @@ fn build_series_invite_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
     let invite = ical::IcsInvite {
         uid: ics_uid(series.id),
@@ -1601,7 +1642,7 @@ fn build_series_invite_ics(
         status: ical::EventStatus::Confirmed,
         summary: session_summary(coach, coachee),
         description,
-        anchor_tz,
+        anchor_tz: rule.zone(),
         dtstamp,
         start: first_session.date,
         duration_minutes: first_session.duration_minutes,
@@ -1627,9 +1668,9 @@ fn build_series_snapshot_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
-    let slots = coaching_session::series_slots(rule.start_at, &rule.recurrence)?;
+    let anchor_tz = rule.zone();
+    let slots = rule.slots()?;
     let start = *slots.first().ok_or_else(|| Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
@@ -2103,7 +2144,6 @@ fn build_series_cancel_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
     let invite = ical::IcsInvite {
         uid: ics_uid(series.id),
@@ -2114,7 +2154,7 @@ fn build_series_cancel_ics(
         status: ical::EventStatus::Cancelled,
         summary: session_summary(coach, coachee),
         description,
-        anchor_tz,
+        anchor_tz: rule.zone(),
         dtstamp,
         start: first_session.date,
         duration_minutes: first_session.duration_minutes,

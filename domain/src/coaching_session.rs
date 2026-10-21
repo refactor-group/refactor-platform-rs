@@ -182,13 +182,14 @@ pub async fn bulk_create_recurring(
     .await?)
 }
 
-/// The original start of every occurrence a series rule produces, truncated exactly as
+/// The original start of every occurrence a published series rule produces, truncated as
 /// [`bulk_create_recurring`] stores them, so they compare equal to `ical_recurrence_id`.
 pub(crate) fn series_slots(
     start_at: NaiveDateTime,
     recurrence: &Recurrence,
+    zone: chrono_tz::Tz,
 ) -> Result<Vec<NaiveDateTime>, Error> {
-    expand_recurrence(start_at, recurrence)?
+    recurrence::expand_published(start_at, recurrence, zone)?
         .into_iter()
         .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
         .collect()

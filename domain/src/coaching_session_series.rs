@@ -11,9 +11,11 @@ use crate::coaching_sessions;
 use crate::duration::Duration;
 use crate::emails;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::gateway::ical;
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
 use chrono::NaiveDateTime;
+use chrono_tz::Tz;
 use entity_api::coaching_session_series;
 use log::{debug, warn};
 use sea_orm::{DatabaseConnection, TransactionTrait};
@@ -34,6 +36,29 @@ pub struct SeriesRule {
     pub start_at: NaiveDateTime,
     pub recurrence: Recurrence,
     pub duration_minutes: i16,
+    /// IANA zone the series was published in: its invites are written in it and its
+    /// slots expanded in it, so a coach changing zone later cannot split the two.
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+}
+
+fn default_timezone() -> String {
+    chrono_tz::UTC.name().to_string()
+}
+
+impl SeriesRule {
+    /// The zone to expand and publish in. An unknown name falls back to UTC, as an
+    /// invite for it would.
+    pub fn zone(&self) -> Tz {
+        self.timezone
+            .parse()
+            .map_or(chrono_tz::UTC, ical::emitted_zone)
+    }
+
+    /// The original start of every occurrence, in the form `ical_recurrence_id` stores.
+    pub(crate) fn slots(&self) -> Result<Vec<NaiveDateTime>, Error> {
+        coaching_session::series_slots(self.start_at, &self.recurrence, self.zone())
+    }
 }
 
 /// Create a series and materialize its sessions in a single transaction.
@@ -72,8 +97,9 @@ pub async fn create_with_sessions(
         });
     }
     let coach_id = relationship.coach_id;
+    let zone = publication_zone(db, coach_id).await?;
 
-    let dates = coaching_session::expand_recurrence(start_at, &recurrence)?;
+    let dates = coaching_session::expand_recurrence(start_at, &recurrence, zone)?;
     let resolved_duration =
         entity_api::coaching_session::resolve_duration(db, coach_id, requested_duration).await?;
 
@@ -81,6 +107,7 @@ pub async fn create_with_sessions(
         start_at,
         recurrence,
         duration_minutes: resolved_duration.minutes(),
+        timezone: zone.name().to_string(),
     };
     let rule_json = serde_json::to_value(&rule)?;
 
@@ -113,6 +140,12 @@ pub async fn create_with_sessions(
     emails::notify_recurring_sessions_scheduled(db, config, &series, &sessions).await;
 
     Ok((series, sessions))
+}
+
+/// The zone a series published now by this coach is written in.
+async fn publication_zone(db: &DatabaseConnection, coach_id: Id) -> Result<Tz, Error> {
+    let coach = entity_api::user::find_by_id_without_roles(db, coach_id).await?;
+    Ok(emails::publication_zone(&coach))
 }
 
 /// List every series owned by the given coaching relationship.
@@ -159,7 +192,9 @@ pub async fn reschedule(
         return Err(RecurrenceError::StartAtInPast.into());
     }
 
-    let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence)?;
+    // A reschedule re-publishes the series, so it adopts the coach's zone as it is now.
+    let zone = publication_zone(db, coach_id).await?;
+    let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence, zone)?;
 
     // Resolve the duration for the re-materialized sessions. A reschedule moves
     // the meetings; it must not silently restretch them. So when the caller
@@ -183,6 +218,7 @@ pub async fn reschedule(
         start_at: new_start_at,
         recurrence: new_recurrence,
         duration_minutes: resolved_duration.minutes(),
+        timezone: zone.name().to_string(),
     };
 
     let future_sessions =
@@ -440,6 +476,27 @@ mod tests {
         }
     }
 
+    /// The coach row the series reads its publication zone from.
+    fn coach_row(timezone: &str) -> entity::users::Model {
+        let now = chrono::Utc::now();
+        entity::users::Model {
+            id: Id::new_v4(),
+            email: "coach@example.com".into(),
+            first_name: "Coach".into(),
+            last_name: "One".into(),
+            display_name: None,
+            password: None,
+            github_username: None,
+            github_profile_url: None,
+            timezone: timezone.into(),
+            default_coaching_session_duration_minutes: 60,
+            roles: vec![],
+            invite_status: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
     fn start() -> NaiveDateTime {
         // Relative to now so `reschedule`'s past-guard (and date rollover)
         // can't make this flaky; a fixed calendar date eventually goes stale.
@@ -519,7 +576,9 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             // 1. authz → coaching_relationship::find_by_id
             .append_query_results(vec![vec![relationship.clone()]])
-            // 2. resolve_duration → user::find_by_id with related user_roles
+            // 2. publication zone → the coach
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            // 3. resolve_duration → user::find_by_id with related user_roles
             .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
                 vec![vec![(coach, None)]],
             )
@@ -571,6 +630,7 @@ mod tests {
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .into_connection();
         let bad_rule = Recurrence {
             frequency: Frequency::Weekly,
@@ -613,6 +673,7 @@ mod tests {
                 start_at: start(),
                 recurrence: weekly_rule_count(3),
                 duration_minutes: 60,
+                timezone: "UTC".into(),
             })?,
             ical_sequence: 0,
             created_by_user_id: Id::new_v4(),
@@ -663,6 +724,8 @@ mod tests {
         ];
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // 0. publication zone → the coach
+            .append_query_results(vec![vec![coach_row("UTC")]])
             // 1. duration omitted → find_by_id on the series to read its stored rule
             .append_query_results(vec![vec![existing_series.clone()]])
             // 2. find_future_sessions_by_series_id → 2 future rows
@@ -737,6 +800,7 @@ mod tests {
             start_at,
             recurrence: weekly_rule_count(3),
             duration_minutes: 60,
+            timezone: "UTC".into(),
         })?;
         let existing_series = Model {
             id: series_id,
@@ -767,6 +831,7 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![existing_series.clone()]])
             .append_query_results(vec![vec![future_session.clone()]])
             .into_connection();
@@ -817,6 +882,7 @@ mod tests {
             start_at,
             recurrence: weekly_rule_count(3),
             duration_minutes: 60,
+            timezone: "UTC".into(),
         })?;
         // A field written by some other version of this struct.
         stored_rule["legacy_field"] = serde_json::json!("ignored");
@@ -850,6 +916,7 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![existing_series.clone()]])
             .append_query_results(vec![vec![future_session]])
             .into_connection();
@@ -998,6 +1065,7 @@ mod tests {
                 start_at: start(),
                 recurrence: weekly_rule_count(1),
                 duration_minutes: 60,
+                timezone: "UTC".into(),
             })?,
             ical_sequence: 0,
             created_by_user_id: Id::new_v4(),
@@ -1024,6 +1092,7 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![existing_series.clone()]])
             // The pre-lock snapshot still shows SEQUENCE 1.
             .append_query_results(vec![vec![session(1)]])
