@@ -37,6 +37,7 @@ pub mod organization;
 pub mod password_reset_attempt;
 pub mod platform_cost_metrics;
 pub mod query;
+pub mod search;
 pub mod tiptap_metrics;
 pub mod transcript_analysis;
 pub mod transcript_participant;

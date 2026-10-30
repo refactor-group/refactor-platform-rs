@@ -8,6 +8,7 @@ pub(crate) mod compare_api_version;
 pub(crate) mod organization_admin_access;
 pub(crate) mod organization_member_access;
 pub(crate) mod organization_user_access;
+pub(crate) mod search_access;
 pub(crate) mod super_admin_access;
 pub(crate) mod svix_signature;
 pub(crate) mod transcript_suggestion_access;

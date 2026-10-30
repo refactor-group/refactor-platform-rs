@@ -1,4 +1,5 @@
 use super::*;
+use crate::roles::Role;
 use crate::user_roles;
 use crate::users;
 

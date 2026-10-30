@@ -125,6 +125,10 @@ default flag feature that pulls in no SQLite code.)
 - **Coaching session image cascades**
   (`domain/src/coaching_session_image_cascade_sqlite_tests.rs`): deleting a session removes
   only its own images, and deleting a user removes the images they uploaded.
+- **Search visibility** (`domain/src/search_sqlite_tests.rs`): over an access matrix
+  across two organizations, the relationships search scopes on (`visible_to`) are exactly
+  the ones `grants_access_to` allows, for every caller except super admins, who search
+  everything.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge
