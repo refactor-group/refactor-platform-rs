@@ -257,10 +257,7 @@ pub async fn lookup_by_email_scoped(
 ) -> Result<Vec<UserLookupResult>, Error> {
     let found = user::find_by_email_ci(db, email.trim()).await?;
 
-    let requester_is_super_admin = requester
-        .roles
-        .iter()
-        .any(|role| role.role == Role::SuperAdmin && role.organization_id.is_none());
+    let requester_is_super_admin = requester.is_super_admin();
 
     // Both scope checks run on every path, including unknown emails and super admin
     // requesters, so response timing cannot be used to enumerate accounts. Combining
@@ -302,10 +299,7 @@ pub async fn can_administer_user(
     requester: &users::Model,
     target_user_id: Id,
 ) -> Result<bool, Error> {
-    let requester_is_super_admin = requester
-        .roles
-        .iter()
-        .any(|role| role.role == Role::SuperAdmin && role.organization_id.is_none());
+    let requester_is_super_admin = requester.is_super_admin();
 
     Ok(requester_is_super_admin
         || user_role::shares_administered_organization(db, requester.id, target_user_id).await?
