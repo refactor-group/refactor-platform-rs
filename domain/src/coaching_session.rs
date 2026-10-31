@@ -23,9 +23,9 @@ use service::config::Config;
 
 pub use entity_api::coaching_session::{
     claim_due_reminders, confirm_reminder_claim, find_by_id, find_by_series_id,
-    find_by_user_with_includes, find_counts_by_month_for_user, find_next_session,
-    find_participant_ids, release_reminder_claim, CountByMonth, DueReminder, EnrichedSession,
-    IncludeOptions, SessionQueryOptions,
+    find_by_user_with_includes, find_counts_by_month_for_user, find_nearest_by_user_with_includes,
+    find_next_session, find_participant_ids, release_reminder_claim, CountByMonth, DueReminder,
+    EnrichedSession, IncludeOptions, NearestWindow, SessionQueryOptions,
 };
 pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
@@ -1927,3 +1927,7 @@ mod tests {
         post_mock.assert_async().await;
     }
 }
+
+#[cfg(test)]
+#[path = "coaching_session_sqlite_tests.rs"]
+mod sqlite_tests;

@@ -4,7 +4,7 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::user::coaching_session::{
-    CountsByMonthParams, GroupByParam, IncludeParam, IndexParams,
+    include_options, CountsByMonthParams, GroupByParam, IndexParams, NearestParams,
 };
 use crate::{AppState, Error};
 use std::str::FromStr;
@@ -81,15 +81,7 @@ pub async fn index(
         None => None,
     };
 
-    // Build include options from parameters
-    let includes = CoachingSessionApi::IncludeOptions {
-        relationship: params.include.contains(&IncludeParam::Relationship),
-        organization: params.include.contains(&IncludeParam::Organization),
-        goal: params.include.contains(&IncludeParam::Goal),
-        agreements: params.include.contains(&IncludeParam::Agreements),
-        topics: params.include.contains(&IncludeParam::Topics),
-        series: params.include.contains(&IncludeParam::Series),
-    };
+    let includes = include_options(&params.include);
     let sort_column = params.get_sort_column();
     let sort_order = params.get_sort_order();
 
@@ -120,6 +112,54 @@ pub async fn index(
         StatusCode::OK.into(),
         enriched_sessions,
     )))
+}
+
+/// GET a coaching relationship's sessions nearest a point in time.
+///
+/// Returns up to `before` sessions strictly before `around` and up to `after` at
+/// or after it, however far apart, merged latest first (ties by `id`). A
+/// relationship the user is not part of yields an empty list.
+#[utoipa::path(
+    get,
+    path = "/users/{user_id}/coaching_sessions/nearest",
+    params(
+        ApiVersion,
+        ("user_id" = Uuid, Path, description = "User ID to retrieve coaching sessions for"),
+        ("coaching_relationship_id" = Uuid, Query, description = "The coaching relationship whose sessions to return"),
+        ("around" = String, Query, description = "Datetime the window is centered on: UTC with no offset (e.g. '2026-10-30T14:00:00') or RFC 3339 with one. A session exactly here counts as after."),
+        ("before" = u8, Query, description = "Most sessions to return before `around`, 0 to 10"),
+        ("after" = u8, Query, description = "Most sessions to return at or after `around`, 0 to 10"),
+        ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements', 'topics', 'series'.")
+    ),
+    responses(
+        (status = 200, description = "The window's sessions, latest first", body = [domain::coaching_session::EnrichedSession]),
+        (status = 400, description = "Bad Request (`invalid_nearest_window`, or an invalid include parameter)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn nearest(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Path(user_id): Path<Id>,
+    Query(params): Query<NearestParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("GET nearest Coaching Sessions for User: {user_id}, params: {params:?}");
+
+    let sessions = CoachingSessionApi::find_nearest_by_user_with_includes(
+        app_state.db_conn_ref(),
+        user_id,
+        params.compile()?,
+        include_options(&params.include),
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), sessions)))
 }
 
 /// Payload returned under `ApiResponse::data` for the counts endpoint.
