@@ -13,7 +13,7 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*,
-    sea_query::{Expr, Func},
+    sea_query::{Expr, Func, IntoCondition},
     ActiveValue::Unchanged,
     ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
     Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
@@ -460,12 +460,11 @@ pub async fn find_prior_session(
     coaching_relationship_id: Id,
     before: NaiveDateTime,
 ) -> Result<Option<Model>, Error> {
-    Ok(Entity::find()
-        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
-        .filter(Column::Date.lt(before))
-        .order_by_desc(Column::Date)
-        .one(db)
-        .await?)
+    Ok(
+        find_latest(db, coaching_relationship_id, Column::Date.lt(before), 1)
+            .await?
+            .pop(),
+    )
 }
 
 /// Earliest session in the relationship strictly after `after`. Used to eagerly
@@ -475,11 +474,46 @@ pub async fn find_next_session(
     coaching_relationship_id: Id,
     after: NaiveDateTime,
 ) -> Result<Option<Model>, Error> {
+    Ok(
+        find_earliest(db, coaching_relationship_id, Column::Date.gt(after), 1)
+            .await?
+            .pop(),
+    )
+}
+
+/// Up to `limit` of the relationship's sessions matching `date_filter`, latest
+/// first. Equal dates fall back to `id` so the order is stable.
+async fn find_latest(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    date_filter: impl IntoCondition,
+    limit: u64,
+) -> Result<Vec<Model>, Error> {
     Ok(Entity::find()
         .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
-        .filter(Column::Date.gt(after))
+        .filter(date_filter)
+        .order_by_desc(Column::Date)
+        .order_by_desc(Column::Id)
+        .limit(limit)
+        .all(db)
+        .await?)
+}
+
+/// Up to `limit` of the relationship's sessions matching `date_filter`, earliest
+/// first. Equal dates fall back to `id` so the order is stable.
+async fn find_earliest(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    date_filter: impl IntoCondition,
+    limit: u64,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(date_filter)
         .order_by_asc(Column::Date)
-        .one(db)
+        .order_by_asc(Column::Id)
+        .limit(limit)
+        .all(db)
         .await?)
 }
 
@@ -1015,11 +1049,59 @@ pub async fn find_by_user_with_includes(
     includes.validate()?;
 
     let sessions = find_by_user_filtered(db, user_id, options).await?;
+    enrich(db, sessions, user_id, includes).await
+}
 
+/// A relationship's sessions nearest a point in time: up to `before` strictly
+/// earlier and up to `after` at or later. See [`find_nearest_by_user_with_includes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NearestWindow {
+    pub coaching_relationship_id: Id,
+    /// UTC instant the window is centered on; a session exactly here counts as after.
+    pub around: NaiveDateTime,
+    pub before: u64,
+    pub after: u64,
+}
+
+/// The window's sessions, latest first, enriched like [`find_by_user_with_includes`].
+///
+/// Returns an empty list when `user_id` is neither coach nor coachee of the
+/// relationship, matching how the list read's relationship filter behaves.
+pub async fn find_nearest_by_user_with_includes(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    window: NearestWindow,
+    includes: IncludeOptions,
+) -> Result<Vec<EnrichedSession>, Error> {
+    includes.validate()?;
+
+    if !crate::coaching_relationship::is_participant(db, user_id, window.coaching_relationship_id)
+        .await?
+    {
+        return Ok(Vec::new());
+    }
+
+    let rel = window.coaching_relationship_id;
+    let before = find_latest(db, rel, Column::Date.lt(window.around), window.before).await?;
+    let after = find_earliest(db, rel, Column::Date.gte(window.around), window.after).await?;
+
+    // `after` is earliest first, so reversing it puts the whole window latest first.
+    let sessions = after.into_iter().rev().chain(before).collect();
+    enrich(db, sessions, user_id, includes).await
+}
+
+/// Adds view markers, display titles and the requested related data to `sessions`,
+/// keeping their order. `viewer_id` is whose view markers to load.
+async fn enrich(
+    db: &impl ConnectionTrait,
+    sessions: Vec<Model>,
+    viewer_id: Id,
+    includes: IncludeOptions,
+) -> Result<Vec<EnrichedSession>, Error> {
     // View markers load unconditionally so `viewer_last_viewed_at` is present on
-    // every response (null when never viewed); the path user is the viewer.
+    // every response (null when never viewed).
     let session_ids: Vec<Id> = sessions.iter().map(|s| s.id).collect();
-    let views = batch_load_views(db, &session_ids, user_id).await?;
+    let views = batch_load_views(db, &session_ids, viewer_id).await?;
 
     // `load_related_data` runs no queries for an unset include, so one assembly
     // pass covers both the bare and fully-included cases.
@@ -1391,6 +1473,11 @@ mod normalize_tests;
 #[cfg(feature = "mock")]
 #[path = "coaching_session_org_scope_tests.rs"]
 mod org_scope_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_nearest_tests.rs"]
+mod nearest_tests;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
@@ -2012,7 +2099,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC LIMIT $3"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC, "coaching_sessions"."id" DESC LIMIT $3"#,
                 [
                     relationship_id.into(),
                     before.into(),
@@ -2044,7 +2131,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC LIMIT $3"#,
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" > $2 ORDER BY "coaching_sessions"."date" ASC, "coaching_sessions"."id" ASC LIMIT $3"#,
                 [
                     relationship_id.into(),
                     after.into(),

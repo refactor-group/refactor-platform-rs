@@ -151,6 +151,38 @@ fn the_transcript_download_operation_is_served_with_its_schemas() {
     );
 }
 
+#[test]
+fn the_nearest_sessions_operation_declares_its_query_parameters() {
+    let spec = spec();
+    let operation = &spec["paths"]["/users/{user_id}/coaching_sessions/nearest"]["get"];
+    let query_names: Vec<&str> = operation["parameters"]
+        .as_array()
+        .expect("the nearest read must declare parameters")
+        .iter()
+        .filter(|p| p["in"] == "query")
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+
+    assert_eq!(
+        query_names,
+        [
+            "coaching_relationship_id",
+            "around",
+            "before",
+            "after",
+            "include"
+        ]
+    );
+    assert!(
+        operation["responses"].get("400").is_some(),
+        "the nearest read must document its invalid_nearest_window 400"
+    );
+    assert!(
+        operation["responses"].get("422").is_some(),
+        "the nearest read must document the 422 for `organization` without `relationship`"
+    );
+}
+
 /// Every `$ref` in the spec must point at a schema that is actually defined.
 /// utoipa 4 silently emitted refs to unregistered types; this guards the regression.
 #[test]

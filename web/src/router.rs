@@ -147,6 +147,7 @@ use utoipa_rapidoc::RapiDoc;
             user::coaching_relationships_controller::index,
             user::coaching_session_controller::index,
             user::coaching_session_controller::counts,
+            user::coaching_session_controller::nearest,
             user::goal_controller::index,
             search_controller::index,
             jwt_controller::generate_collab_token,
@@ -833,6 +834,10 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
                 .route(
                     "/users/:user_id/coaching_sessions/counts",
                     get(user::coaching_session_controller::counts),
+                )
+                .route(
+                    "/users/:user_id/coaching_sessions/nearest",
+                    get(user::coaching_session_controller::nearest),
                 )
                 .route_layer(from_fn_with_state(
                     app_state.clone(),

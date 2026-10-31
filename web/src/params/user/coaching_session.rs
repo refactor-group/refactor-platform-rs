@@ -1,12 +1,18 @@
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use sea_orm::Order;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::error::WebErrorKind;
 use crate::params::coaching_session::SortField;
 use crate::params::sort::SortOrder;
 use crate::params::WithSortDefaults;
+use crate::Error;
+use domain::coaching_session::{IncludeOptions, NearestWindow};
 use domain::{coaching_sessions, Id, QuerySort};
+
+/// Most sessions `/nearest` returns on either side of `around`.
+pub(crate) const MAX_NEAREST_PER_SIDE: u64 = 10;
 
 /// Related resources that can be batch-loaded with coaching sessions.
 ///
@@ -73,6 +79,88 @@ pub(crate) struct IndexParams {
     /// See `IncludeParam` for valid values and N+1 query optimization details.
     #[serde(default, deserialize_with = "deserialize_comma_separated")]
     pub(crate) include: Vec<IncludeParam>,
+}
+
+/// The batch-loads the `include` values ask for.
+pub(crate) fn include_options(include: &[IncludeParam]) -> IncludeOptions {
+    IncludeOptions {
+        relationship: include.contains(&IncludeParam::Relationship),
+        organization: include.contains(&IncludeParam::Organization),
+        goal: include.contains(&IncludeParam::Goal),
+        agreements: include.contains(&IncludeParam::Agreements),
+        topics: include.contains(&IncludeParam::Topics),
+        series: include.contains(&IncludeParam::Series),
+    }
+}
+
+/// Query parameters for GET `/users/{user_id}/coaching_sessions/nearest`.
+///
+/// Every window field arrives as a string so a missing or malformed value gets the
+/// structured `invalid_nearest_window` 400 instead of axum's plain-text rejection.
+#[derive(Debug, Deserialize)]
+pub(crate) struct NearestParams {
+    pub(crate) coaching_relationship_id: Option<String>,
+    /// UTC with no offset (the form a session's `date` takes), or RFC 3339 with one.
+    pub(crate) around: Option<String>,
+    pub(crate) before: Option<String>,
+    pub(crate) after: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_comma_separated")]
+    pub(crate) include: Vec<IncludeParam>,
+}
+
+impl NearestParams {
+    /// Validate into the window to query. Every rejection is `invalid_nearest_window`.
+    pub(crate) fn compile(&self) -> Result<NearestWindow, Error> {
+        let coaching_relationship_id =
+            required("coaching_relationship_id", &self.coaching_relationship_id)?
+                .parse::<Id>()
+                .map_err(|_| invalid_window("`coaching_relationship_id` must be a UUID."))?;
+        let around = parse_around(required("around", &self.around)?).ok_or_else(|| {
+            invalid_window(
+                "`around` must be a datetime such as 2026-10-30T14:00:00 (UTC) or 2026-10-30T09:00:00-05:00.",
+            )
+        })?;
+
+        Ok(NearestWindow {
+            coaching_relationship_id,
+            around,
+            before: per_side_count("before", &self.before)?,
+            after: per_side_count("after", &self.after)?,
+        })
+    }
+}
+
+fn invalid_window(message: &str) -> Error {
+    Error::Web(WebErrorKind::InvalidParam {
+        error: "invalid_nearest_window",
+        message: message.to_string(),
+    })
+}
+
+fn required<'a>(name: &str, value: &'a Option<String>) -> Result<&'a str, Error> {
+    value
+        .as_deref()
+        .ok_or_else(|| invalid_window(&format!("`{name}` is required.")))
+}
+
+/// An offset is converted to UTC; a bare datetime is already UTC.
+fn parse_around(raw: &str) -> Option<NaiveDateTime> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|at| at.naive_utc())
+        .or_else(|_| NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.f"))
+        .ok()
+}
+
+fn per_side_count(name: &str, value: &Option<String>) -> Result<u64, Error> {
+    required(name, value)?
+        .parse::<u64>()
+        .ok()
+        .filter(|count| *count <= MAX_NEAREST_PER_SIDE)
+        .ok_or_else(|| {
+            invalid_window(&format!(
+                "`{name}` must be a whole number from 0 to {MAX_NEAREST_PER_SIDE}."
+            ))
+        })
 }
 
 /// Custom deserializer for comma-separated include parameter
@@ -205,5 +293,189 @@ mod tests {
         let axum::extract::Query(params) =
             axum::extract::Query::<IndexParams>::try_from_uri(&uri).expect("include=series parses");
         assert_eq!(params.include, vec![IncludeParam::Series]);
+    }
+
+    const RELATIONSHIP_ID: &str = "7b16a3b2-a709-4068-95d2-c1600db57cae";
+
+    fn nearest(query: &str) -> NearestParams {
+        let uri: axum::http::Uri = format!("/?{query}").parse().unwrap();
+        axum::extract::Query::<NearestParams>::try_from_uri(&uri)
+            .expect("the query deserializes")
+            .0
+    }
+
+    /// A full query with `field` replaced by `value`, or left out when `value` is `None`.
+    fn query_with(field: &str, value: Option<&str>) -> String {
+        [
+            ("coaching_relationship_id", RELATIONSHIP_ID),
+            ("around", "2026-10-30T14:00:00"),
+            ("before", "2"),
+            ("after", "3"),
+        ]
+        .into_iter()
+        .filter_map(|(name, default)| match name == field {
+            true => value.map(|v| format!("{name}={v}")),
+            false => Some(format!("{name}={default}")),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+    }
+
+    fn valid(around: &str) -> String {
+        query_with("around", Some(around))
+    }
+
+    fn utc(hour: u32, minute: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 10, 30)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+    }
+
+    /// The `invalid_nearest_window` message, or a panic for any other outcome.
+    fn rejection(params: NearestParams) -> String {
+        match params.compile() {
+            Err(Error::Web(WebErrorKind::InvalidParam {
+                error: "invalid_nearest_window",
+                message,
+            })) => message,
+            other => panic!("expected invalid_nearest_window, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_full_query_compiles_into_the_window() {
+        let window = nearest(&valid("2026-10-30T14:00:00"))
+            .compile()
+            .expect("compiles");
+        assert_eq!(
+            window,
+            NearestWindow {
+                coaching_relationship_id: RELATIONSHIP_ID.parse().unwrap(),
+                around: utc(14, 0),
+                before: 2,
+                after: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn around_without_an_offset_is_read_as_utc_like_a_session_date() {
+        let session_date = utc(14, 0).format("%Y-%m-%dT%H:%M:%S").to_string();
+        let window = nearest(&valid(&session_date)).compile().expect("compiles");
+        assert_eq!(window.around, utc(14, 0));
+    }
+
+    #[test]
+    fn around_with_an_offset_is_converted_to_utc() {
+        for around in [
+            "2026-10-30T14:00:00Z",
+            "2026-10-30T09:00:00-05:00",
+            "2026-10-30T19:30:00%2B05:30",
+        ] {
+            let window = nearest(&valid(around)).compile().expect("compiles");
+            assert_eq!(window.around, utc(14, 0), "{around}");
+        }
+    }
+
+    #[test]
+    fn around_keeps_fractional_seconds() {
+        let window = nearest(&valid("2026-10-30T14:00:00.250"))
+            .compile()
+            .expect("compiles");
+        assert_eq!(
+            window.around,
+            utc(14, 0) + chrono::TimeDelta::milliseconds(250)
+        );
+    }
+
+    /// An unencoded `+` decodes to a space, so a `+hh:mm` offset must be sent as `%2B`.
+    #[test]
+    fn around_with_an_unencoded_plus_is_rejected() {
+        assert!(rejection(nearest(&valid("2026-10-30T19:30:00+05:30"))).contains("`around`"));
+    }
+
+    #[test]
+    fn around_that_is_not_a_datetime_is_rejected() {
+        for around in ["2026-10-30", "14:00", "yesterday", ""] {
+            assert!(
+                rejection(nearest(&valid(around))).contains("`around`"),
+                "{around}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_missing_field_is_named() {
+        for field in ["coaching_relationship_id", "around", "before", "after"] {
+            let query = query_with(field, None);
+            assert_eq!(
+                rejection(nearest(&query)),
+                format!("`{field}` is required.")
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_relationship_id_is_rejected() {
+        let query = query_with("coaching_relationship_id", Some("nope"));
+        assert!(rejection(nearest(&query)).contains("`coaching_relationship_id`"));
+    }
+
+    #[test]
+    fn counts_from_zero_to_ten_are_accepted() {
+        let window = nearest(&query_with("before", Some("0")))
+            .compile()
+            .expect("compiles");
+        assert_eq!(window.before, 0);
+        let window = nearest(&query_with("after", Some("10")))
+            .compile()
+            .expect("compiles");
+        assert_eq!(window.after, MAX_NEAREST_PER_SIDE);
+    }
+
+    #[test]
+    fn counts_outside_zero_to_ten_or_not_whole_numbers_are_rejected() {
+        for (field, value) in [
+            ("before", "11"),
+            ("after", "-1"),
+            ("before", "two"),
+            ("after", "2.5"),
+        ] {
+            assert_eq!(
+                rejection(nearest(&query_with(field, Some(value)))),
+                format!("`{field}` must be a whole number from 0 to 10."),
+                "{field}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_include_value_maps_to_its_own_batch_load() {
+        let params = nearest(&format!(
+            "{}&include=relationship,organization,goal,agreements,topics,series",
+            valid("2026-10-30T14:00:00")
+        ));
+        let includes = include_options(&params.include);
+        assert!(
+            includes.relationship
+                && includes.organization
+                && includes.goal
+                && includes.agreements
+                && includes.topics
+                && includes.series,
+            "{includes:?}"
+        );
+    }
+
+    #[test]
+    fn include_relationship_maps_to_the_relationship_batch_load() {
+        let params = nearest(&format!(
+            "{}&include=relationship",
+            valid("2026-10-30T14:00:00")
+        ));
+        let includes = include_options(&params.include);
+        assert!(includes.relationship);
+        assert!(!includes.organization && !includes.goal && !includes.agreements);
     }
 }
