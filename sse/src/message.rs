@@ -93,6 +93,13 @@ pub enum Event {
     // Transcription events (session-scoped)
     #[serde(rename = "transcription_updated")]
     TranscriptionUpdated { coaching_session_id: String },
+
+    // Transcript suggestion events (session-scoped, coarse: refetch on receipt)
+    #[serde(rename = "transcript_suggestions_changed")]
+    TranscriptSuggestionsChanged {
+        coaching_session_id: String,
+        target: String,
+    },
 }
 
 impl EventType for Event {
@@ -114,6 +121,7 @@ impl EventType for Event {
             Event::TopicsChanged { .. } => "topics_changed",
             Event::CoachingSessionTitleUpdated { .. } => "coaching_session_title_updated",
             Event::TranscriptionUpdated { .. } => "transcription_updated",
+            Event::TranscriptSuggestionsChanged { .. } => "transcript_suggestions_changed",
         }
     }
 }
@@ -211,5 +219,22 @@ mod tests {
             })
         );
         assert_eq!(event.event_type(), "coaching_session_title_updated");
+    }
+
+    // Pins the coarse transcript-suggestions event wire shape.
+    #[test]
+    fn transcript_suggestions_changed_serializes_to_expected_wire_shape() {
+        let event = Event::TranscriptSuggestionsChanged {
+            coaching_session_id: "abc-123".to_string(),
+            target: "action".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            serde_json::json!({
+                "type": "transcript_suggestions_changed",
+                "data": { "coaching_session_id": "abc-123", "target": "action" }
+            })
+        );
+        assert_eq!(event.event_type(), "transcript_suggestions_changed");
     }
 }

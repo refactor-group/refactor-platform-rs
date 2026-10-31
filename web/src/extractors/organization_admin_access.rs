@@ -39,11 +39,10 @@ where
 
         // Evaluated in memory against the roles `AuthenticatedUser` already hydrated,
         // so this extractor costs no extra connection.
-        let is_organization_admin = authenticated_user.roles.iter().any(|role| {
-            (role.role == users::Role::SuperAdmin && role.organization_id.is_none())
-                || (role.role == users::Role::Admin
-                    && role.organization_id == Some(organization_id))
-        });
+        let is_organization_admin = authenticated_user.is_super_admin()
+            || authenticated_user.roles.iter().any(|role| {
+                role.role == users::Role::Admin && role.organization_id == Some(organization_id)
+            });
 
         // Precedes the lookup so a non-admin cannot probe which organizations exist.
         if !is_organization_admin {

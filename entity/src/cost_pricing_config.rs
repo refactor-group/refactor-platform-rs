@@ -56,6 +56,44 @@ impl Model {
             avg: quantity * self.cost_per_unit_avg,
         }
     }
+
+    /// Exact cost of a token-priced call, with the same figure in low, high and avg.
+    ///
+    /// A token rate keeps the input price in `cost_per_unit_low` and the output price in
+    /// `cost_per_unit_high`. The call's token counts are known, so no blended average is needed.
+    pub fn cost_for_tokens(&self, input: Decimal, output: Decimal) -> CostRange {
+        let exact = input * self.cost_per_unit_low + output * self.cost_per_unit_high;
+        CostRange {
+            low: exact,
+            high: exact,
+            avg: exact,
+        }
+    }
 }
 
 impl ActiveModelBehavior for ActiveModel {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_token_call_costs_input_at_the_low_rate_and_output_at_the_high_rate() {
+        let rate = Model {
+            id: Id::new_v4(),
+            provider: pipeline_provider::Provider::LlmGateway,
+            metric: cost_metric::Metric::LlmTokens,
+            unit: cost_unit::Unit::Tokens,
+            cost_per_unit_low: Decimal::new(33, 7),
+            cost_per_unit_high: Decimal::new(165, 7),
+            cost_per_unit_avg: Decimal::new(51857, 10),
+            effective_from: chrono::Utc::now().fixed_offset(),
+        };
+
+        // 29,020 input and 400 output tokens, as billed by AssemblyAI for a 59-minute session.
+        let cost = rate.cost_for_tokens(Decimal::from(29_020), Decimal::from(400));
+
+        let billed = Decimal::new(102366, 6);
+        assert_eq!((cost.low, cost.high, cost.avg), (billed, billed, billed));
+    }
+}

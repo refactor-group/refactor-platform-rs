@@ -7,7 +7,7 @@ use crate::coaching_session_hydration::{
 use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
 use crate::emails;
-use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::error::{DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::MeetingProperties;
@@ -180,6 +180,19 @@ pub async fn bulk_create_recurring(
         requested_duration,
     )
     .await?)
+}
+
+/// The original start of every occurrence a published series rule produces, truncated as
+/// [`bulk_create_recurring`] stores them, so they compare equal to `ical_recurrence_id`.
+pub(crate) fn series_slots(
+    start_at: NaiveDateTime,
+    recurrence: &Recurrence,
+    zone: chrono_tz::Tz,
+) -> Result<Vec<NaiveDateTime>, Error> {
+    recurrence::expand_published(start_at, recurrence, zone)?
+        .into_iter()
+        .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
+        .collect()
 }
 
 /// Runs deferred side-effects (Tiptap doc, meeting URL, in-progress-goal links)
@@ -444,6 +457,64 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
     // Announce only once the delete has committed.
     emails::notify_session_cancelled(db, config, &cancelled).await;
     Ok(())
+}
+
+/// Resend a session's invite to both participants, under a bumped SEQUENCE so calendars
+/// update the event they already hold. A member of a current series is refused: its
+/// invite is the series', so it is resent from there. A legacy member never had a series
+/// invite and goes out standalone.
+pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
+    let session = find_by_id(db, id).await?;
+    if session.date <= chrono::Utc::now().naive_utc() {
+        return Err(resend_refused(
+            "This session has already happened.",
+            "no_upcoming_sessions",
+        ));
+    }
+    if session.coaching_session_series_id.is_some() && session.ical_recurrence_id.is_some() {
+        return Err(resend_refused(
+            "This session's invite is part of its series.",
+            "series_member",
+        ));
+    }
+
+    // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
+    let bumped = coaching_session::increment_ical_sequence(db, id).await?;
+    let parties = emails::InviteParties::load(db, bumped.coaching_relationship_id).await?;
+    let delivered = emails::send_session_invite_resend(
+        db,
+        config,
+        &parties.participants(),
+        &bumped,
+        &parties.organization,
+    )
+    .await?;
+    ensure_coachee_reached(&delivered)
+}
+
+/// A resend that cannot apply, as a 409 carrying a machine-readable `reason`.
+pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
+    Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+            EntityErrorKind::Conflict {
+                message: message.to_string(),
+                details: Some(serde_json::json!({ "reason": reason })),
+            },
+        )),
+    }
+}
+
+/// A resend is only done once the coachee has it. Missing the coach is not a failure: the
+/// coach is the one asking.
+pub(crate) fn ensure_coachee_reached(delivered: &emails::Delivered) -> Result<(), Error> {
+    match delivered.coachee {
+        true => Ok(()),
+        false => Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+        }),
+    }
 }
 
 /// If a provider is specified on the session, attempt to attach a meeting URL. First checks

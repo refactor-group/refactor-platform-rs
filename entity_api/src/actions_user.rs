@@ -7,7 +7,7 @@ use entity::actions_users::{ActiveModel, Column, Entity, Model};
 use entity::Id;
 use sea_orm::{
     entity::prelude::*, ActiveValue::Set, Condition, ConnectionTrait, DatabaseConnection,
-    TransactionTrait, TryIntoModel,
+    TransactionSession, TransactionTrait, TryIntoModel,
 };
 
 use log::*;
@@ -194,8 +194,8 @@ pub async fn find_assignees_for_actions(
 ///
 /// Returns `Error` if any database operation fails. On error, the transaction
 /// is rolled back and no changes are persisted.
-pub async fn set_assignees(
-    db: &DatabaseConnection,
+pub async fn set_assignees<C: ConnectionTrait + TransactionTrait>(
+    db: &C,
     action_id: Id,
     user_ids: Vec<Id>,
 ) -> Result<Vec<Model>, Error> {
@@ -213,11 +213,11 @@ pub async fn set_assignees(
 
     for user_id in &user_ids {
         let active_model = ActiveModel {
+            id: Set(Id::new_v4()),
             action_id: Set(action_id),
             user_id: Set(*user_id),
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
-            ..Default::default()
         };
 
         let model = active_model.insert(&txn).await?.try_into_model()?;

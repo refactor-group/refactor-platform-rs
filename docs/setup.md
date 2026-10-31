@@ -113,7 +113,20 @@ Once the tunnel is up it sends an unsigned `POST /webhooks/recall_ai` through it
 
 If ngrok reports the domain is already online, another ngrok (often a forgotten earlier run) holds it; stop that one first.
 
-### 5. Coaching Note Images (Object Storage)
+### 5. Suggested Actions (AssemblyAI LLM Gateway)
+
+When a coaching session transcript completes, the backend sends the speaker-labelled transcript to the AssemblyAI LLM Gateway and stores the commitments it finds as suggested Actions that the coach and coachee review. Nothing becomes an Action until one of them accepts it. See [docs/architecture/transcript_suggestions.md](architecture/transcript_suggestions.md) for how it works.
+
+```env
+ASSEMBLY_AI_API_KEY=<your AssemblyAI API key>
+# These have working defaults; only set them to override:
+# ASSEMBLY_AI_LLM_MODEL=claude-sonnet-4-6
+# ASSEMBLY_AI_LLM_BASE_URL=https://llm-gateway.assemblyai.com/v1
+```
+
+Without `ASSEMBLY_AI_API_KEY` transcripts still complete and no suggestions are made. Surrounding whitespace, such as a trailing newline, is trimmed; a key with any other character a header cannot carry is ignored with a startup warning. Only transcripts that complete while the key is set are analyzed. To test locally, record a real session through the Recall webhook tunnel (section 4) and follow [docs/test-plans/transcript_suggestions_manual_testing.md](test-plans/transcript_suggestions_manual_testing.md).
+
+### 6. Coaching Note Images (Object Storage)
 
 Images pasted into a coaching note are uploaded to object storage; the note itself stores only an
 image id and resolves the URL at render time. `OBJECT_STORE_BACKEND` picks the backend.
@@ -161,7 +174,7 @@ the image endpoints return 503 rather than failing startup.
 To verify the whole pipeline end to end, follow
 [docs/test-plans/coaching_session_images_manual_testing.md](test-plans/coaching_session_images_manual_testing.md).
 
-### 6. Full `.env` Snippet
+### 7. Full `.env` Snippet
 
 ```env
 # ==============================
@@ -186,6 +199,13 @@ RECALL_AI_REGION=us-west-2
 RECALL_AI_WEBHOOK_SECRET=whsec_<your workspace signing secret>
 
 # ==============================
+#   Suggested Actions (AssemblyAI LLM Gateway)
+# ==============================
+ASSEMBLY_AI_API_KEY=<your AssemblyAI API key>
+ASSEMBLY_AI_LLM_MODEL=claude-sonnet-4-6
+ASSEMBLY_AI_LLM_BASE_URL=https://llm-gateway.assemblyai.com/v1
+
+# ==============================
 #   Coaching note images
 # ==============================
 OBJECT_STORE_BACKEND=local
@@ -203,7 +223,7 @@ TIPTAP_AUTH_KEY=<any shared secret; the launcher passes it to both servers>
 TIPTAP_JWT_SIGNING_KEY=<any shared secret; the launcher passes it to both servers>
 ```
 
-### 7. Collaborative Notes Server (docs-collab-server)
+### 8. Collaborative Notes Server (docs-collab-server)
 
 Coaching-session notes sync through the self-hosted `docs-collab-server`, not TipTap Cloud. The frontend has no Cloud fallback: if its collab URL is set but nothing is listening, the editor opens local-only with **no error**, and notes silently never sync. So the server has to be running whenever you work on notes.
 
@@ -230,7 +250,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:1234/health   # 200
 
 If notes open but never sync or show presence, check that the collab server is running before anything else.
 
-### 8. Development Flow
+### 9. Development Flow
 
 1. Generate and set `ENCRYPTION_KEY`.
 2. Start the backend: `scripts/run_backend.sh` (app server plus collab server).
@@ -275,6 +295,7 @@ OAUTH_SUCCESS_REDIRECT_URI=https://myrefactor.com/settings
 - **Webhook URL**: Set to your production endpoint, e.g. `https://api.myrefactor.com/webhooks/recall_ai`
 - No tunnel required — the production host is directly reachable
 - Use production API keys and signing secrets, not development ones
+- **Retention**: every bot asks Recall to delete its recording (audio, video and Recall's copy of the transcript) after 7 days, which is within Recall's free retention. The platform keeps only the transcript, in its own database. Bots created before this setting keep the account's default retention; delete their media through Recall's API if that default is forever
 
 ```env
 RECALL_AI_API_KEY=<production-api-key>
@@ -282,7 +303,30 @@ RECALL_AI_REGION=us-east-1          # or eu-west-2
 RECALL_AI_WEBHOOK_SECRET=whsec_<production-signing-secret>
 ```
 
-### 4. Full Production Environment Variables
+### 4. Suggested Actions: private AssemblyAI setup
+
+Session conversations are sent to AssemblyAI and, through the LLM Gateway, to the model vendor. Walk through this checklist before setting `ASSEMBLY_AI_API_KEY` in production.
+
+- [ ] **Own account and key.** Use the platform's own AssemblyAI account on a paid plan and a production key. Set `ASSEMBLY_AI_API_KEY` as a GitHub `production` environment secret.
+- [ ] **Opt out of model training.** In the AssemblyAI dashboard, open Settings > Data Controls and turn on "Opt Out of Data Sharing for Model Improvement Program". Only an Owner or Admin can do this, it needs a paid plan, it applies going forward only, and it forgoes the program discount. Alternative: email data-opt-out@assemblyai.com from the account's address and keep the confirmation.
+- [ ] **Model vendors do not train on LLM Gateway traffic.** AssemblyAI states it has opted out of training with every LLM Gateway provider. Nothing to configure.
+- [ ] **Short retention.** In Data Controls, set **Time-to-live (TTL)** to 1 day. It covers LLM Gateway inputs and outputs as well as audio and transcripts sent to AssemblyAI directly, and deletion runs hourly once it has passed. The privacy policy promises deletion within one day, so change both together.
+- [ ] **Keep an Anthropic model.** Leave `ASSEMBLY_AI_LLM_MODEL` on an Anthropic model (default `claude-sonnet-4-6`). AssemblyAI runs Claude on Amazon Bedrock, which stores nothing, falling back to Anthropic's own API with zero-day retention. Zero data retention for every request is available for Anthropic and Google models under a signed BAA, if it is ever required.
+- [ ] **Provider toggles.** Claude runs through AWS Bedrock, which is enabled by default. In Data Controls, leave the opt-in providers (Together AI, Fireworks AI, DigitalOcean) off.
+- [ ] **Pricing row (optional, for cost tracking).** Without it, analyses still run but no cost row is recorded. Insert one rate for provider `llm_gateway`, metric `llm_tokens`: `cost_per_unit_low` is the model's input price per token and `cost_per_unit_high` its output price per token. Each analysis is priced exactly from its input and output token counts, so `cost_per_unit_avg` is not used for tokens; it only has to be filled in, for example with a blend of the two. claude-sonnet-4-6 on AssemblyAI is $3 / $15 per million tokens, and LLM Gateway requests are billed with its 10% regional surcharge, which is 0.0000033 / 0.0000165 per token:
+
+  ```sql
+  INSERT INTO refactor_platform.cost_pricing_config
+      (provider, metric, unit, cost_per_unit_low, cost_per_unit_high, cost_per_unit_avg, effective_from)
+  VALUES
+      ('llm_gateway', 'llm_tokens', 'tokens', 0.0000033, 0.0000165, 0.0000051857, NOW());
+  ```
+
+  The average above, (6 x 0.0000033 + 1 x 0.0000165) / 7, is informational only. When prices change, insert a new row with a later `effective_from` rather than editing this one.
+- [ ] **Re-check the terms.** AssemblyAI's terms change. Read their current pages before enabling: [data retention and model training](https://www.assemblyai.com/docs/data-retention-and-model-training), [data controls](https://assemblyai.com/docs/data-controls), [LLM Gateway providers](https://assemblyai.com/docs/llm-gateway/providers).
+- [ ] **Privacy policy.** The platform's privacy policy (`/privacy` in the frontend) names Recall.ai, AssemblyAI and Anthropic, and states the training opt-out, the one-day TTL and Recall's 7-day retention. Keep it in step with these settings.
+
+### 5. Full Production Environment Variables
 
 In addition to the variables in [README.md](../README.md) (database, Tiptap, Resend), add:
 
@@ -301,6 +345,11 @@ RECALL_AI_API_KEY=<production-api-key>
 RECALL_AI_REGION=us-east-1
 RECALL_AI_WEBHOOK_SECRET=whsec_<production-signing-secret>
 
+# Suggested Actions (see "Suggested Actions: private AssemblyAI setup")
+ASSEMBLY_AI_API_KEY=<production-api-key>
+ASSEMBLY_AI_LLM_MODEL=claude-sonnet-4-6
+ASSEMBLY_AI_LLM_BASE_URL=https://llm-gateway.assemblyai.com/v1
+
 # Coaching note images (see "Coaching Note Images" under Development Setup)
 OBJECT_STORE_BACKEND=spaces
 SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
@@ -314,6 +363,6 @@ COACHING_SESSION_IMAGE_GRACE_PERIOD_HOURS=168
 COACHING_SESSION_IMAGE_PURGE_POLL_MINUTES=60
 ```
 
-### 5. Deployment
+### 6. Deployment
 
 See [docs/cicd/production-deployment.md](cicd/production-deployment.md) for the full deployment process.

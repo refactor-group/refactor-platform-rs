@@ -67,6 +67,19 @@ pub struct Model {
 impl ActiveModelBehavior for ActiveModel {}
 
 impl Model {
+    /// Whether this user holds the global SuperAdmin role: a `SuperAdmin` row with
+    /// no organization. An organization-scoped `SuperAdmin` row does not count.
+    ///
+    /// The single definition every authorization check uses, so that a decision
+    /// made per-row (`coaching_relationships::Model::grants_access_to`) and one made
+    /// corpus-wide (search's `Visibility`) can never disagree. Reads the preloaded
+    /// `roles`, so it is `false` for a user loaded without them.
+    pub fn is_super_admin(&self) -> bool {
+        self.roles
+            .iter()
+            .any(|r| r.role == Role::SuperAdmin && r.organization_id.is_none())
+    }
+
     /// How this user is named to other humans: their chosen display name, else first and
     /// last, else their email. Distinct from the bare `first_name` + `last_name` pairing
     /// used where a formal name is wanted regardless of what the user chose to be called.
@@ -143,6 +156,33 @@ mod tests {
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),
         }
+    }
+
+    fn role(user_id: Uuid, role: Role, organization_id: Option<Uuid>) -> crate::user_roles::Model {
+        crate::user_roles::Model {
+            id: Uuid::new_v4(),
+            role,
+            organization_id,
+            user_id,
+            created_at: Utc::now().into(),
+            updated_at: Utc::now().into(),
+        }
+    }
+
+    #[test]
+    fn is_super_admin_requires_the_global_super_admin_row() {
+        let id = Uuid::new_v4();
+        let mut user = test_user(id, None);
+        assert!(!user.is_super_admin());
+
+        user.roles = vec![
+            role(id, Role::SuperAdmin, Some(Uuid::new_v4())),
+            role(id, Role::Admin, None),
+        ];
+        assert!(!user.is_super_admin());
+
+        user.roles.push(role(id, Role::SuperAdmin, None));
+        assert!(user.is_super_admin());
     }
 
     #[test]

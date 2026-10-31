@@ -1,0 +1,14 @@
+# Real transcript of a f12-later-deadlines recording (rec1), transcription errors kept; names changed.
+# session: Wednesday 2026-10-21
+# next_session: Wednesday 2026-10-28 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:25] Coach: I'll find for the project
+[s2 00:31] Coach: and I will commit you that by our next session.
+[s3 00:43] Coachee: I'll update the team wiki with the new process.
+[s4 00:55] Coach: When? By.
+[s5 01:01] Coachee: Let's say by Friday.
+[s6 01:12] Coachee: I'll call the vendor about the renewal and I'll draft the hiring plan.
+[s7 01:22] Coachee: The hiring plan. By Monday,
+[s8 01:33] Coachee: I'll prep the board slides.
+[s9 01:39] Coach: And I'll review your draft by Thursday.

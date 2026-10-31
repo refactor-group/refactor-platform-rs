@@ -2,6 +2,8 @@ use super::*;
 use crate::{coaching_sessions, organizations, users, Id};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+#[cfg(feature = "mock")]
+use chrono::DurationRound;
 use chrono::NaiveDate;
 use mockito::{Server, ServerGuard};
 #[cfg(feature = "mock")]
@@ -821,6 +823,17 @@ fn mock_description_loaders() -> DatabaseConnection {
         .into_connection()
 }
 
+/// The description loaders, then the series an occurrence invite reads its zone from.
+#[cfg(feature = "mock")]
+fn mock_occurrence_loaders(series: coaching_session_series::Model) -> DatabaseConnection {
+    MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+        .append_query_results(vec![vec![series]])
+        .into_connection()
+}
+
 /// mockito has no negative body matcher, so absence of a template variable rides on
 /// `match_request`. An unreadable or unparsable body fails the match.
 fn reject_template_variables(keys: &'static [&'static str]) -> impl Fn(&mockito::Request) -> bool {
@@ -1178,12 +1191,13 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
 async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
     let mut server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
-    let db = mock_description_loaders();
+    let series = create_test_series();
+    let series_id = series.id;
+    let db = mock_occurrence_loaders(series);
     let capture = IcsCapture::default();
 
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let series_id = Id::new_v4();
     let original_start = NaiveDate::from_ymd_opt(2026, 3, 4)
         .unwrap()
         .and_hms_opt(15, 0, 0)
@@ -1428,7 +1442,9 @@ async fn test_send_session_cancelled_email() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
 
     // The send swallows errors, so the mock assertions are what give this test teeth.
@@ -1487,7 +1503,9 @@ async fn test_send_session_cancelled_email_omits_when_variables() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
 
     mock.assert_async().await;
@@ -1528,6 +1546,7 @@ fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
         &coachee,
         &session,
         series_id,
+        chrono_tz::America::New_York,
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
     )
@@ -1570,6 +1589,7 @@ fn test_build_occurrence_reschedule_ics_keeps_original_recurrence_id() {
         &coachee,
         &session,
         series_id,
+        chrono_tz::America::New_York,
         "Join this session: https://app/x".into(),
         dtstamp,
     )
@@ -1644,7 +1664,9 @@ async fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
     mock.assert_async().await;
 
@@ -1931,7 +1953,9 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
         .create_async()
         .await;
 
-    let result = send_session_cancelled_email(&config, &coach, &coachee, &session, &org).await;
+    let result =
+        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
+            .await;
     assert!(result.is_ok());
 
     // The send swallows errors, so the mock assertions are what give this test teeth.
@@ -2359,6 +2383,7 @@ fn create_test_series() -> coaching_session_series::Model {
             "start_at": "2026-09-15T15:00:00",
             "recurrence": { "frequency": "weekly", "interval": 1 },
             "duration_minutes": 60,
+            "timezone": "America/New_York",
         }),
         ical_sequence: 0,
         created_by_user_id: Id::new_v4(),
@@ -2442,6 +2467,222 @@ fn test_build_series_invite_ics_carries_bumped_sequence() {
     assert!(ics.contains("RRULE:FREQ=WEEKLY"));
     assert!(ics.contains("METHOD:REQUEST"));
     assert!(ics.contains("STATUS:CONFIRMED"));
+}
+
+// ── Series Snapshot Tests ──────────────────────────────────────────
+
+/// A weekly, six-occurrence series starting at `start_at` (a Tuesday, UTC).
+fn snapshot_series(start_at: NaiveDateTime, ical_sequence: i32) -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": start_at,
+            "recurrence": { "frequency": "weekly", "interval": 1, "count": 6 },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ical_sequence,
+        ..create_test_series()
+    }
+}
+
+fn at(year: i32, month: u32, day: u32, hour: u32) -> NaiveDateTime {
+    let date = NaiveDate::from_ymd_opt(year, month, day).unwrap();
+    date.and_hms_opt(hour, 0, 0).unwrap()
+}
+
+/// Tuesday Sep 15 2026, 19:00 UTC: 14:00 in Chicago (CDT) for all six weeks.
+fn snapshot_start() -> NaiveDateTime {
+    at(2026, 9, 15, 19)
+}
+
+/// One unmoved member per slot.
+fn snapshot_members(series: &coaching_session_series::Model) -> Vec<coaching_sessions::Model> {
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    (0..6)
+        .map(|week| rule.start_at + chrono::Duration::weeks(week))
+        .map(|slot| coaching_sessions::Model {
+            duration_minutes: 60,
+            meeting_url: Some("https://meet.example/series".into()),
+            ..create_test_series_session(series.id, slot)
+        })
+        .collect()
+}
+
+/// The members with each `(slot, sequence)` in `moved` a day later at that sequence, and
+/// the `deleted` slots gone.
+fn edit_members(
+    series: &coaching_session_series::Model,
+    deleted: &[usize],
+    moved: &[(usize, i32)],
+) -> Vec<coaching_sessions::Model> {
+    let mut members = snapshot_members(series);
+    for &(slot, sequence) in moved {
+        members[slot].date += chrono::Duration::days(1);
+        members[slot].ical_sequence = sequence;
+    }
+    deleted.iter().rev().for_each(|&slot| {
+        members.remove(slot);
+    });
+    members
+}
+
+/// The unfolded snapshot for a Chicago coach.
+fn snapshot(
+    series: &coaching_session_series::Model,
+    members: &[coaching_sessions::Model],
+) -> String {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let dtstamp = at(2026, 9, 1, 12);
+    let ics = build_series_snapshot_ics(&coach, &coachee, series, members, "desc".into(), dtstamp)
+        .unwrap();
+    unfold(&ics)
+}
+
+/// The snapshot of the series from `start` at `sequence`, edited as [`edit_members`] does.
+fn edited_snapshot(
+    start: NaiveDateTime,
+    sequence: i32,
+    deleted: &[usize],
+    moved: &[(usize, i32)],
+) -> String {
+    let series = snapshot_series(start, sequence);
+    snapshot(&series, &edit_members(&series, deleted, moved))
+}
+
+/// Asserts the master (Chicago local `dtstart`, `sequence`), exactly `exdates`, then one
+/// override per `(recurrence_id, dtstart, sequence)`, in order.
+fn assert_snapshot(
+    ics: &str,
+    (dtstart, sequence): (&str, i32),
+    exdates: &[&str],
+    overrides: &[(&str, &str, i32)],
+) {
+    let tz = "TZID=America/Chicago";
+    let events: Vec<&str> = ics
+        .match_indices("BEGIN:VEVENT")
+        .map(|(start, _)| &ics[start..start + ics[start..].find("END:VEVENT").unwrap()])
+        .collect();
+    assert_eq!(events.len(), 1 + overrides.len(), "{ics}");
+    let master = events[0];
+    assert!(master.contains(&format!("DTSTART;{tz}:{dtstart}")), "{ics}");
+    assert!(
+        master.contains("RRULE:FREQ=WEEKLY;WKST=MO;COUNT=6"),
+        "{ics}"
+    );
+    assert!(master.contains(&format!("SEQUENCE:{sequence}")), "{ics}");
+    assert!(master.contains("LOCATION:https://meet.example/series"));
+    assert_eq!(ics.matches("EXDATE").count(), exdates.len(), "{ics}");
+    for exdate in exdates {
+        assert!(ics.contains(&format!("EXDATE;{tz}:{exdate}")), "{ics}");
+    }
+    for (event, (recurrence_id, dtstart, sequence)) in events[1..].iter().zip(overrides) {
+        assert!(event.contains(&format!("RECURRENCE-ID;{tz}:{recurrence_id}")));
+        assert!(
+            event.contains(&format!("DTSTART;{tz}:{dtstart}")),
+            "{event}"
+        );
+        assert!(event.contains(&format!("SEQUENCE:{sequence}")), "{event}");
+        assert!(!event.contains("RRULE"), "{event}");
+    }
+}
+
+const FIRST: &str = "20260915T140000";
+
+#[test]
+fn snapshot_untouched_series_is_master_only() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[]);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[]);
+}
+
+#[test]
+fn snapshot_deleted_slot_becomes_exdate() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[3], &[]);
+    assert_snapshot(&ics, (FIRST, 1), &["20261006T140000"], &[]);
+}
+
+#[test]
+fn snapshot_moved_slot_becomes_override() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[(2, 4)]);
+    let moved = ("20260929T140000", "20260930T140000", 4);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[moved]);
+}
+
+#[test]
+fn snapshot_deleted_and_moved_together() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[3], &[(2, 1)]);
+    let moved = ("20260929T140000", "20260930T140000", 1);
+    assert_snapshot(&ics, (FIRST, 1), &["20261006T140000"], &[moved]);
+}
+
+/// Nothing is filtered by `now`: a moved past occurrence still needs its override.
+#[test]
+fn snapshot_past_moved_member_kept() {
+    // Tuesday Jan 7 2025, 19:00 UTC: 13:00 in Chicago (CST).
+    let ics = edited_snapshot(at(2025, 1, 7, 19), 1, &[], &[(0, 1)]);
+    let moved = ("20250107T130000", "20250108T130000", 1);
+    assert_snapshot(&ics, ("20250107T130000", 1), &[], &[moved]);
+}
+
+#[test]
+fn snapshot_master_dtstart_is_rule_start_even_if_first_moved() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[(0, 1)]);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[(FIRST, "20260916T140000", 1)]);
+}
+
+/// Google drops an override whose SEQUENCE trails its master; a higher one is kept.
+#[test]
+fn snapshot_override_sequence_is_at_least_the_master() {
+    let trailing = edited_snapshot(snapshot_start(), 3, &[], &[(3, 1)]);
+    let leading = edited_snapshot(snapshot_start(), 3, &[], &[(3, 5)]);
+    let moved = |sequence| ("20261006T140000", "20261007T140000", sequence);
+    assert_snapshot(&trailing, (FIRST, 3), &[], &[moved(3)]);
+    assert_snapshot(&leading, (FIRST, 3), &[], &[moved(5)]);
+}
+
+/// The snapshot with slot `index` unmoved but carrying `meeting_url`.
+fn snapshot_with_url(index: usize, meeting_url: Option<&str>) -> String {
+    let series = snapshot_series(snapshot_start(), 1);
+    let mut members = snapshot_members(&series);
+    members[index].meeting_url = meeting_url.map(Into::into);
+    snapshot(&series, &members)
+}
+
+#[test]
+fn snapshot_unmoved_member_with_own_url_becomes_override() {
+    let ics = snapshot_with_url(2, Some("https://meet.example/own"));
+    let unmoved = ("20260929T140000", "20260929T140000", 1);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[unmoved]);
+    let override_event = &ics[ics.rfind("BEGIN:VEVENT").unwrap()..];
+    assert!(
+        override_event.contains("LOCATION:https://meet.example/own"),
+        "{ics}"
+    );
+}
+
+#[test]
+fn snapshot_unmoved_member_without_url_inherits_master() {
+    let ics = snapshot_with_url(2, None);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[]);
+}
+
+#[test]
+fn snapshot_ignores_non_slot_and_null_members() {
+    let series = snapshot_series(snapshot_start(), 1);
+    let members = snapshot_members(&series);
+    let stray = |recurrence_id| coaching_sessions::Model {
+        coaching_session_series_id: Some(series.id),
+        ical_recurrence_id: recurrence_id,
+        date: snapshot_start() - chrono::Duration::weeks(2),
+        duration_minutes: 30,
+        meeting_url: Some("https://meet.example/stray".into()),
+        ical_sequence: 9,
+        ..create_test_session()
+    };
+    let off_slot = snapshot_start() + chrono::Duration::hours(1);
+    let with_strays = [members.clone(), vec![stray(None), stray(Some(off_slot))]].concat();
+
+    assert_eq!(snapshot(&series, &with_strays), snapshot(&series, &members));
 }
 
 #[cfg(feature = "mock")]
@@ -3151,6 +3392,103 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
     );
 }
 
+/// The two invites a series sends.
+#[cfg(feature = "mock")]
+enum SeriesSend {
+    Resend,
+    Scheduled,
+}
+
+/// Sends a series with slot 4 deleted and slot 3 moved, the coachee's send answered with
+/// `coachee_status`. Returns the resend's outcome, if any, and the last send's attachments.
+#[cfg(feature = "mock")]
+async fn send_edited_series(
+    send: SeriesSend,
+    coachee_status: usize,
+) -> (Option<Delivered>, Vec<(String, String)>) {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let (series, org) = (
+        snapshot_series(snapshot_start(), 1),
+        create_test_organization(),
+    );
+    let rows = edit_members(&series, &[3], &[(2, 1)]);
+    // Loader for the series `.ics` description: the first session's in-progress goals.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let mut mocks = Vec::new();
+    for (email, status) in [("jane@", coachee_status), ("alex@", 200)] {
+        let to = mockito::Matcher::Regex(format!(r#""to":\[[^\]]*{email}"#));
+        let mock = server.mock("POST", "/emails").match_body(to);
+        let mock = mock.match_request(capture.recorder()).with_status(status);
+        let mock = mock.with_body(r#"{"id":"e"}"#).expect(1);
+        mocks.push(mock.create_async().await);
+    }
+
+    let delivered = match send {
+        SeriesSend::Resend => {
+            let participants = Participants {
+                coach: &coach,
+                coachee: &coachee,
+            };
+            let delivered =
+                send_series_invite_resend(&db, &config, &series, &participants, &rows, &rows, &org);
+            Some(delivered.await.unwrap())
+        }
+        SeriesSend::Scheduled => {
+            send_recurring_sessions_scheduled_email(
+                &db, &config, &series, &coach, &coachee, &rows, &org,
+            )
+            .await
+            .unwrap();
+            None
+        }
+    };
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+    (delivered, capture.captured())
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_resend_attaches_snapshot() {
+    let (delivered, attachments) = send_edited_series(SeriesSend::Resend, 200).await;
+
+    let delivered = delivered.unwrap();
+    assert_eq!((delivered.coachee, delivered.coach), (true, true));
+    assert_eq!(attachments.len(), 1);
+    let ics = &attachments[0].1;
+    assert!(ics.contains("METHOD:REQUEST"));
+    assert_eq!(ics.matches("EXDATE").count(), 1);
+    assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2);
+    assert!(ics.contains("RECURRENCE-ID"));
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_resend_reports_coachee_failure() {
+    let (delivered, _) = send_edited_series(SeriesSend::Resend, 400).await;
+
+    let delivered = delivered.unwrap();
+    assert_eq!((delivered.coachee, delivered.coach), (false, true));
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_scheduled_still_master_only() {
+    let (_, attachments) = send_edited_series(SeriesSend::Scheduled, 200).await;
+
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].1.matches("EXDATE").count(), 0);
+    assert_eq!(attachments[0].1.matches("BEGIN:VEVENT").count(), 1);
+}
+
 /// A reschedule can legitimately leave no future occurrences. There is then no series
 /// invite to attach anything to, but the rows it replaced are still deleted, and any
 /// standalone event they left is addressed by nothing else. Returning early here strands
@@ -3835,4 +4173,285 @@ async fn test_session_reminder_missing_template_id() {
         DomainErrorKind::Internal(InternalErrorKind::Config) => {}
         other => panic!("Expected Config error, got: {other:?}"),
     }
+}
+
+// ───── stored series zone vs the coach's current zone ─────
+
+/// Weekly Thursdays at 11:00 Chicago, published before its coach moved to New York.
+fn chicago_series() -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": "2026-09-10T16:00:00",
+            "recurrence": {
+                "frequency": "weekly",
+                "interval": 1,
+                "by_weekdays": ["Thu"],
+                "until": "2027-01-01T05:59:59",
+            },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ..create_test_series()
+    }
+}
+
+fn relocated_coach() -> users::Model {
+    create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York")
+}
+
+/// An occurrence reads its zone from the series; anything else keeps the coach's, and
+/// a legacy member has no occurrence to address, so it reads nothing.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn invite_zone_is_the_series_zone_for_an_occurrence_only() {
+    let coach = relocated_coach();
+    let series = chicago_series();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![series.clone()]])
+        .into_connection();
+    let member = create_test_series_session(series.id, at(2026, 11, 5, 17));
+    assert_eq!(
+        invite_zone(&db, &member, &coach).await.unwrap(),
+        chrono_tz::America::Chicago
+    );
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    let legacy = coaching_sessions::Model {
+        ical_recurrence_id: None,
+        ..member.clone()
+    };
+    assert_eq!(
+        invite_zone(&db, &legacy, &coach).await.unwrap(),
+        chrono_tz::America::New_York
+    );
+    assert_eq!(
+        invite_zone(&db, &create_test_session(), &coach)
+            .await
+            .unwrap(),
+        chrono_tz::America::New_York
+    );
+    assert!(db.into_transaction_log().is_empty());
+}
+
+/// Moving one post-DST occurrence names the slot in the zone the calendar expanded the
+/// series in, not the coach's new one: 11:00 Chicago on Nov 5 is 17:00Z.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn occurrence_reschedule_uses_the_stored_series_zone() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = chicago_series();
+    let capture = IcsCapture::default();
+    let coach = relocated_coach();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let slot = at(2026, 11, 5, 17);
+    let session = coaching_sessions::Model {
+        date: at(2026, 11, 5, 19),
+        ..create_test_series_session(series.id, slot)
+    };
+    let db = mock_occurrence_loaders(series);
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    send_session_rescheduled_email(
+        &db,
+        &config,
+        &coach,
+        &coachee,
+        &session,
+        &create_test_organization(),
+        slot,
+    )
+    .await
+    .unwrap();
+    mock.assert_async().await;
+
+    let ics = capture.ics();
+    assert!(
+        ics.contains("RECURRENCE-ID;TZID=America/Chicago:20261105T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("DTSTART;TZID=America/Chicago:20261105T130000"),
+        "{ics}"
+    );
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// Cancelling an occurrence addresses it in the stored zone too, through the same
+/// lookup the send path uses.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn occurrence_cancel_uses_the_stored_series_zone() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = chicago_series();
+    let capture = IcsCapture::default();
+    let coach = relocated_coach();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    // Upcoming, or the notifier treats the delete as housekeeping.
+    let slot = (chrono::Utc::now() + chrono::Duration::days(30))
+        .naive_utc()
+        .duration_trunc(chrono::TimeDelta::hours(1))
+        .unwrap();
+    let session = create_test_series_session(series.id, slot);
+    let relationship = coaching_relationships::Model {
+        id: session.coaching_relationship_id,
+        organization_id: org.id,
+        coach_id: coach.id,
+        coachee_id: coachee.id,
+        slug: "test".into(),
+        created_at: chrono::Utc::now().into(),
+        updated_at: chrono::Utc::now().into(),
+    };
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![relationship]])
+        .append_query_results(vec![vec![coach.clone()]])
+        .append_query_results(vec![vec![coachee]])
+        .append_query_results(vec![vec![org]])
+        .append_query_results(vec![vec![series]])
+        .into_connection();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    notify_session_cancelled(&db, &config, &session).await;
+    mock.assert_async().await;
+
+    let local = Utc
+        .from_utc_datetime(&slot)
+        .with_timezone(&chrono_tz::America::Chicago)
+        .format("%Y%m%dT%H%M%S");
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("RECURRENCE-ID;TZID=America/Chicago:{local}")),
+        "{ics}"
+    );
+    assert!(ics.contains("METHOD:CANCEL"), "{ics}");
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// The snapshot of a Chicago series across Nov 1, built for a coach now in New York:
+/// the master, its EXDATE and its override all sit at 11:00 Chicago on both sides of the
+/// change, which is where the calendar holds every instance.
+#[test]
+fn snapshot_across_dst_uses_the_stored_series_zone() {
+    let series = chicago_series();
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    let slots = rule.slots().unwrap();
+    let nov_5 = slots
+        .iter()
+        .position(|s| *s == at(2026, 11, 5, 17))
+        .unwrap();
+    let nov_12 = slots
+        .iter()
+        .position(|s| *s == at(2026, 11, 12, 17))
+        .unwrap();
+
+    let members: Vec<coaching_sessions::Model> = slots
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != nov_12)
+        .map(|(i, slot)| coaching_sessions::Model {
+            duration_minutes: 60,
+            date: match i == nov_5 {
+                true => at(2026, 11, 5, 19),
+                false => *slot,
+            },
+            ..create_test_series_session(series.id, *slot)
+        })
+        .collect();
+
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &relocated_coach(),
+            &coachee,
+            &series,
+            &members,
+            "desc".into(),
+            at(2026, 10, 20, 12),
+        )
+        .unwrap(),
+    );
+
+    assert!(
+        ics.contains("DTSTART;TZID=America/Chicago:20260910T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("EXDATE;TZID=America/Chicago:20261112T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("RECURRENCE-ID;TZID=America/Chicago:20261105T110000"),
+        "{ics}"
+    );
+    assert_eq!(ics.matches("RECURRENCE-ID").count(), 1, "{ics}");
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// A monthly series on the 31st, stored before new series were limited to day 28, can
+/// still be resent: its snapshot skips the months without a 31st, as calendars do.
+#[test]
+fn snapshot_of_a_stored_late_month_series_still_builds() {
+    let series = coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": "2026-12-31T16:00:00",
+            "recurrence": { "frequency": "monthly", "interval": 1, "count": 4 },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ..create_test_series()
+    };
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    let slots = rule.slots().unwrap();
+    assert_eq!(
+        slots,
+        vec![
+            at(2026, 12, 31, 16),
+            at(2027, 1, 31, 16),
+            at(2027, 3, 31, 15),
+            at(2027, 5, 31, 15),
+        ]
+    );
+
+    let members: Vec<coaching_sessions::Model> = slots
+        .iter()
+        .map(|slot| coaching_sessions::Model {
+            duration_minutes: 60,
+            ..create_test_series_session(series.id, *slot)
+        })
+        .collect();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &relocated_coach(),
+            &coachee,
+            &series,
+            &members,
+            "desc".into(),
+            at(2026, 12, 1, 12),
+        )
+        .unwrap(),
+    );
+
+    assert!(ics.contains("RRULE:FREQ=MONTHLY;WKST=MO;COUNT=4"), "{ics}");
+    assert!(!ics.contains("EXDATE"), "{ics}");
+    assert!(!ics.contains("RECURRENCE-ID"), "{ics}");
 }

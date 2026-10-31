@@ -14,6 +14,7 @@ pub(crate) mod oauth_controller;
 pub(crate) mod organization;
 pub(crate) mod organization_controller;
 pub(crate) mod password_reset_controller;
+pub(crate) mod search_controller;
 pub(crate) mod tiptap_metrics_controller;
 pub(crate) mod user;
 pub(crate) mod user_controller;
@@ -29,6 +30,11 @@ mod coaching_session_view_tests;
 #[cfg(feature = "mock")]
 #[path = "user_lookup_tests.rs"]
 mod user_lookup_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "resend_invite_tests.rs"]
+mod resend_invite_tests;
 
 #[derive(Debug, Serialize)]
 struct ApiResponse<T: Serialize> {

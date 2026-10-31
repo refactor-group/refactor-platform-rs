@@ -149,6 +149,9 @@ services:
       RECALL_AI_API_KEY: ${RECALL_AI_API_KEY}
       RECALL_AI_REGION: ${RECALL_AI_REGION}
       RECALL_AI_WEBHOOK_SECRET: ${RECALL_AI_WEBHOOK_SECRET}
+      ASSEMBLY_AI_API_KEY: ${ASSEMBLY_AI_API_KEY}
+      ASSEMBLY_AI_LLM_MODEL: ${ASSEMBLY_AI_LLM_MODEL}
+      ASSEMBLY_AI_LLM_BASE_URL: ${ASSEMBLY_AI_LLM_BASE_URL}
 
       # Coaching note image storage (values set in ci-deploy-pr-preview.yml heredoc).
       # Previews use the "spaces" backend so images survive the ephemeral container.

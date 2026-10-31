@@ -141,7 +141,7 @@ above. Watch for: exactly one `BEGIN:VTIMEZONE` (before `BEGIN:VEVENT`), `DTSTAR
 
 ### H4: Biweekly series
 1. Create a biweekly series.
-2. **Expect:** `RRULE:FREQ=WEEKLY;INTERVAL=2`; occurrences land every 2 weeks.
+2. **Expect:** `RRULE:FREQ=WEEKLY;WKST=MO;INTERVAL=2`; occurrences land every 2 weeks.
 
 ### H5: Rich single-session description
 1. Single session WITH a title, one or more topics, at least one in-progress goal, and at
@@ -452,6 +452,68 @@ session moving or being cancelled.
 1. Only reachable with a series materialized before the `ical_recurrence_id` migration.
 2. **Expect:** editing or deleting one of its occurrences sends **no** email, with a warning logged. There
    is no valid occurrence address, and guessing would remove or move the wrong instance.
+
+---
+
+## Series across a DST change
+
+The app and the calendar must hold every occurrence at the same instant on both sides of
+a DST change. Series are expanded in the zone stored on the series (`rule.timezone`), at
+the local wall time of the first session, which is how calendars read the
+`DTSTART;TZID` + `RRULE`. A UTC coach never exercises this, so run these with the coach's
+timezone set to **`America/Chicago`** and pick dates that span **Nov 1, 2026** (fall back)
+or **Mar 14, 2027** (spring forward). Verify each case in **Google Calendar** as well as
+in the app.
+
+### HD1: Weekly series keeps its wall time across DST
+1. Create a weekly series on Thursdays at **11:00 AM Chicago**, starting before Nov 1 and
+   running at least three weeks past it.
+2. **Expect** in the app: every session shows 11:00 AM, before and after Nov 1.
+3. **Expect** in Google Calendar: every instance at 11:00 AM, matching the app one for one.
+4. The series response's `rule.timezone` is `America/Chicago`.
+
+### HD2: Move one occurrence after DST
+1. In the HD1 series, move the first occurrence after Nov 1 from 11:00 AM to 1:00 PM.
+2. **Expect** in the `.ics`: `RECURRENCE-ID;TZID=America/Chicago:<date>T110000` and
+   `DTSTART;TZID=America/Chicago:<date>T130000`.
+3. **Expect** in Google Calendar: that instance moves to 1:00 PM, and Gmail does **not**
+   say "Removed from Google Calendar".
+
+### HD3: Cancel one occurrence after DST
+1. In the HD1 series, delete a different occurrence after Nov 1.
+2. **Expect** in the `.ics`: `METHOD:CANCEL` with `RECURRENCE-ID;TZID=America/Chicago:<date>T110000`.
+3. **Expect** in Google Calendar: that instance disappears; its neighbours stay at 11:00 AM.
+
+### HD4: Resend the series after HD2 and HD3
+1. Resend the HD1 series invite.
+2. **Expect** in the `.ics`: an `EXDATE;TZID=America/Chicago:<HD3 date>T110000` and one
+   override with `RECURRENCE-ID;TZID=America/Chicago:<HD2 date>T110000`.
+3. **Expect** in Google Calendar: the moved instance at 1:00 PM, the deleted one absent,
+   every other instance at 11:00 AM.
+
+### HD5: Evening weekly series (local weekday)
+1. Create a weekly series on Thursdays at **7:00 PM Chicago** (Friday in UTC).
+2. **Expect:** it is created (no 422), and every session in the app and in Google
+   Calendar is a Thursday at 7:00 PM, including after Nov 1.
+
+### HD6: Spring forward
+1. Create a weekly series at 10:00 AM Chicago starting in early March 2027 and running past
+   Mar 14.
+2. **Expect:** every session shows 10:00 AM in the app and in Google Calendar on both sides
+   of Mar 14.
+
+### SD1: Monthly series on the 29th to 31st is refused (sad path)
+1. Via the API, create a monthly series whose first session is on the 30th in the coach's
+   timezone.
+2. **Expect:** `422` with `"error":"validation_error"` and
+   `"message":"Monthly series must start on day 28 or earlier in the coach's timezone."`
+3. A monthly series on the 28th at 7:00 PM Chicago (the 29th in UTC) is accepted.
+
+### SD2: Coach changes timezone after publishing (sad path)
+1. Create the HD1 series, then change the coach's timezone to `America/New_York`.
+2. Move one occurrence after Nov 1.
+3. **Expect:** the `.ics` still uses `TZID=America/Chicago` and the `RECURRENCE-ID` still
+   names 11:00 AM Chicago, so Google moves the right instance.
 
 ---
 

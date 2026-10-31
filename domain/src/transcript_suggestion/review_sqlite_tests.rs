@@ -1,0 +1,1520 @@
+//! Reviewing action suggestions against a real SQL engine: what each operation leaves in
+//! `actions`, `actions_users` and `transcript_suggestions`, and what it announces.
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use chrono::{NaiveDateTime, TimeZone};
+use entity::meeting_recording::{self, MeetingRecordingStatus};
+use entity::transcription::TranscriptionStatus;
+use entity::{actions_users, coaching_relationships, transcript_segment, transcript_suggestion};
+use entity::{transcript_analysis as analysis_rows, transcription as transcription_rows};
+use meeting_ai::types::transcription::{
+    Participant as SpeakerIn, Segment as SegmentIn, Status as TranscriptStatus, Transcription,
+};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, Set,
+};
+
+use super::*;
+use crate::events::{DomainEvent, EventHandler};
+use crate::test_utils::sqlite::{database, seed_organization, within_time_limit};
+use crate::transcript_attribution::Attribution;
+use crate::transcript_participant::MatchSource;
+use crate::transcription::persist_completion;
+
+const COACHEE_NAME: &str = "Casey Coachee";
+
+/// Keeps every published event.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<DomainEvent>>);
+
+#[async_trait]
+impl EventHandler for Recorder {
+    async fn handle(&self, event: &DomainEvent) {
+        self.0.lock().expect("the lock is free").push(event.clone());
+    }
+}
+
+impl Recorder {
+    fn suggestion_changes(&self) -> usize {
+        self.0
+            .lock()
+            .expect("the lock is free")
+            .iter()
+            .filter(|e| matches!(e, DomainEvent::TranscriptSuggestionsChanged { target, .. } if target == "action"))
+            .count()
+    }
+}
+
+fn recording_publisher() -> (EventPublisher, Arc<Recorder>) {
+    let recorder = Arc::new(Recorder::default());
+    (
+        EventPublisher::new().with_handler(recorder.clone()),
+        recorder,
+    )
+}
+
+/// 2026-10-12 15:00 UTC, the fixed "now" of every test.
+fn now() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 10, 12, 15, 0, 0)
+        .single()
+        .expect("valid time")
+}
+
+/// The reviewed session starts an hour before `now`.
+fn session_start() -> NaiveDateTime {
+    (now() - Duration::hours(1)).naive_utc()
+}
+
+struct Fixture {
+    db: DatabaseConnection,
+    coach: users::Model,
+    coachee: users::Model,
+    relationship_id: Id,
+    session: coaching_sessions::Model,
+    analysis_id: Id,
+    /// Segment ids in speaking order: coach, coachee, coach.
+    segment_ids: Vec<Id>,
+}
+
+async fn seed_person(db: &DatabaseConnection, name: &str) -> users::Model {
+    let id = Id::new_v4();
+    let at = Utc::now();
+    users::ActiveModel {
+        id: Set(id),
+        email: Set(format!("{id}@example.com")),
+        first_name: Set("Test".to_string()),
+        last_name: Set("User".to_string()),
+        display_name: Set(Some(name.to_string())),
+        password: Set(None),
+        github_username: Set(None),
+        github_profile_url: Set(None),
+        timezone: Set("UTC".to_string()),
+        default_coaching_session_duration_minutes: Set(60),
+        created_at: Set(at.into()),
+        updated_at: Set(at.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the user is seeded")
+}
+
+async fn seed_session(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+    date: NaiveDateTime,
+) -> coaching_sessions::Model {
+    let at = Utc::now();
+    coaching_sessions::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_relationship_id: Set(relationship_id),
+        coaching_session_series_id: Set(None),
+        ical_sequence: Set(0),
+        ical_recurrence_id: Set(None),
+        collab_document_name: Set(None),
+        date: Set(date),
+        duration_minutes: Set(60),
+        title: Set(None),
+        meeting_url: Set(None),
+        provider: Set(None),
+        created_at: Set(at.into()),
+        updated_at: Set(at.into()),
+        hydrated_at: Set(None),
+        notice_given_at: Set(at.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the session is seeded")
+}
+
+fn speaker(provider_id: &str) -> SpeakerIn {
+    SpeakerIn {
+        provider_id: provider_id.to_string(),
+        display_name: None,
+        is_host: Some(false),
+        platform: None,
+        account_id: None,
+        extra_data: None,
+    }
+}
+
+fn spoken(provider_id: &str, text: &str, start_ms: i64) -> SegmentIn {
+    SegmentIn {
+        text: text.to_string(),
+        speaker: provider_id.to_string(),
+        participant_id: Some(provider_id.to_string()),
+        start_ms,
+        end_ms: start_ms + 1000,
+        confidence: 0.0,
+        words: vec![],
+    }
+}
+
+/// A coach and coachee, their session with a completed three-segment transcript, and an analysis.
+async fn fixture_in(db: DatabaseConnection) -> Fixture {
+    let coach = seed_person(&db, "Jordan Coach").await;
+    let coachee = seed_person(&db, COACHEE_NAME).await;
+    let at = Utc::now();
+
+    let relationship_id = Id::new_v4();
+    coaching_relationships::ActiveModel {
+        id: Set(relationship_id),
+        organization_id: Set(seed_organization(&db).await),
+        coach_id: Set(coach.id),
+        coachee_id: Set(coachee.id),
+        slug: Set(format!("relationship-{relationship_id}")),
+        created_at: Set(at.into()),
+        updated_at: Set(at.into()),
+    }
+    .insert(&db)
+    .await
+    .expect("the relationship is seeded");
+    let session = seed_session(&db, relationship_id, session_start()).await;
+
+    let recording_id = Id::new_v4();
+    meeting_recording::ActiveModel {
+        id: Set(recording_id),
+        coaching_session_id: Set(session.id),
+        bot_id: Set(format!("bot-{recording_id}")),
+        status: Set(MeetingRecordingStatus::Completed),
+        video_url: Set(None),
+        audio_url: Set(None),
+        duration_seconds: Set(None),
+        started_at: Set(None),
+        ended_at: Set(None),
+        error_message: Set(None),
+        created_at: Set(at.into()),
+        updated_at: Set(at.into()),
+    }
+    .insert(&db)
+    .await
+    .expect("the recording is seeded");
+
+    let external_id = format!("ext-{recording_id}");
+    let transcription = entity::transcription::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session.id),
+        meeting_recording_id: Set(recording_id),
+        external_id: Set(external_id.clone()),
+        recall_recording_id: Set(None),
+        status: Set(TranscriptionStatus::Processing),
+        language_code: Set(None),
+        speaker_count: Set(None),
+        word_count: Set(None),
+        duration_seconds: Set(None),
+        confidence: Set(None),
+        error_message: Set(None),
+        created_at: Set(at.into()),
+        updated_at: Set(at.into()),
+    }
+    .insert(&db)
+    .await
+    .expect("the transcription is seeded");
+
+    let result = Transcription {
+        id: external_id,
+        status: TranscriptStatus::Completed,
+        text: None,
+        words: vec![],
+        segments: vec![
+            spoken("100", "What will you do before we next meet?", 0),
+            spoken("200", "I will send you the org chart by Friday.", 4000),
+            spoken("100", "And I will share the article.", 9000),
+        ],
+        participants: vec![speaker("100"), speaker("200")],
+        chapters: vec![],
+        sentiment_analysis: vec![],
+        confidence: None,
+        duration_seconds: None,
+        language_code: None,
+        speaker_count: None,
+        error_message: None,
+    };
+    let attributions =
+        [("100", coach.id), ("200", coachee.id)].map(|(provider_id, user_id)| Attribution {
+            provider_id: provider_id.to_string(),
+            user_id: Some(user_id),
+            source: Some(MatchSource::Account),
+        });
+    persist_completion(&db, &transcription, &result, &attributions)
+        .await
+        .expect("the transcript is completed");
+
+    let segment_ids = transcript_segment::Entity::find()
+        .filter(transcript_segment::Column::TranscriptionId.eq(transcription.id))
+        .order_by_asc(transcript_segment::Column::StartMs)
+        .all(&db)
+        .await
+        .expect("the segments are read")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let analysis_id = transcript_analysis::create_pending(&db, transcription.id, Target::Action)
+        .await
+        .expect("the analysis is seeded")
+        .id;
+
+    Fixture {
+        db,
+        coach,
+        coachee,
+        relationship_id,
+        session,
+        analysis_id,
+        segment_ids,
+    }
+}
+
+async fn fixture() -> Fixture {
+    fixture_in(database().await).await
+}
+
+fn proposal(
+    f: &Fixture,
+    body: &str,
+    assignee_ids: Vec<Id>,
+    due_by: Option<DateTimeWithTimeZone>,
+    due_phrase: Option<&str>,
+) -> ActionProposal {
+    let placeholder = DateTime::<Utc>::UNIX_EPOCH.fixed_offset();
+    ActionProposal {
+        action: ActionWithAssignees {
+            action: actions::Model {
+                id: Id::nil(),
+                coaching_session_id: f.session.id,
+                goal_id: None,
+                user_id: Id::nil(),
+                body: Some(body.to_string()),
+                due_by,
+                status: ActionStatus::NotStarted,
+                status_changed_at: placeholder,
+                created_at: placeholder,
+                updated_at: placeholder,
+            },
+            assignee_ids,
+        },
+        due_phrase: due_phrase.map(str::to_string),
+    }
+}
+
+/// The edits that turn a suggestion into `proposal`.
+fn edits_of(proposal: ActionProposal) -> ActionEdits {
+    ActionEdits {
+        body: proposal.action.action.body.unwrap_or_default(),
+        due_by: proposal.action.action.due_by,
+        assignee_ids: proposal.action.assignee_ids,
+        goal_id: proposal.action.action.goal_id,
+    }
+}
+
+/// A suggestion of `proposal` from the coachee's segment.
+async fn suggest(
+    f: &Fixture,
+    proposal: &ActionProposal,
+    status: Status,
+    duplicate_of_id: Option<Id>,
+) -> Model {
+    transcript_suggestion::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(f.session.id),
+        transcript_analysis_id: Set(f.analysis_id),
+        target: Set(Target::Action),
+        proposal: Set(serde_json::to_value(proposal).expect("the proposal serializes")),
+        segment_id: Set(f.segment_ids[1]),
+        quote: Set("send you the org chart".to_string()),
+        duplicate_of_id: Set(duplicate_of_id),
+        status: Set(status),
+        resolved_by: Set(None),
+        resolved_at: Set(None),
+        created_entity_id: Set(None),
+        created_at: Set(now().fixed_offset()),
+        updated_at: Set(now().fixed_offset()),
+    }
+    .insert(&f.db)
+    .await
+    .expect("the suggestion is seeded")
+}
+
+async fn reread(f: &Fixture, id: Id) -> Model {
+    transcript_suggestion::Entity::find_by_id(id)
+        .one(&f.db)
+        .await
+        .expect("the suggestion is read")
+        .expect("the suggestion exists")
+}
+
+async fn session_actions(f: &Fixture) -> Vec<actions::Model> {
+    actions::Entity::find()
+        .filter(actions::Column::CoachingSessionId.eq(f.session.id))
+        .all(&f.db)
+        .await
+        .expect("the actions are read")
+}
+
+async fn assignees_of(f: &Fixture, action_id: Id) -> Vec<Id> {
+    actions_users::Entity::find()
+        .filter(actions_users::Column::ActionId.eq(action_id))
+        .all(&f.db)
+        .await
+        .expect("the assignees are read")
+        .into_iter()
+        .map(|a| a.user_id)
+        .collect()
+}
+
+fn due(days: i64) -> DateTimeWithTimeZone {
+    (now() + Duration::days(days)).fixed_offset()
+}
+
+fn kind(error: &Error) -> &DomainErrorKind {
+    &error.error_kind
+}
+
+fn is_forbidden(error: &Error) -> bool {
+    matches!(
+        kind(error),
+        DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Forbidden))
+    )
+}
+
+fn is_conflict(error: &Error) -> bool {
+    matches!(
+        kind(error),
+        DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict { .. }))
+    )
+}
+
+/// The message a conflict carries, shown to the user as a toast.
+fn conflict_message(error: &Error) -> Option<&str> {
+    match kind(error) {
+        DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            message,
+            ..
+        })) => Some(message.as_str()),
+        _ => None,
+    }
+}
+
+fn is_validation(error: &Error) -> bool {
+    matches!(kind(error), DomainErrorKind::Validation(_))
+}
+
+#[tokio::test]
+async fn accept_creates_exactly_one_action_owned_by_the_accepting_user() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, recorder) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            Some("by Friday"),
+        );
+        let s = suggest(&f, &p, Status::Pending, None).await;
+
+        let created = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coachee,
+            s.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the coachee accepts");
+
+        let rows = session_actions(&f).await;
+        assert_eq!(rows.len(), 1);
+        let action = &rows[0];
+        assert_eq!(action.id, created.action.id);
+        assert_eq!(action.body.as_deref(), Some("Send the org chart"));
+        assert_eq!(action.due_by, Some(due(3)));
+        assert_eq!(action.user_id, f.coachee.id);
+        assert_eq!(action.coaching_session_id, f.session.id);
+        assert_eq!(action.status, ActionStatus::NotStarted);
+        assert_eq!(assignees_of(&f, action.id).await, vec![f.coachee.id]);
+
+        let stored = reread(&f, s.id).await;
+        assert_eq!(stored.status, Status::Accepted);
+        assert_eq!(stored.resolved_by, Some(f.coachee.id));
+        assert_eq!(stored.created_entity_id, Some(action.id));
+        assert_eq!(recorder.suggestion_changes(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_second_accept_conflicts_and_creates_nothing() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, recorder) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let s = suggest(&f, &p, Status::Pending, None).await;
+
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coachee,
+            s.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the first accept succeeds");
+        // The stale pending model stands in for a racing second request.
+        let second = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            None,
+            now(),
+        )
+        .await
+        .expect_err("the second accept is refused");
+
+        assert!(is_conflict(&second), "{second:?}");
+        assert_eq!(session_actions(&f).await.len(), 1);
+        let assigned = actions_users::Entity::find()
+            .count(&f.db)
+            .await
+            .expect("the assignees are counted");
+        assert_eq!(assigned, 1);
+        assert_eq!(recorder.suggestion_changes(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn accept_without_a_due_date_uses_the_next_session_start() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let next = seed_session(
+            &f.db,
+            f.relationship_id,
+            (now() + Duration::days(3)).naive_utc(),
+        )
+        .await;
+        let (publisher, _) = recording_publisher();
+        let s = suggest(
+            &f,
+            &proposal(&f, "Read the article", vec![], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            None,
+            now(),
+        )
+        .await
+        .expect("the coach accepts");
+
+        let rows = session_actions(&f).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].due_by, Some(next.date.and_utc().fixed_offset()));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn accept_without_a_due_date_or_a_next_session_is_due_in_seven_days() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let s = suggest(
+            &f,
+            &proposal(&f, "Read the article", vec![], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            None,
+            now(),
+        )
+        .await
+        .expect("the coach accepts");
+
+        let rows = session_actions(&f).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].due_by, Some(due(7)));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn accept_with_edits_uses_them_and_rejects_an_outside_assignee() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, recorder) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let outsider = suggest(&f, &p, Status::Pending, None).await;
+
+        let bad = proposal(
+            &f,
+            "Send the org chart",
+            vec![Id::new_v4()],
+            Some(due(3)),
+            None,
+        );
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            outsider.clone(),
+            Some(edits_of(bad)),
+            now(),
+        )
+        .await
+        .expect_err("an outside assignee is refused");
+        assert!(is_validation(&refused), "{refused:?}");
+        assert!(session_actions(&f).await.is_empty());
+        assert_eq!(reread(&f, outsider.id).await.status, Status::Pending);
+        assert_eq!(recorder.suggestion_changes(), 0);
+
+        let edits = proposal(
+            &f,
+            "Send the revised org chart",
+            vec![f.coachee.id],
+            Some(due(5)),
+            None,
+        );
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            outsider,
+            Some(edits_of(edits)),
+            now(),
+        )
+        .await
+        .expect("the edited accept succeeds");
+
+        let rows = session_actions(&f).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body.as_deref(), Some("Send the revised org chart"));
+        assert_eq!(rows[0].due_by, Some(due(5)));
+        assert_eq!(rows[0].user_id, f.coach.id);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_coachee_may_not_accept_a_coach_only_suggestion_or_add_the_coach() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, recorder) = recording_publisher();
+        let coach_only = suggest(
+            &f,
+            &proposal(&f, "Share the article", vec![f.coach.id], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coachee,
+            coach_only.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect_err("a coach-only accept is refused");
+        assert!(is_forbidden(&refused), "{refused:?}");
+        assert!(session_actions(&f).await.is_empty());
+        assert_eq!(reread(&f, coach_only.id).await.status, Status::Pending);
+
+        let p = proposal(&f, "Send the org chart", vec![f.coachee.id], None, None);
+        let coachee_only = suggest(&f, &p, Status::Pending, None).await;
+        let adds_coach = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id, f.coach.id],
+            None,
+            None,
+        );
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coachee,
+            coachee_only.clone(),
+            Some(edits_of(adds_coach)),
+            now(),
+        )
+        .await
+        .expect_err("adding the coach is refused");
+        assert!(is_forbidden(&refused), "{refused:?}");
+        assert!(session_actions(&f).await.is_empty());
+        assert_eq!(reread(&f, coachee_only.id).await.status, Status::Pending);
+        assert_eq!(recorder.suggestion_changes(), 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn accept_with_edits_trims_the_body_and_drops_a_repeated_assignee() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            Some("by Friday"),
+        );
+        let s = suggest(&f, &p, Status::Pending, None).await;
+
+        let edits = ActionEdits {
+            body: "  Send the full org chart  ".to_string(),
+            due_by: Some(due(4)),
+            assignee_ids: vec![f.coachee.id, f.coach.id, f.coachee.id],
+            goal_id: None,
+        };
+        let created = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            Some(edits),
+            now(),
+        )
+        .await
+        .expect("the edited accept succeeds");
+
+        assert_eq!(
+            created.action.body.as_deref(),
+            Some("Send the full org chart")
+        );
+        assert_eq!(created.action.due_by, Some(due(4)));
+        assert_eq!(created.action.coaching_session_id, f.session.id);
+        let mut assignees = assignees_of(&f, created.action.id).await;
+        assignees.sort();
+        let mut expected = vec![f.coachee.id, f.coach.id];
+        expected.sort();
+        assert_eq!(assignees, expected);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dismiss_and_restore_move_the_suggestion_and_restoring_a_pending_one_conflicts() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, recorder) = recording_publisher();
+        let s = suggest(
+            &f,
+            &proposal(&f, "Send the org chart", vec![f.coachee.id], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        let dismissed = dismiss(&f.db, &publisher, &f.coachee, s.clone(), now())
+            .await
+            .expect("the dismiss succeeds");
+        let stored = reread(&f, s.id).await;
+        assert_eq!(stored.status, Status::Dismissed);
+        assert_eq!(stored.resolved_by, Some(f.coachee.id));
+        assert_eq!(stored.resolved_at, Some(now().fixed_offset()));
+
+        restore(&f.db, &publisher, &f.coach, dismissed, now())
+            .await
+            .expect("the restore succeeds");
+        let stored = reread(&f, s.id).await;
+        assert_eq!(stored.status, Status::Pending);
+        assert_eq!(stored.resolved_by, None);
+        assert_eq!(stored.resolved_at, None);
+        assert_eq!(stored.created_entity_id, None);
+
+        let refused = restore(&f.db, &publisher, &f.coach, stored, now())
+            .await
+            .expect_err("a pending suggestion cannot be restored");
+        assert!(is_conflict(&refused), "{refused:?}");
+        assert_eq!(recorder.suggestion_changes(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn list_returns_the_sessions_pending_suggestions_with_their_segment_and_duplicate() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let next = seed_session(
+            &f.db,
+            f.relationship_id,
+            (now() + Duration::days(3)).naive_utc(),
+        )
+        .await;
+        let at = Utc::now().fixed_offset();
+        let existing = actions::ActiveModel {
+            id: Set(Id::new_v4()),
+            coaching_session_id: Set(f.session.id),
+            goal_id: Set(None),
+            user_id: Set(f.coach.id),
+            body: Set(Some("Share the org chart".to_string())),
+            due_by: Set(None),
+            status: Set(ActionStatus::NotStarted),
+            status_changed_at: Set(at),
+            created_at: Set(at),
+            updated_at: Set(at),
+        }
+        .insert(&f.db)
+        .await
+        .expect("the action is seeded");
+
+        let p = proposal(&f, "Send the org chart", vec![f.coachee.id], None, None);
+        let flagged = suggest(&f, &p, Status::Pending, Some(existing.id)).await;
+        suggest(&f, &p, Status::Dismissed, None).await;
+        let other = fixture_in(f.db.clone()).await;
+        suggest(
+            &other,
+            &proposal(&other, "Elsewhere", vec![], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        let listed = list_actions(&f.db, &f.session, Status::Pending, now())
+            .await
+            .expect("the list reads");
+        assert_eq!(listed.len(), 1);
+        let item = &listed[0];
+        assert_eq!(item.id, flagged.id);
+        assert_eq!(item.coaching_session_id, f.session.id);
+        assert_eq!(item.proposal, p);
+        assert_eq!(item.quote, "send you the org chart");
+        assert_eq!(item.segment.id, f.segment_ids[1]);
+        assert_eq!(item.segment.start_ms, 4000);
+        assert_eq!(item.segment.speaker_role, Some(SpeakerRole::Coachee));
+        assert_eq!(item.segment.speaker_label, COACHEE_NAME);
+        assert_eq!(
+            item.duplicate_of,
+            Some(DuplicateOf {
+                action_id: existing.id,
+                body: Some("Share the org chart".to_string()),
+            })
+        );
+        assert_eq!(
+            item.default_due,
+            DefaultDue {
+                at: next.date.and_utc().fixed_offset(),
+                source: DueSource::NextSession,
+            }
+        );
+
+        existing.delete(&f.db).await.expect("the action is deleted");
+        let listed = list_actions(&f.db, &f.session, Status::Pending, now())
+            .await
+            .expect("the list reads");
+        assert_eq!(listed[0].duplicate_of, None);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_list_returns_at_most_the_cap_in_list_order() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let p = proposal(&f, "Send the org chart", vec![f.coachee.id], None, None);
+        let mut ids = vec![];
+        for _ in 0..=MAX_LISTED {
+            ids.push(suggest(&f, &p, Status::Pending, None).await.id);
+        }
+
+        let listed = list_actions(&f.db, &f.session, Status::Pending, now())
+            .await
+            .expect("the list reads");
+
+        // Every row shares one timestamp, so the order falls to the id.
+        ids.sort();
+        ids.truncate(MAX_LISTED as usize);
+        assert_eq!(listed.iter().map(|s| s.id).collect::<Vec<_>>(), ids);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_next_session_that_already_started_gives_seven_days() {
+    within_time_limit(async {
+        let f = fixture().await;
+        seed_session(
+            &f.db,
+            f.relationship_id,
+            (now() - Duration::minutes(30)).naive_utc(),
+        )
+        .await;
+
+        let default = default_due(&f.db, &f.session, now())
+            .await
+            .expect("the default reads");
+
+        assert_eq!(
+            default,
+            DefaultDue {
+                at: due(7),
+                source: DueSource::SevenDays,
+            }
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_session_that_has_not_started_defaults_to_a_week_after_it() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let start = now() + Duration::days(23);
+        let upcoming = seed_session(&f.db, f.relationship_id, start.naive_utc()).await;
+
+        let default = default_due(&f.db, &upcoming, now())
+            .await
+            .expect("the default reads");
+
+        assert_eq!(
+            default,
+            DefaultDue {
+                at: (start + Duration::days(7)).fixed_offset(),
+                source: DueSource::WeekAfterSession,
+            }
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_list_says_why_a_spoken_deadline_gave_no_date() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let mut suggested = vec![];
+        for (body, due_by, phrase) in [
+            ("Map out stakeholders", None, Some("by our next session")),
+            ("Reach out to the VP", None, Some("soon")),
+            ("Send the deck", Some(due(3)), Some("by Friday")),
+            ("Read the article", None, None),
+        ] {
+            let p = proposal(&f, body, vec![f.coachee.id], due_by, phrase);
+            suggested.push(suggest(&f, &p, Status::Pending, None).await.id);
+        }
+        let reasons = || async {
+            let listed = list_actions(&f.db, &f.session, Status::Pending, now())
+                .await
+                .expect("the list reads");
+            suggested
+                .iter()
+                .map(|id| {
+                    listed
+                        .iter()
+                        .find(|s| s.id == *id)
+                        .expect("listed")
+                        .undated_reason
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            reasons().await,
+            vec![
+                Some(UndatedReason::NoNextSession),
+                Some(UndatedReason::NotADate),
+                None,
+                None
+            ]
+        );
+
+        seed_session(
+            &f.db,
+            f.relationship_id,
+            (now() + Duration::days(3)).naive_utc(),
+        )
+        .await;
+        assert_eq!(
+            reasons().await,
+            vec![None, Some(UndatedReason::NotADate), None, None]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_dismissed_list_holds_only_dismissed_suggestions_with_who_dismissed_them() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let kept = suggest(
+            &f,
+            &proposal(&f, "Keep me", vec![f.coachee.id], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+        let set_aside = suggest(
+            &f,
+            &proposal(&f, "Set me aside", vec![f.coachee.id], None, None),
+            Status::Pending,
+            None,
+        )
+        .await;
+        suggest(
+            &f,
+            &proposal(&f, "Already accepted", vec![], None, None),
+            Status::Accepted,
+            None,
+        )
+        .await;
+        dismiss(&f.db, &publisher, &f.coachee, set_aside.clone(), now())
+            .await
+            .expect("the dismiss succeeds");
+
+        let dismissed = list_actions(&f.db, &f.session, Status::Dismissed, now())
+            .await
+            .expect("the list reads");
+        assert_eq!(
+            dismissed.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![set_aside.id]
+        );
+        assert_eq!(dismissed[0].resolved_by, Some(f.coachee.id));
+        assert_eq!(dismissed[0].resolved_at, Some(now().fixed_offset()));
+
+        let pending = list_actions(&f.db, &f.session, Status::Pending, now())
+            .await
+            .expect("the list reads");
+        assert_eq!(
+            pending.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![kept.id]
+        );
+        assert_eq!(pending[0].resolved_by, None);
+        assert_eq!(pending[0].resolved_at, None);
+        assert_eq!(
+            list_actions(&f.db, &f.session, Status::Pending, now())
+                .await
+                .expect("the list reads"),
+            pending
+        );
+    })
+    .await;
+}
+
+async fn seed_goal(db: &DatabaseConnection, relationship_id: Id, user_id: Id) -> Id {
+    let at = Utc::now();
+    entity::goals::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_relationship_id: Set(relationship_id),
+        created_in_session_id: Set(None),
+        user_id: Set(user_id),
+        title: Set(Some("Grow as a leader".to_string())),
+        body: Set(None),
+        status: Set(entity::status::Status::InProgress),
+        status_changed_at: Set(None),
+        completed_at: Set(None),
+        target_date: Set(None),
+        created_at: Set(at.into()),
+        updated_at: Set(at.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the goal is seeded")
+    .id
+}
+
+#[tokio::test]
+async fn accept_links_the_action_to_a_goal_in_the_relationship() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let goal_id = seed_goal(&f.db, f.relationship_id, f.coach.id).await;
+        let s = suggest(
+            &f,
+            &proposal(
+                &f,
+                "Send the org chart",
+                vec![f.coachee.id],
+                Some(due(3)),
+                None,
+            ),
+            Status::Pending,
+            None,
+        )
+        .await;
+
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            Some(ActionEdits {
+                body: "Send the org chart".to_string(),
+                due_by: Some(due(3)),
+                assignee_ids: vec![f.coachee.id],
+                goal_id: Some(goal_id),
+            }),
+            now(),
+        )
+        .await
+        .expect("the accept succeeds");
+
+        let rows = session_actions(&f).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].goal_id, Some(goal_id));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn accept_refuses_a_goal_from_another_relationship_or_a_missing_one() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let other = fixture_in(f.db.clone()).await;
+        let (publisher, recorder) = recording_publisher();
+        let foreign_goal = seed_goal(&f.db, other.relationship_id, other.coach.id).await;
+        let s = suggest(
+            &f,
+            &proposal(
+                &f,
+                "Send the org chart",
+                vec![f.coachee.id],
+                Some(due(3)),
+                None,
+            ),
+            Status::Pending,
+            None,
+        )
+        .await;
+        let edits = ActionEdits {
+            body: "Send the org chart".to_string(),
+            due_by: Some(due(3)),
+            assignee_ids: vec![f.coachee.id],
+            goal_id: Some(foreign_goal),
+        };
+
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s.clone(),
+            Some(edits),
+            now(),
+        )
+        .await
+        .expect_err("a foreign goal is refused");
+        assert!(is_validation(&refused), "{refused:?}");
+        assert!(session_actions(&f).await.is_empty());
+        assert_eq!(reread(&f, s.id).await.status, Status::Pending);
+        assert_eq!(recorder.suggestion_changes(), 0);
+
+        let missing = ActionEdits {
+            body: "Send the org chart".to_string(),
+            due_by: Some(due(3)),
+            assignee_ids: vec![f.coachee.id],
+            goal_id: Some(Id::new_v4()),
+        };
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s,
+            Some(missing),
+            now(),
+        )
+        .await
+        .expect_err("a missing goal is refused");
+        assert!(is_validation(&refused), "{refused:?}");
+    })
+    .await;
+}
+
+/// Puts an accepted suggestion back to pending by hand, keeping the link to its action.
+async fn reset_to_pending(f: &Fixture, id: Id) {
+    transcript_suggestion::ActiveModel {
+        id: Set(id),
+        status: Set(Status::Pending),
+        ..Default::default()
+    }
+    .update(&f.db)
+    .await
+    .expect("the suggestion is reset");
+}
+
+#[tokio::test]
+async fn a_suggestion_that_already_created_an_action_cannot_be_accepted_again() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let s = suggest(&f, &p, Status::Pending, None).await;
+        let first = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the first accept succeeds");
+
+        reset_to_pending(&f, s.id).await;
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            reread(&f, s.id).await,
+            None,
+            now(),
+        )
+        .await
+        .expect_err("a second action is refused");
+
+        assert!(is_conflict(&refused), "{refused:?}");
+        assert_eq!(session_actions(&f).await.len(), 1);
+        let stored = reread(&f, s.id).await;
+        assert_eq!(stored.status, Status::Pending);
+        assert_eq!(stored.created_entity_id, Some(first.action.id));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dismissing_and_restoring_does_not_clear_the_created_action_guard() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let s = suggest(&f, &p, Status::Pending, None).await;
+        let first = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            s.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the first accept succeeds");
+
+        reset_to_pending(&f, s.id).await;
+        let dismissed = dismiss(&f.db, &publisher, &f.coach, reread(&f, s.id).await, now())
+            .await
+            .expect("the dismiss succeeds");
+        restore(&f.db, &publisher, &f.coach, dismissed, now())
+            .await
+            .expect("the restore succeeds");
+        assert_eq!(
+            reread(&f, s.id).await.created_entity_id,
+            Some(first.action.id)
+        );
+
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            reread(&f, s.id).await,
+            None,
+            now(),
+        )
+        .await
+        .expect_err("a second action is refused after dismiss and restore");
+        assert!(is_conflict(&refused), "{refused:?}");
+        assert_eq!(session_actions(&f).await.len(), 1);
+    })
+    .await;
+}
+
+/// Config with transcript suggestions turned on.
+#[tokio::test]
+async fn a_suggestion_that_already_created_an_action_is_listed_nowhere() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, _) = recording_publisher();
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let linked = suggest(&f, &p, Status::Pending, None).await;
+        let unlinked = suggest(&f, &p, Status::Pending, None).await;
+        let dismissed = suggest(&f, &p, Status::Dismissed, None).await;
+        accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            linked.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect("the accept succeeds");
+        let listed = |status| {
+            let f = &f;
+            async move {
+                list_actions(&f.db, &f.session, status, now())
+                    .await
+                    .expect("the list reads")
+                    .into_iter()
+                    .map(|s| s.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        reset_to_pending(&f, linked.id).await;
+        assert_eq!(listed(Status::Pending).await, vec![unlinked.id]);
+
+        transcript_suggestion::ActiveModel {
+            id: Set(linked.id),
+            status: Set(Status::Dismissed),
+            ..Default::default()
+        }
+        .update(&f.db)
+        .await
+        .expect("the suggestion is set to dismissed");
+        assert_eq!(listed(Status::Dismissed).await, vec![dismissed.id]);
+        assert_eq!(listed(Status::Pending).await, vec![unlinked.id]);
+    })
+    .await;
+}
+
+fn scanning() -> Config {
+    Config::from_args(["test", "--assembly-ai-api-key=test-key"])
+}
+
+/// Every analysis recorded for the fixture's transcript.
+async fn analyses(f: &Fixture) -> Vec<transcript_analysis::Model> {
+    analysis_rows::Entity::find()
+        .all(&f.db)
+        .await
+        .expect("the analyses are read")
+}
+
+async fn set_analysis(f: &Fixture, status: AnalysisStatus, attempts: i16, error: Option<&str>) {
+    analysis_rows::ActiveModel {
+        id: Set(f.analysis_id),
+        status: Set(status),
+        attempts: Set(attempts),
+        claimed_at: Set(Some(now().fixed_offset())),
+        error_message: Set(error.map(str::to_string)),
+        ..Default::default()
+    }
+    .update(&f.db)
+    .await
+    .expect("the analysis is set");
+}
+
+async fn delete_analysis(f: &Fixture) {
+    analysis_rows::Entity::delete_by_id(f.analysis_id)
+        .exec(&f.db)
+        .await
+        .expect("the analysis is deleted");
+}
+
+#[tokio::test]
+async fn starting_a_scan_never_run_queues_one_pending_analysis_and_announces_it() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let transcription_id = analyses(&f).await[0].transcription_id;
+        delete_analysis(&f).await;
+        let config = scanning();
+        assert_eq!(
+            scan_status(&f.db, &config, &f.session).await.unwrap(),
+            ScanStatus::None
+        );
+        let (publisher, recorder) = recording_publisher();
+
+        let status = start_scan(&f.db, &publisher, &config, &f.session)
+            .await
+            .expect("the scan starts");
+
+        assert_eq!(status, ScanStatus::Pending);
+        let rows = analyses(&f).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].transcription_id, transcription_id);
+        assert_eq!(rows[0].target, Target::Action);
+        assert_eq!(rows[0].status, AnalysisStatus::Pending);
+        assert_eq!(recorder.suggestion_changes(), 1);
+        assert_eq!(
+            scan_status(&f.db, &config, &f.session).await.unwrap(),
+            ScanStatus::Pending
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn starting_a_scan_after_a_failure_resets_the_same_analysis() {
+    within_time_limit(async {
+        let f = fixture().await;
+        set_analysis(
+            &f,
+            AnalysisStatus::Failed,
+            3,
+            Some("provider error: Timeout"),
+        )
+        .await;
+        let config = scanning();
+        assert_eq!(
+            scan_status(&f.db, &config, &f.session).await.unwrap(),
+            ScanStatus::Failed
+        );
+        let (publisher, recorder) = recording_publisher();
+
+        let status = start_scan(&f.db, &publisher, &config, &f.session)
+            .await
+            .expect("the scan restarts");
+
+        assert_eq!(status, ScanStatus::Pending);
+        let rows = analyses(&f).await;
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.id, f.analysis_id);
+        assert_eq!(row.status, AnalysisStatus::Pending);
+        assert_eq!(row.attempts, 0);
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.claimed_at, None);
+        assert_eq!(recorder.suggestion_changes(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn starting_a_scan_that_completed_conflicts_and_changes_nothing() {
+    within_time_limit(async {
+        let f = fixture().await;
+        set_analysis(&f, AnalysisStatus::Completed, 1, None).await;
+        let before = analyses(&f).await;
+        let (publisher, recorder) = recording_publisher();
+
+        let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+            .await
+            .expect_err("a completed scan is never repeated");
+
+        assert!(is_conflict(&error));
+        assert_eq!(
+            conflict_message(&error),
+            Some("Transcript already scanned for actions.")
+        );
+        assert_eq!(analyses(&f).await, before);
+        assert_eq!(recorder.suggestion_changes(), 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn starting_a_scan_while_one_is_running_conflicts_and_changes_nothing() {
+    within_time_limit(async {
+        let f = fixture().await;
+        for status in [AnalysisStatus::Pending, AnalysisStatus::Processing] {
+            set_analysis(&f, status, 1, None).await;
+            let before = analyses(&f).await;
+            let (publisher, recorder) = recording_publisher();
+
+            let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+                .await
+                .expect_err("a running scan is not restarted");
+
+            assert!(is_conflict(&error), "{status:?}");
+            assert_eq!(analyses(&f).await, before, "{status:?}");
+            assert_eq!(recorder.suggestion_changes(), 0, "{status:?}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_session_without_a_completed_transcript_or_a_key_cannot_be_scanned() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let transcription_id = analyses(&f).await[0].transcription_id;
+        delete_analysis(&f).await;
+        let (publisher, recorder) = recording_publisher();
+
+        let unconfigured = Config::from_args(["test"]);
+        assert_eq!(
+            scan_status(&f.db, &unconfigured, &f.session).await.unwrap(),
+            ScanStatus::Unavailable
+        );
+        let error = start_scan(&f.db, &publisher, &unconfigured, &f.session)
+            .await
+            .expect_err("nothing to scan without a key");
+        assert!(is_validation(&error));
+
+        transcription_rows::ActiveModel {
+            id: Set(transcription_id),
+            status: Set(TranscriptionStatus::Processing),
+            ..Default::default()
+        }
+        .update(&f.db)
+        .await
+        .expect("the transcript is reopened");
+        assert_eq!(
+            scan_status(&f.db, &scanning(), &f.session).await.unwrap(),
+            ScanStatus::Unavailable
+        );
+        let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+            .await
+            .expect_err("nothing to scan without a completed transcript");
+        assert!(is_validation(&error));
+
+        assert!(analyses(&f).await.is_empty());
+        assert_eq!(recorder.suggestion_changes(), 0);
+    })
+    .await;
+}

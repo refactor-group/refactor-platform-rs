@@ -16,7 +16,7 @@ use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
     coaching_session_series_controller, goal_controller, jwt_controller, magic_link_controller,
     note_controller, oauth_controller, organization, organization_controller,
-    password_reset_controller, tiptap_metrics_controller, user, user_controller,
+    password_reset_controller, search_controller, tiptap_metrics_controller, user, user_controller,
     user_session_controller, webhook_controller,
 };
 use crate::sse;
@@ -57,11 +57,13 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_controller::update,
             coaching_session_controller::update_title,
             coaching_session_controller::delete,
+            coaching_session_controller::resend_invite,
             coaching_session_series_controller::create,
             coaching_session_series_controller::read,
             coaching_session_series_controller::index,
             coaching_session_series_controller::update,
             coaching_session_series_controller::delete,
+            coaching_session_series_controller::resend_invite,
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
@@ -77,6 +79,12 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::set_rating,
             coaching_session::topic_controller::set_status,
             coaching_session::topic_controller::undo,
+            coaching_session::transcript_suggestion_controller::index,
+            coaching_session::transcript_suggestion_controller::scan,
+            coaching_session::transcript_suggestion_controller::start_scan,
+            coaching_session::transcript_suggestion_controller::accept,
+            coaching_session::transcript_suggestion_controller::dismiss,
+            coaching_session::transcript_suggestion_controller::restore,
             coaching_session::transcription_controller::read_latest,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
@@ -140,6 +148,7 @@ use utoipa_rapidoc::RapiDoc;
             user::coaching_session_controller::index,
             user::coaching_session_controller::counts,
             user::goal_controller::index,
+            search_controller::index,
             jwt_controller::generate_collab_token,
             tiptap_metrics_controller::platform_totals,
             tiptap_metrics_controller::per_org_metrics,
@@ -167,6 +176,8 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::coaching_session_series::CreateParams,
                 crate::params::coaching_session_series::RescheduleParams,
                 crate::params::goal::SortField,
+                crate::params::search::Mode,
+                crate::params::search::GoalFilter,
                 crate::params::sort::SortOrder,
                 crate::params::user::AttachRoleParams,
                 crate::params::user::UpdateRoleParams,
@@ -190,16 +201,36 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_sessions::Model,
                 domain::coaching_sessions_goals::Model,
                 domain::goals::Model,
+                domain::transcript_suggestion::actions::ActionProposal,
+                domain::transcript_suggestion::review::ActionEdits,
+                domain::transcript_suggestion::review::ActionSuggestion,
+                domain::transcript_suggestion::review::DefaultDue,
+                domain::transcript_suggestion::review::DueSource,
+                domain::transcript_suggestion::review::DuplicateOf,
+                domain::transcript_suggestion::review::Scan,
+                domain::transcript_suggestion::review::ScanStatus,
+                domain::transcript_suggestion::review::SourceSegment,
+                domain::transcript_suggestion::review::UndatedReason,
                 domain::jwts::Jwt,
                 domain::notes::Model,
                 domain::organizations::Model,
                 domain::meeting_provider::Provider,
+                domain::search::Results,
+                domain::search::Hit,
+                domain::search::Core,
+                domain::search::SessionHit,
+                domain::search::GoalHit,
+                domain::search::ActionHit,
+                domain::search::AgreementHit,
+                domain::search::TopicHit,
                 domain::status::Status,
                 domain::transcript_export::LabeledSegment,
                 domain::transcript_export::Speaker,
                 domain::transcript_export::SpeakerRole,
                 domain::transcription::Model,
                 domain::transcription::WithSpeakers,
+                domain::topic_status::Status,
+                domain::topic_priority::Priority,
                 domain::user::Credentials,
                 domain::user_role::UserLookupResult,
                 domain::user_roles::Model,
@@ -254,6 +285,9 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(coaching_session_meeting_recording_routes(app_state.clone()))
         .merge(coaching_session_image_routes(app_state.clone()))
         .merge(coaching_session_topic_routes(app_state.clone()))
+        .merge(coaching_session_transcript_suggestion_routes(
+            app_state.clone(),
+        ))
         .merge(coaching_session_transcription_routes(app_state.clone()))
         .merge(coaching_session_transcription_segment_routes(
             app_state.clone(),
@@ -273,6 +307,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
         .merge(coaching_session_series_routes(app_state.clone()))
+        .merge(search_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         .merge(tiptap_metrics_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
@@ -383,6 +418,18 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
                     protect::coaching_sessions::delete,
                 )),
         )
+        .merge(
+            // POST /coaching_sessions/:id/resend_invite
+            Router::new()
+                .route(
+                    "/coaching_sessions/:id/resend_invite",
+                    post(coaching_session_controller::resend_invite),
+                )
+                .route_layer(from_fn_with_state(
+                    app_state.clone(),
+                    protect::coaching_sessions::resend_invite,
+                )),
+        )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -409,6 +456,10 @@ pub fn coaching_session_series_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_session_series/:id",
             delete(coaching_session_series_controller::delete),
+        )
+        .route(
+            "/coaching_session_series/:id/resend_invite",
+            post(coaching_session_series_controller::resend_invite),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -713,6 +764,16 @@ fn password_reset_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+fn search_routes(app_state: AppState) -> Router {
+    // Per-IP throttle sized for search-as-you-type; see
+    // `ThrottlePolicy::SEARCH_ENDPOINT` and `docs/architecture/throttling.md`.
+    Router::new()
+        .route("/search", get(search_controller::index))
+        .route_layer(from_fn(require_auth))
+        .layer(PerIpThrottle::new(ThrottlePolicy::SEARCH_ENDPOINT).into_layer())
+        .with_state(app_state)
+}
+
 fn jwt_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
@@ -879,6 +940,33 @@ fn coaching_session_topic_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_sessions/:coaching_session_id/topics/:topic_id/undo",
             post(coaching_session::topic_controller::undo),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_transcript_suggestion_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions",
+            get(coaching_session::transcript_suggestion_controller::index),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/scan",
+            get(coaching_session::transcript_suggestion_controller::scan)
+                .post(coaching_session::transcript_suggestion_controller::start_scan),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/accept",
+            post(coaching_session::transcript_suggestion_controller::accept),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/dismiss",
+            post(coaching_session::transcript_suggestion_controller::dismiss),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/restore",
+            post(coaching_session::transcript_suggestion_controller::restore),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

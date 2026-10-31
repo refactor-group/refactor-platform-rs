@@ -24,10 +24,7 @@ where
         let AuthenticatedUser(authenticated_user) =
             AuthenticatedUser::from_request_parts(parts, state).await?;
 
-        let is_super_admin = authenticated_user
-            .roles
-            .iter()
-            .any(|r| r.role == users::Role::SuperAdmin && r.organization_id.is_none());
+        let is_super_admin = authenticated_user.is_super_admin();
 
         if is_super_admin {
             Ok(SuperAdminAccess { authenticated_user })

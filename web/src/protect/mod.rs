@@ -44,9 +44,7 @@ use log::*;
 /// impl Check for UserIsAdmin {
 ///     async fn eval(&self, _app: &AppState, user: &domain::users::Model, args: Vec<Id>) -> bool {
 ///         // Check if user is a SuperAdmin (global access)
-///         if user.roles.iter().any(|r|
-///             r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none()
-///         ) {
+///         if user.is_super_admin() {
 ///             return true;
 ///         }
 ///
@@ -153,11 +151,7 @@ impl Check for UserIsAdmin {
         args: Vec<Id>,
     ) -> bool {
         // Check if user is a SuperAdmin (global access)
-        if authenticated_user
-            .roles
-            .iter()
-            .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
-        {
+        if authenticated_user.is_super_admin() {
             return true;
         }
 
@@ -193,9 +187,6 @@ impl Check for UserIsSuperAdmin {
         authenticated_user: &domain::users::Model,
         _args: Vec<Id>,
     ) -> bool {
-        authenticated_user
-            .roles
-            .iter()
-            .any(|r| r.role == domain::users::Role::SuperAdmin && r.organization_id.is_none())
+        authenticated_user.is_super_admin()
     }
 }

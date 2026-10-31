@@ -27,6 +27,8 @@ pub enum IncludeParam {
     Agreements,
     /// Include session topics
     Topics,
+    /// Include the session's series id and its latest session date
+    Series,
 }
 
 /// Query parameters for GET `/users/{user_id}/coaching_sessions` endpoint.
@@ -195,5 +197,13 @@ mod tests {
         assert!(serde_json::from_str::<GroupByParam>(r#""week""#).is_err());
         assert!(serde_json::from_str::<GroupByParam>(r#""MONTH""#).is_err());
         assert!(serde_json::from_str::<GroupByParam>(r#""""#).is_err());
+    }
+
+    #[test]
+    fn include_param_parses_series() {
+        let uri: axum::http::Uri = "/?include=series".parse().unwrap();
+        let axum::extract::Query(params) =
+            axum::extract::Query::<IndexParams>::try_from_uri(&uri).expect("include=series parses");
+        assert_eq!(params.include, vec![IncludeParam::Series]);
     }
 }

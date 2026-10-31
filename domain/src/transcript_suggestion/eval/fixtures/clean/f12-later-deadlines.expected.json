@@ -1,0 +1,8 @@
+[
+  {"segments": ["s1"], "assignees": ["coach"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "deadline on the next line"},
+  {"segments": ["s3"], "assignees": ["coachee"], "due_dates": ["2026-10-09"], "duplicate_of": null, "note": "deadline after a question, sourced to the commitment"},
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "vendor call: the later deadline is the hiring plan's"},
+  {"segments": ["s6", "s7"], "assignees": ["coachee"], "due_dates": ["2026-10-12"], "duplicate_of": null, "note": "hiring plan by Monday"},
+  {"segments": ["s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "slides: Thursday is the coach's review"},
+  {"segments": ["s9"], "assignees": ["coach"], "due_dates": ["2026-10-08"], "duplicate_of": null, "note": "coach reviews by Thursday"}
+]

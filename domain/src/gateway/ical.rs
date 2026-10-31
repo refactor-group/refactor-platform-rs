@@ -15,7 +15,12 @@ use vtimezones_rs::VTIMEZONES;
 #[path = "ical_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "ical_oracle_tests.rs"]
+mod oracle_tests;
+
 /// VCALENDAR-level `METHOD`.
+#[derive(PartialEq, Eq)]
 pub enum Method {
     Request,
     Cancel,
@@ -62,6 +67,9 @@ pub struct IcsInvite<'a> {
     /// RFC 5545 `RECURRENCE-ID`: the original start of the occurrence this invite
     /// overrides. Mutually exclusive with `recurrence`.
     pub recurrence_id: Option<NaiveDateTime>,
+    /// RFC 5545 `EXDATE`s (UTC, like `start`): series occurrences that no longer exist.
+    /// Only emitted alongside an RRULE.
+    pub exdates: Vec<NaiveDateTime>,
 }
 
 /// One open action rendered into the DESCRIPTION.
@@ -102,6 +110,15 @@ fn vtimezone_block(tz: chrono_tz::Tz) -> Option<String> {
     Some(inner.replace("\r\n", "\n").replace('\n', "\r\n"))
 }
 
+/// The zone an invite anchored to `tz` is actually written in: `tz` itself, or UTC when
+/// no `VTIMEZONE` block exists for it. Series expansion must use this same zone.
+pub fn emitted_zone(tz: chrono_tz::Tz) -> chrono_tz::Tz {
+    match tz == chrono_tz::UTC || vtimezone_block(tz).is_some() {
+        true => tz,
+        false => chrono_tz::UTC,
+    }
+}
+
 /// Insert the `VTIMEZONE` block immediately before the first `BEGIN:VEVENT`.
 fn splice_vtimezone(serialized: &str, block: &str) -> Result<String, Error> {
     let marker = "BEGIN:VEVENT";
@@ -135,6 +152,8 @@ fn rrule_value(rule: &Recurrence) -> String {
     let effective_interval = rule.effective_interval();
 
     let mut parts = vec![format!("FREQ={freq}")];
+    // Explicit, so every client aligns multi-week steps on Monday as the expander does.
+    parts.push("WKST=MO".to_string());
     if effective_interval > 1 {
         parts.push(format!("INTERVAL={effective_interval}"));
     }
@@ -152,22 +171,77 @@ fn rrule_value(rule: &Recurrence) -> String {
 
 /// Build the full VCALENDAR text (with spliced VTIMEZONE when zoned) for one invite.
 pub fn build(invite: &IcsInvite) -> Result<String, Error> {
-    let method = match invite.method {
+    build_calendar(std::slice::from_ref(invite))
+}
+
+/// Build one VCALENDAR holding every invite as a VEVENT, in order, under a single
+/// METHOD and a single VTIMEZONE. A series master and its overrides travel together.
+pub fn build_calendar(invites: &[IcsInvite]) -> Result<String, Error> {
+    let first = invites
+        .first()
+        .ok_or_else(|| internal("no invites to build a calendar from"))?;
+    if invites.iter().any(|i| i.anchor_tz != first.anchor_tz) {
+        return Err(internal(
+            "invites in one calendar must share an anchor zone",
+        ));
+    }
+    if invites.iter().any(|i| i.method != first.method) {
+        return Err(internal("invites in one calendar must share a method"));
+    }
+
+    let method = match first.method {
         Method::Request => "REQUEST",
         Method::Cancel => "CANCEL",
     };
+
+    let block = if first.anchor_tz == chrono_tz::UTC {
+        None
+    } else {
+        vtimezone_block(first.anchor_tz)
+    };
+    if block.is_none() && first.anchor_tz != chrono_tz::UTC {
+        warn!(
+            "no VTIMEZONE block for zone {}, falling back to UTC",
+            first.anchor_tz.name()
+        );
+    }
+    let zone = block.as_ref().map(|_| first.anchor_tz);
+
+    let mut calendar = Calendar::new();
+    calendar.append_property(("METHOD", method));
+    invites.iter().for_each(|invite| {
+        calendar.push(event(invite, zone));
+    });
+
+    let serialized = calendar.done().to_string();
+    match block {
+        Some(block) => splice_vtimezone(&serialized, &block),
+        None => Ok(serialized),
+    }
+}
+
+/// A date-time property in the same form as DTSTART: `TZID` + local wall time when
+/// zoned, UTC otherwise. Clients match RECURRENCE-ID and EXDATE against DTSTART.
+fn occurrence_property(name: &str, at: NaiveDateTime, zone: Option<chrono_tz::Tz>) -> Property {
+    match zone {
+        Some(tz) => {
+            let local = Utc.from_utc_datetime(&at).with_timezone(&tz).naive_local();
+            Property::new(name, local.format(LOCAL_BASIC).to_string())
+                .add_parameter("TZID", tz.name())
+                .done()
+        }
+        None => Property::new(name, at.format(UTC_BASIC).to_string()),
+    }
+}
+
+/// One VEVENT. `zone` is the anchor zone when a VTIMEZONE block accompanies it.
+fn event(invite: &IcsInvite, zone: Option<chrono_tz::Tz>) -> Event {
     let status = match invite.status {
         EventStatus::Confirmed => "CONFIRMED",
         EventStatus::Cancelled => "CANCELLED",
     };
 
     let end = invite.start + Duration::minutes(invite.duration_minutes as i64);
-
-    let block = if invite.anchor_tz == chrono_tz::UTC {
-        None
-    } else {
-        vtimezone_block(invite.anchor_tz)
-    };
 
     let mut event = Event::new();
     event
@@ -178,44 +252,23 @@ pub fn build(invite: &IcsInvite) -> Result<String, Error> {
         .add_property("DTSTAMP", invite.dtstamp.format(UTC_BASIC).to_string())
         .add_property("STATUS", status);
 
-    match &block {
-        Some(_) => {
+    match zone {
+        Some(tz) => {
             let start_local = Utc
                 .from_utc_datetime(&invite.start)
-                .with_timezone(&invite.anchor_tz)
+                .with_timezone(&tz)
                 .naive_local();
-            let end_local = Utc
-                .from_utc_datetime(&end)
-                .with_timezone(&invite.anchor_tz)
-                .naive_local();
-            event.starts(CalendarDateTime::from((start_local, invite.anchor_tz)));
-            event.ends(CalendarDateTime::from((end_local, invite.anchor_tz)));
-            // Must mirror DTSTART's form or clients fail to match the override.
-            if let Some(recurrence_id) = invite.recurrence_id {
-                let local = Utc
-                    .from_utc_datetime(&recurrence_id)
-                    .with_timezone(&invite.anchor_tz)
-                    .naive_local();
-                event.append_property(
-                    Property::new("RECURRENCE-ID", local.format(LOCAL_BASIC).to_string())
-                        .add_parameter("TZID", invite.anchor_tz.name())
-                        .done(),
-                );
-            }
+            let end_local = Utc.from_utc_datetime(&end).with_timezone(&tz).naive_local();
+            event.starts(CalendarDateTime::from((start_local, tz)));
+            event.ends(CalendarDateTime::from((end_local, tz)));
         }
         None => {
-            if invite.anchor_tz != chrono_tz::UTC {
-                warn!(
-                    "no VTIMEZONE block for zone {}, falling back to UTC",
-                    invite.anchor_tz.name()
-                );
-            }
             event.starts(Utc.from_utc_datetime(&invite.start));
             event.ends(Utc.from_utc_datetime(&end));
-            if let Some(recurrence_id) = invite.recurrence_id {
-                event.add_property("RECURRENCE-ID", recurrence_id.format(UTC_BASIC).to_string());
-            }
         }
+    }
+    if let Some(recurrence_id) = invite.recurrence_id {
+        event.append_property(occurrence_property("RECURRENCE-ID", recurrence_id, zone));
     }
 
     event.append_property(
@@ -248,25 +301,29 @@ pub fn build(invite: &IcsInvite) -> Result<String, Error> {
     }
 
     // An override instance addresses a single occurrence, so it carries no RRULE.
-    match (&invite.recurrence, invite.recurrence_id) {
-        (Some(rule), None) => {
-            event.add_property("RRULE", rrule_value(rule));
+    let rrule = match (&invite.recurrence, invite.recurrence_id) {
+        (Some(rule), None) => Some(rule),
+        (Some(_), Some(_)) => {
+            warn!("dropping RRULE from an invite that carries a RECURRENCE-ID");
+            None
         }
-        (Some(_), Some(_)) => warn!("dropping RRULE from an invite that carries a RECURRENCE-ID"),
-        (None, _) => {}
+        (None, _) => None,
+    };
+    // EXDATEs only mean something against an RRULE.
+    match rrule {
+        Some(rule) => {
+            event.add_property("RRULE", rrule_value(rule));
+            invite.exdates.iter().for_each(|exdate| {
+                event.append_multi_property(occurrence_property("EXDATE", *exdate, zone));
+            });
+        }
+        None if !invite.exdates.is_empty() => {
+            warn!("dropping EXDATEs from an invite that carries no RRULE");
+        }
+        None => {}
     }
 
-    let event = event.done();
-    let calendar = Calendar::new()
-        .append_property(("METHOD", method))
-        .push(event)
-        .done();
-
-    let serialized = calendar.to_string();
-    match block {
-        Some(block) => splice_vtimezone(&serialized, &block),
-        None => Ok(serialized),
-    }
+    event.done()
 }
 
 /// Compose the DESCRIPTION string. Each section is omitted when its data is empty.
