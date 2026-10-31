@@ -1,6 +1,6 @@
 [package]
 name = "docs-collab-server"
-version = "0.1.0"
+version = "1.0.0-beta4"
 edition = "2021"
 description = "Self-hosted collaborative document server speaking the Hocuspocus wire protocol over yrs."
 publish = false

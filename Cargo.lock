@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "docs-collab-server"
-version = "0.1.0"
+version = "1.0.0-beta4"
 dependencies = [
  "async-trait",
  "axum",
@@ -2663,7 +2663,7 @@ dependencies = [
 
 [[package]]
 name = "meeting-auth"
-version = "0.1.0"
+version = "1.0.0-beta4"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5218,7 +5218,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "testing-tools"
-version = "0.1.0"
+version = "1.0.0-beta4"
 dependencies = [
  "anyhow",
  "clap",
