@@ -1,6 +1,5 @@
-use crate::controller::user::coaching_session_controller::nearest;
-use crate::middleware::auth::require_auth;
-use crate::{protect, AppState};
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::{body::Body, extract::Request, routing::get, Router};
@@ -15,10 +14,13 @@ use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, MockDatabase};
 use serde_json::{json, Value};
 use service::config::Config;
-use std::sync::Arc;
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
+
+use crate::controller::user::coaching_session_controller::nearest;
+use crate::middleware::auth::require_auth;
+use crate::{protect, AppState};
 
 fn test_user() -> users::Model {
     let now = Utc::now();
@@ -188,6 +190,26 @@ async fn an_invalid_window_is_a_400_with_the_invalid_nearest_window_slug() {
             "message": "`coaching_relationship_id` is required.",
         })
     );
+}
+
+#[tokio::test]
+async fn a_signed_out_request_is_unauthorized() {
+    let app = build_app(Arc::new(
+        MockDatabase::new(DatabaseBackend::Postgres).into_connection(),
+    ));
+    let request = Request::builder()
+        .uri(format!(
+            "/users/{}/coaching_sessions/nearest?{}",
+            Id::new_v4(),
+            window_query(Id::new_v4())
+        ))
+        .header("x-version", "1.0.0")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

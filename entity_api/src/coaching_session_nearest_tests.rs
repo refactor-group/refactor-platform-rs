@@ -1,10 +1,11 @@
 //! Control flow of `find_nearest_by_user_with_includes`; which rows the queries
 //! select is covered by the SQLite tier in `domain`.
 
-use super::*;
 use chrono::{NaiveDate, Utc};
 use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+
+use super::*;
 
 const SESSION_COLUMNS: &str = r#""coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at""#;
 

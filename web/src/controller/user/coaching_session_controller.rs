@@ -133,9 +133,10 @@ pub async fn index(
     ),
     responses(
         (status = 200, description = "The window's sessions, latest first", body = [domain::coaching_session::EnrichedSession]),
-        (status = 400, description = "Bad Request (`invalid_nearest_window`, or an invalid include parameter)"),
+        (status = 400, description = "Bad Request (`invalid_nearest_window`, or an unknown include value)"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
+        (status = 422, description = "Unprocessable include combination: `organization` requires `relationship`"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(

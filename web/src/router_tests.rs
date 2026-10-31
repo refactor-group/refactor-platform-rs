@@ -177,6 +177,10 @@ fn the_nearest_sessions_operation_declares_its_query_parameters() {
         operation["responses"].get("400").is_some(),
         "the nearest read must document its invalid_nearest_window 400"
     );
+    assert!(
+        operation["responses"].get("422").is_some(),
+        "the nearest read must document the 422 for `organization` without `relationship`"
+    );
 }
 
 /// Every `$ref` in the spec must point at a schema that is actually defined.
