@@ -28,6 +28,7 @@ use entity::coaching_relationships::Visibility;
 use entity::status::Status;
 use entity::topic_priority::Priority;
 use entity::topic_status::Status as TopicStatus;
+use entity::transcript_suggestion_target::Target;
 use entity::Id;
 
 pub mod action;
@@ -37,6 +38,7 @@ pub mod goal;
 mod session_title;
 mod snippet;
 pub mod topic;
+pub mod transcript_suggestion;
 mod visibility;
 
 pub use session_title::resolve_session_titles;
@@ -54,17 +56,19 @@ pub enum HitType {
     CoachingSession,
     Goal,
     Topic,
+    TranscriptSuggestion,
 }
 
 impl HitType {
     /// Every searchable type, in merge (type-ascending) order. The single list
     /// that fan-out, snippet hydration, and the default `types` filter draw from.
-    pub const ALL: [HitType; 5] = [
+    pub const ALL: [HitType; 6] = [
         HitType::Action,
         HitType::Agreement,
         HitType::CoachingSession,
         HitType::Goal,
         HitType::Topic,
+        HitType::TranscriptSuggestion,
     ];
 
     /// Stable wire code for cursor payloads. Never renumber: new types take the
@@ -76,6 +80,7 @@ impl HitType {
             HitType::Action => 3,
             HitType::Agreement => 4,
             HitType::Topic => 5,
+            HitType::TranscriptSuggestion => 6,
         }
     }
 
@@ -167,6 +172,22 @@ pub struct TopicHit {
     pub priority: Option<Priority>,
 }
 
+/// A pending AI-suggested item; no review status, since every hit is pending.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[schema(as = domain::search::TranscriptSuggestionHit)]
+pub struct TranscriptSuggestionHit {
+    #[serde(flatten)]
+    pub core: Core,
+    /// What accepting the suggestion would create.
+    pub target: Target,
+    pub coaching_session_id: Id,
+    pub coaching_relationship_id: Id,
+    #[schema(value_type = String, format = DateTime)]
+    pub session_date: DateTime,
+    /// Hydrated post-merge (dated fallback when the session composes no title).
+    pub session_title: String,
+}
+
 /// One search result. Additional variants ship additively in later PRs
 /// (notes, transcripts, users, organizations); clients must ignore unknown
 /// `type` values.
@@ -179,6 +200,7 @@ pub enum Hit {
     CoachingSession(SessionHit),
     Goal(GoalHit),
     Topic(TopicHit),
+    TranscriptSuggestion(TranscriptSuggestionHit),
 }
 
 impl Hit {
@@ -190,6 +212,7 @@ impl Hit {
             Hit::CoachingSession(_) => HitType::CoachingSession,
             Hit::Goal(_) => HitType::Goal,
             Hit::Topic(_) => HitType::Topic,
+            Hit::TranscriptSuggestion(_) => HitType::TranscriptSuggestion,
         }
     }
 
@@ -201,6 +224,7 @@ impl Hit {
             Hit::CoachingSession(h) => &h.core,
             Hit::Goal(h) => &h.core,
             Hit::Topic(h) => &h.core,
+            Hit::TranscriptSuggestion(h) => &h.core,
         }
     }
 
@@ -213,6 +237,7 @@ impl Hit {
             Hit::CoachingSession(h) => &mut h.core,
             Hit::Goal(h) => &mut h.core,
             Hit::Topic(h) => &mut h.core,
+            Hit::TranscriptSuggestion(h) => &mut h.core,
         }
     }
 }
@@ -253,7 +278,8 @@ impl TimeRange {
 pub struct Filters {
     pub organization_id: Option<Id>,
     /// Creator (`user_id` column) for goals/actions/agreements/topics; for
-    /// sessions the domain compiles it into `participant_relationship_ids`.
+    /// sessions and transcript suggestions (which have no creator) the domain
+    /// compiles it into `participant_relationship_ids`.
     pub user_id: Option<Id>,
     pub coaching_session_id: Option<Id>,
     pub goal_id: Option<Id>,
@@ -291,7 +317,8 @@ pub struct Request<'a> {
 impl Request<'_> {
     /// The relationship id set a session-anchored searcher scopes on:
     /// the participant-narrowed set when the `user_id` filter targets
-    /// participation (sessions), otherwise the caller's visible set.
+    /// participation (sessions, transcript suggestions), otherwise the
+    /// caller's visible set.
     pub(crate) fn effective_relationship_ids(&self, participant_semantics: bool) -> Option<&[Id]> {
         if participant_semantics {
             if let Some(ids) = &self.filters.participant_relationship_ids {
@@ -310,7 +337,7 @@ pub trait Searcher: Send + Sync {
     async fn search(&self, db: &DatabaseConnection, req: &Request<'_>) -> Result<Vec<Hit>, Error>;
 }
 
-/// The five phase-1 searchers, in merge (type-ascending) order.
+/// Every active searcher, in merge (type-ascending) order.
 pub fn searchers() -> Vec<Box<dyn Searcher>> {
     HitType::ALL.into_iter().map(searcher).collect()
 }
@@ -322,6 +349,7 @@ fn searcher(hit_type: HitType) -> Box<dyn Searcher> {
         HitType::CoachingSession => Box::new(coaching_session::Searcher),
         HitType::Goal => Box::new(goal::Searcher),
         HitType::Topic => Box::new(topic::Searcher),
+        HitType::TranscriptSuggestion => Box::new(transcript_suggestion::Searcher),
     }
 }
 

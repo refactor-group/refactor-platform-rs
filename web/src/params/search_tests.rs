@@ -38,7 +38,7 @@ fn a_plain_query_compiles_with_defaults() {
     let spec = params("quarterly review").compile().expect("compiles");
     assert_eq!(spec.query, "quarterly review");
     assert_eq!(spec.limit, 25);
-    assert_eq!(spec.types.len(), 5);
+    assert_eq!(spec.types.len(), 6);
     assert!(spec.cursor.is_none());
 }
 
@@ -68,6 +68,14 @@ fn inactive_type_tokens_are_silently_dropped() {
     p.types = Some("goals,notes,users,organizations,transcripts".to_string());
     let spec = p.compile().expect("compiles");
     assert_eq!(spec.types, vec![HitType::Goal]);
+}
+
+#[test]
+fn transcript_suggestions_is_an_active_type_token() {
+    let mut p = params("review");
+    p.types = Some("transcript_suggestions".to_string());
+    let spec = p.compile().expect("compiles");
+    assert_eq!(spec.types, vec![HitType::TranscriptSuggestion]);
 }
 
 #[test]

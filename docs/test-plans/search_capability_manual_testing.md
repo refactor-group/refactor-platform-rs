@@ -19,7 +19,8 @@ even if the full record is never returned.
 
 > [!NOTE]
 > Scenario applicability by delivery phase:
-> A–H apply from **PR 1** (keyword core). I applies from **PR 2**
+> A–H apply from **PR 1** (keyword core). M applies from **PR 1b**
+> (transcript suggestions). I applies from **PR 2**
 > (transcripts). J applies from **PR 3** (members/organizations). K applies
 > from **PR 4** (MCP tool). L applies from **PR 6** (semantic). Run the full
 > plan again after each phase lands — every new searchable type is a new
@@ -47,7 +48,7 @@ even if the full record is never returned.
 
 | Sentinel | Where it must appear |
 |---|---|
-| `kumquat` | R1: session title, goal title *and* body, action body, agreement body, one live topic body, one **soft-deleted** topic body, transcript segments (PR 2+), note body via the collaborative editor (PR 5+) |
+| `kumquat` | R1: session title, goal title *and* body, action body, agreement body, one live topic body, one **soft-deleted** topic body, a pending transcript suggestion's proposal body plus accepted/dismissed ones that must stay hidden (PR 1b+), transcript segments (PR 2+), note body via the collaborative editor (PR 5+) |
 | `tamarind` | R2: same spread |
 | `yuzu` | G1 (Globex): same spread |
 
@@ -93,6 +94,12 @@ BEGIN;
 SET search_path TO refactor_platform;
 
 -- Cleanup (children first; the optional 1.3 volume rows are caught via parent ids).
+DELETE FROM transcript_suggestions  WHERE coaching_session_id::text LIKE '0d000000-%';
+DELETE FROM transcript_analyses     WHERE id::text LIKE '1f000000-%';
+DELETE FROM transcript_segments     WHERE id::text LIKE '1e000000-%';
+DELETE FROM transcriptions          WHERE id::text LIKE '1d000000-%';
+DELETE FROM meeting_recordings      WHERE id::text LIKE '1c000000-%';
+DELETE FROM actions_users           WHERE action_id IN (SELECT id FROM actions WHERE coaching_session_id::text LIKE '0d000000-%');
 DELETE FROM coaching_session_topics WHERE coaching_session_id::text LIKE '0d000000-%';
 DELETE FROM agreements              WHERE coaching_session_id::text LIKE '0d000000-%';
 DELETE FROM actions                 WHERE coaching_session_id::text LIKE '0d000000-%';
@@ -181,6 +188,53 @@ INSERT INTO coaching_session_topics (id, coaching_session_id, user_id, body, dis
   ('1b000000-0000-4000-a000-000000000004', '0d000000-0000-4000-a000-000000000003', '0b000000-0000-4000-a000-000000000008', 'Yuzu harvest window.',                1, 'open', NULL,  now(), now()),
   ('1b000000-0000-4000-a000-000000000005', '0d000000-0000-4000-a000-000000000001', '0b000000-0000-4000-a000-000000000002', 'Monthly check-in cadence.',           3, 'open', NULL,  now(), now());
 
+-- Transcript suggestions (Scenario M / PR 1b+). Each of S1/S2/SG gets the
+-- recording → transcription → segment → analysis chain a suggestion hangs off.
+INSERT INTO meeting_recordings (id, coaching_session_id, bot_id, status, created_at, updated_at) VALUES
+  ('1c000000-0000-4000-a000-000000000001', '0d000000-0000-4000-a000-000000000001', 'search-bot-s1', 'completed', now(), now()),
+  ('1c000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000002', 'search-bot-s2', 'completed', now(), now()),
+  ('1c000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000003', 'search-bot-sg', 'completed', now(), now());
+
+INSERT INTO transcriptions (id, coaching_session_id, meeting_recording_id, external_id, status, created_at, updated_at) VALUES
+  ('1d000000-0000-4000-a000-000000000001', '0d000000-0000-4000-a000-000000000001', '1c000000-0000-4000-a000-000000000001', 'search-tx-s1', 'completed', now(), now()),
+  ('1d000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000002', '1c000000-0000-4000-a000-000000000002', 'search-tx-s2', 'completed', now(), now()),
+  ('1d000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000003', '1c000000-0000-4000-a000-000000000003', 'search-tx-sg', 'completed', now(), now());
+
+-- The S1 segment says "loquat", which no proposal body does: Scenario M's
+-- proof that only the body is searched, never the quote.
+INSERT INTO transcript_segments (id, transcription_id, speaker_label, text, start_ms, end_ms, created_at) VALUES
+  ('1e000000-0000-4000-a000-000000000001', '1d000000-0000-4000-a000-000000000001', 'Speaker A', 'Before spring I will trim that kumquat hedge, and the loquat too.', 60000, 64000, now()),
+  ('1e000000-0000-4000-a000-000000000002', '1d000000-0000-4000-a000-000000000002', 'Speaker A', 'Let us try a few tamarind chutney recipes.',                         60000, 63000, now()),
+  ('1e000000-0000-4000-a000-000000000003', '1d000000-0000-4000-a000-000000000003', 'Speaker A', 'We should ship yuzu samples to the buyers.',                         60000, 63000, now());
+
+INSERT INTO transcript_analyses (id, transcription_id, target, status, created_at, updated_at) VALUES
+  ('1f000000-0000-4000-a000-000000000001', '1d000000-0000-4000-a000-000000000001', 'action', 'completed', now(), now()),
+  ('1f000000-0000-4000-a000-000000000002', '1d000000-0000-4000-a000-000000000002', 'action', 'completed', now(), now()),
+  ('1f000000-0000-4000-a000-000000000003', '1d000000-0000-4000-a000-000000000003', 'action', 'completed', now(), now());
+
+-- R1 has one suggestion per lifecycle state; only 001 is searchable. 002 was
+-- accepted into the "Water the kumquat seedlings" action, 003 dismissed, and
+-- 004 is pending but already carries a created entity, which the review list
+-- hides too. Proposals mirror the extractor's stored ActionProposal JSON.
+INSERT INTO transcript_suggestions (id, coaching_session_id, transcript_analysis_id, target, proposal, segment_id, quote, status, resolved_by, resolved_at, created_entity_id, created_at, updated_at)
+SELECT v.id::uuid, v.session::uuid, v.analysis::uuid, 'action',
+       jsonb_build_object(
+         'id', '00000000-0000-0000-0000-000000000000', 'coaching_session_id', v.session,
+         'goal_id', NULL, 'user_id', '00000000-0000-0000-0000-000000000000', 'body', v.body,
+         'due_by', NULL, 'status', 'NotStarted', 'status_changed_at', '1970-01-01T00:00:00+00:00',
+         'created_at', '1970-01-01T00:00:00+00:00', 'updated_at', '1970-01-01T00:00:00+00:00',
+         'assignee_ids', '[]'::jsonb, 'due_phrase', NULL),
+       v.segment::uuid, v.quote, v.status::transcript_suggestion_status, v.resolved_by::uuid,
+       CASE WHEN v.status <> 'pending' THEN now() END, v.created_entity::uuid, now(), now()
+FROM (VALUES
+  ('2a000000-0000-4000-a000-000000000001', '0d000000-0000-4000-a000-000000000001', '1f000000-0000-4000-a000-000000000001', '1e000000-0000-4000-a000-000000000001', 'Trim the kumquat hedge before spring.',        'trim that kumquat hedge, and the loquat too', 'pending',   NULL,                                   NULL),
+  ('2a000000-0000-4000-a000-000000000002', '0d000000-0000-4000-a000-000000000001', '1f000000-0000-4000-a000-000000000001', '1e000000-0000-4000-a000-000000000001', 'Accepted kumquat suggestion, now an action.', 'trim that kumquat hedge',                     'accepted',  '0b000000-0000-4000-a000-000000000001', '0f000000-0000-4000-a000-000000000001'),
+  ('2a000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000001', '1f000000-0000-4000-a000-000000000001', '1e000000-0000-4000-a000-000000000001', 'Dismissed kumquat suggestion.',              'trim that kumquat hedge',                     'dismissed', '0b000000-0000-4000-a000-000000000001', NULL),
+  ('2a000000-0000-4000-a000-000000000004', '0d000000-0000-4000-a000-000000000001', '1f000000-0000-4000-a000-000000000001', '1e000000-0000-4000-a000-000000000001', 'Orphaned kumquat suggestion.',               'trim that kumquat hedge',                     'pending',   NULL,                                   '0f000000-0000-4000-a000-000000000002'),
+  ('2a000000-0000-4000-a000-000000000005', '0d000000-0000-4000-a000-000000000002', '1f000000-0000-4000-a000-000000000002', '1e000000-0000-4000-a000-000000000002', 'Try three tamarind chutney recipes.',        'a few tamarind chutney recipes',              'pending',   NULL,                                   NULL),
+  ('2a000000-0000-4000-a000-000000000006', '0d000000-0000-4000-a000-000000000003', '1f000000-0000-4000-a000-000000000003', '1e000000-0000-4000-a000-000000000003', 'Ship yuzu samples to the buyers.',           'ship yuzu samples to the buyers',             'pending',   NULL,                                   NULL)
+) AS v(id, session, analysis, segment, body, quote, status, resolved_by, created_entity);
+
 COMMIT;
 SQL
 ```
@@ -227,6 +281,7 @@ The fixture pins every id the scenarios reference:
 | S1 (R1) / S2 (R2) / SG (G1) / bare SB (R1) `coaching_session_id` | `0d000000-0000-4000-a000-00000000000{1,2,3,4}` |
 | R1 / R2 / G1 goal ids | `0e000000-0000-4000-a000-00000000000{1,2,3}` |
 | Casey…Quinn `user_id` | `0b000000-0000-4000-a000-000000000001` … `…009` (fixture order) |
+| R1 suggestions: pending / accepted / dismissed / pending-with-entity; R2 / G1 pending | `2a000000-0000-4000-a000-00000000000{1,2,3,4}`; `…005` / `…006` |
 
 All example requests below elide the host and auth; append params to
 `GET /search` (or use the `search` helper from 1.1).
@@ -243,7 +298,7 @@ Logged in as Casey. `GET /search?q=kumquat`.
 | Hit ordering | non-increasing `score` |
 | Snippets | HTML-escaped text whose only tags are `<mark>…</mark>` around matched terms — check the raw JSON, and confirm the FE renders them as highlights, **not** as injected HTML |
 | Forged highlights | edit a matching goal's title to `Kumquat <mark=>forged & a<b` plus `\x02fake\x03` (via SQL `E'…'`), search `q=forged`: only `forged` is wrapped in `<mark>`; `&`/`<` come back as `&amp;`/`&lt;`; `fake` is not highlighted; the FE shows the literal `&` and `<`. Restore the title afterwards |
-| Session-anchored hits | carry `coaching_session_id` and `coaching_relationship_id`; action and agreement hits also carry `session_title` (non-empty even where the session's `title` column is NULL); topic hits do not |
+| Session-anchored hits | carry `coaching_session_id` and `coaching_relationship_id`; action, agreement and transcript-suggestion hits also carry `session_title` (non-empty even where the session's `title` column is NULL); topic hits do not |
 | The bare session's action hit | `session_title` is exactly `Coaching session — YYYY-MM-DD` (the session's date) — not empty, not an improvised placeholder |
 
 ## 3. Scenario B: keyword semantics (feature requirements)
@@ -283,7 +338,7 @@ plus one `kumquat` action **linked to the R1 goal** and one **unlinked**
 |---|---|
 | `created_from=<yesterday>&created_to=<yesterday>&tz=America/New_York` | only rows whose `created_at` falls on that New-York calendar day; the window is inclusive of the whole day |
 | `tz=Not/AZone` | 400 with `"error": "invalid_timezone"` |
-| `user_id=<Robin>` | only R1 content Robin authored (notes/goals/actions/agreements/topics) or participates in (sessions/transcripts) |
+| `user_id=<Robin>` | only R1 content Robin authored (notes/goals/actions/agreements/topics) or participates in (sessions/transcripts/transcript suggestions) |
 | `coaching_relationship_id=<R1>` | identical to the unfiltered search — Casey's scope is exactly R1, so this only proves the filter doesn't drop in-scope content; the discriminating narrowing check runs as Alex in F, and the foreign-id probe as Casey in D |
 | `coaching_session_id=<R1 session>` | session-anchored types narrowed to that session's content, plus the session itself; goal hits are unaffected (goals are relationship-anchored — the filter is ignored for them, like `goal_id` for non-linkable types) |
 | `organization_id=<Acme>` | unchanged (Casey's scope is already Acme-only) |
@@ -454,7 +509,73 @@ Additional seeding on top of the prerequisites:
 | Same query, `mode=hybrid` vs `mode=semantic` | latencies roughly equal — the embed call dominates both; hybrid landing near semantic-plus-keyword *summed* suggests the arms run sequentially instead of in parallel |
 | Simulated provider outage (if feasible): a query embedded moments earlier, then a novel query | the recent query may still succeed from the embedding cache — that is legitimate, not a fail-loud violation; the **novel** query must return the 502-style upstream error, never keyword results labeled as semantic |
 
-## 14. Notes caveat (until PR 5)
+## 14. Scenario M: transcript suggestions (PR 1b+)
+
+AI-suggested actions are searchable only while **pending**: dismissed ones
+were rejected, and accepted ones are found as the actions they became. The
+1.2 fixture gives R1 one suggestion in each lifecycle state, and R2 and G1 a
+pending one each. Run the read checks first. The lifecycle rows change state,
+and accept cannot be undone, so rerun 1.2 to reset afterwards.
+
+Logged in as Casey unless stated. `T=types=transcript_suggestions`.
+
+| Check | Request | Expected |
+|---|---|---|
+| Only pending rows match | `q=kumquat&$T` | exactly one hit, `2a…001`. Accepted `…002`, dismissed `…003` and pending-with-entity `…004` are all absent |
+| Hit shape | same | `type` is `transcript_suggestion`, `target` is `action`; `coaching_session_id` S1, `coaching_relationship_id` R1, `session_date`, `session_title` `Planning the harvest kumquat review`; `title` is the proposal body; snippet marks `kumquat`; **no** `status` field |
+| Body only, never the quote | `q=loquat&$T` | zero hits. `loquat` is only in the quote and the source segment |
+| Prefix as-you-type | `q=hed&$T` | `…001` (from `hedge`) |
+| Session filter | `q=kumquat&$T&coaching_session_id=<S1>` / `=<SB>` | `…001` / zero hits |
+| `user_id` means participant | `q=kumquat&$T&user_id=<Robin>` / `=<Jordan>` | `…001` (Robin is R1's coachee, though the suggestion has no author) / zero hits |
+| `status` is ignored | `q=kumquat&$T&status=Completed` | still `…001`. Action status is not a suggestion filter (the param takes the enum's PascalCase values) |
+| In the default type set | `q=kumquat` (no `types`) | includes the `transcript_suggestion` hit next to the other types |
+| Cursor | `q=kumquat&limit=1`, walk `next_cursor` to the end | the suggestion hit appears exactly once; a cursor issued on it decodes on the next page |
+| Same-org leak | `q=tamarind&$T` | zero hits (R2's pending suggestion) |
+| Cross-org leak | `q=yuzu&$T` | zero hits (G1's) |
+| Admin has no relationship visibility | Alex: `q=kumquat&$T` | zero hits (Scenario F) |
+| Super admin | Sam: `q=kumquat&$T`, `q=tamarind&$T`, `q=yuzu&$T` | one pending hit each, never `…002`–`…004` |
+| Removal revokes | Robin after the Scenario G removal: `q=kumquat&$T` | zero hits |
+
+**Lifecycle**, as Casey, against `…001` in S1
+(`POST /coaching_sessions/<S1>/transcript_suggestions/2a000000-0000-4000-a000-000000000001/<verb>`):
+
+| Step | Then search | Expected |
+|---|---|---|
+| `dismiss` | `q=hedge&$T` | zero hits, immediately |
+| `restore` | `q=hedge&$T` | `…001` is back, immediately |
+| `accept` (no body) | `q=hedge&$T`, then `q=hedge&types=actions` | zero suggestion hits; one new action hit, `Trim the kumquat hedge before spring.` |
+
+**Index use under a generic plan.** On the fixture's handful of rows, the
+planner prefers the existing `(coaching_session_id, target, status)` btree
+whatever the predicate looks like, so this check adds 20k throwaway pending
+rows in a transaction and rolls them back:
+
+```sql
+BEGIN;
+SET search_path TO refactor_platform;
+INSERT INTO transcript_suggestions (coaching_session_id, transcript_analysis_id, target, proposal, segment_id, quote, status)
+SELECT '0d000000-0000-4000-a000-000000000001', '1f000000-0000-4000-a000-000000000001', 'action',
+       jsonb_build_object('body', 'Volume filler suggestion number ' || n), '1e000000-0000-4000-a000-000000000001', 'filler', 'pending'
+FROM generate_series(1, 20000) n;
+ANALYZE transcript_suggestions;
+SET LOCAL plan_cache_mode = force_generic_plan;
+PREPARE lit(text) AS SELECT id FROM transcript_suggestions
+  WHERE to_tsvector('english', coalesce(proposal ->> 'body', '')) @@ websearch_to_tsquery('english', $1)
+    AND status = 'pending' AND created_entity_id IS NULL;
+EXPLAIN EXECUTE lit('kumquat');
+PREPARE bound(text, transcript_suggestion_status) AS SELECT id FROM transcript_suggestions
+  WHERE to_tsvector('english', coalesce(proposal ->> 'body', '')) @@ websearch_to_tsquery('english', $1)
+    AND status = $2 AND created_entity_id IS NULL;
+EXPLAIN EXECUTE bound('kumquat', 'pending');
+ROLLBACK;
+```
+
+| Plan | Expected |
+|---|---|
+| `lit` (the searcher's literal predicate) | `Bitmap Index Scan on idx_transcript_suggestions_pending_fts` |
+| `bound` (the predicate as a parameter) | no `idx_transcript_suggestions_pending_fts`; it falls back to the status btree and filters every pending row through `to_tsvector`. This is the regression the literal predicate prevents |
+
+## 15. Notes caveat (until PR 5)
 
 Notes are **not searched at all** before PR 5: note content lives only in
 Tiptap (the backend never reads it back), so there is no note corpus to
@@ -471,7 +592,7 @@ Any `note`-typed hit before PR 5 means a searcher is reading the legacy
 lands, re-run the leak scenarios (D, F, G, H) with note content included:
 a hit on another relationship's note content is a leak like any other.
 
-## 15. Failure triage
+## 16. Failure triage
 
 | Symptom | Likely cause |
 |---|---|
@@ -480,13 +601,15 @@ a hit on another relationship's note content is a leak like any other.
 | Hits but empty/garbled snippets | `ts_headline` running over a different expression than the index/query |
 | Correct hits but sequential-scan slowness | query expression drifted from the index expression (see the shared-constants rule in the implementation plan) |
 | Soft-deleted topic or archived org appears | searcher missing its `deleted_at`/`archived_at` predicate |
+| Accepted, dismissed or pending-with-entity suggestion appears | the suggestion searcher lost part of its pending predicate (`status = 'pending' AND created_entity_id IS NULL`) |
+| Suggestion search correct but sequential-scan slow at volume | the pending predicate was turned into a bound parameter; a generic plan can no longer prove it matches the partial index (Scenario M's `EXPLAIN` check) |
 | Semantic search empty for a tier-1 user but fine for a super admin | HNSW post-filter recall — check `hnsw.iterative_scan` is enabled and the scoped exact-scan threshold (see the ANN recall bullet in the implementation plan) |
 | Same note or session appears several times in semantic/hybrid results | chunk-to-entity collapse missing, or running after fusion instead of within each retrieval arm (see the collapse bullet in the implementation plan) |
 | Repeated queries return garbage relevance right after an embedding-model swap, novel queries are fine | embedding cache key is missing `embedding_model` — cached old-model vectors are being compared against the new-model index |
 | Hybrid latency ≈ semantic + keyword latencies summed | the hybrid arms run sequentially — the keyword retrieval should fire in parallel with the embedding call (see the latency-budget bullet in the implementation plan) |
 | As-you-type feels dead — zero hits until a word is fully typed | final-token prefix matching missing, or the server trims the query before inspecting the raw tail for the trailing-whitespace opt-out |
 
-## 16. Results — PR 1 (scenarios A–H), 2026-10-14
+## 17. Results — PR 1 (scenarios A–H), 2026-10-14
 
 Full re-run against the local backend on `feat/search-keyword-core` after the
 review fixes (shared FTS query skeleton, `users::Model::is_super_admin`,
@@ -522,3 +645,19 @@ all passing; the original 108 are identical line-for-line to the previous run.
 Against the fixture text, the pre-fix query forms reproduce both regressions:
 `kumquat or tamarind weekly` matched 2 of the 46 kumquat action, agreement,
 and topic rows instead of all 46, and `checkin:*` missed the `check-in` topic.
+
+## 18. Results — PR 1b (scenario M), 2026-11-01
+
+Local backend on `feat/search-transcript-suggestions` with the
+`m20261101_000000_add_transcript_suggestion_search_index` migration applied
+and a freshly loaded 1.2 fixture. Scripted: 35 checks, all passing.
+
+| Area | Result | Notes |
+|---|---|---|
+| Pending only | PASS | `q=kumquat` matched only `…001`; accepted `…002`, dismissed `…003` and pending-with-entity `…004` were all absent |
+| Hit shape | PASS | `transcript_suggestion` / `action`, session and relationship ids, `session_date`, `session_title`, body as `title`, `<mark>` snippet, no `status` field |
+| Text and filters | PASS | `loquat` (quote only) found nothing; `hed` prefix; session filter; `user_id` as participant (Robin yes, Jordan no); `status=Completed` ignored; present in the default type set |
+| Cursor | PASS | `limit=1` walk over every `kumquat` hit: the suggestion exactly once, no duplicates |
+| Leaks | PASS | Casey: zero for `tamarind`/`yuzu`; Alex: zero; Sam: exactly the pending suggestion of each relationship |
+| Lifecycle | PASS | dismiss removes the hit at once, restore brings it back, accept removes it and the new action is found |
+| Index | PASS | with 20k rolled-back filler rows under a forced generic plan, the literal predicate uses `idx_transcript_suggestions_pending_fts`; a bound `status = $2` falls back to the status btree |
