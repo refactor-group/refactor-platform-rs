@@ -365,6 +365,24 @@ pub async fn is_coach_of(
     Ok(relationship.is_some())
 }
 
+/// Checks if a user is the coach or the coachee of a coaching relationship.
+pub async fn is_participant(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+    coaching_relationship_id: Id,
+) -> Result<bool, Error> {
+    let relationship = coaching_relationships::Entity::find_by_id(coaching_relationship_id)
+        .filter(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
+        )
+        .one(db)
+        .await?;
+
+    Ok(relationship.is_some())
+}
+
 pub async fn find_by_organization(
     db: &impl ConnectionTrait,
     organization_id: Id,
