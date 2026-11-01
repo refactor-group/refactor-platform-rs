@@ -779,37 +779,30 @@ pub async fn find_counts_by_month_for_user(
     Ok(rows)
 }
 
-/// Public API response type: a single coaching session with its optional related resources.
+// One session per element of a user-session read. Related data is batch loaded for
+// every session at once (`RelatedData`, `IN` queries) to avoid N+1 queries, then
+// looked up per session here; `session` is flattened into the JSON root.
+
+/// A coaching session with the related resources the request asked for.
 ///
-/// # Purpose
-/// This struct solves the N+1 query problem when fetching coaching sessions with their
-/// related data. Instead of making separate database queries for each session's relationships,
-/// users, organizations, etc., this struct enables batch loading all related resources in a
-/// single efficient operation.
+/// The session's own fields sit at the top level. `viewer_last_viewed_at` and
+/// `display_title` are always present (null when empty). The rest appear only when
+/// requested via `include`: `relationship` adds `relationship`, `coach` and
+/// `coachee`; `organization` adds `organization`; `goal` adds `goals`;
+/// `agreements` adds `agreement`; `topics` adds `topics`; `series` adds `series`.
 ///
-/// **Contrast with `RelatedData`:** This holds specific related data for ONE session (returned to clients),
-/// while `RelatedData` holds ALL related data in lookup tables (internal only).
-///
-/// # Usage Pattern
-/// Clients can request specific related resources via query parameters (e.g., `?include=relationship,organization`),
-/// and the `find_by_user_with_includes` function will:
-/// 1. Fetch all coaching sessions for the user
-/// 2. Batch load requested related resources into `RelatedData` using `IN` queries
-/// 3. Assemble each `EnrichedSession` by looking up its specific related data
-///
-/// # Serialization Behavior
-/// - The base `session` fields are flattened into the JSON root using `#[serde(flatten)]`
-/// - Optional related resources are only included in JSON when present (`skip_serializing_if`)
-/// - This allows the same struct to represent sessions with varying levels of detail
-///
-/// # Example JSON Output
 /// ```json
 /// {
-///   "id": "session-123",
-///   "date": "2025-01-15",
-///   "relationship": { "id": "rel-456", ... },  // Only if included
-///   "coach": { "id": "user-789", ... },        // Only if included
-///   "organization": { "id": "org-101", ... }    // Only if included
+///   "id": "8d627d48-a4e2-49ef-9c49-4ddd98b38672",
+///   "coaching_relationship_id": "aa26cf35-e07a-4e9b-9ef6-efa5724eaef2",
+///   "date": "2026-07-29T15:53:39.165720",
+///   "duration_minutes": 60,
+///   "title": null,
+///   "viewer_last_viewed_at": null,
+///   "display_title": "Quarterly review",
+///   "relationship": { "id": "aa26cf35-e07a-4e9b-9ef6-efa5724eaef2", "...": "..." },
+///   "coach": { "id": "fa81f04e-fb59-4524-a4e2-ee1addb12d24", "...": "..." },
+///   "coachee": { "id": "64f2aa5c-7146-4c3c-9476-48f65f6c9cec", "...": "..." }
 /// }
 /// ```
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
@@ -829,11 +822,9 @@ pub struct EnrichedSession {
     pub goals: Option<Vec<goals::Model>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreement: Option<agreements::Model>,
-    // Caller-scoped read receipt: when the path user last marked this session viewed; null if never.
+    /// When the requesting user last viewed this session; null if never.
     pub viewer_last_viewed_at: Option<DateTimeWithTimeZone>,
-    // Server-composed fallback title: human title -> first topic body -> first goal title;
-    // null when none derive. Always present (serialized as null, never omitted), so consumers
-    // get one canonical title without re-deriving the chain.
+    /// The session's title, else its first topic, else its first goal's title; null if none.
     pub display_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<coaching_session_topics::Model>>,
