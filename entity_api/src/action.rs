@@ -4,7 +4,7 @@ use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
     ConnectionTrait, DatabaseConnection, ExprTrait, JoinType, Order, QueryOrder, QuerySelect,
-    TransactionTrait, TryIntoModel,
+    TransactionError, TransactionTrait, TryIntoModel,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -85,37 +85,19 @@ fn status_changed_at(
 }
 
 pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
-    let result = Entity::find_by_id(id).one(db).await?;
-
-    match result {
-        Some(action) => {
-            debug!("Existing Action model to be Updated: {action:?}");
-            let status_changed_at = status_changed_at(&action, &model.status);
-
-            let active_model: ActiveModel = ActiveModel {
-                id: Unchanged(action.id),
-                coaching_session_id: Unchanged(action.coaching_session_id),
-                goal_id: Set(model.goal_id),
-                user_id: Unchanged(model.user_id),
-                body: Set(model.body),
-                due_by: Set(model.due_by),
-                status: Set(model.status),
-                status_changed_at,
-                updated_at: Set(chrono::Utc::now().into()),
-                created_at: Unchanged(action.created_at),
-            };
-
-            Ok(active_model.update(db).await?.try_into_model()?)
-        }
-        None => {
-            error!("Action with id {id} not found");
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
+    update_locked(db, id, move |action| ActiveModel {
+        id: Unchanged(action.id),
+        coaching_session_id: Unchanged(action.coaching_session_id),
+        goal_id: Set(model.goal_id),
+        user_id: Unchanged(model.user_id),
+        body: Set(model.body),
+        due_by: Set(model.due_by),
+        status_changed_at: status_changed_at(&action, &model.status),
+        status: Set(model.status),
+        updated_at: Set(chrono::Utc::now().into()),
+        created_at: Unchanged(action.created_at),
+    })
+    .await
 }
 
 pub async fn update_status(
@@ -123,37 +105,47 @@ pub async fn update_status(
     id: Id,
     status: Status,
 ) -> Result<Model, Error> {
-    let result = Entity::find_by_id(id).one(db).await?;
+    update_locked(db, id, move |action| ActiveModel {
+        status_changed_at: status_changed_at(&action, &status),
+        id: Unchanged(action.id),
+        coaching_session_id: Unchanged(action.coaching_session_id),
+        goal_id: Unchanged(action.goal_id),
+        user_id: Unchanged(action.user_id),
+        body: Unchanged(action.body),
+        due_by: Unchanged(action.due_by),
+        status: Set(status),
+        updated_at: Set(chrono::Utc::now().into()),
+        created_at: Unchanged(action.created_at),
+    })
+    .await
+}
 
-    match result {
-        Some(action) => {
-            debug!("Existing Action model to be Updated: {action:?}");
-            let status_changed_at = status_changed_at(&action, &status);
-
-            let active_model: ActiveModel = ActiveModel {
-                id: Unchanged(action.id),
-                coaching_session_id: Unchanged(action.coaching_session_id),
-                goal_id: Unchanged(action.goal_id),
-                user_id: Unchanged(action.user_id),
-                body: Unchanged(action.body),
-                due_by: Unchanged(action.due_by),
-                status: Set(status),
-                status_changed_at,
-                updated_at: Set(chrono::Utc::now().into()),
-                created_at: Unchanged(action.created_at),
+/// Writes `changes` to an action read under a row lock, so a concurrent status change
+/// can't land between `status_changed_at`'s comparison and this write.
+async fn update_locked(
+    db: &DatabaseConnection,
+    id: Id,
+    changes: impl FnOnce(Model) -> ActiveModel + Send + 'static,
+) -> Result<Model, Error> {
+    db.transaction::<_, Model, Error>(|txn| {
+        Box::pin(async move {
+            let Some(action) = Entity::find_by_id(id).lock_exclusive().one(txn).await? else {
+                error!("Action with id {id} not found");
+                return Err(Error {
+                    source: None,
+                    error_kind: EntityApiErrorKind::RecordNotFound,
+                });
             };
+            debug!("Existing Action model to be Updated: {action:?}");
 
-            Ok(active_model.update(db).await?.try_into_model()?)
-        }
-        None => {
-            error!("Action with id {id} not found");
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
+            Ok(changes(action).update(txn).await?.try_into_model()?)
+        })
+    })
+    .await
+    .map_err(|e| match e {
+        TransactionError::Connection(db_err) => db_err.into(),
+        TransactionError::Transaction(err) => err,
+    })
 }
 
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
@@ -813,6 +805,55 @@ mod tests {
         update_status(&db, existing.id, Status::Completed).await?;
 
         assert!(!update_set_clause(db).contains("status_changed_at"));
+        Ok(())
+    }
+
+    /// The read locks the row inside the write's transaction, so a concurrent status
+    /// change can't land between the status comparison and the UPDATE.
+    fn assert_locked_read_then_update(db: sea_orm::DatabaseConnection) {
+        let log = db.into_transaction_log();
+        let [transaction] = log.as_slice() else {
+            panic!("expected one transaction, got {log:?}");
+        };
+        let statements: Vec<&str> = transaction
+            .statements()
+            .iter()
+            .map(|s| s.sql.as_str())
+            .filter(|sql| sql.starts_with("SELECT") || sql.starts_with("UPDATE"))
+            .collect();
+        let [read, write] = statements.as_slice() else {
+            panic!("expected a read then a write, got {statements:?}");
+        };
+        assert!(
+            read.starts_with("SELECT") && read.ends_with("FOR UPDATE"),
+            "{read}"
+        );
+        assert!(write.starts_with("UPDATE"), "{write}");
+    }
+
+    #[tokio::test]
+    async fn update_reads_the_action_under_a_row_lock() -> Result<(), Error> {
+        let existing = action_with_status(Status::Completed);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![existing.clone()]])
+            .into_connection();
+
+        update(&db, existing.id, existing.clone()).await?;
+
+        assert_locked_read_then_update(db);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_reads_the_action_under_a_row_lock() -> Result<(), Error> {
+        let existing = action_with_status(Status::InProgress);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![existing.clone()]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::Completed).await?;
+
+        assert_locked_read_then_update(db);
         Ok(())
     }
 
