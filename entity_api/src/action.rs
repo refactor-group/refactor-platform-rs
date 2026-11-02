@@ -71,12 +71,26 @@ pub async fn create<C: ConnectionTrait>(
     Ok(action_active_model.insert(db).await?)
 }
 
+/// `status_changed_at` records when the status last changed, so an update that
+/// keeps the status (editing the body, due date, goal or assignees) leaves it alone.
+fn status_changed_at(
+    action: &Model,
+    next_status: &Status,
+) -> sea_orm::ActiveValue<sea_orm::prelude::DateTimeWithTimeZone> {
+    if &action.status == next_status {
+        Unchanged(action.status_changed_at)
+    } else {
+        Set(chrono::Utc::now().into())
+    }
+}
+
 pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
     let result = Entity::find_by_id(id).one(db).await?;
 
     match result {
         Some(action) => {
             debug!("Existing Action model to be Updated: {action:?}");
+            let status_changed_at = status_changed_at(&action, &model.status);
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(action.id),
@@ -86,7 +100,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
                 body: Set(model.body),
                 due_by: Set(model.due_by),
                 status: Set(model.status),
-                status_changed_at: Set(chrono::Utc::now().into()),
+                status_changed_at,
                 updated_at: Set(chrono::Utc::now().into()),
                 created_at: Unchanged(action.created_at),
             };
@@ -114,6 +128,7 @@ pub async fn update_status(
     match result {
         Some(action) => {
             debug!("Existing Action model to be Updated: {action:?}");
+            let status_changed_at = status_changed_at(&action, &status);
 
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(action.id),
@@ -123,7 +138,7 @@ pub async fn update_status(
                 body: Unchanged(action.body),
                 due_by: Unchanged(action.due_by),
                 status: Set(status),
-                status_changed_at: Set(chrono::Utc::now().into()),
+                status_changed_at,
                 updated_at: Set(chrono::Utc::now().into()),
                 created_at: Unchanged(action.created_at),
             };
@@ -720,6 +735,84 @@ mod tests {
 
         assert_eq!(action.status, Status::Completed);
 
+        Ok(())
+    }
+
+    /// The SET clause of the single UPDATE an update call issues (RETURNING names every column).
+    fn update_set_clause(db: sea_orm::DatabaseConnection) -> String {
+        let update = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| transaction.statements().iter().map(|s| s.sql.clone()))
+            .find(|sql| sql.starts_with("UPDATE"))
+            .expect("an UPDATE statement");
+        let set = update.split(" SET ").nth(1).expect("a SET clause");
+        set.split(" WHERE ").next().unwrap_or_default().to_owned()
+    }
+
+    fn action_with_status(status: Status) -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: Id::new_v4(),
+            coaching_session_id: Id::new_v4(),
+            goal_id: None,
+            due_by: Some(now.into()),
+            body: Some("Send the notes".to_owned()),
+            user_id: Id::new_v4(),
+            status_changed_at: now.into(),
+            status,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_keeps_status_changed_at_when_the_status_is_unchanged() -> Result<(), Error> {
+        let existing = action_with_status(Status::Completed);
+        let edited = Model {
+            body: Some("Send the notes and the deck".to_owned()),
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![edited.clone()]])
+            .into_connection();
+
+        update(&db, existing.id, edited).await?;
+
+        let set = update_set_clause(db);
+        assert!(!set.contains("status_changed_at"), "{set}");
+        assert!(set.contains("\"body\""), "{set}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_sets_status_changed_at_when_the_status_changes() -> Result<(), Error> {
+        let existing = action_with_status(Status::InProgress);
+        let completed = Model {
+            status: Status::Completed,
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![completed.clone()]])
+            .into_connection();
+
+        update(&db, existing.id, completed).await?;
+
+        assert!(update_set_clause(db).contains("status_changed_at"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_keeps_status_changed_at_when_the_status_is_unchanged(
+    ) -> Result<(), Error> {
+        let existing = action_with_status(Status::Completed);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![existing.clone()]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::Completed).await?;
+
+        assert!(!update_set_clause(db).contains("status_changed_at"));
         Ok(())
     }
 
