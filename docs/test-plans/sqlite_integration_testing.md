@@ -133,8 +133,9 @@ default flag feature that pulls in no SQLite code.)
   (`domain/src/coaching_session_sqlite_tests.rs`): the `/nearest` window keeps the sessions
   closest to `around` on each side, counts a session exactly at `around` as after, breaks
   date ties by id, reads only the requested relationship, and returns nothing to a
-  non-participant. The prior/next lookups that share its queries skip a session at the
-  given date.
+  non-participant. With several relationships, each keeps its own window, and one the
+  caller isn't part of (or that doesn't exist) adds nothing. The prior/next lookups skip a
+  session at the given date.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge
