@@ -454,3 +454,28 @@ fn sources_under<S: AsRef<str>>(dirs: &[S]) -> Vec<PathBuf> {
         .for_each(|dir| walk(&workspace_root().join(dir.as_ref()), &mut out));
     out
 }
+
+/// The session read documents `organization_id` beside the session's own fields, so a
+/// consumer can find the field from the spec alone.
+#[test]
+fn the_session_read_documents_its_organization() {
+    let spec = spec();
+    let response = &spec["paths"]["/coaching_sessions/{id}"]["get"]["responses"]["200"];
+    let mut referenced = Vec::new();
+    schema_refs(response, &mut referenced);
+    assert_eq!(referenced, ["SessionWithOrganization"], "{response}");
+
+    let schema = &spec["components"]["schemas"]["SessionWithOrganization"];
+    let mut parts = Vec::new();
+    schema_refs(schema, &mut parts);
+    assert!(
+        parts
+            .iter()
+            .any(|name| name == "domain.coaching_sessions.Model"),
+        "the session's fields are flattened in: {schema}"
+    );
+    assert!(
+        schema.to_string().contains("\"organization_id\""),
+        "the new field is documented: {schema}"
+    );
+}

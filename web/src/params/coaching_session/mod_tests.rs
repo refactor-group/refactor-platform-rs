@@ -103,3 +103,32 @@ fn into_model_leaves_title_none_when_absent() {
     .into_model();
     assert_eq!(model.title, None);
 }
+
+// A client that sends back the session it read echoes fields no update takes. They are
+// dropped, never rejected and never applied.
+
+const ECHOED_SESSION_FIELDS: &str = r#""id":"7b16a3b2-a709-4068-95d2-c1600db57cae","coaching_relationship_id":"58abc462-23ad-44cb-bdb0-c532658a4b9c","organization_id":"9c5cd245-0000-4000-8000-000000000001""#;
+
+#[test]
+fn an_update_ignores_echoed_session_fields() {
+    let params: UpdateParams = serde_json::from_str(&format!(
+        r#"{{"date":"2026-06-07T10:00:00",{ECHOED_SESSION_FIELDS}}}"#
+    ))
+    .expect("echoed fields are accepted");
+    let map = params.into_update_map();
+    for field in ["id", "coaching_relationship_id", "organization_id"] {
+        assert!(map.get_value(field).is_none(), "{field} is not updated");
+    }
+}
+
+#[test]
+fn a_title_update_ignores_echoed_session_fields() {
+    let params: TitleUpdateParams =
+        serde_json::from_str(&format!(r#"{{"title":"Renamed",{ECHOED_SESSION_FIELDS}}}"#))
+            .expect("echoed fields are accepted");
+    let map = params.into_update_map();
+    assert_eq!(map.get("title").unwrap(), "Renamed");
+    for field in ["id", "coaching_relationship_id", "organization_id"] {
+        assert!(map.get_value(field).is_none(), "{field} is not updated");
+    }
+}

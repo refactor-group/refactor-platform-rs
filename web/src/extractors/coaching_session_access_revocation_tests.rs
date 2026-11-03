@@ -100,8 +100,8 @@ async fn protected_route(
     "extracted_success"
 }
 
-/// Logs in over the real router, then requests the protected route with the session cookie.
-async fn status_for_protected_request(db: Arc<DatabaseConnection>, session_id: Id) -> StatusCode {
+/// The protected route and the real session read behind login, on `db`.
+fn app(db: Arc<DatabaseConnection>) -> Router {
     let app_state = AppState::new(
         service::AppState::new(Config::default(), &db),
         Arc::new(sse::Manager::default()),
@@ -120,7 +120,7 @@ async fn status_for_protected_request(db: Arc<DatabaseConnection>, session_id: I
     let backend = Backend::new(&db);
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
-    let app = Router::new()
+    Router::new()
         .route(
             "/login",
             axum::routing::post(crate::controller::user_session_controller::login),
@@ -131,11 +131,18 @@ async fn status_for_protected_request(db: Arc<DatabaseConnection>, session_id: I
                     "/coaching_sessions/:coaching_session_id",
                     get(protected_route),
                 )
+                .route(
+                    "/read/:id",
+                    get(crate::controller::coaching_session_controller::read),
+                )
                 .route_layer(from_fn(require_auth)),
         )
         .layer(auth_layer)
-        .with_state(app_state);
+        .with_state(app_state)
+}
 
+/// Logs in over the real router, then sends `uri` with the session cookie.
+async fn logged_in_get(app: &Router, uri: &str) -> axum::response::Response {
     let login_request = Request::builder()
         .uri("/login")
         .method("POST")
@@ -151,16 +158,19 @@ async fn status_for_protected_request(db: Arc<DatabaseConnection>, session_id: I
         .expect("Login should return session cookie")
         .to_string();
 
-    let protected_request = Request::builder()
-        .uri(format!("/coaching_sessions/{}", session_id).as_str())
+    let request = Request::builder()
+        .uri(uri)
         .header("cookie", cookie)
+        .header("x-version", "1.0.0")
         .body(Body::empty())
         .unwrap();
 
-    app.clone()
-        .oneshot(protected_request)
+    app.clone().oneshot(request).await.unwrap()
+}
+
+async fn status_for_protected_request(db: Arc<DatabaseConnection>, session_id: Id) -> StatusCode {
+    logged_in_get(&app(db), &format!("/coaching_sessions/{session_id}"))
         .await
-        .unwrap()
         .status()
 }
 
@@ -242,4 +252,64 @@ async fn grants_access_to_a_participant_who_is_still_a_member() {
         status_for_protected_request(db, session_id).await,
         StatusCode::OK
     );
+}
+
+/// The session read names the organization that owns the session, beside the session's own
+/// fields rather than nested under them.
+#[tokio::test]
+async fn the_read_names_the_sessions_organization() {
+    let session_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let organization_id = Id::new_v4();
+    let test_user = create_test_user();
+    let test_role = create_test_role(test_user.id, Some(organization_id));
+
+    let db = Arc::new(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
+            .append_query_results(vec![vec![(
+                create_test_session(session_id, relationship_id),
+                create_test_relationship(relationship_id, test_user.id, organization_id),
+            )]])
+            .into_connection(),
+    );
+
+    let response = logged_in_get(&app(db), &format!("/read/{session_id}")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let data = &body["data"];
+
+    assert_eq!(data["organization_id"], serde_json::json!(organization_id));
+    assert_eq!(data["id"], serde_json::json!(session_id));
+    assert_eq!(
+        data["coaching_relationship_id"],
+        serde_json::json!(relationship_id)
+    );
+}
+
+/// The read keeps the shared access check: a participant removed from the organization is
+/// refused before anything about the session is returned.
+#[tokio::test]
+async fn the_read_denies_a_participant_removed_from_the_organization() {
+    let session_id = Id::new_v4();
+    let relationship_id = Id::new_v4();
+    let test_user = create_test_user();
+
+    let db = Arc::new(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![(test_user.clone(), None::<user_roles::Model>)]])
+            .append_query_results([vec![(test_user.clone(), None::<user_roles::Model>)]])
+            .append_query_results(vec![vec![(
+                create_test_session(session_id, relationship_id),
+                create_test_relationship(relationship_id, test_user.id, Id::new_v4()),
+            )]])
+            .into_connection(),
+    );
+
+    let response = logged_in_get(&app(db), &format!("/read/{session_id}")).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
