@@ -166,6 +166,7 @@ fn the_nearest_sessions_operation_declares_its_query_parameters() {
     assert_eq!(
         query_names,
         [
+            "coaching_relationship_ids",
             "coaching_relationship_id",
             "around",
             "before",
