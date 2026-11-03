@@ -506,6 +506,8 @@ struct SeriesSessions<'a> {
 struct SeriesIcs {
     body: String,
     orphan_cancels: Vec<String>,
+    /// The shortened invite of the series a "this and following" reschedule split from.
+    split_from: Option<String>,
 }
 
 /// True when an edit changes something the invite carries, so the calendar needs a fresh
@@ -1597,6 +1599,11 @@ async fn send_recurring_series_email_to_recipient(
         .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
         .add_ics_attachment(&ics.body, &ical::Method::Request);
 
+    let builder = match &ics.split_from {
+        Some(split_from) => builder.add_ics_attachment(split_from, &ical::Method::Request),
+        None => builder,
+    };
+
     // Clears whatever a legacy member left on calendars, alongside the new series event.
     let builder = attach_orphan_cancels(builder, &ics.orphan_cancels);
 
@@ -1753,6 +1760,18 @@ enum SeriesInviteShape<'a> {
     Master,
     /// The series as it stands today, built from every row linked to the series.
     Snapshot(&'a [coaching_sessions::Model]),
+    /// A snapshot of the series, plus one of the series it split from, so calendars drop
+    /// the occurrences the new series took over.
+    Split {
+        rows: &'a [coaching_sessions::Model],
+        split_from: SeriesRows<'a>,
+    },
+}
+
+/// A series and every row linked to it, which its snapshot is built from.
+struct SeriesRows<'a> {
+    series: &'a coaching_session_series::Model,
+    rows: &'a [coaching_sessions::Model],
 }
 
 /// What kind of series email this is: the reschedule template variables, if any, and
@@ -1828,10 +1847,38 @@ async fn send_series_invite_email<N: EmailNotification>(
             // The replaced rows are gone from the database, but any standalone events they
             // put on calendars outlive them and are addressed by nothing the new series carries.
             orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
+            split_from: None,
         },
         SeriesInviteShape::Snapshot(rows) => SeriesIcs {
-            body: build_series_snapshot_ics(coach, coachee, series, rows, description, dtstamp)?,
-            orphan_cancels: Vec::new(),
+            body: build_series_snapshot_ics(
+                coach,
+                coachee,
+                series,
+                rows,
+                description.clone(),
+                dtstamp,
+            )?,
+            orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
+            split_from: None,
+        },
+        SeriesInviteShape::Split { rows, split_from } => SeriesIcs {
+            body: build_series_snapshot_ics(
+                coach,
+                coachee,
+                series,
+                rows,
+                description.clone(),
+                dtstamp,
+            )?,
+            orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
+            split_from: Some(build_series_snapshot_ics(
+                coach,
+                coachee,
+                split_from.series,
+                split_from.rows,
+                description,
+                dtstamp,
+            )?),
         },
     };
 
@@ -2133,6 +2180,91 @@ pub async fn notify_recurring_sessions_rescheduled(
     }
 }
 
+/// What a "this and following" series reschedule changed, as its email reports it.
+pub struct FollowingRescheduled<'a> {
+    /// The series now holding the moved sessions, already carrying its bumped `ical_sequence`.
+    pub series: &'a coaching_session_series::Model,
+    /// The moved and created sessions, in date order.
+    pub sessions: &'a [coaching_sessions::Model],
+    /// The series as the recipients last saw it, for its previous cadence.
+    pub previous_series: PreviousSeries<'a>,
+    /// Where the first moved session started before the move.
+    pub previous_start: NaiveDateTime,
+    /// The leftover sessions the reschedule deleted.
+    pub replaced: ReplacedSessions<'a>,
+    /// The shortened series the moved sessions split from, when they did.
+    pub split_from: Option<&'a coaching_session_series::Model>,
+}
+
+/// Orchestrate the email for a "this and following" series reschedule (best-effort).
+///
+/// The invite is a snapshot of the series as it now stands, since moved sessions keep their
+/// own meeting links. On a split it also carries the shortened series' snapshot, so
+/// calendars drop the occurrences the new series took over. Returns whether the coachee was
+/// told, which decides whether the moved sessions count as noticed.
+pub async fn notify_recurring_sessions_rescheduled_following(
+    db: &DatabaseConnection,
+    config: &Config,
+    change: &FollowingRescheduled<'_>,
+) -> bool {
+    let result: Result<Delivered, Error> = async {
+        let parties = InviteParties::load(db, change.series.coaching_relationship_id).await?;
+        let previous_rule: SeriesRule =
+            serde_json::from_value(change.previous_series.0.rule.clone())?;
+        let rows = coaching_session::find_by_series_id(db, change.series.id).await?;
+        let split_from = match change.split_from {
+            Some(series) => Some((
+                series,
+                coaching_session::find_by_series_id(db, series.id).await?,
+            )),
+            None => None,
+        };
+        let shape = match &split_from {
+            Some((series, split_rows)) => SeriesInviteShape::Split {
+                rows: &rows,
+                split_from: SeriesRows {
+                    series,
+                    rows: split_rows,
+                },
+            },
+            None => SeriesInviteShape::Snapshot(&rows),
+        };
+
+        send_series_invite_email::<RecurringSessionsRescheduled>(
+            db,
+            config,
+            change.series,
+            &parties.participants(),
+            &SeriesSessions {
+                current: change.sessions,
+                replaced: change.replaced.0,
+            },
+            &parties.organization,
+            SeriesInviteKind {
+                reschedule: Some(&RescheduleVars {
+                    session_or_series: "series",
+                    previous_start: change.previous_start,
+                    previous_recurrence_summary: Some(previous_rule.recurrence.summary()),
+                }),
+                shape,
+            },
+        )
+        .await
+    }
+    .await;
+
+    match result {
+        Ok(delivered) => delivered.coachee,
+        Err(e) => {
+            warn!(
+                "Failed to send series rescheduled emails for series {}: {e:?}",
+                change.series.id
+            );
+            false
+        }
+    }
+}
+
 /// Build the series cancellation `.ics` body (VEVENT + RRULE). Pure: `dtstamp` injected.
 /// Keeps the invite's `UID`, `DTSTART`, and `RRULE` so calendar clients match the
 /// cancellation to the recurring event they already hold.
@@ -2338,6 +2470,7 @@ async fn send_recurring_sessions_cancelled_email(
         // `sessions` is the set the delete removed, so any legacy member's standalone
         // event is in here and would otherwise survive the cancellation.
         orphan_cancels: build_orphan_cancels(&Participants { coach, coachee }, sessions, dtstamp),
+        split_from: None,
     };
 
     if let Err(e) = send_recurring_sessions_cancelled_email_to_recipient(

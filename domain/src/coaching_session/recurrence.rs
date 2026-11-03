@@ -77,6 +77,27 @@ impl Recurrence {
         }
     }
 
+    /// The same cadence carried on for `remaining` occurrences: a `count` ending becomes
+    /// `remaining`, an `until` ending is kept.
+    pub(crate) fn continued(&self, remaining: usize) -> Self {
+        Self {
+            count: self
+                .count
+                .map(|_| u32::try_from(remaining).unwrap_or(u32::MAX)),
+            ..self.clone()
+        }
+    }
+
+    /// The same cadence ending just before `slot`, so `slot` and everything after it fall
+    /// outside the rule.
+    pub(crate) fn ending_before(&self, slot: NaiveDateTime) -> Self {
+        Self {
+            count: None,
+            until: Some(slot - Duration::seconds(1)),
+            ..self.clone()
+        }
+    }
+
     /// Human phrase for how often the rule repeats, e.g. `Every 2 weeks on Monday and
     /// Wednesday`. Terminators (`count`, `until`) are deliberately left out.
     pub fn summary(&self) -> String {

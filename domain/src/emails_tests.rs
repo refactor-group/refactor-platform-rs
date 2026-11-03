@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "mock")]
+use crate::coaching_session::{Frequency, Recurrence};
 use crate::{coaching_sessions, organizations, users, Id};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -3392,6 +3394,122 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
     );
 }
 
+/// A "this and following" split publishes the new series and shortens the old one, so
+/// the email carries both invites. Without the second, calendars keep the old series'
+/// occurrences on top of the new ones.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let at = |day, hour| {
+        NaiveDate::from_ymd_opt(2026, 9, day)
+            .unwrap()
+            .and_hms_opt(hour, 0, 0)
+            .unwrap()
+    };
+    let series_with = |rule: SeriesRule, ical_sequence| coaching_session_series::Model {
+        rule: serde_json::to_value(rule).unwrap(),
+        ical_sequence,
+        ..create_test_series()
+    };
+    let weekly = |count, until| Recurrence {
+        frequency: Frequency::Weekly,
+        interval: 1,
+        by_weekdays: None,
+        count,
+        until,
+    };
+    let shortened = series_with(
+        SeriesRule {
+            start_at: at(1, 15),
+            recurrence: weekly(None, Some(at(15, 15) - chrono::Duration::seconds(1))),
+            duration_minutes: 60,
+            timezone: "UTC".into(),
+        },
+        4,
+    );
+    let split_off = series_with(
+        SeriesRule {
+            start_at: at(15, 17),
+            recurrence: weekly(Some(2), None),
+            duration_minutes: 60,
+            timezone: "UTC".into(),
+        },
+        0,
+    );
+    let earlier: Vec<_> = [at(1, 15), at(8, 15)]
+        .into_iter()
+        .map(|slot| create_test_series_session(shortened.id, slot))
+        .collect();
+    let moved: Vec<_> = [at(15, 17), at(22, 17)]
+        .into_iter()
+        .map(|slot| create_test_series_session(split_off.id, slot))
+        .collect();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let delivered = send_series_invite_email::<RecurringSessionsRescheduled>(
+        &mock_description_loaders(),
+        &config,
+        &split_off,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
+        &SeriesSessions {
+            current: &moved,
+            replaced: &[],
+        },
+        &org,
+        SeriesInviteKind {
+            reschedule: Some(&RescheduleVars {
+                session_or_series: "series",
+                previous_start: at(15, 15),
+                previous_recurrence_summary: Some("Weekly".into()),
+            }),
+            shape: SeriesInviteShape::Split {
+                rows: &moved,
+                split_from: SeriesRows {
+                    series: &shortened,
+                    rows: &earlier,
+                },
+            },
+        },
+    )
+    .await
+    .expect("the send runs");
+    assert!(delivered.coach && delivered.coachee);
+    mock.assert_async().await;
+
+    let attachments = capture.captured();
+    assert_eq!(
+        attachments.len(),
+        2,
+        "the new series, then the shortened one"
+    );
+    let (new_invite, old_invite) = (&attachments[0].1, &attachments[1].1);
+    assert!(new_invite.contains("METHOD:REQUEST") && old_invite.contains("METHOD:REQUEST"));
+    assert!(new_invite.contains(&format!("UID:{}@myrefactor.com", split_off.id)));
+    assert!(new_invite.contains("COUNT=2"), "{new_invite}");
+    assert!(old_invite.contains(&format!("UID:{}@myrefactor.com", shortened.id)));
+    assert!(old_invite.contains("SEQUENCE:4"), "{old_invite}");
+    assert!(old_invite.contains("UNTIL="), "{old_invite}");
+    assert!(!old_invite.contains("COUNT="), "{old_invite}");
+}
+
 /// The two invites a series sends.
 #[cfg(feature = "mock")]
 enum SeriesSend {
@@ -3953,6 +4071,7 @@ async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
         &SeriesIcs {
             body: String::new(),
             orphan_cancels: Vec::new(),
+            split_from: None,
         },
         "Weekly",
         None,

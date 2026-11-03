@@ -3,12 +3,12 @@ use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
 use entity::{
-    agreements, coaching_relationships, coaching_session_reminders, coaching_session_topics,
-    coaching_session_views,
+    actions, agreements, coaching_relationships, coaching_session_reminders,
+    coaching_session_topics, coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
-    organizations, users, Id,
+    notes, organizations, users, Id,
 };
 use log::debug;
 use sea_orm::{
@@ -19,7 +19,7 @@ use sea_orm::{
     Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 /// Resolve the duration for a new coaching session via the defaulting cascade.
@@ -257,6 +257,87 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
         .exec(db)
         .await?;
     Ok(result.rows_affected)
+}
+
+/// Moves a series session onto `slot` of series `series_id`, keeping the row and everything
+/// hung off it. `ical_recurrence_id` follows the slot, since the move republishes the
+/// occurrence under the rule that produced it. `ical_sequence` advances as a column
+/// expression, so a concurrent edit cannot land on the same value.
+pub async fn move_to_slot(
+    db: &impl ConnectionTrait,
+    id: Id,
+    series_id: Id,
+    slot: NaiveDateTime,
+    duration: Duration,
+) -> Result<Model, Error> {
+    Entity::update_many()
+        .col_expr(Column::CoachingSessionSeriesId, Expr::value(series_id))
+        .col_expr(Column::Date, Expr::value(slot))
+        .col_expr(Column::IcalRecurrenceId, Expr::value(slot))
+        .col_expr(Column::DurationMinutes, Expr::value(duration.minutes()))
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .col_expr(
+            Column::UpdatedAt,
+            Expr::value::<DateTimeWithTimeZone>(chrono::Utc::now().into()),
+        )
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
+/// The sessions among `ids` holding something a delete would lose: a note, action,
+/// agreement, or live topic. Notes, actions and agreements also block the delete by FK.
+pub async fn find_ids_with_content(
+    db: &impl ConnectionTrait,
+    ids: &[Id],
+) -> Result<HashSet<Id>, Error> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let in_ids = || ids.iter().copied();
+
+    let notes: Vec<Id> = notes::Entity::find()
+        .select_only()
+        .column(notes::Column::CoachingSessionId)
+        .filter(notes::Column::CoachingSessionId.is_in(in_ids()))
+        .into_tuple()
+        .all(db)
+        .await?;
+    let actions: Vec<Id> = actions::Entity::find()
+        .select_only()
+        .column(actions::Column::CoachingSessionId)
+        .filter(actions::Column::CoachingSessionId.is_in(in_ids()))
+        .into_tuple()
+        .all(db)
+        .await?;
+    let agreements: Vec<Id> = agreements::Entity::find()
+        .select_only()
+        .column(agreements::Column::CoachingSessionId)
+        .filter(agreements::Column::CoachingSessionId.is_in(in_ids()))
+        .into_tuple()
+        .all(db)
+        .await?;
+    let topics: Vec<Id> = coaching_session_topics::Entity::find()
+        .select_only()
+        .column(coaching_session_topics::Column::CoachingSessionId)
+        .filter(coaching_session_topics::Column::CoachingSessionId.is_in(in_ids()))
+        .filter(coaching_session_topics::Column::DeletedAt.is_null())
+        .into_tuple()
+        .all(db)
+        .await?;
+
+    Ok(notes
+        .into_iter()
+        .chain(actions)
+        .chain(agreements)
+        .chain(topics)
+        .collect())
 }
 
 /// One claimed reminder: the session to send about, and who it goes to.

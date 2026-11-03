@@ -64,6 +64,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_series_controller::update,
             coaching_session_series_controller::delete,
             coaching_session_series_controller::resend_invite,
+            coaching_session_series_controller::reschedule,
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
@@ -176,6 +177,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::coaching_session::goal::LinkParams,
                 crate::params::coaching_session_series::CreateParams,
                 crate::params::coaching_session_series::RescheduleParams,
+                crate::params::coaching_session_series::RescheduleFollowingParams,
                 crate::params::goal::SortField,
                 crate::params::search::Mode,
                 crate::params::search::GoalFilter,
@@ -461,6 +463,10 @@ pub fn coaching_session_series_routes(app_state: AppState) -> Router {
         .route(
             "/coaching_session_series/:id/resend_invite",
             post(coaching_session_series_controller::resend_invite),
+        )
+        .route(
+            "/coaching_session_series/:id/reschedule",
+            post(coaching_session_series_controller::reschedule),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

@@ -166,17 +166,12 @@ pub async fn bulk_create_recurring(
     dates: Vec<NaiveDateTime>,
     requested_duration: Option<Duration>,
 ) -> Result<Vec<Model>, Error> {
-    let truncated = dates
-        .into_iter()
-        .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
-        .collect::<Result<Vec<_>, _>>()?;
-
     Ok(coaching_session::bulk_create_recurring(
         db,
         coaching_relationship_id,
         coach_id,
         series_id,
-        truncated,
+        truncated(dates)?,
         requested_duration,
     )
     .await?)
@@ -189,7 +184,22 @@ pub(crate) fn series_slots(
     recurrence: &Recurrence,
     zone: chrono_tz::Tz,
 ) -> Result<Vec<NaiveDateTime>, Error> {
-    recurrence::expand_published(start_at, recurrence, zone)?
+    truncated(recurrence::expand_published(start_at, recurrence, zone)?)
+}
+
+/// The slots of a rule about to be published, validated as a new rule and truncated as
+/// [`bulk_create_recurring`] stores them.
+pub(crate) fn publishable_slots(
+    start_at: NaiveDateTime,
+    recurrence: &Recurrence,
+    zone: chrono_tz::Tz,
+) -> Result<Vec<NaiveDateTime>, Error> {
+    truncated(expand_recurrence(start_at, recurrence, zone)?)
+}
+
+/// Session dates as they are stored: truncated to the minute.
+fn truncated(dates: Vec<NaiveDateTime>) -> Result<Vec<NaiveDateTime>, Error> {
+    dates
         .into_iter()
         .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
         .collect()
@@ -494,12 +504,17 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
 
 /// A resend that cannot apply, as a 409 carrying a machine-readable `reason`.
 pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
+    conflict(message, serde_json::json!({ "reason": reason }))
+}
+
+/// A request that cannot apply as things stand, as a 409 carrying machine-readable `details`.
+pub(crate) fn conflict(message: &str, details: serde_json::Value) -> Error {
     Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
             EntityErrorKind::Conflict {
                 message: message.to_string(),
-                details: Some(serde_json::json!({ "reason": reason })),
+                details: Some(details),
             },
         )),
     }
