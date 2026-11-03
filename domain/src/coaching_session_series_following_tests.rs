@@ -414,3 +414,32 @@ fn every_affected_session_is_superseded_as_it_was_before_the_move() {
 
     assert_eq!(plan.superseded(), rows[1..].to_vec());
 }
+
+/// Rescheduling from the series' first slot still splits when a session moved on its own
+/// to an earlier date stays behind; replacing the rule in place would drop its slot.
+#[test]
+fn a_session_moved_ahead_of_the_first_slot_splits_the_series() {
+    // Week 1's session was moved to before week 0's, so by date it precedes the anchor.
+    let mut rows = sessions(3);
+    rows[1].date = week(0) - TimeDelta::days(1);
+    rows.sort_by_key(|session| (session.date, session.id));
+    let anchor = rows
+        .iter()
+        .find(|session| session.ical_recurrence_id == Some(week(0)))
+        .unwrap()
+        .clone();
+
+    let plan = plan(
+        &existing_rule(weekly(3)),
+        &rows,
+        &request(&anchor, week(0) + TimeDelta::hours(1), None),
+    )
+    .unwrap();
+
+    let shortened = plan.split_from.expect("the series splits");
+    assert_eq!(shortened.slots().unwrap(), vec![week(0), week(1)]);
+    assert!(plan
+        .moves
+        .iter()
+        .all(|(session, _)| session.ical_recurrence_id != Some(week(1))));
+}

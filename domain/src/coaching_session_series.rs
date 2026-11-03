@@ -377,9 +377,8 @@ impl FollowingPlan {
 /// Pair the affected sessions with the new rule's slots. Pure, so every edge of the
 /// pairing is testable without a database.
 ///
-/// The series splits only when the old rule has an occurrence before the first moved
-/// session that a session still holds. Otherwise the rule is replaced in place, as a full
-/// series reschedule does.
+/// The series splits only when a session left behind still holds one of the old rule's
+/// slots. Otherwise the rule is replaced in place, as a full series reschedule does.
 fn plan_following(
     existing: &SeriesRule,
     sessions: &[coaching_sessions::Model],
@@ -418,22 +417,27 @@ fn plan_following(
         timezone: zone.name().to_string(),
     };
 
+    // The series splits when a session left behind still holds one of the old rule's slots,
+    // so its meeting stays on calendars. Its rule then runs through the latest such slot,
+    // even past the anchor's for a session moved on its own; emptied slots are excluded.
     let anchor_slot = anchor.ical_recurrence_id.unwrap_or(anchor.date);
-    let has_earlier_occurrence = existing
-        .slots()?
-        .first()
-        .is_some_and(|first| *first < anchor_slot);
-    // An earlier session moved on its own can hold a slot past the anchor's; the old rule
-    // keeps that slot so the session stays on calendars. Emptied slots are excluded.
-    let last_kept_slot = earlier
+    let old_slots = existing.slots()?;
+    let kept_slots: Vec<NaiveDateTime> = earlier
         .iter()
         .filter_map(|session| session.ical_recurrence_id)
-        .filter(|slot| *slot > anchor_slot)
-        .max()
-        .unwrap_or(anchor_slot - TimeDelta::seconds(1));
-    let split_from = (!earlier.is_empty() && has_earlier_occurrence).then(|| SeriesRule {
-        recurrence: existing.recurrence.ending_at(last_kept_slot),
-        ..existing.clone()
+        .filter(|slot| old_slots.contains(slot))
+        .collect();
+    let split_from = (!kept_slots.is_empty()).then(|| {
+        let last_kept_slot = kept_slots
+            .iter()
+            .copied()
+            .filter(|slot| *slot > anchor_slot)
+            .max()
+            .unwrap_or(anchor_slot - TimeDelta::seconds(1));
+        SeriesRule {
+            recurrence: existing.recurrence.ending_at(last_kept_slot),
+            ..existing.clone()
+        }
     });
 
     Ok(FollowingPlan {
