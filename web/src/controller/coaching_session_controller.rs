@@ -1,5 +1,7 @@
 use crate::controller::ApiResponse;
-use crate::extractors::coaching_session_access::CoachingSessionAccess;
+use crate::extractors::coaching_session_access::{
+    CoachingSessionAccess, CoachingSessionContextAccess,
+};
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
@@ -12,12 +14,27 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{coaching_session as CoachingSessionApi, Id};
+use domain::{coaching_session as CoachingSessionApi, coaching_sessions, Id};
+use serde::Serialize;
 use service::config::ApiVersion;
+use utoipa::ToSchema;
 
 use log::*;
 
+/// A coaching session with the organization that owns its coaching relationship.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct SessionWithOrganization {
+    #[serde(flatten)]
+    session: coaching_sessions::Model,
+    /// The organization that owns this session's coaching relationship.
+    organization_id: Id,
+}
+
 /// GET a Coaching Session by ID
+///
+/// Returns the session with `organization_id`, the organization that owns its coaching
+/// relationship, so a caller can switch to that organization before reading anything
+/// scoped to it.
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{id}",
@@ -26,7 +43,7 @@ use log::*;
         ("id" = Uuid, Path, description = "Coaching Session ID to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a Coaching Session", body = domain::coaching_sessions::Model),
+        (status = 200, description = "Successfully retrieved a Coaching Session", body = SessionWithOrganization),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching Session not found"),
         (status = 405, description = "Method not allowed"),
@@ -39,9 +56,9 @@ use log::*;
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    CoachingSessionAccess(coaching_session): CoachingSessionAccess,
+    CoachingSessionContextAccess(coaching_session, relationship): CoachingSessionContextAccess,
 ) -> Result<impl IntoResponse, Error> {
-    let coaching_session = CoachingSessionApi::ensure_hydrated(
+    let session = CoachingSessionApi::ensure_hydrated(
         app_state.db_conn_ref(),
         &app_state.config,
         app_state.event_publisher.as_ref(),
@@ -50,7 +67,10 @@ pub async fn read(
     .await?;
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
-        coaching_session,
+        SessionWithOrganization {
+            session,
+            organization_id: relationship.organization_id,
+        },
     )))
 }
 

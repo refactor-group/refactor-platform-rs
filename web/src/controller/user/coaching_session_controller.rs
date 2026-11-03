@@ -114,21 +114,23 @@ pub async fn index(
     )))
 }
 
-/// GET a coaching relationship's sessions nearest a point in time.
+/// GET the sessions nearest a point in time, for one or more coaching relationships.
 ///
-/// Returns up to `before` sessions strictly before `around` and up to `after` at
-/// or after it, however far apart, merged latest first (ties by `id`). A
-/// relationship the user is not part of yields an empty list.
+/// Per relationship, returns up to `before` sessions strictly before `around` and up to
+/// `after` at or after it, however far apart. All relationships' sessions come back in one
+/// list, latest first (ties by `id`). A relationship the user is not part of contributes
+/// nothing.
 #[utoipa::path(
     get,
     path = "/users/{user_id}/coaching_sessions/nearest",
     params(
         ApiVersion,
         ("user_id" = Uuid, Path, description = "User ID to retrieve coaching sessions for"),
-        ("coaching_relationship_id" = Uuid, Query, description = "The coaching relationship whose sessions to return"),
+        ("coaching_relationship_ids" = Option<String>, Query, description = "Comma-separated ids of 1 to 50 coaching relationships whose sessions to return. Send this or `coaching_relationship_id`, not both."),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "A single coaching relationship whose sessions to return. Send this or `coaching_relationship_ids`, not both."),
         ("around" = String, Query, description = "Datetime the window is centered on: UTC with no offset (e.g. '2026-10-30T14:00:00') or RFC 3339 with one. A session exactly here counts as after."),
-        ("before" = u8, Query, description = "Most sessions to return before `around`, 0 to 10"),
-        ("after" = u8, Query, description = "Most sessions to return at or after `around`, 0 to 10"),
+        ("before" = u8, Query, description = "Most sessions to return before `around` per relationship, 0 to 10"),
+        ("after" = u8, Query, description = "Most sessions to return at or after `around` per relationship, 0 to 10"),
         ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements', 'topics', 'series'.")
     ),
     responses(

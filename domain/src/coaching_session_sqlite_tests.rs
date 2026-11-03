@@ -29,7 +29,13 @@ struct Relationship {
 }
 
 async fn seed_relationship(db: &DatabaseConnection) -> Relationship {
-    let (id, coach_id, coachee_id) = (Id::new_v4(), seed_user(db).await, seed_user(db).await);
+    let coach_id = seed_user(db).await;
+    seed_relationship_coached_by(db, coach_id).await
+}
+
+/// A relationship with a new coachee, coached by `coach_id`.
+async fn seed_relationship_coached_by(db: &DatabaseConnection, coach_id: Id) -> Relationship {
+    let (id, coachee_id) = (Id::new_v4(), seed_user(db).await);
     let now = Utc::now();
     coaching_relationships::ActiveModel {
         id: Set(id),
@@ -89,8 +95,12 @@ async fn seed_session(
 }
 
 fn window(coaching_relationship_id: Id, before: u64, after: u64) -> NearestWindow {
+    window_over(&[coaching_relationship_id], before, after)
+}
+
+fn window_over(coaching_relationship_ids: &[Id], before: u64, after: u64) -> NearestWindow {
     NearestWindow {
-        coaching_relationship_id,
+        coaching_relationship_ids: coaching_relationship_ids.to_vec(),
         around: around(),
         before,
         after,
@@ -190,6 +200,68 @@ async fn only_the_requested_relationship_is_read() -> Result<(), Error> {
         assert_eq!(
             nearest_ids(&db, rel.coach_id, window(rel.id, 10, 10)).await?,
             [mine]
+        );
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// With several relationships, each gets its own `before` and `after`, and all of them
+/// come back in one list, latest first.
+#[tokio::test]
+async fn each_relationship_keeps_its_own_window() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let first = seed_relationship(&db).await;
+        let second = seed_relationship_coached_by(&db, first.coach_id).await;
+        let mut sessions = BTreeMap::new();
+        for (rel, hour) in [(&first, 0), (&second, 1)] {
+            for day in [-2, -1, 1, 2] {
+                let date = days_from_around(day) + TimeDelta::hours(hour);
+                sessions.insert((rel.id, day), seed_session(&db, rel.id, date).await);
+            }
+        }
+
+        let ids = nearest_ids(
+            &db,
+            first.coach_id,
+            window_over(&[first.id, second.id], 1, 1),
+        )
+        .await?;
+
+        assert_eq!(
+            ids,
+            [
+                sessions[&(second.id, 1)],
+                sessions[&(first.id, 1)],
+                sessions[&(second.id, -1)],
+                sessions[&(first.id, -1)],
+            ]
+        );
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// A relationship the caller isn't part of, or one that doesn't exist, adds nothing,
+/// and the caller's own relationships still come back.
+#[tokio::test]
+async fn relationships_the_caller_is_not_in_add_nothing() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let mine = seed_relationship(&db).await;
+        let mine_session = seed_session(&db, mine.id, days_from_around(1)).await;
+        let theirs = seed_relationship(&db).await;
+        seed_session(&db, theirs.id, days_from_around(1)).await;
+
+        assert_eq!(
+            nearest_ids(
+                &db,
+                mine.coach_id,
+                window_over(&[theirs.id, mine.id, Id::new_v4()], 2, 2),
+            )
+            .await?,
+            [mine_session]
         );
         Ok::<(), Error>(())
     })

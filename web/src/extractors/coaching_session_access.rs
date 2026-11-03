@@ -11,7 +11,7 @@ use crate::{
     extractors::{authenticated_user::AuthenticatedUser, RejectionType},
     AppState,
 };
-use domain::coaching_sessions;
+use domain::{coaching_relationships, coaching_sessions};
 use log::*;
 
 /// Extractor that verifies the authenticated user is a participant (coach or coachee)
@@ -22,6 +22,13 @@ use log::*;
 /// additional database query.
 pub(crate) struct CoachingSessionAccess(pub coaching_sessions::Model);
 
+/// [`CoachingSessionAccess`] that also yields the session's coaching relationship, which the
+/// access check loads anyway, for handlers that report what the relationship holds.
+pub(crate) struct CoachingSessionContextAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
 #[async_trait]
 impl<S> FromRequestParts<S> for CoachingSessionAccess
 where
@@ -31,63 +38,78 @@ where
     type Rejection = RejectionType;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let state = AppState::from_ref(state);
-        let AuthenticatedUser(authenticated_user) =
-            AuthenticatedUser::from_request_parts(parts, &state).await?;
-
-        let Path(path_params) = Path::<HashMap<String, String>>::from_request_parts(parts, &state)
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid path parameters".to_string(),
-                )
-            })?;
-
-        let coaching_session_id: Id = path_params
-            .get("coaching_session_id")
-            .or_else(|| path_params.get("id"))
-            .ok_or_else(|| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Missing coaching_session_id in path".to_string(),
-                )
-            })?
-            .parse()
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid coaching session id".to_string(),
-                )
-            })?;
-
-        debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
-
-        // Get the coaching session
-        let (coaching_session, coaching_relationship) =
-            match coaching_session::find_by_id_with_coaching_relationship(
-                state.db_conn_ref(),
-                coaching_session_id,
-            )
-            .await
-            {
-                Ok((coaching_session, coaching_relationship)) => {
-                    (coaching_session, coaching_relationship)
-                }
-                Err(e) => {
-                    error!(
-                        "Authorization error finding coaching session {coaching_session_id}: {e:?}"
-                    );
-                    return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
-                }
-            };
-
-        if !coaching_relationship.grants_access_to(&authenticated_user) {
-            return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
-        }
-
-        Ok(CoachingSessionAccess(coaching_session))
+        let (session, _) = authorize(parts, &AppState::from_ref(state)).await?;
+        Ok(CoachingSessionAccess(session))
     }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionContextAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
+        Ok(CoachingSessionContextAccess(session, relationship))
+    }
+}
+
+/// Loads the session named in the path with its relationship, and admits the caller only if
+/// the relationship grants them access.
+async fn authorize(
+    parts: &mut Parts,
+    state: &AppState,
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
+    let AuthenticatedUser(authenticated_user) =
+        AuthenticatedUser::from_request_parts(parts, state).await?;
+
+    let Path(path_params) = Path::<HashMap<String, String>>::from_request_parts(parts, state)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid path parameters".to_string(),
+            )
+        })?;
+
+    let coaching_session_id: Id = path_params
+        .get("coaching_session_id")
+        .or_else(|| path_params.get("id"))
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Missing coaching_session_id in path".to_string(),
+            )
+        })?
+        .parse()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid coaching session id".to_string(),
+            )
+        })?;
+
+    debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
+
+    let (coaching_session, coaching_relationship) =
+        coaching_session::find_by_id_with_coaching_relationship(
+            state.db_conn_ref(),
+            coaching_session_id,
+        )
+        .await
+        .map_err(|e| {
+            error!("Authorization error finding coaching session {coaching_session_id}: {e:?}");
+            (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
+        })?;
+
+    if !coaching_relationship.grants_access_to(&authenticated_user) {
+        return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+    }
+
+    Ok((coaching_session, coaching_relationship))
 }
 
 #[cfg(test)]

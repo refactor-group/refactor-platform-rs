@@ -160,6 +160,7 @@ use utoipa_rapidoc::RapiDoc;
             schemas(
                 crate::controller::action_controller::ActionRequest,
                 crate::controller::coaching_session::meeting_recording_controller::StartRecordingParams,
+                crate::controller::coaching_session_controller::SessionWithOrganization,
                 crate::controller::coaching_session_series_controller::SeriesWithSessions,
                 crate::controller::coaching_session::topic_controller::CreateParams,
                 crate::controller::coaching_session::topic_controller::UpdateParams,
