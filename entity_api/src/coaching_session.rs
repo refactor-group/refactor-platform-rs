@@ -313,8 +313,12 @@ pub async fn lock_for_update(db: &impl ConnectionTrait, ids: &[Id]) -> Result<()
 }
 
 /// The sessions among `ids` holding something a delete would lose: a note, action,
-/// agreement, or live topic. Notes, actions and agreements also block the delete by FK.
-/// One `UNION` query, so a caller holding locks makes a single round trip.
+/// agreement, live topic, or a shared notes document. Notes, actions and agreements also
+/// block the delete by FK.
+///
+/// The document is created when a session is first opened, and its content can't be read
+/// from here, so any session with one counts as holding notes. One `UNION` query, so a
+/// caller holding locks makes a single round trip.
 pub async fn find_ids_with_content(
     db: &impl ConnectionTrait,
     ids: &[Id],
@@ -343,6 +347,12 @@ pub async fn find_ids_with_content(
             .filter(coaching_session_topics::Column::DeletedAt.is_null())
             .into_query(),
         )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<Entity>(Column::Id, ids)
+                .filter(Column::CollabDocumentName.is_not_null())
+                .into_query(),
+        )
         .to_owned();
 
     db.query_all(&statement)
@@ -352,7 +362,7 @@ pub async fn find_ids_with_content(
         .collect()
 }
 
-/// The `coaching_session_id`s of `E`'s rows that point at one of `ids`.
+/// The values of `column` (a session id) for `E`'s rows where it is one of `ids`.
 fn session_ids_in<E: EntityTrait>(column: E::Column, ids: &[Id]) -> Select<E> {
     E::find()
         .select_only()

@@ -6,7 +6,7 @@ use entity::{
     actions, agreements, coaching_session_series as series_entity, coaching_session_topics,
     coaching_sessions, notes,
 };
-use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
 use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
@@ -75,7 +75,7 @@ async fn seed_series_session_with_id(
         coaching_session_series_id: Set(Some(seeded.series_id)),
         ical_sequence: Set(2),
         ical_recurrence_id: Set(Some(date)),
-        collab_document_name: Set(Some(format!("doc-{date}"))),
+        collab_document_name: Set(None),
         date: Set(date),
         duration_minutes: Set(60),
         title: Set(Some("Weekly".to_string())),
@@ -89,6 +89,21 @@ async fn seed_series_session_with_id(
     .insert(db)
     .await
     .expect("the series session is seeded")
+}
+
+/// The session as it is once first opened: it has a shared notes document.
+async fn opened(
+    db: &DatabaseConnection,
+    session: coaching_sessions::Model,
+) -> coaching_sessions::Model {
+    coaching_sessions::ActiveModel {
+        id: Unchanged(session.id),
+        collab_document_name: Set(Some(format!("doc-{}", session.id))),
+        ..Default::default()
+    }
+    .update(db)
+    .await
+    .expect("the session is opened")
 }
 
 async fn reread(db: &DatabaseConnection, id: Id) -> coaching_sessions::Model {
@@ -175,7 +190,7 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
     within_time_limit(async {
         let db = database().await;
         let seeded = seed_series(&db).await;
-        let target = seed_series_session(&db, &seeded, monday()).await;
+        let target = opened(&db, seed_series_session(&db, &seeded, monday()).await).await;
         let bystander = seed_series_session(&db, &seeded, monday() + TimeDelta::weeks(1)).await;
         let note_id = seed_note(&db, target.id, seeded.user_id).await;
         let new_series = series_entity::ActiveModel {
@@ -240,6 +255,9 @@ async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
         let with_deleted_topic = seed_series_session(&db, &seeded, week(4)).await.id;
         let empty = seed_series_session(&db, &seeded, week(5)).await.id;
         let not_asked_about = seed_series_session(&db, &seeded, week(6)).await.id;
+        let with_shared_notes = opened(&db, seed_series_session(&db, &seeded, week(7)).await)
+            .await
+            .id;
 
         seed_note(&db, with_note, seeded.user_id).await;
         seed_action(&db, with_action, seeded.user_id).await;
@@ -257,6 +275,7 @@ async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
                 with_topic,
                 with_deleted_topic,
                 empty,
+                with_shared_notes,
             ],
         )
         .await
@@ -264,9 +283,15 @@ async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
 
         assert_eq!(
             flagged,
-            [with_note, with_action, with_agreement, with_topic]
-                .into_iter()
-                .collect()
+            [
+                with_note,
+                with_action,
+                with_agreement,
+                with_topic,
+                with_shared_notes
+            ]
+            .into_iter()
+            .collect()
         );
     })
     .await;
