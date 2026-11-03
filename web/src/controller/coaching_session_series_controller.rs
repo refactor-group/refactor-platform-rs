@@ -208,7 +208,7 @@ pub async fn update(
     ),
     security(("cookie_auth" = []))
 )]
-pub async fn reschedule(
+pub async fn reschedule_following(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,

@@ -59,9 +59,18 @@ async fn seed_series_session(
     seeded: &Seeded,
     date: NaiveDateTime,
 ) -> coaching_sessions::Model {
+    seed_series_session_with_id(db, seeded, Id::new_v4(), date).await
+}
+
+async fn seed_series_session_with_id(
+    db: &DatabaseConnection,
+    seeded: &Seeded,
+    id: Id,
+    date: NaiveDateTime,
+) -> coaching_sessions::Model {
     let now = Utc::now();
     coaching_sessions::ActiveModel {
-        id: Set(Id::new_v4()),
+        id: Set(id),
         coaching_relationship_id: Set(seeded.relationship_id),
         coaching_session_series_id: Set(Some(seeded.series_id)),
         ical_sequence: Set(2),
@@ -276,24 +285,23 @@ async fn find_ids_with_content_of_no_sessions_is_empty() {
 }
 
 #[tokio::test]
-async fn series_sessions_in_order_breaks_date_ties_by_id() {
+async fn find_by_series_id_breaks_date_ties_by_id() {
     within_time_limit(async {
         let db = database().await;
         let seeded = seed_series(&db).await;
         let later = seed_series_session(&db, &seeded, monday() + TimeDelta::weeks(1)).await;
-        let tied_a = seed_series_session(&db, &seeded, monday()).await;
-        let tied_b = seed_series_session(&db, &seeded, monday()).await;
-        let (first, second) = match tied_a.id < tied_b.id {
-            true => (tied_a.id, tied_b.id),
-            false => (tied_b.id, tied_a.id),
-        };
+        // The larger id goes in first, so only the id tie-break can put it second.
+        let (first, second) = (Id::from_u128(1), Id::from_u128(2));
+        seed_series_session_with_id(&db, &seeded, second, monday()).await;
+        seed_series_session_with_id(&db, &seeded, first, monday()).await;
 
-        let ordered: Vec<Id> = series_sessions_in_order(&db, seeded.series_id)
-            .await
-            .expect("the read succeeds")
-            .into_iter()
-            .map(|session| session.id)
-            .collect();
+        let ordered: Vec<Id> =
+            entity_api::coaching_session::find_by_series_id(&db, seeded.series_id)
+                .await
+                .expect("the read succeeds")
+                .into_iter()
+                .map(|session| session.id)
+                .collect();
 
         assert_eq!(ordered, vec![first, second, later.id]);
     })

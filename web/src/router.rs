@@ -64,7 +64,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session_series_controller::update,
             coaching_session_series_controller::delete,
             coaching_session_series_controller::resend_invite,
-            coaching_session_series_controller::reschedule,
+            coaching_session_series_controller::reschedule_following,
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
@@ -466,7 +466,7 @@ pub fn coaching_session_series_routes(app_state: AppState) -> Router {
         )
         .route(
             "/coaching_session_series/:id/reschedule",
-            post(coaching_session_series_controller::reschedule),
+            post(coaching_session_series_controller::reschedule_following),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

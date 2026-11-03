@@ -381,16 +381,24 @@ pub async fn update(
     // too, leaving the coachee with neither. A failed stamp after a delivered email costs
     // a redundant reminder, which is the direction worth being wrong in.
     if schedule_moved && emails::notify_session_rescheduled(db, config, &updated, old_date).await {
-        match coaching_session::mark_notice_given(db, updated.id).await {
-            Ok(stamped) => return Ok(stamped),
-            Err(e) => warn!(
-                "Told the participants session {} moved but could not record it, so they \
-                 may be reminded about a time they already have: {e:?}",
-                updated.id
-            ),
-        }
+        return Ok(record_notice(db, updated.id).await.unwrap_or(updated));
     }
     Ok(updated)
+}
+
+/// Record that the participants were told about a session's new start, so the reminder
+/// sweep measures notice from that email. Best-effort: a failure is logged and yields
+/// `None`, costing at worst a redundant reminder.
+pub(crate) async fn record_notice(db: &DatabaseConnection, id: Id) -> Option<Model> {
+    coaching_session::mark_notice_given(db, id)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Told the participants session {id} moved but could not record it, so they \
+                 may be reminded about a time they already have: {e:?}"
+            )
+        })
+        .ok()
 }
 
 /// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
@@ -504,20 +512,7 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
 
 /// A resend that cannot apply, as a 409 carrying a machine-readable `reason`.
 pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
-    conflict(message, serde_json::json!({ "reason": reason }))
-}
-
-/// A request that cannot apply as things stand, as a 409 carrying machine-readable `details`.
-pub(crate) fn conflict(message: &str, details: serde_json::Value) -> Error {
-    Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-            EntityErrorKind::Conflict {
-                message: message.to_string(),
-                details: Some(details),
-            },
-        )),
-    }
+    Error::conflict(message, serde_json::json!({ "reason": reason }))
 }
 
 /// A resend is only done once the coachee has it. Missing the coach is not a failure: the

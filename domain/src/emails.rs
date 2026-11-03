@@ -1758,13 +1758,12 @@ fn build_series_snapshot_ics(
 enum SeriesInviteShape<'a> {
     /// The master VEVENT only (create and reschedule).
     Master,
-    /// The series as it stands today, built from every row linked to the series.
-    Snapshot(&'a [coaching_sessions::Model]),
-    /// A snapshot of the series, plus one of the series it split from, so calendars drop
-    /// the occurrences the new series took over.
-    Split {
+    /// The series as it stands today, built from every row linked to the series. After a
+    /// split it also carries the series it split from, so calendars drop the occurrences
+    /// the new series took over.
+    Snapshot {
         rows: &'a [coaching_sessions::Model],
-        split_from: SeriesRows<'a>,
+        split_from: Option<SeriesRows<'a>>,
     },
 }
 
@@ -1849,36 +1848,21 @@ async fn send_series_invite_email<N: EmailNotification>(
             orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
             split_from: None,
         },
-        SeriesInviteShape::Snapshot(rows) => SeriesIcs {
-            body: build_series_snapshot_ics(
-                coach,
-                coachee,
-                series,
-                rows,
-                description.clone(),
-                dtstamp,
-            )?,
+        SeriesInviteShape::Snapshot { rows, split_from } => SeriesIcs {
+            split_from: split_from
+                .map(|from| {
+                    build_series_snapshot_ics(
+                        coach,
+                        coachee,
+                        from.series,
+                        from.rows,
+                        description.clone(),
+                        dtstamp,
+                    )
+                })
+                .transpose()?,
+            body: build_series_snapshot_ics(coach, coachee, series, rows, description, dtstamp)?,
             orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
-            split_from: None,
-        },
-        SeriesInviteShape::Split { rows, split_from } => SeriesIcs {
-            body: build_series_snapshot_ics(
-                coach,
-                coachee,
-                series,
-                rows,
-                description.clone(),
-                dtstamp,
-            )?,
-            orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
-            split_from: Some(build_series_snapshot_ics(
-                coach,
-                coachee,
-                split_from.series,
-                split_from.rows,
-                description,
-                dtstamp,
-            )?),
         },
     };
 
@@ -1991,7 +1975,10 @@ pub(crate) async fn send_series_invite_resend(
         organization,
         SeriesInviteKind {
             reschedule: None,
-            shape: SeriesInviteShape::Snapshot(rows),
+            shape: SeriesInviteShape::Snapshot {
+                rows,
+                split_from: None,
+            },
         },
     )
     .await
@@ -2181,7 +2168,7 @@ pub async fn notify_recurring_sessions_rescheduled(
 }
 
 /// What a "this and following" series reschedule changed, as its email reports it.
-pub struct FollowingRescheduled<'a> {
+pub struct FollowingRescheduleNotice<'a> {
     /// The series now holding the moved sessions, already carrying its bumped `ical_sequence`.
     pub series: &'a coaching_session_series::Model,
     /// The moved and created sessions, in date order.
@@ -2205,7 +2192,7 @@ pub struct FollowingRescheduled<'a> {
 pub async fn notify_recurring_sessions_rescheduled_following(
     db: &DatabaseConnection,
     config: &Config,
-    change: &FollowingRescheduled<'_>,
+    change: &FollowingRescheduleNotice<'_>,
 ) -> bool {
     let result: Result<Delivered, Error> = async {
         let parties = InviteParties::load(db, change.series.coaching_relationship_id).await?;
@@ -2219,15 +2206,11 @@ pub async fn notify_recurring_sessions_rescheduled_following(
             )),
             None => None,
         };
-        let shape = match &split_from {
-            Some((series, split_rows)) => SeriesInviteShape::Split {
-                rows: &rows,
-                split_from: SeriesRows {
-                    series,
-                    rows: split_rows,
-                },
-            },
-            None => SeriesInviteShape::Snapshot(&rows),
+        let shape = SeriesInviteShape::Snapshot {
+            rows: &rows,
+            split_from: split_from
+                .as_ref()
+                .map(|(series, rows)| SeriesRows { series, rows }),
         };
 
         send_series_invite_email::<RecurringSessionsRescheduled>(

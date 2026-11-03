@@ -13,7 +13,7 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*,
-    sea_query::{Expr, Func, IntoCondition},
+    sea_query::{Expr, Func, IntoCondition, UnionType},
     ActiveValue::Unchanged,
     ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
     Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
@@ -217,7 +217,8 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     })
 }
 
-/// Returns every coaching session linked to the given series, ordered by date ascending.
+/// Returns every coaching session linked to the given series, ordered by date ascending,
+/// ties by id so the order is the same on every read.
 pub async fn find_by_series_id(
     db: &impl ConnectionTrait,
     series_id: Id,
@@ -225,6 +226,7 @@ pub async fn find_by_series_id(
     Ok(Entity::find()
         .filter(Column::CoachingSessionSeriesId.eq(series_id))
         .order_by_asc(Column::Date)
+        .order_by_asc(Column::Id)
         .all(db)
         .await?)
 }
@@ -293,6 +295,7 @@ pub async fn move_to_slot(
 
 /// The sessions among `ids` holding something a delete would lose: a note, action,
 /// agreement, or live topic. Notes, actions and agreements also block the delete by FK.
+/// One `UNION` query, so a caller holding locks makes a single round trip.
 pub async fn find_ids_with_content(
     db: &impl ConnectionTrait,
     ids: &[Id],
@@ -300,44 +303,42 @@ pub async fn find_ids_with_content(
     if ids.is_empty() {
         return Ok(HashSet::new());
     }
-    let in_ids = || ids.iter().copied();
 
-    let notes: Vec<Id> = notes::Entity::find()
-        .select_only()
-        .column(notes::Column::CoachingSessionId)
-        .filter(notes::Column::CoachingSessionId.is_in(in_ids()))
-        .into_tuple()
-        .all(db)
-        .await?;
-    let actions: Vec<Id> = actions::Entity::find()
-        .select_only()
-        .column(actions::Column::CoachingSessionId)
-        .filter(actions::Column::CoachingSessionId.is_in(in_ids()))
-        .into_tuple()
-        .all(db)
-        .await?;
-    let agreements: Vec<Id> = agreements::Entity::find()
-        .select_only()
-        .column(agreements::Column::CoachingSessionId)
-        .filter(agreements::Column::CoachingSessionId.is_in(in_ids()))
-        .into_tuple()
-        .all(db)
-        .await?;
-    let topics: Vec<Id> = coaching_session_topics::Entity::find()
-        .select_only()
-        .column(coaching_session_topics::Column::CoachingSessionId)
-        .filter(coaching_session_topics::Column::CoachingSessionId.is_in(in_ids()))
-        .filter(coaching_session_topics::Column::DeletedAt.is_null())
-        .into_tuple()
-        .all(db)
-        .await?;
+    let statement = session_ids_in::<notes::Entity>(notes::Column::CoachingSessionId, ids)
+        .into_query()
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<actions::Entity>(actions::Column::CoachingSessionId, ids).into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<agreements::Entity>(agreements::Column::CoachingSessionId, ids)
+                .into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<coaching_session_topics::Entity>(
+                coaching_session_topics::Column::CoachingSessionId,
+                ids,
+            )
+            .filter(coaching_session_topics::Column::DeletedAt.is_null())
+            .into_query(),
+        )
+        .to_owned();
 
-    Ok(notes
-        .into_iter()
-        .chain(actions)
-        .chain(agreements)
-        .chain(topics)
-        .collect())
+    db.query_all(&statement)
+        .await?
+        .iter()
+        .map(|row| row.try_get_by_index::<Id>(0).map_err(Into::into))
+        .collect()
+}
+
+/// The `coaching_session_id`s of `E`'s rows that point at one of `ids`.
+fn session_ids_in<E: EntityTrait>(column: E::Column, ids: &[Id]) -> Select<E> {
+    E::find()
+        .select_only()
+        .column(column)
+        .filter(column.is_in(ids.iter().copied()))
 }
 
 /// One claimed reminder: the session to send about, and who it goes to.

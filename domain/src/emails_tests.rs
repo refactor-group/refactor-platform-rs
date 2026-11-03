@@ -3480,12 +3480,12 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
                 previous_start: at(15, 15),
                 previous_recurrence_summary: Some("Weekly".into()),
             }),
-            shape: SeriesInviteShape::Split {
+            shape: SeriesInviteShape::Snapshot {
                 rows: &moved,
-                split_from: SeriesRows {
+                split_from: Some(SeriesRows {
                     series: &shortened,
                     rows: &earlier,
-                },
+                }),
             },
         },
     )

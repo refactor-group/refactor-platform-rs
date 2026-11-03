@@ -363,23 +363,6 @@ impl FollowingPlan {
     }
 }
 
-/// A series' sessions in the order a reschedule walks them: by date, ties by id.
-async fn series_sessions_in_order(
-    db: &impl sea_orm::ConnectionTrait,
-    series_id: Id,
-) -> Result<Vec<coaching_sessions::Model>, Error> {
-    let mut sessions = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
-    sessions.sort_by_key(|session| (session.date, session.id));
-    Ok(sessions)
-}
-
-fn invalid(message: &str) -> Error {
-    Error {
-        source: None,
-        error_kind: DomainErrorKind::Validation(message.to_string()),
-    }
-}
-
 /// Pair the affected sessions with the new rule's slots. Pure, so every edge of the
 /// pairing is testable without a database.
 ///
@@ -396,11 +379,13 @@ fn plan_following(
     let anchor_index = sessions
         .iter()
         .position(|session| session.id == request.coaching_session_id)
-        .ok_or_else(|| invalid("`coaching_session_id` is not a session of this series."))?;
+        .ok_or_else(|| {
+            Error::validation("`coaching_session_id` is not a session of this series.")
+        })?;
     let (earlier, affected) = sessions.split_at(anchor_index);
     let anchor = &affected[0];
     if anchor.date < now {
-        return Err(invalid(
+        return Err(Error::validation(
             "`coaching_session_id` has already happened; only upcoming sessions can be rescheduled.",
         ));
     }
@@ -466,14 +451,14 @@ pub async fn reschedule_following(
     let now = chrono::Utc::now().naive_utc();
 
     // Planned once to reject a bad request before taking locks, then again under them.
-    let snapshot = series_sessions_in_order(db, series_id).await?;
+    let snapshot = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
     let draft = plan_following(&existing_rule, &snapshot, &request, zone, now)?;
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     for id in draft.affected_ids() {
         entity_api::coaching_session::acquire_advisory_lock(&txn, id).await?;
     }
-    let sessions = series_sessions_in_order(&txn, series_id).await?;
+    let sessions = entity_api::coaching_session::find_by_series_id(&txn, series_id).await?;
     let plan = plan_following(&existing_rule, &sessions, &request, zone, now)?;
 
     if plan.changes_nothing() {
@@ -494,7 +479,7 @@ pub async fn reschedule_following(
             .copied()
             .filter(|id| with_content.contains(id))
             .collect();
-        return Err(coaching_session::conflict(
+        return Err(Error::conflict(
             "The new schedule leaves out sessions that have notes, actions, agreements or topics.",
             serde_json::json!({
                 "reason": "sessions_have_content",
@@ -573,7 +558,7 @@ pub async fn reschedule_following(
     let told = emails::notify_recurring_sessions_rescheduled_following(
         db,
         config,
-        &emails::FollowingRescheduled {
+        &emails::FollowingRescheduleNotice {
             series: &target,
             sessions: &sessions,
             previous_series: emails::PreviousSeries(&existing),
@@ -587,7 +572,9 @@ pub async fn reschedule_following(
     )
     .await;
     if told {
-        mark_noticed(db, &moved).await;
+        for session in &moved {
+            coaching_session::record_notice(db, session.id).await;
+        }
     }
 
     Ok(Rescheduled {
@@ -595,20 +582,6 @@ pub async fn reschedule_following(
         sessions,
         changed: true,
     })
-}
-
-/// Record that the participants were told about each moved session's new start, so the
-/// reminder sweep measures notice from the email they just got. Best-effort per session.
-async fn mark_noticed(db: &DatabaseConnection, sessions: &[coaching_sessions::Model]) {
-    for session in sessions {
-        if let Err(e) = entity_api::coaching_session::mark_notice_given(db, session.id).await {
-            warn!(
-                "Told the participants session {} moved but could not record it, so they \
-                 may be reminded about a time they already have: {e:?}",
-                session.id
-            );
-        }
-    }
 }
 
 /// Delete the series row and its future sessions. Past sessions survive as
@@ -1649,7 +1622,6 @@ mod tests {
         let noted = |id: Id| {
             std::collections::BTreeMap::from([("coaching_session_id", sea_orm::Value::from(id))])
         };
-        let none = Vec::<std::collections::BTreeMap<&str, sea_orm::Value>>::new;
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![series.clone()]])
@@ -1657,9 +1629,8 @@ mod tests {
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok(), exec_ok()])
             .append_query_results(vec![sessions.clone()])
-            // notes, actions, agreements, topics
+            // the content UNION
             .append_query_results(vec![vec![noted(with_note)]])
-            .append_query_results(vec![none(), none(), none()])
             .into_connection();
 
         let err = reschedule_following(
