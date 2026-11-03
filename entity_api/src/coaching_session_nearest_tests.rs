@@ -1,9 +1,9 @@
-//! Control flow of `find_nearest_by_user_with_includes`; which rows the queries
-//! select is covered by the SQLite tier in `domain`.
+//! The statement `find_nearest_by_user_with_includes` sends and its control flow; which
+//! rows the statement selects is covered by the SQLite tier in `domain`.
 
 use chrono::{NaiveDate, Utc};
 use entity::Id;
-use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
+use sea_orm::{DatabaseBackend, MockDatabase};
 
 use super::*;
 
@@ -16,25 +16,12 @@ fn around() -> NaiveDateTime {
         .unwrap()
 }
 
-fn window(coaching_relationship_id: Id) -> NearestWindow {
+fn window(coaching_relationship_ids: &[Id]) -> NearestWindow {
     NearestWindow {
-        coaching_relationship_id,
+        coaching_relationship_ids: coaching_relationship_ids.to_vec(),
         around: around(),
         before: 2,
         after: 3,
-    }
-}
-
-fn relationship(id: Id, coach_id: Id, coachee_id: Id) -> coaching_relationships::Model {
-    let now = Utc::now();
-    coaching_relationships::Model {
-        id,
-        organization_id: Id::new_v4(),
-        coach_id,
-        coachee_id,
-        slug: "coach-coachee".to_string(),
-        created_at: now.into(),
-        updated_at: now.into(),
     }
 }
 
@@ -62,116 +49,104 @@ fn session(coaching_relationship_id: Id, day: u32) -> Model {
     }
 }
 
-/// A non-participant learns nothing: no session query runs at all.
+/// One statement reads every relationship's window: each side ranks a relationship's
+/// sessions outward from `around` and keeps its own limit, only relationships the user is
+/// part of count, and the result comes back latest first.
 #[tokio::test]
-async fn a_non_participant_gets_nothing_and_no_session_is_queried() -> Result<(), Error> {
+async fn one_statement_reads_every_relationships_window() -> Result<(), Error> {
     let user_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
+    let (first, second) = (Id::new_v4(), Id::new_v4());
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results::<coaching_relationships::Model, Vec<_>, _>(vec![vec![]])
-        .into_connection();
-
-    let sessions = find_nearest_by_user_with_includes(
-        &db,
-        user_id,
-        window(relationship_id),
-        IncludeOptions::default(),
-    )
-    .await?;
-
-    assert!(sessions.is_empty());
-    let log = db.into_transaction_log();
-    assert_eq!(log.len(), 1, "only the participant check runs: {log:?}");
-    assert!(log[0].statements()[0]
-        .sql
-        .contains(r#"FROM "refactor_platform"."coaching_relationships""#));
-
-    Ok(())
-}
-
-/// Before is strict and latest first; after includes `around` and is earliest
-/// first. Both scope to the relationship and tie-break on id.
-#[tokio::test]
-async fn a_participant_queries_each_side_of_around_with_its_own_limit() -> Result<(), Error> {
-    let user_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![relationship(relationship_id, user_id, Id::new_v4())]])
-        .append_query_results::<Model, Vec<Model>, _>(vec![vec![], vec![]])
+        .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
         .into_connection();
 
     find_nearest_by_user_with_includes(
         &db,
         user_id,
-        window(relationship_id),
+        window(&[first, second]),
         IncludeOptions::default(),
     )
     .await?;
 
     let log = db.into_transaction_log();
-    assert_eq!(
-        log[1..3],
-        [
-            Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                format!(
-                    r#"SELECT {SESSION_COLUMNS} FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" < $2 ORDER BY "coaching_sessions"."date" DESC, "coaching_sessions"."id" DESC LIMIT $3"#
-                ),
-                [
-                    relationship_id.into(),
-                    around().into(),
-                    sea_orm::Value::BigUnsigned(Some(2))
-                ]
-            ),
-            Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                format!(
-                    r#"SELECT {SESSION_COLUMNS} FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = $1 AND "coaching_sessions"."date" >= $2 ORDER BY "coaching_sessions"."date" ASC, "coaching_sessions"."id" ASC LIMIT $3"#
-                ),
-                [
-                    relationship_id.into(),
-                    around().into(),
-                    sea_orm::Value::BigUnsigned(Some(3))
-                ]
-            ),
-        ]
-    );
+    let statements: Vec<_> = log.iter().flat_map(|txn| txn.statements()).collect();
+    assert_eq!(statements.len(), 1, "one statement: {statements:?}");
+    let sql = &statements[0].sql;
+
+    assert!(sql.starts_with(&format!(
+        r#"SELECT {SESSION_COLUMNS} FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" IN ("#
+    )));
+    assert!(sql
+        .ends_with(r#") ORDER BY "coaching_sessions"."date" DESC, "coaching_sessions"."id" DESC"#));
+
+    let (before, after) = sql
+        .split_once("UNION ALL")
+        .expect("both sides in one statement");
+    let participant = r#"("coaching_relationships"."coach_id" = "#;
+    for (side, order, date) in [
+        (before, "DESC", r#""date" < "#),
+        (after, "ASC", r#""date" >= "#),
+    ] {
+        assert!(side.contains(&format!(
+            r#"ROW_NUMBER() OVER ( PARTITION BY "coaching_sessions"."coaching_relationship_id" ORDER BY "coaching_sessions"."date" {order}, "coaching_sessions"."id" {order} ) AS "nearness""#
+        )), "{side}");
+        assert!(
+            side.contains(participant)
+                && side.contains(r#"OR "coaching_relationships"."coachee_id" = "#),
+            "{side}"
+        );
+        assert!(side.contains(date), "{side}");
+        assert!(side.contains(r#"WHERE "nearness" <= "#), "{side}");
+    }
+
+    let values = statements[0]
+        .values
+        .as_ref()
+        .expect("bound values")
+        .0
+        .clone();
+    for expected in [
+        first.into(),
+        second.into(),
+        user_id.into(),
+        around().into(),
+        sea_orm::Value::BigUnsigned(Some(2)),
+        sea_orm::Value::BigUnsigned(Some(3)),
+    ] {
+        assert!(values.contains(&expected), "{expected:?} in {values:?}");
+    }
 
     Ok(())
 }
 
-/// The two sides merge latest first: `after` (queried earliest first) is reversed
-/// ahead of `before` (already latest first).
+/// The statement's order is the response's order; nothing reorders the rows after.
 #[tokio::test]
-async fn the_two_sides_merge_latest_first() -> Result<(), Error> {
-    let user_id = Id::new_v4();
+async fn sessions_keep_the_statements_order() -> Result<(), Error> {
     let relationship_id = Id::new_v4();
-    let (b1, b2) = (session(relationship_id, 29), session(relationship_id, 28));
-    let (a1, a2) = (session(relationship_id, 30), session(relationship_id, 31));
+    let rows = vec![
+        session(relationship_id, 31),
+        session(relationship_id, 30),
+        session(relationship_id, 29),
+    ];
 
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![relationship(relationship_id, user_id, Id::new_v4())]])
-        .append_query_results(vec![
-            vec![b1.clone(), b2.clone()],
-            vec![a1.clone(), a2.clone()],
-        ])
+        .append_query_results(vec![rows.clone()])
         // View markers, first topic bodies, first goal titles.
         .append_query_results::<Model, Vec<Model>, _>(vec![vec![], vec![], vec![]])
         .into_connection();
 
     let sessions = find_nearest_by_user_with_includes(
         &db,
-        user_id,
-        window(relationship_id),
+        Id::new_v4(),
+        window(&[relationship_id]),
         IncludeOptions::default(),
     )
     .await?;
 
     assert_eq!(
         sessions.iter().map(|s| s.session.id).collect::<Vec<_>>(),
-        [a2.id, a1.id, b1.id, b2.id]
+        rows.iter().map(|s| s.id).collect::<Vec<_>>()
     );
 
     Ok(())
@@ -185,7 +160,7 @@ async fn an_invalid_include_combination_runs_no_query() {
     let result = find_nearest_by_user_with_includes(
         &db,
         Id::new_v4(),
-        window(Id::new_v4()),
+        window(&[Id::new_v4()]),
         IncludeOptions {
             organization: true,
             ..Default::default()

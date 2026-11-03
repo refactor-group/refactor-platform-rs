@@ -13,10 +13,11 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*,
-    sea_query::{Expr, Func, IntoCondition},
+    sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType, WindowStatement},
     ActiveValue::Unchanged,
-    ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
-    Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
+    Condition, ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult,
+    JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel,
+    Value,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -760,11 +761,7 @@ pub async fn find_counts_by_month_for_user(
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
         .filter(Column::Date.gte(from_date))
         .filter(Column::Date.lt(to_exclusive))
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
+        .filter(participant(user_id))
         .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
             q.filter(Column::CoachingRelationshipId.eq(rel_id))
         })
@@ -1003,11 +1000,7 @@ async fn find_by_user_filtered(
     // function body.
     let query = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
+        .filter(participant(user_id))
         .apply_if(
             options.coaching_relationship_id,
             |q: Select<Entity>, rel_id| {
@@ -1043,21 +1036,24 @@ pub async fn find_by_user_with_includes(
     enrich(db, sessions, user_id, includes).await
 }
 
-/// A relationship's sessions nearest a point in time: up to `before` strictly
-/// earlier and up to `after` at or later. See [`find_nearest_by_user_with_includes`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Sessions nearest a point in time, for each of several relationships: per relationship,
+/// up to `before` strictly earlier and up to `after` at or later.
+/// See [`find_nearest_by_user_with_includes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NearestWindow {
-    pub coaching_relationship_id: Id,
+    pub coaching_relationship_ids: Vec<Id>,
     /// UTC instant the window is centered on; a session exactly here counts as after.
     pub around: NaiveDateTime,
     pub before: u64,
     pub after: u64,
 }
 
-/// The window's sessions, latest first, enriched like [`find_by_user_with_includes`].
+/// The window's sessions across its relationships, latest first (ties by id), enriched
+/// like [`find_by_user_with_includes`].
 ///
-/// Returns an empty list when `user_id` is neither coach nor coachee of the
-/// relationship, matching how the list read's relationship filter behaves.
+/// A relationship `user_id` is neither coach nor coachee of contributes nothing, matching
+/// how the list read's relationship filter behaves. One statement, however many
+/// relationships.
 pub async fn find_nearest_by_user_with_includes(
     db: &impl ConnectionTrait,
     user_id: Id,
@@ -1066,19 +1062,81 @@ pub async fn find_nearest_by_user_with_includes(
 ) -> Result<Vec<EnrichedSession>, Error> {
     includes.validate()?;
 
-    if !crate::coaching_relationship::is_participant(db, user_id, window.coaching_relationship_id)
-        .await?
-    {
-        return Ok(Vec::new());
-    }
-
-    let rel = window.coaching_relationship_id;
-    let before = find_latest(db, rel, Column::Date.lt(window.around), window.before).await?;
-    let after = find_earliest(db, rel, Column::Date.gte(window.around), window.after).await?;
-
-    // `after` is earliest first, so reversing it puts the whole window latest first.
-    let sessions = after.into_iter().rev().chain(before).collect();
+    let sessions = Entity::find()
+        .filter(Column::Id.in_subquery(nearest_ids(user_id, &window)))
+        .order_by_desc(Column::Date)
+        .order_by_desc(Column::Id)
+        .all(db)
+        .await?;
     enrich(db, sessions, user_id, includes).await
+}
+
+/// The ids of the window's sessions: both sides of `around`, for every requested
+/// relationship `user_id` is part of.
+fn nearest_ids(user_id: Id, window: &NearestWindow) -> SelectStatement {
+    nearest_side_ids(
+        user_id,
+        window,
+        Column::Date.lt(window.around),
+        Order::Desc,
+        window.before,
+    )
+    .union(
+        UnionType::All,
+        nearest_side_ids(
+            user_id,
+            window,
+            Column::Date.gte(window.around),
+            Order::Asc,
+            window.after,
+        ),
+    )
+    .to_owned()
+}
+
+/// One side of the window: each relationship's sessions matching `side`, numbered from
+/// the one nearest `around` (date then id, in `order`), keeping the first `limit`.
+fn nearest_side_ids(
+    user_id: Id,
+    window: &NearestWindow,
+    side: impl IntoCondition,
+    order: Order,
+    limit: u64,
+) -> SelectStatement {
+    let mut ranked = Entity::find()
+        .select_only()
+        .column(Column::Id)
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(participant(user_id))
+        .filter(Column::CoachingRelationshipId.is_in(window.coaching_relationship_ids.clone()))
+        .filter(side)
+        .into_query();
+    ranked.expr_window_as(
+        Expr::cust("ROW_NUMBER()"),
+        WindowStatement::partition_by((Entity, Column::CoachingRelationshipId))
+            .order_by((Entity, Column::Date), order.clone())
+            .order_by((Entity, Column::Id), order)
+            .to_owned(),
+        NEARNESS,
+    );
+
+    Query::select()
+        .column(Column::Id)
+        .from_subquery(ranked, RANKED)
+        .and_where(Expr::col(NEARNESS).lte(limit))
+        .to_owned()
+}
+
+/// Rank of a session within its relationship's side of a nearest window, 1 nearest.
+const NEARNESS: &str = "nearness";
+const RANKED: &str = "ranked";
+
+/// Sessions of relationships `user_id` coaches or is coached in. Needs the
+/// `coaching_relationships` join.
+fn participant(user_id: Id) -> Condition {
+    Condition::any()
+        .add(coaching_relationships::Column::CoachId.eq(user_id))
+        .add(coaching_relationships::Column::CoacheeId.eq(user_id))
 }
 
 /// Adds view markers, display titles and the requested related data to `sessions`,

@@ -54,19 +54,6 @@ fn test_role(user_id: Id) -> user_roles::Model {
     }
 }
 
-fn relationship(id: Id, coach_id: Id) -> coaching_relationships::Model {
-    let now = Utc::now();
-    coaching_relationships::Model {
-        id,
-        organization_id: Id::new_v4(),
-        coach_id,
-        coachee_id: Id::new_v4(),
-        slug: "coach-coachee".to_string(),
-        created_at: now.into(),
-        updated_at: now.into(),
-    }
-}
-
 fn session(coaching_relationship_id: Id) -> coaching_sessions::Model {
     let now = Utc::now();
     coaching_sessions::Model {
@@ -187,7 +174,7 @@ async fn an_invalid_window_is_a_400_with_the_invalid_nearest_window_slug() {
         json!({
             "status_code": 400,
             "error": "invalid_nearest_window",
-            "message": "`coaching_relationship_id` is required.",
+            "message": "`coaching_relationship_ids` is required.",
         })
     );
 }
@@ -245,8 +232,8 @@ async fn the_windows_sessions_come_back_in_the_list_endpoints_shape() {
     let relationship_id = Id::new_v4();
     let earlier = session(relationship_id);
     let db = logged_in(&user)
-        .append_query_results([vec![relationship(relationship_id, user.id)]])
-        .append_query_results(vec![vec![earlier.clone()], vec![]])
+        // The window's one statement.
+        .append_query_results(vec![vec![earlier.clone()]])
         // View markers, first topic bodies, first goal titles.
         .append_query_results::<coaching_sessions::Model, Vec<_>, _>(vec![vec![], vec![], vec![]])
         .into_connection();
