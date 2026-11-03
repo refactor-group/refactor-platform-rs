@@ -554,13 +554,13 @@ pub async fn reschedule_following(
     cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names).await;
     coaching_session_image::destroy_objects(config, &image_keys).await;
 
-    let sessions: Vec<coaching_sessions::Model> = moved.iter().chain(&created).cloned().collect();
+    let listed: Vec<coaching_sessions::Model> = moved.iter().chain(&created).cloned().collect();
     let told = emails::notify_recurring_sessions_rescheduled_following(
         db,
         config,
         &emails::FollowingRescheduleNotice {
             series: &target,
-            sessions: &sessions,
+            sessions: &listed,
             previous_series: emails::PreviousSeries(&existing),
             previous_start: plan
                 .moves
@@ -571,15 +571,26 @@ pub async fn reschedule_following(
         },
     )
     .await;
-    if told {
-        for session in &moved {
-            coaching_session::record_notice(db, session.id).await;
+
+    // Created sessions were stamped on insert; moved ones are stamped once the email
+    // reached the coachee, and the response carries the stamped rows.
+    let moved = match told {
+        true => {
+            stream::iter(moved)
+                .then(|session| async move {
+                    coaching_session::record_notice(db, session.id)
+                        .await
+                        .unwrap_or(session)
+                })
+                .collect::<Vec<_>>()
+                .await
         }
-    }
+        false => moved,
+    };
 
     Ok(Rescheduled {
         series: target,
-        sessions,
+        sessions: moved.into_iter().chain(created).collect(),
         changed: true,
     })
 }
@@ -1768,6 +1779,123 @@ mod tests {
             !statements.iter().any(|s| s.sql.contains("DELETE")),
             "a split that keeps every session deletes nothing"
         );
+        Ok(())
+    }
+
+    /// Once the email reaches the coachee, each moved session is stamped as noticed, and
+    /// the response carries the stamped rows rather than the ones from before the stamp.
+    #[tokio::test]
+    async fn reschedule_following_returns_moved_sessions_as_stamped_once_told() -> Result<(), Error>
+    {
+        let mut resend = mockito::Server::new_async().await;
+        let sends = resend
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_api_key",
+            "--recurring-sessions-rescheduled-email-template-id=series_reschedule_template",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", resend.url()),
+        ]);
+
+        let (series, _, sessions) = following_fixture(2);
+        let now = chrono::Utc::now();
+        let new_start = sessions[0].date + chrono::Duration::hours(1);
+        let moved: Vec<_> = sessions
+            .iter()
+            .enumerate()
+            .map(|(week, session)| {
+                let slot = new_start + chrono::Duration::weeks(week as i64);
+                coaching_sessions::Model {
+                    date: slot,
+                    ical_recurrence_id: Some(slot),
+                    ical_sequence: session.ical_sequence + 1,
+                    ..session.clone()
+                }
+            })
+            .collect();
+        let stamped_at: chrono::DateTime<chrono::FixedOffset> =
+            (now + chrono::Duration::minutes(5)).into();
+        let stamped: Vec<_> = moved
+            .iter()
+            .map(|session| coaching_sessions::Model {
+                notice_given_at: stamped_at,
+                ..session.clone()
+            })
+            .collect();
+        let (coach, coachee) = (coach_row("UTC"), coach_row("UTC"));
+        let organization = entity::organizations::Model {
+            id: Id::new_v4(),
+            name: "Acme".into(),
+            logo: None,
+            slug: "acme".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
+        };
+        let relationship = entity::coaching_relationships::Model {
+            id: series.coaching_relationship_id,
+            organization_id: organization.id,
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let bumped = Model {
+            ical_sequence: series.ical_sequence + 1,
+            ..series.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            .append_query_results(vec![sessions.clone()])
+            // update_rule in place, then move_to_slot × 2
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_query_results(vec![vec![moved[0].clone()]])
+            .append_query_results(vec![vec![moved[1].clone()]])
+            .append_exec_results(vec![exec_ok()])
+            // the email: parties, the series' rows, the first session's goals
+            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee]])
+            .append_query_results(vec![vec![organization]])
+            .append_query_results(vec![moved.clone()])
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            // mark_notice_given × 2
+            .append_query_results(vec![vec![stamped[0].clone()]])
+            .append_query_results(vec![vec![stamped[1].clone()]])
+            .into_connection();
+
+        let rescheduled = reschedule_following(
+            &db,
+            &config,
+            series.id,
+            Id::new_v4(),
+            FollowingReschedule {
+                coaching_session_id: sessions[0].id,
+                start_at: new_start,
+                duration: None,
+                recurrence: None,
+            },
+        )
+        .await?;
+
+        sends.assert_async().await;
+        assert_eq!(
+            rescheduled.series.id, series.id,
+            "the first session replaces in place"
+        );
+        assert_eq!(rescheduled.sessions, stamped);
         Ok(())
     }
 }
