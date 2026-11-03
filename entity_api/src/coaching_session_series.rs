@@ -4,7 +4,8 @@ use entity::coaching_session_series::{ActiveModel, Column, Entity};
 use entity::Id;
 use log::debug;
 use sea_orm::{
-    entity::prelude::*, ActiveValue::Set, ConnectionTrait, ExprTrait, QueryOrder, TryIntoModel,
+    entity::prelude::*, ActiveValue::Set, ConnectionTrait, ExprTrait, QueryOrder, QuerySelect,
+    TryIntoModel,
 };
 
 /// Inserts a new coaching_session_series row. The `id`, `created_at`, and
@@ -33,6 +34,19 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// Reads a series and locks its row until the transaction ends, so its rule cannot change
+/// under a caller planning from it.
+pub async fn find_by_id_for_update(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .lock_exclusive()
+        .one(db)
+        .await?
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
 }
 
 /// Returns every series owned by the given coaching relationship, most-recently

@@ -2177,7 +2177,9 @@ pub struct FollowingRescheduleNotice<'a> {
     pub previous_series: PreviousSeries<'a>,
     /// Where the first moved session started before the move.
     pub previous_start: NaiveDateTime,
-    /// The leftover sessions the reschedule deleted.
+    /// Every session whose earlier calendar event the new invite supersedes, as it was
+    /// before the reschedule: the moved ones and the deleted leftovers. Any of them invited
+    /// on its own gets a cancellation.
     pub replaced: ReplacedSessions<'a>,
     /// The shortened series the moved sessions split from, when they did.
     pub split_from: Option<&'a coaching_session_series::Model>,

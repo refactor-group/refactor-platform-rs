@@ -372,3 +372,45 @@ fn a_new_duration_or_slot_is_a_change() {
     assert!(!resized.changes_nothing());
     assert!(!moved.changes_nothing());
 }
+
+/// An earlier session moved on its own past the anchor's slot stays on the old series, so
+/// the shortened rule must still hold its slot or calendars lose that meeting.
+#[test]
+fn a_session_moved_ahead_of_the_anchor_keeps_its_slot_on_the_old_series() {
+    // Week 2's session was moved to before week 1's, so by date it precedes the anchor.
+    let mut rows = sessions(4);
+    rows[2].date = week(1) - TimeDelta::days(1);
+    rows.sort_by_key(|session| (session.date, session.id));
+    let anchor = rows
+        .iter()
+        .find(|session| session.ical_recurrence_id == Some(week(1)))
+        .unwrap()
+        .clone();
+
+    let plan = plan(
+        &existing_rule(weekly(4)),
+        &rows,
+        &request(&anchor, week(1) + TimeDelta::hours(1), None),
+    )
+    .unwrap();
+
+    let shortened = plan.split_from.expect("the series splits");
+    assert_eq!(shortened.slots().unwrap(), vec![week(0), week(1), week(2)]);
+    assert!(plan
+        .moves
+        .iter()
+        .all(|(session, _)| session.ical_recurrence_id != Some(week(2))));
+}
+
+#[test]
+fn every_affected_session_is_superseded_as_it_was_before_the_move() {
+    let rows = sessions(4);
+    let plan = plan(
+        &existing_rule(weekly(4)),
+        &rows,
+        &request(&rows[1], week(1) + TimeDelta::hours(1), Some(weekly(2))),
+    )
+    .unwrap();
+
+    assert_eq!(plan.superseded(), rows[1..].to_vec());
+}

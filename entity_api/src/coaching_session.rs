@@ -294,6 +294,24 @@ pub async fn move_to_slot(
         })
 }
 
+/// Locks the session rows `ids` until the transaction ends. A note, action, agreement or
+/// topic added meanwhile takes a key lock on its session, so it waits for the transaction
+/// instead of landing between a check of the rows' content and their deletion.
+pub async fn lock_for_update(db: &impl ConnectionTrait, ids: &[Id]) -> Result<(), Error> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    Entity::find()
+        .select_only()
+        .column(Column::Id)
+        .filter(Column::Id.is_in(ids.iter().copied()))
+        .lock_exclusive()
+        .into_tuple::<Id>()
+        .all(db)
+        .await?;
+    Ok(())
+}
+
 /// The sessions among `ids` holding something a delete would lose: a note, action,
 /// agreement, or live topic. Notes, actions and agreements also block the delete by FK.
 /// One `UNION` query, so a caller holding locks makes a single round trip.

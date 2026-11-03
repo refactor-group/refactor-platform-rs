@@ -14,7 +14,7 @@ use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::gateway::ical;
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, TimeDelta};
 use chrono_tz::Tz;
 use entity_api::coaching_session_series;
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -361,6 +361,17 @@ impl FollowingPlan {
     fn leftover_ids(&self) -> Vec<Id> {
         self.leftovers.iter().map(|session| session.id).collect()
     }
+
+    /// Every affected session as it was before the reschedule. Whatever calendar event
+    /// each last received is superseded: the moved ones get new slots, the leftovers go.
+    fn superseded(&self) -> Vec<coaching_sessions::Model> {
+        self.moves
+            .iter()
+            .map(|(session, _)| session)
+            .chain(&self.leftovers)
+            .cloned()
+            .collect()
+    }
 }
 
 /// Pair the affected sessions with the new rule's slots. Pure, so every edge of the
@@ -412,8 +423,16 @@ fn plan_following(
         .slots()?
         .first()
         .is_some_and(|first| *first < anchor_slot);
+    // An earlier session moved on its own can hold a slot past the anchor's; the old rule
+    // keeps that slot so the session stays on calendars. Emptied slots are excluded.
+    let last_kept_slot = earlier
+        .iter()
+        .filter_map(|session| session.ical_recurrence_id)
+        .filter(|slot| *slot > anchor_slot)
+        .max()
+        .unwrap_or(anchor_slot - TimeDelta::seconds(1));
     let split_from = (!earlier.is_empty() && has_earlier_occurrence).then(|| SeriesRule {
-        recurrence: existing.recurrence.ending_before(anchor_slot),
+        recurrence: existing.recurrence.ending_at(last_kept_slot),
         ..existing.clone()
     });
 
@@ -428,6 +447,10 @@ fn plan_following(
         rule,
         split_from,
     })
+}
+
+fn rule_of(series: &Model) -> Result<SeriesRule, Error> {
+    Ok(serde_json::from_value(series.rule.clone())?)
 }
 
 /// Reschedule one session of a series and every session after it, in place.
@@ -445,19 +468,21 @@ pub async fn reschedule_following(
     coach_id: Id,
     request: FollowingReschedule,
 ) -> Result<Rescheduled, Error> {
-    let existing = coaching_session_series::find_by_id(db, series_id).await?;
-    let existing_rule: SeriesRule = serde_json::from_value(existing.rule.clone())?;
     let zone = publication_zone(db, coach_id).await?;
     let now = chrono::Utc::now().naive_utc();
 
     // Planned once to reject a bad request before taking locks, then again under them.
+    let snapshot_rule = rule_of(&coaching_session_series::find_by_id(db, series_id).await?)?;
     let snapshot = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
-    let draft = plan_following(&existing_rule, &snapshot, &request, zone, now)?;
+    let draft = plan_following(&snapshot_rule, &snapshot, &request, zone, now)?;
 
+    // Session locks first, then the series row: the order the other series writes take.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     for id in draft.affected_ids() {
         entity_api::coaching_session::acquire_advisory_lock(&txn, id).await?;
     }
+    let existing = coaching_session_series::find_by_id_for_update(&txn, series_id).await?;
+    let existing_rule = rule_of(&existing)?;
     let sessions = entity_api::coaching_session::find_by_series_id(&txn, series_id).await?;
     let plan = plan_following(&existing_rule, &sessions, &request, zone, now)?;
 
@@ -471,6 +496,7 @@ pub async fn reschedule_following(
     }
 
     let leftover_ids = plan.leftover_ids();
+    entity_api::coaching_session::lock_for_update(&txn, &leftover_ids).await?;
     let with_content =
         entity_api::coaching_session::find_ids_with_content(&txn, &leftover_ids).await?;
     if !with_content.is_empty() {
@@ -555,6 +581,7 @@ pub async fn reschedule_following(
     coaching_session_image::destroy_objects(config, &image_keys).await;
 
     let listed: Vec<coaching_sessions::Model> = moved.iter().chain(&created).cloned().collect();
+    let superseded = plan.superseded();
     let told = emails::notify_recurring_sessions_rescheduled_following(
         db,
         config,
@@ -566,7 +593,7 @@ pub async fn reschedule_following(
                 .moves
                 .first()
                 .map_or(request.start_at, |(session, _)| session.date),
-            replaced: emails::ReplacedSessions(&plan.leftovers),
+            replaced: emails::ReplacedSessions(&superseded),
             split_from: split_from.as_ref(),
         },
     )
@@ -1584,10 +1611,14 @@ mod tests {
             .collect()
     }
 
+    fn is_write(sql: &str) -> bool {
+        ["DELETE", "UPDATE", "INSERT"]
+            .iter()
+            .any(|verb| sql.starts_with(verb))
+    }
+
     fn writes(sql: &[String]) -> Vec<&String> {
-        sql.iter()
-            .filter(|s| s.contains("DELETE") || s.contains("UPDATE") || s.contains("INSERT"))
-            .collect()
+        sql.iter().filter(|s| is_write(s)).collect()
     }
 
     #[tokio::test]
@@ -1597,10 +1628,12 @@ mod tests {
         let anchor = sessions[1].clone();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
             .into_connection();
 
@@ -1635,12 +1668,15 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
-            // the content UNION
+            // the leftovers, locked, then the content UNION
+            .append_query_results(vec![vec![noted(sessions[1].id), noted(with_note)]])
             .append_query_results(vec![vec![noted(with_note)]])
             .into_connection();
 
@@ -1673,6 +1709,33 @@ mod tests {
         );
         let sql = written_sql(db);
         assert!(writes(&sql).is_empty(), "a refusal must not write: {sql:?}");
+
+        // Session locks, then the series row, then the leftovers, then their content: the
+        // rule is read locked, and nothing can land on a leftover after it is checked.
+        let position = |needle: &str| {
+            sql.iter()
+                .position(|s| s.contains(needle))
+                .unwrap_or_else(|| panic!("no statement with {needle}: {sql:?}"))
+        };
+        let last_advisory_lock = sql
+            .iter()
+            .rposition(|s| s.contains("pg_advisory_xact_lock"))
+            .expect("session locks");
+        let series_lock = position(
+            r#"FROM "refactor_platform"."coaching_session_series" WHERE "coaching_session_series"."id" = $1 LIMIT $2 FOR UPDATE"#,
+        );
+        let leftover_lock = position(
+            r#"SELECT "coaching_sessions"."id" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" IN"#,
+        );
+        let content_check = position(r#"FROM "refactor_platform"."notes""#);
+        assert!(last_advisory_lock < series_lock, "{sql:?}");
+        assert!(series_lock < leftover_lock, "{sql:?}");
+        assert!(
+            sql[leftover_lock].ends_with("FOR UPDATE"),
+            "{}",
+            sql[leftover_lock]
+        );
+        assert!(leftover_lock < content_check, "{sql:?}");
     }
 
     #[tokio::test]
@@ -1706,10 +1769,12 @@ mod tests {
         ];
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
             // update_rule on the old series, then the new series' insert
             .append_query_results(vec![vec![shortened.clone()]])
@@ -1740,10 +1805,7 @@ mod tests {
 
         let log = db.into_transaction_log();
         let statements: Vec<_> = log.iter().flat_map(|txn| txn.statements()).collect();
-        let written: Vec<_> = statements
-            .iter()
-            .filter(|s| s.sql.contains("UPDATE") || s.sql.contains("INSERT"))
-            .collect();
+        let written: Vec<_> = statements.iter().filter(|s| is_write(&s.sql)).collect();
         assert_eq!(written.len(), 4, "{written:?}");
 
         let until = (anchor.date - chrono::Duration::seconds(1))
@@ -1854,10 +1916,12 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
             // update_rule in place, then move_to_slot × 2
             .append_query_results(vec![vec![bumped.clone()]])

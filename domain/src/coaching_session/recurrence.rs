@@ -88,12 +88,11 @@ impl Recurrence {
         }
     }
 
-    /// The same cadence ending just before `slot`, so `slot` and everything after it fall
-    /// outside the rule.
-    pub(crate) fn ending_before(&self, slot: NaiveDateTime) -> Self {
+    /// The same cadence ending at `last`: a slot at `last` is kept, every later one is not.
+    pub(crate) fn ending_at(&self, last: NaiveDateTime) -> Self {
         Self {
             count: None,
-            until: Some(slot - Duration::seconds(1)),
+            until: Some(last),
             ..self.clone()
         }
     }

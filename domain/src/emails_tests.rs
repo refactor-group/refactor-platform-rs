@@ -3396,7 +3396,8 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
 
 /// A "this and following" split publishes the new series and shortens the old one, so
 /// the email carries both invites. Without the second, calendars keep the old series'
-/// occurrences on top of the new ones.
+/// occurrences on top of the new ones. A moved session last invited on its own also gets
+/// its own event cancelled.
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
@@ -3452,6 +3453,14 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
         .map(|slot| create_test_series_session(split_off.id, slot))
         .collect();
 
+    // The first moved session as it was before the move: a legacy member invited on its own.
+    let legacy_before_move = coaching_sessions::Model {
+        coaching_session_series_id: Some(shortened.id),
+        ical_recurrence_id: None,
+        ical_sequence: 2,
+        ..moved[0].clone()
+    };
+
     let mock = server
         .mock("POST", "/emails")
         .match_request(capture.recorder())
@@ -3471,7 +3480,7 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
         },
         &SeriesSessions {
             current: &moved,
-            replaced: &[],
+            replaced: std::slice::from_ref(&legacy_before_move),
         },
         &org,
         SeriesInviteKind {
@@ -3495,10 +3504,16 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
     mock.assert_async().await;
 
     let attachments = capture.captured();
+    let cancel = &attachments.last().expect("attachments").1;
+    assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+    assert!(
+        cancel.contains(&format!("UID:{}@myrefactor.com", moved[0].id)),
+        "the moved legacy member's own event is cancelled: {cancel}"
+    );
     assert_eq!(
         attachments.len(),
-        2,
-        "the new series, then the shortened one"
+        3,
+        "the new series, the shortened one, then the moved legacy member's cancellation"
     );
     let (new_invite, old_invite) = (&attachments[0].1, &attachments[1].1);
     assert!(new_invite.contains("METHOD:REQUEST") && old_invite.contains("METHOD:REQUEST"));

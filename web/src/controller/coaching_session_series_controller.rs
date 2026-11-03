@@ -200,11 +200,12 @@ pub async fn update(
     request_body = RescheduleFollowingParams,
     responses(
         (status = 200, description = "Rescheduled; `series` holds the moved sessions", body = SeriesWithSessions),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — not the coach on the relationship"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Leftover sessions have content; `details.reason` is `sessions_have_content`"),
-        (status = 422, description = "Invalid session, start, duration or recurrence rule")
+        (status = 400, description = "Missing or unsupported API version header (plain text)"),
+        (status = 401, description = "Unauthorized (plain text)"),
+        (status = 403, description = "Forbidden: not the coach on the relationship (plain text)"),
+        (status = 404, description = "Not found (plain text)"),
+        (status = 409, description = "Leftover sessions have content. JSON `{status_code, error: \"conflict\", message, details: {reason: \"sessions_have_content\", coaching_session_ids}}`"),
+        (status = 422, description = "Invalid session, start, duration or recurrence rule. JSON `{status_code, error: \"validation_error\", message}`, or plain text for a malformed body")
     ),
     security(("cookie_auth" = []))
 )]
