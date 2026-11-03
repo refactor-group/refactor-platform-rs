@@ -49,9 +49,9 @@ fn session(coaching_relationship_id: Id, day: u32) -> Model {
     }
 }
 
-/// One statement reads every relationship's window: each side ranks a relationship's
-/// sessions outward from `around` and keeps its own limit, only relationships the user is
-/// part of count, and the result comes back latest first.
+/// One statement reads every relationship's window: for each relationship, the latest
+/// sessions before `around` and the earliest at or after it, each part an ordered read that
+/// stops at its count. Only relationships the user is part of count, latest first.
 #[tokio::test]
 async fn one_statement_reads_every_relationships_window() -> Result<(), Error> {
     let user_id = Id::new_v4();
@@ -74,30 +74,35 @@ async fn one_statement_reads_every_relationships_window() -> Result<(), Error> {
     assert_eq!(statements.len(), 1, "one statement: {statements:?}");
     let sql = &statements[0].sql;
 
-    assert!(sql.starts_with(&format!(
-        r#"SELECT {SESSION_COLUMNS} FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" IN ("#
-    )));
-    assert!(sql
+    let (outer, ids) = sql
+        .split_once(r#"AND "coaching_sessions"."id" IN ("#)
+        .expect("sessions are read by id");
+    assert!(outer.starts_with(&format!("SELECT {SESSION_COLUMNS} FROM ")));
+    assert!(outer.contains(r#"WHERE ("coaching_relationships"."coach_id" = "#));
+    assert!(outer.contains(r#"OR "coaching_relationships"."coachee_id" = "#));
+    assert!(ids
         .ends_with(r#") ORDER BY "coaching_sessions"."date" DESC, "coaching_sessions"."id" DESC"#));
 
-    let (before, after) = sql
-        .split_once("UNION ALL")
-        .expect("both sides in one statement");
-    let participant = r#"("coaching_relationships"."coach_id" = "#;
-    for (side, order, date) in [
-        (before, "DESC", r#""date" < "#),
-        (after, "ASC", r#""date" >= "#),
-    ] {
-        assert!(side.contains(&format!(
-            r#"ROW_NUMBER() OVER ( PARTITION BY "coaching_sessions"."coaching_relationship_id" ORDER BY "coaching_sessions"."date" {order}, "coaching_sessions"."id" {order} ) AS "nearness""#
-        )), "{side}");
+    let parts: Vec<&str> = ids.split("UNION ALL").collect();
+    assert_eq!(
+        parts.len(),
+        4,
+        "a before and an after part per relationship: {ids}"
+    );
+    for (part, (date, order)) in parts.iter().zip([
+        (r#""date" < "#, "DESC"),
+        (r#""date" >= "#, "ASC"),
+        (r#""date" < "#, "DESC"),
+        (r#""date" >= "#, "ASC"),
+    ]) {
         assert!(
-            side.contains(participant)
-                && side.contains(r#"OR "coaching_relationships"."coachee_id" = "#),
-            "{side}"
+            part.contains(r#"WHERE "coaching_sessions"."coaching_relationship_id" = "#),
+            "{part}"
         );
-        assert!(side.contains(date), "{side}");
-        assert!(side.contains(r#"WHERE "nearness" <= "#), "{side}");
+        assert!(part.contains(date), "{part}");
+        assert!(part.contains(&format!(
+            r#"ORDER BY "coaching_sessions"."date" {order}, "coaching_sessions"."id" {order} LIMIT "#
+        )), "{part}");
     }
 
     let values = statements[0]
@@ -117,6 +122,24 @@ async fn one_statement_reads_every_relationships_window() -> Result<(), Error> {
         assert!(values.contains(&expected), "{expected:?} in {values:?}");
     }
 
+    Ok(())
+}
+
+/// A window naming no relationships reads nothing.
+#[tokio::test]
+async fn a_window_with_no_relationships_runs_no_query() -> Result<(), Error> {
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+    let sessions = find_nearest_by_user_with_includes(
+        &db,
+        Id::new_v4(),
+        window(&[]),
+        IncludeOptions::default(),
+    )
+    .await?;
+
+    assert!(sessions.is_empty());
+    assert!(db.into_transaction_log().is_empty());
     Ok(())
 }
 

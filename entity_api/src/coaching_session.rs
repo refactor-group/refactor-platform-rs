@@ -13,7 +13,7 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*,
-    sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType, WindowStatement},
+    sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType},
     ActiveValue::Unchanged,
     Condition, ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult,
     JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel,
@@ -482,40 +482,58 @@ pub async fn find_next_session(
     )
 }
 
-/// Up to `limit` of the relationship's sessions matching `date_filter`, latest
-/// first. Equal dates fall back to `id` so the order is stable.
 async fn find_latest(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     date_filter: impl IntoCondition,
     limit: u64,
 ) -> Result<Vec<Model>, Error> {
-    Ok(Entity::find()
-        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
-        .filter(date_filter)
-        .order_by_desc(Column::Date)
-        .order_by_desc(Column::Id)
-        .limit(limit)
+    Ok(latest(coaching_relationship_id, date_filter, limit)
         .all(db)
         .await?)
 }
 
-/// Up to `limit` of the relationship's sessions matching `date_filter`, earliest
-/// first. Equal dates fall back to `id` so the order is stable.
 async fn find_earliest(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     date_filter: impl IntoCondition,
     limit: u64,
 ) -> Result<Vec<Model>, Error> {
-    Ok(Entity::find()
+    Ok(earliest(coaching_relationship_id, date_filter, limit)
+        .all(db)
+        .await?)
+}
+
+/// Up to `limit` of the relationship's sessions matching `date_filter`, latest
+/// first. Equal dates fall back to `id` so the order is stable. The
+/// `(coaching_relationship_id, date)` index lets the read stop at `limit`.
+fn latest(
+    coaching_relationship_id: Id,
+    date_filter: impl IntoCondition,
+    limit: u64,
+) -> Select<Entity> {
+    Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(date_filter)
+        .order_by_desc(Column::Date)
+        .order_by_desc(Column::Id)
+        .limit(limit)
+}
+
+/// Up to `limit` of the relationship's sessions matching `date_filter`, earliest
+/// first. Equal dates fall back to `id` so the order is stable. The
+/// `(coaching_relationship_id, date)` index lets the read stop at `limit`.
+fn earliest(
+    coaching_relationship_id: Id,
+    date_filter: impl IntoCondition,
+    limit: u64,
+) -> Select<Entity> {
+    Entity::find()
         .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
         .filter(date_filter)
         .order_by_asc(Column::Date)
         .order_by_asc(Column::Id)
         .limit(limit)
-        .all(db)
-        .await?)
 }
 
 /// Returns the coach and coachee user IDs for a coaching session, excluding any
@@ -1062,8 +1080,13 @@ pub async fn find_nearest_by_user_with_includes(
 ) -> Result<Vec<EnrichedSession>, Error> {
     includes.validate()?;
 
+    let Some(ids) = nearest_ids(&window) else {
+        return Ok(Vec::new());
+    };
     let sessions = Entity::find()
-        .filter(Column::Id.in_subquery(nearest_ids(user_id, &window)))
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(participant(user_id))
+        .filter(Column::Id.in_subquery(ids))
         .order_by_desc(Column::Date)
         .order_by_desc(Column::Id)
         .all(db)
@@ -1071,65 +1094,45 @@ pub async fn find_nearest_by_user_with_includes(
     enrich(db, sessions, user_id, includes).await
 }
 
-/// The ids of the window's sessions: both sides of `around`, for every requested
-/// relationship `user_id` is part of.
-fn nearest_ids(user_id: Id, window: &NearestWindow) -> SelectStatement {
-    nearest_side_ids(
-        user_id,
-        window,
-        Column::Date.lt(window.around),
-        Order::Desc,
-        window.before,
-    )
-    .union(
-        UnionType::All,
-        nearest_side_ids(
-            user_id,
-            window,
-            Column::Date.gte(window.around),
-            Order::Asc,
-            window.after,
-        ),
-    )
-    .to_owned()
+/// The ids of the window's sessions: for each relationship, the [`latest`] `before` sessions
+/// before `around` and the [`earliest`] `after` at or after it, as one `UNION ALL`. Each part
+/// is an index read that stops at its count, so a long history costs nothing extra. `None`
+/// for a window with no relationships.
+fn nearest_ids(window: &NearestWindow) -> Option<SelectStatement> {
+    window
+        .coaching_relationship_ids
+        .iter()
+        .flat_map(|&relationship_id| {
+            [
+                latest(
+                    relationship_id,
+                    Column::Date.lt(window.around),
+                    window.before,
+                ),
+                earliest(
+                    relationship_id,
+                    Column::Date.gte(window.around),
+                    window.after,
+                ),
+            ]
+        })
+        .map(ids_of)
+        .reduce(|mut all, side| {
+            all.union(UnionType::All, side);
+            all
+        })
 }
 
-/// One side of the window: each relationship's sessions matching `side`, numbered from
-/// the one nearest `around` (date then id, in `order`), keeping the first `limit`.
-fn nearest_side_ids(
-    user_id: Id,
-    window: &NearestWindow,
-    side: impl IntoCondition,
-    order: Order,
-    limit: u64,
-) -> SelectStatement {
-    let mut ranked = Entity::find()
-        .select_only()
-        .column(Column::Id)
-        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(participant(user_id))
-        .filter(Column::CoachingRelationshipId.is_in(window.coaching_relationship_ids.clone()))
-        .filter(side)
-        .into_query();
-    ranked.expr_window_as(
-        Expr::cust("ROW_NUMBER()"),
-        WindowStatement::partition_by((Entity, Column::CoachingRelationshipId))
-            .order_by((Entity, Column::Date), order.clone())
-            .order_by((Entity, Column::Id), order)
-            .to_owned(),
-        NEARNESS,
-    );
-
+/// The ids `side` selects, wrapped so its `ORDER BY` and `LIMIT` stay inside one part of a
+/// `UNION`.
+fn ids_of(side: Select<Entity>) -> SelectStatement {
     Query::select()
         .column(Column::Id)
-        .from_subquery(ranked, RANKED)
-        .and_where(Expr::col(NEARNESS).lte(limit))
+        .from_subquery(side.select_only().column(Column::Id).into_query(), SIDE)
         .to_owned()
 }
 
-/// Rank of a session within its relationship's side of a nearest window, 1 nearest.
-const NEARNESS: &str = "nearness";
-const RANKED: &str = "ranked";
+const SIDE: &str = "side";
 
 /// Sessions of relationships `user_id` coaches or is coached in. Needs the
 /// `coaching_relationships` join.
