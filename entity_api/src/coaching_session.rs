@@ -3,12 +3,12 @@ use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
 use entity::{
-    agreements, coaching_relationships, coaching_session_reminders, coaching_session_topics,
-    coaching_session_views,
+    actions, agreements, coaching_relationships, coaching_session_reminders,
+    coaching_session_topics, coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
-    organizations, users, Id,
+    notes, organizations, users, Id,
 };
 use log::debug;
 use sea_orm::{
@@ -20,7 +20,7 @@ use sea_orm::{
     Value,
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 /// Resolve the duration for a new coaching session via the defaulting cascade.
@@ -218,7 +218,8 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     })
 }
 
-/// Returns every coaching session linked to the given series, ordered by date ascending.
+/// Returns every coaching session linked to the given series, ordered by date ascending,
+/// ties by id so the order is the same on every read.
 pub async fn find_by_series_id(
     db: &impl ConnectionTrait,
     series_id: Id,
@@ -226,6 +227,7 @@ pub async fn find_by_series_id(
     Ok(Entity::find()
         .filter(Column::CoachingSessionSeriesId.eq(series_id))
         .order_by_asc(Column::Date)
+        .order_by_asc(Column::Id)
         .all(db)
         .await?)
 }
@@ -258,6 +260,114 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
         .exec(db)
         .await?;
     Ok(result.rows_affected)
+}
+
+/// Moves a series session onto `slot` of series `series_id`, keeping the row and everything
+/// hung off it. `ical_recurrence_id` follows the slot, since the move republishes the
+/// occurrence under the rule that produced it. `ical_sequence` advances as a column
+/// expression, so a concurrent edit cannot land on the same value.
+pub async fn move_to_slot(
+    db: &impl ConnectionTrait,
+    id: Id,
+    series_id: Id,
+    slot: NaiveDateTime,
+    duration: Duration,
+) -> Result<Model, Error> {
+    Entity::update_many()
+        .col_expr(Column::CoachingSessionSeriesId, Expr::value(series_id))
+        .col_expr(Column::Date, Expr::value(slot))
+        .col_expr(Column::IcalRecurrenceId, Expr::value(slot))
+        .col_expr(Column::DurationMinutes, Expr::value(duration.minutes()))
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .col_expr(
+            Column::UpdatedAt,
+            Expr::value::<DateTimeWithTimeZone>(chrono::Utc::now().into()),
+        )
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
+/// Locks the session rows `ids` until the transaction ends. A note, action, agreement or
+/// topic added meanwhile takes a key lock on its session, so it waits for the transaction
+/// instead of landing between a check of the rows' content and their deletion.
+pub async fn lock_for_update(db: &impl ConnectionTrait, ids: &[Id]) -> Result<(), Error> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    Entity::find()
+        .select_only()
+        .column(Column::Id)
+        .filter(Column::Id.is_in(ids.iter().copied()))
+        .lock_exclusive()
+        .into_tuple::<Id>()
+        .all(db)
+        .await?;
+    Ok(())
+}
+
+/// The sessions among `ids` holding something a delete would lose: a note, action,
+/// agreement, live topic, or a shared notes document. Notes, actions and agreements also
+/// block the delete by FK.
+///
+/// The document is created when a session is first opened, and its content can't be read
+/// from here, so any session with one counts as holding notes. One `UNION` query, so a
+/// caller holding locks makes a single round trip.
+pub async fn find_ids_with_content(
+    db: &impl ConnectionTrait,
+    ids: &[Id],
+) -> Result<HashSet<Id>, Error> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let statement = session_ids_in::<notes::Entity>(notes::Column::CoachingSessionId, ids)
+        .into_query()
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<actions::Entity>(actions::Column::CoachingSessionId, ids).into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<agreements::Entity>(agreements::Column::CoachingSessionId, ids)
+                .into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<coaching_session_topics::Entity>(
+                coaching_session_topics::Column::CoachingSessionId,
+                ids,
+            )
+            .filter(coaching_session_topics::Column::DeletedAt.is_null())
+            .into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<Entity>(Column::Id, ids)
+                .filter(Column::CollabDocumentName.is_not_null())
+                .into_query(),
+        )
+        .to_owned();
+
+    db.query_all(&statement)
+        .await?
+        .iter()
+        .map(|row| row.try_get_by_index::<Id>(0).map_err(Into::into))
+        .collect()
+}
+
+/// The values of `column` (a session id) for `E`'s rows where it is one of `ids`.
+fn session_ids_in<E: EntityTrait>(column: E::Column, ids: &[Id]) -> Select<E> {
+    E::find()
+        .select_only()
+        .column(column)
+        .filter(column.is_in(ids.iter().copied()))
 }
 
 /// One claimed reminder: the session to send about, and who it goes to.

@@ -20,6 +20,21 @@ pub(crate) struct CreateParams {
     pub(crate) duration_minutes: Option<i16>,
 }
 
+/// Request body for `POST /coaching_session_series/:id/reschedule`. Moves one session and
+/// every session after it onto a new schedule, in place.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct RescheduleFollowingParams {
+    /// The first session to move. Must belong to the series and not be in the past.
+    pub(crate) coaching_session_id: Id,
+    /// The new start of that session, in UTC. Must not be in the past.
+    pub(crate) start_at: NaiveDateTime,
+    /// Session duration in minutes (1..=480). Omit to keep the series' current duration.
+    pub(crate) duration_minutes: Option<i16>,
+    /// Omit to keep the series' cadence from `start_at`: a `count` ending keeps the number
+    /// of sessions being moved, an `until` ending is kept.
+    pub(crate) recurrence: Option<Recurrence>,
+}
+
 /// Request body for `PUT /coaching_session_series/:id`. Replaces the rule
 /// entirely (no partial updates) and re-materializes future sessions; past
 /// sessions are not touched.

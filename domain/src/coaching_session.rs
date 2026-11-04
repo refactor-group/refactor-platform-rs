@@ -166,17 +166,12 @@ pub async fn bulk_create_recurring(
     dates: Vec<NaiveDateTime>,
     requested_duration: Option<Duration>,
 ) -> Result<Vec<Model>, Error> {
-    let truncated = dates
-        .into_iter()
-        .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
-        .collect::<Result<Vec<_>, _>>()?;
-
     Ok(coaching_session::bulk_create_recurring(
         db,
         coaching_relationship_id,
         coach_id,
         series_id,
-        truncated,
+        truncated(dates)?,
         requested_duration,
     )
     .await?)
@@ -189,7 +184,22 @@ pub(crate) fn series_slots(
     recurrence: &Recurrence,
     zone: chrono_tz::Tz,
 ) -> Result<Vec<NaiveDateTime>, Error> {
-    recurrence::expand_published(start_at, recurrence, zone)?
+    truncated(recurrence::expand_published(start_at, recurrence, zone)?)
+}
+
+/// The slots of a rule about to be published, validated as a new rule and truncated as
+/// [`bulk_create_recurring`] stores them.
+pub(crate) fn publishable_slots(
+    start_at: NaiveDateTime,
+    recurrence: &Recurrence,
+    zone: chrono_tz::Tz,
+) -> Result<Vec<NaiveDateTime>, Error> {
+    truncated(expand_recurrence(start_at, recurrence, zone)?)
+}
+
+/// Session dates as they are stored: truncated to the minute.
+fn truncated(dates: Vec<NaiveDateTime>) -> Result<Vec<NaiveDateTime>, Error> {
+    dates
         .into_iter()
         .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
         .collect()
@@ -371,16 +381,24 @@ pub async fn update(
     // too, leaving the coachee with neither. A failed stamp after a delivered email costs
     // a redundant reminder, which is the direction worth being wrong in.
     if schedule_moved && emails::notify_session_rescheduled(db, config, &updated, old_date).await {
-        match coaching_session::mark_notice_given(db, updated.id).await {
-            Ok(stamped) => return Ok(stamped),
-            Err(e) => warn!(
-                "Told the participants session {} moved but could not record it, so they \
-                 may be reminded about a time they already have: {e:?}",
-                updated.id
-            ),
-        }
+        return Ok(record_notice(db, updated.id).await.unwrap_or(updated));
     }
     Ok(updated)
+}
+
+/// Record that the participants were told about a session's new start, so the reminder
+/// sweep measures notice from that email. Best-effort: a failure is logged and yields
+/// `None`, costing at worst a redundant reminder.
+pub(crate) async fn record_notice(db: &DatabaseConnection, id: Id) -> Option<Model> {
+    coaching_session::mark_notice_given(db, id)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Told the participants session {id} moved but could not record it, so they \
+                 may be reminded about a time they already have: {e:?}"
+            )
+        })
+        .ok()
 }
 
 /// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
@@ -494,15 +512,7 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
 
 /// A resend that cannot apply, as a 409 carrying a machine-readable `reason`.
 pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
-    Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-            EntityErrorKind::Conflict {
-                message: message.to_string(),
-                details: Some(serde_json::json!({ "reason": reason })),
-            },
-        )),
-    }
+    Error::conflict(message, serde_json::json!({ "reason": reason }))
 }
 
 /// A resend is only done once the coachee has it. Missing the coach is not a failure: the

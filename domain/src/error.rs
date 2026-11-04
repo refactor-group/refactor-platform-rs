@@ -118,6 +118,30 @@ pub enum ExternalErrorKind {
     Other(String),
 }
 
+impl Error {
+    /// A request refused as invalid, answered with a 422 carrying `message`.
+    pub(crate) fn validation(message: impl Into<String>) -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Validation(message.into()),
+        }
+    }
+
+    /// A request that cannot apply as things stand, answered with a 409 carrying
+    /// machine-readable `details`.
+    pub(crate) fn conflict(message: impl Into<String>, details: serde_json::Value) -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Conflict {
+                    message: message.into(),
+                    details: Some(details),
+                },
+            )),
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self.error_kind)?;
