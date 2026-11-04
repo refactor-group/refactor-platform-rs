@@ -17,10 +17,7 @@ use super::{
 };
 use super::{CompiledQuery, Hit, HitType};
 use crate::error::Error;
-use entity::{
-    actions, agreements, coaching_session_topics, coaching_sessions, goals,
-    transcript_suggestion as suggestions, Id,
-};
+use entity::{actions, agreements, coaching_session_topics, coaching_sessions, goals, Id};
 
 /// Control-character markers that stored text can never contain (they are
 /// stripped from the document first), so a match is never forgeable.
@@ -110,8 +107,8 @@ async fn load_snippets(
             .await?
         }
         HitType::TranscriptSuggestion => {
-            select_snippets::<suggestions::Entity>(
-                suggestions::Column::Id,
+            select_snippets::<entity::transcript_suggestion::Entity>(
+                entity::transcript_suggestion::Column::Id,
                 transcript_suggestion::TEXT_EXPR,
                 cq,
                 ids,
