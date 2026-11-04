@@ -133,8 +133,15 @@ default flag feature that pulls in no SQLite code.)
   (`domain/src/coaching_session_sqlite_tests.rs`): the `/nearest` window keeps the sessions
   closest to `around` on each side, counts a session exactly at `around` as after, breaks
   date ties by id, reads only the requested relationship, and returns nothing to a
-  non-participant. The prior/next lookups that share its queries skip a session at the
-  given date.
+  non-participant. With several relationships, each keeps its own window, and one the
+  caller isn't part of (or that doesn't exist) adds nothing. The prior/next lookups skip a
+  session at the given date.
+- **"This and following" series reschedules**
+  (`domain/src/coaching_session_series_sqlite_tests.rs`): moving a session onto a slot
+  rewrites only that row's date, slot, series and duration, keeps its notes attached, and
+  leaves its neighbours alone. The content check flags a session with a note, action,
+  agreement or live topic, and nothing else. The series' sessions are walked by date with
+  ties broken by id.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge

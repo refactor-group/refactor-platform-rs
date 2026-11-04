@@ -3,23 +3,24 @@ use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
 use entity::{
-    agreements, coaching_relationships, coaching_session_reminders, coaching_session_topics,
-    coaching_session_views,
+    actions, agreements, coaching_relationships, coaching_session_reminders,
+    coaching_session_topics, coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
-    organizations, users, Id,
+    notes, organizations, users, Id,
 };
 use log::debug;
 use sea_orm::{
     entity::prelude::*,
-    sea_query::{Expr, Func, IntoCondition},
+    sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType},
     ActiveValue::Unchanged,
-    ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
-    Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
+    Condition, ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult,
+    JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel,
+    Value,
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 /// Resolve the duration for a new coaching session via the defaulting cascade.
@@ -217,7 +218,8 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     })
 }
 
-/// Returns every coaching session linked to the given series, ordered by date ascending.
+/// Returns every coaching session linked to the given series, ordered by date ascending,
+/// ties by id so the order is the same on every read.
 pub async fn find_by_series_id(
     db: &impl ConnectionTrait,
     series_id: Id,
@@ -225,6 +227,7 @@ pub async fn find_by_series_id(
     Ok(Entity::find()
         .filter(Column::CoachingSessionSeriesId.eq(series_id))
         .order_by_asc(Column::Date)
+        .order_by_asc(Column::Id)
         .all(db)
         .await?)
 }
@@ -257,6 +260,114 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
         .exec(db)
         .await?;
     Ok(result.rows_affected)
+}
+
+/// Moves a series session onto `slot` of series `series_id`, keeping the row and everything
+/// hung off it. `ical_recurrence_id` follows the slot, since the move republishes the
+/// occurrence under the rule that produced it. `ical_sequence` advances as a column
+/// expression, so a concurrent edit cannot land on the same value.
+pub async fn move_to_slot(
+    db: &impl ConnectionTrait,
+    id: Id,
+    series_id: Id,
+    slot: NaiveDateTime,
+    duration: Duration,
+) -> Result<Model, Error> {
+    Entity::update_many()
+        .col_expr(Column::CoachingSessionSeriesId, Expr::value(series_id))
+        .col_expr(Column::Date, Expr::value(slot))
+        .col_expr(Column::IcalRecurrenceId, Expr::value(slot))
+        .col_expr(Column::DurationMinutes, Expr::value(duration.minutes()))
+        .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .col_expr(
+            Column::UpdatedAt,
+            Expr::value::<DateTimeWithTimeZone>(chrono::Utc::now().into()),
+        )
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
+/// Locks the session rows `ids` until the transaction ends. A note, action, agreement or
+/// topic added meanwhile takes a key lock on its session, so it waits for the transaction
+/// instead of landing between a check of the rows' content and their deletion.
+pub async fn lock_for_update(db: &impl ConnectionTrait, ids: &[Id]) -> Result<(), Error> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    Entity::find()
+        .select_only()
+        .column(Column::Id)
+        .filter(Column::Id.is_in(ids.iter().copied()))
+        .lock_exclusive()
+        .into_tuple::<Id>()
+        .all(db)
+        .await?;
+    Ok(())
+}
+
+/// The sessions among `ids` holding something a delete would lose: a note, action,
+/// agreement, live topic, or a shared notes document. Notes, actions and agreements also
+/// block the delete by FK.
+///
+/// The document is created when a session is first opened, and its content can't be read
+/// from here, so any session with one counts as holding notes. One `UNION` query, so a
+/// caller holding locks makes a single round trip.
+pub async fn find_ids_with_content(
+    db: &impl ConnectionTrait,
+    ids: &[Id],
+) -> Result<HashSet<Id>, Error> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let statement = session_ids_in::<notes::Entity>(notes::Column::CoachingSessionId, ids)
+        .into_query()
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<actions::Entity>(actions::Column::CoachingSessionId, ids).into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<agreements::Entity>(agreements::Column::CoachingSessionId, ids)
+                .into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<coaching_session_topics::Entity>(
+                coaching_session_topics::Column::CoachingSessionId,
+                ids,
+            )
+            .filter(coaching_session_topics::Column::DeletedAt.is_null())
+            .into_query(),
+        )
+        .union(
+            UnionType::Distinct,
+            session_ids_in::<Entity>(Column::Id, ids)
+                .filter(Column::CollabDocumentName.is_not_null())
+                .into_query(),
+        )
+        .to_owned();
+
+    db.query_all(&statement)
+        .await?
+        .iter()
+        .map(|row| row.try_get_by_index::<Id>(0).map_err(Into::into))
+        .collect()
+}
+
+/// The values of `column` (a session id) for `E`'s rows where it is one of `ids`.
+fn session_ids_in<E: EntityTrait>(column: E::Column, ids: &[Id]) -> Select<E> {
+    E::find()
+        .select_only()
+        .column(column)
+        .filter(column.is_in(ids.iter().copied()))
 }
 
 /// One claimed reminder: the session to send about, and who it goes to.
@@ -481,40 +592,58 @@ pub async fn find_next_session(
     )
 }
 
-/// Up to `limit` of the relationship's sessions matching `date_filter`, latest
-/// first. Equal dates fall back to `id` so the order is stable.
 async fn find_latest(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     date_filter: impl IntoCondition,
     limit: u64,
 ) -> Result<Vec<Model>, Error> {
-    Ok(Entity::find()
-        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
-        .filter(date_filter)
-        .order_by_desc(Column::Date)
-        .order_by_desc(Column::Id)
-        .limit(limit)
+    Ok(latest(coaching_relationship_id, date_filter, limit)
         .all(db)
         .await?)
 }
 
-/// Up to `limit` of the relationship's sessions matching `date_filter`, earliest
-/// first. Equal dates fall back to `id` so the order is stable.
 async fn find_earliest(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     date_filter: impl IntoCondition,
     limit: u64,
 ) -> Result<Vec<Model>, Error> {
-    Ok(Entity::find()
+    Ok(earliest(coaching_relationship_id, date_filter, limit)
+        .all(db)
+        .await?)
+}
+
+/// Up to `limit` of the relationship's sessions matching `date_filter`, latest
+/// first. Equal dates fall back to `id` so the order is stable. The
+/// `(coaching_relationship_id, date)` index lets the read stop at `limit`.
+fn latest(
+    coaching_relationship_id: Id,
+    date_filter: impl IntoCondition,
+    limit: u64,
+) -> Select<Entity> {
+    Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(date_filter)
+        .order_by_desc(Column::Date)
+        .order_by_desc(Column::Id)
+        .limit(limit)
+}
+
+/// Up to `limit` of the relationship's sessions matching `date_filter`, earliest
+/// first. Equal dates fall back to `id` so the order is stable. The
+/// `(coaching_relationship_id, date)` index lets the read stop at `limit`.
+fn earliest(
+    coaching_relationship_id: Id,
+    date_filter: impl IntoCondition,
+    limit: u64,
+) -> Select<Entity> {
+    Entity::find()
         .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
         .filter(date_filter)
         .order_by_asc(Column::Date)
         .order_by_asc(Column::Id)
         .limit(limit)
-        .all(db)
-        .await?)
 }
 
 /// Returns the coach and coachee user IDs for a coaching session, excluding any
@@ -760,11 +889,7 @@ pub async fn find_counts_by_month_for_user(
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
         .filter(Column::Date.gte(from_date))
         .filter(Column::Date.lt(to_exclusive))
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
+        .filter(participant(user_id))
         .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
             q.filter(Column::CoachingRelationshipId.eq(rel_id))
         })
@@ -1003,11 +1128,7 @@ async fn find_by_user_filtered(
     // function body.
     let query = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(
-            coaching_relationships::Column::CoachId
-                .eq(user_id)
-                .or(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
+        .filter(participant(user_id))
         .apply_if(
             options.coaching_relationship_id,
             |q: Select<Entity>, rel_id| {
@@ -1043,21 +1164,24 @@ pub async fn find_by_user_with_includes(
     enrich(db, sessions, user_id, includes).await
 }
 
-/// A relationship's sessions nearest a point in time: up to `before` strictly
-/// earlier and up to `after` at or later. See [`find_nearest_by_user_with_includes`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Sessions nearest a point in time, for each of several relationships: per relationship,
+/// up to `before` strictly earlier and up to `after` at or later.
+/// See [`find_nearest_by_user_with_includes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NearestWindow {
-    pub coaching_relationship_id: Id,
+    pub coaching_relationship_ids: Vec<Id>,
     /// UTC instant the window is centered on; a session exactly here counts as after.
     pub around: NaiveDateTime,
     pub before: u64,
     pub after: u64,
 }
 
-/// The window's sessions, latest first, enriched like [`find_by_user_with_includes`].
+/// The window's sessions across its relationships, latest first (ties by id), enriched
+/// like [`find_by_user_with_includes`].
 ///
-/// Returns an empty list when `user_id` is neither coach nor coachee of the
-/// relationship, matching how the list read's relationship filter behaves.
+/// A relationship `user_id` is neither coach nor coachee of contributes nothing, matching
+/// how the list read's relationship filter behaves. One statement, however many
+/// relationships.
 pub async fn find_nearest_by_user_with_includes(
     db: &impl ConnectionTrait,
     user_id: Id,
@@ -1066,19 +1190,66 @@ pub async fn find_nearest_by_user_with_includes(
 ) -> Result<Vec<EnrichedSession>, Error> {
     includes.validate()?;
 
-    if !crate::coaching_relationship::is_participant(db, user_id, window.coaching_relationship_id)
-        .await?
-    {
+    let Some(ids) = nearest_ids(&window) else {
         return Ok(Vec::new());
-    }
-
-    let rel = window.coaching_relationship_id;
-    let before = find_latest(db, rel, Column::Date.lt(window.around), window.before).await?;
-    let after = find_earliest(db, rel, Column::Date.gte(window.around), window.after).await?;
-
-    // `after` is earliest first, so reversing it puts the whole window latest first.
-    let sessions = after.into_iter().rev().chain(before).collect();
+    };
+    let sessions = Entity::find()
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(participant(user_id))
+        .filter(Column::Id.in_subquery(ids))
+        .order_by_desc(Column::Date)
+        .order_by_desc(Column::Id)
+        .all(db)
+        .await?;
     enrich(db, sessions, user_id, includes).await
+}
+
+/// The ids of the window's sessions: for each relationship, the [`latest`] `before` sessions
+/// before `around` and the [`earliest`] `after` at or after it, as one `UNION ALL`. Each part
+/// is an index read that stops at its count, so a long history costs nothing extra. `None`
+/// for a window with no relationships.
+fn nearest_ids(window: &NearestWindow) -> Option<SelectStatement> {
+    window
+        .coaching_relationship_ids
+        .iter()
+        .flat_map(|&relationship_id| {
+            [
+                latest(
+                    relationship_id,
+                    Column::Date.lt(window.around),
+                    window.before,
+                ),
+                earliest(
+                    relationship_id,
+                    Column::Date.gte(window.around),
+                    window.after,
+                ),
+            ]
+        })
+        .map(ids_of)
+        .reduce(|mut all, side| {
+            all.union(UnionType::All, side);
+            all
+        })
+}
+
+/// The ids `side` selects, wrapped so its `ORDER BY` and `LIMIT` stay inside one part of a
+/// `UNION`.
+fn ids_of(side: Select<Entity>) -> SelectStatement {
+    Query::select()
+        .column(Column::Id)
+        .from_subquery(side.select_only().column(Column::Id).into_query(), SIDE)
+        .to_owned()
+}
+
+const SIDE: &str = "side";
+
+/// Sessions of relationships `user_id` coaches or is coached in. Needs the
+/// `coaching_relationships` join.
+fn participant(user_id: Id) -> Condition {
+    Condition::any()
+        .add(coaching_relationships::Column::CoachId.eq(user_id))
+        .add(coaching_relationships::Column::CoacheeId.eq(user_id))
 }
 
 /// Adds view markers, display titles and the requested related data to `sessions`,

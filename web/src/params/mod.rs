@@ -24,7 +24,19 @@ pub(crate) mod transcript_suggestion;
 pub(crate) mod user;
 pub(crate) mod validation;
 
+use domain::Id;
+
 use self::sort::SortOrder;
+
+/// Parses a comma-separated list of UUIDs, the form list query params take (`?ids=a,b`).
+/// Blank entries are skipped; `None` when any entry is not a UUID.
+pub(crate) fn split_ids(raw: &str) -> Option<Vec<Id>> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| Id::parse_str(entry).ok())
+        .collect()
+}
 
 /// A trait for applying default sorting parameters when at least one sort parameter is provided.
 ///

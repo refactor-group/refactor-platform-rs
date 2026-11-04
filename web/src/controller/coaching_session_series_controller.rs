@@ -5,7 +5,9 @@ use crate::extractors::coaching_session_series_access::{
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
-use crate::params::coaching_session_series::{CreateParams, RescheduleParams};
+use crate::params::coaching_session_series::{
+    CreateParams, RescheduleFollowingParams, RescheduleParams,
+};
 use crate::{AppState, Error};
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -171,6 +173,65 @@ pub async fn update(
         params.start_at,
         params.recurrence,
         requested_duration,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(
+        StatusCode::OK.into(),
+        SeriesWithSessions {
+            series: rescheduled.series,
+            sessions: rescheduled.sessions,
+        },
+    )))
+}
+
+/// Reschedule one session of a series and every session after it.
+///
+/// `POST /coaching_session_series/:id/reschedule`. The sessions move in place and keep their
+/// ids and content. When earlier sessions stay behind, the series splits and `series` in the
+/// response is the new one holding the moved sessions.
+#[utoipa::path(
+    post,
+    path = "/coaching_session_series/{id}/reschedule",
+    params(
+        ApiVersion,
+        ("id" = Uuid, Path, description = "Series ID")
+    ),
+    request_body = RescheduleFollowingParams,
+    responses(
+        (status = 200, description = "Rescheduled; `series` holds the moved sessions", body = SeriesWithSessions),
+        (status = 400, description = "Missing or unsupported API version header (plain text)"),
+        (status = 401, description = "Unauthorized (plain text)"),
+        (status = 403, description = "Forbidden: not the coach on the relationship (plain text)"),
+        (status = 404, description = "Not found (plain text)"),
+        (status = 409, description = "Leftover sessions have content. JSON `{status_code, error: \"conflict\", message, details: {reason: \"sessions_have_content\", coaching_session_ids}}`"),
+        (status = 422, description = "Invalid session, start, duration or recurrence rule. JSON `{status_code, error: \"validation_error\", message}`, or plain text for a malformed body")
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn reschedule_following(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    CoachingSessionSeriesCoachAccess(series): CoachingSessionSeriesCoachAccess,
+    Json(params): Json<RescheduleFollowingParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!(
+        "POST reschedule following coaching_session_series id={} params={params:?}",
+        series.id
+    );
+
+    let rescheduled = CoachingSessionSeriesApi::reschedule_following(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        series.id,
+        user.id,
+        CoachingSessionSeriesApi::FollowingReschedule {
+            coaching_session_id: params.coaching_session_id,
+            start_at: params.start_at,
+            duration: CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?,
+            recurrence: params.recurrence,
+        },
     )
     .await?;
 

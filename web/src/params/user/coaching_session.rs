@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use sea_orm::Order;
 use serde::Deserialize;
@@ -6,13 +8,16 @@ use utoipa::{IntoParams, ToSchema};
 use crate::error::WebErrorKind;
 use crate::params::coaching_session::SortField;
 use crate::params::sort::SortOrder;
-use crate::params::WithSortDefaults;
+use crate::params::{split_ids, WithSortDefaults};
 use crate::Error;
 use domain::coaching_session::{IncludeOptions, NearestWindow};
 use domain::{coaching_sessions, Id, QuerySort};
 
-/// Most sessions `/nearest` returns on either side of `around`.
+/// Most sessions `/nearest` returns on either side of `around`, per relationship.
 pub(crate) const MAX_NEAREST_PER_SIDE: u64 = 10;
+
+/// Most relationships one `/nearest` request may name.
+pub(crate) const MAX_NEAREST_RELATIONSHIPS: usize = 50;
 
 /// Related resources that can be batch-loaded with coaching sessions.
 ///
@@ -99,6 +104,8 @@ pub(crate) fn include_options(include: &[IncludeParam]) -> IncludeOptions {
 /// structured `invalid_nearest_window` 400 instead of axum's plain-text rejection.
 #[derive(Debug, Deserialize)]
 pub(crate) struct NearestParams {
+    /// Comma-separated relationship ids. Exactly one of this and `coaching_relationship_id`.
+    pub(crate) coaching_relationship_ids: Option<String>,
     pub(crate) coaching_relationship_id: Option<String>,
     /// UTC with no offset (the form a session's `date` takes), or RFC 3339 with one.
     pub(crate) around: Option<String>,
@@ -111,10 +118,21 @@ pub(crate) struct NearestParams {
 impl NearestParams {
     /// Validate into the window to query. Every rejection is `invalid_nearest_window`.
     pub(crate) fn compile(&self) -> Result<NearestWindow, Error> {
-        let coaching_relationship_id =
-            required("coaching_relationship_id", &self.coaching_relationship_id)?
+        let coaching_relationship_ids = match (
+            self.coaching_relationship_ids.as_deref(),
+            self.coaching_relationship_id.as_deref(),
+        ) {
+            (Some(list), None) => relationship_ids(list)?,
+            (None, Some(one)) => vec![one
                 .parse::<Id>()
-                .map_err(|_| invalid_window("`coaching_relationship_id` must be a UUID."))?;
+                .map_err(|_| invalid_window("`coaching_relationship_id` must be a UUID."))?],
+            (Some(_), Some(_)) => {
+                return Err(invalid_window(
+                    "Send `coaching_relationship_ids` or `coaching_relationship_id`, not both.",
+                ))
+            }
+            (None, None) => return Err(invalid_window("`coaching_relationship_ids` is required.")),
+        };
         let around = parse_around(required("around", &self.around)?).ok_or_else(|| {
             invalid_window(
                 "`around` must be a datetime such as 2026-10-30T14:00:00 (UTC) or 2026-10-30T09:00:00-05:00.",
@@ -122,11 +140,28 @@ impl NearestParams {
         })?;
 
         Ok(NearestWindow {
-            coaching_relationship_id,
+            coaching_relationship_ids,
             around,
             before: per_side_count("before", &self.before)?,
             after: per_side_count("after", &self.after)?,
         })
+    }
+}
+
+/// The distinct relationship ids in a comma-separated list of 1 to
+/// [`MAX_NEAREST_RELATIONSHIPS`] UUIDs.
+fn relationship_ids(raw: &str) -> Result<Vec<Id>, Error> {
+    let distinct: BTreeSet<Id> = split_ids(raw)
+        .ok_or_else(|| {
+            invalid_window("`coaching_relationship_ids` must be comma-separated UUIDs.")
+        })?
+        .into_iter()
+        .collect();
+    match distinct.len() {
+        1..=MAX_NEAREST_RELATIONSHIPS => Ok(distinct.into_iter().collect()),
+        _ => Err(invalid_window(&format!(
+            "`coaching_relationship_ids` must list 1 to {MAX_NEAREST_RELATIONSHIPS} relationships."
+        ))),
     }
 }
 
@@ -351,7 +386,7 @@ mod tests {
         assert_eq!(
             window,
             NearestWindow {
-                coaching_relationship_id: RELATIONSHIP_ID.parse().unwrap(),
+                coaching_relationship_ids: vec![RELATIONSHIP_ID.parse().unwrap()],
                 around: utc(14, 0),
                 before: 2,
                 after: 3,
@@ -407,13 +442,93 @@ mod tests {
 
     #[test]
     fn each_missing_field_is_named() {
-        for field in ["coaching_relationship_id", "around", "before", "after"] {
+        for field in ["around", "before", "after"] {
             let query = query_with(field, None);
             assert_eq!(
                 rejection(nearest(&query)),
                 format!("`{field}` is required.")
             );
         }
+    }
+
+    /// With neither relationship param, the list form is the one named.
+    #[test]
+    fn a_missing_relationship_names_the_list_param() {
+        let query = query_with("coaching_relationship_id", None);
+        assert_eq!(
+            rejection(nearest(&query)),
+            "`coaching_relationship_ids` is required."
+        );
+    }
+
+    fn with_ids(ids: &str) -> NearestParams {
+        nearest(&format!(
+            "{}&coaching_relationship_ids={ids}",
+            query_with("coaching_relationship_id", None)
+        ))
+    }
+
+    fn ids(n: u128) -> Vec<Id> {
+        (1..=n).map(Id::from_u128).collect()
+    }
+
+    fn joined(ids: &[Id]) -> String {
+        ids.iter().map(Id::to_string).collect::<Vec<_>>().join(",")
+    }
+
+    #[test]
+    fn a_list_of_relationships_compiles_distinct_and_skips_blanks() {
+        let [a, b] = [Id::from_u128(1), Id::from_u128(2)];
+        let window = with_ids(&format!("{b},,{a},%20{b}"))
+            .compile()
+            .expect("compiles");
+        assert_eq!(window.coaching_relationship_ids, vec![a, b]);
+    }
+
+    #[test]
+    fn up_to_fifty_relationships_are_accepted() {
+        let window = with_ids(&joined(&ids(50))).compile().expect("compiles");
+        assert_eq!(
+            window.coaching_relationship_ids.len(),
+            MAX_NEAREST_RELATIONSHIPS
+        );
+    }
+
+    /// Duplicates collapse before the cap is counted.
+    #[test]
+    fn duplicates_do_not_count_toward_the_cap() {
+        let fifty = ids(50);
+        let with_repeats: Vec<Id> = fifty.iter().chain(&fifty).copied().collect();
+        assert!(with_ids(&joined(&with_repeats)).compile().is_ok());
+    }
+
+    #[test]
+    fn an_empty_or_oversized_list_is_rejected() {
+        for list in [String::new(), ",".to_string(), joined(&ids(51))] {
+            assert_eq!(
+                rejection(with_ids(&list)),
+                "`coaching_relationship_ids` must list 1 to 50 relationships.",
+                "{list}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_list_with_a_non_uuid_is_rejected() {
+        let list = format!("{RELATIONSHIP_ID},nope");
+        assert_eq!(
+            rejection(with_ids(&list)),
+            "`coaching_relationship_ids` must be comma-separated UUIDs."
+        );
+    }
+
+    #[test]
+    fn both_relationship_params_together_are_rejected() {
+        let params = nearest(&format!(
+            "{}&coaching_relationship_ids={RELATIONSHIP_ID}",
+            valid("2026-10-30T14:00:00")
+        ));
+        assert!(rejection(params).contains("not both"));
     }
 
     #[test]

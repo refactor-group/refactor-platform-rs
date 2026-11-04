@@ -29,31 +29,31 @@ use crate::controller::user_session_controller;
 use crate::router::{coaching_session_series_routes, coaching_sessions_routes};
 use crate::AppState;
 
-type Series = coaching_session_series::Model;
-type Session = coaching_sessions::Model;
+pub(super) type Series = coaching_session_series::Model;
+pub(super) type Session = coaching_sessions::Model;
 
 fn now() -> DateTimeWithTimeZone {
     Utc::now().into()
 }
 
 /// A whole hour `days` from now, so it is minute-aligned.
-fn start_in(days: i64) -> NaiveDateTime {
+pub(super) fn start_in(days: i64) -> NaiveDateTime {
     (Utc::now() + chrono::Duration::days(days))
         .date_naive()
         .and_hms_opt(15, 0, 0)
         .unwrap()
 }
 
-/// One resend `POST`: who logs in (`None` sends no cookie), where it goes, and the loads
-/// it will make.
-struct Call {
-    caller: Option<String>,
-    path: String,
-    db: MockDatabase,
+/// One `POST`: who logs in (`None` sends no cookie), where it goes, and the loads it will
+/// make.
+pub(super) struct Call {
+    pub(super) caller: Option<String>,
+    pub(super) path: String,
+    pub(super) db: MockDatabase,
 }
 
 impl Call {
-    fn then(self, more: impl FnOnce(MockDatabase) -> MockDatabase) -> Self {
+    pub(super) fn then(self, more: impl FnOnce(MockDatabase) -> MockDatabase) -> Self {
         Self {
             db: more(self.db),
             ..self
@@ -63,15 +63,15 @@ impl Call {
 
 /// A coach and coachee in one organization and the relationship between them, building
 /// the calls each route makes.
-struct Fixture {
-    coach: users::Model,
-    coachee: users::Model,
-    organization: organizations::Model,
-    relationship: coaching_relationships::Model,
+pub(super) struct Fixture {
+    pub(super) coach: users::Model,
+    pub(super) coachee: users::Model,
+    pub(super) organization: organizations::Model,
+    pub(super) relationship: coaching_relationships::Model,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let user = |email: &str| users::Model {
             id: Id::new_v4(),
             email: email.to_string(),
@@ -116,7 +116,7 @@ impl Fixture {
         }
     }
 
-    fn series(&self, start_at: NaiveDateTime) -> Series {
+    pub(super) fn series(&self, start_at: NaiveDateTime) -> Series {
         Series {
             id: Id::new_v4(),
             coaching_relationship_id: self.relationship.id,
@@ -132,7 +132,7 @@ impl Fixture {
         }
     }
 
-    fn session(&self, date: NaiveDateTime) -> Session {
+    pub(super) fn session(&self, date: NaiveDateTime) -> Session {
         Session {
             id: Id::new_v4(),
             coaching_relationship_id: self.relationship.id,
@@ -153,7 +153,7 @@ impl Fixture {
     }
 
     /// One member per slot of `series`, each in the slot it was created for.
-    fn members(&self, series: &Series) -> Vec<Session> {
+    pub(super) fn members(&self, series: &Series) -> Vec<Session> {
         let start_at: NaiveDateTime =
             serde_json::from_value(series.rule["start_at"].clone()).unwrap();
         (0..3)
@@ -167,7 +167,7 @@ impl Fixture {
     }
 
     /// The login and `require_auth` loads for `caller`.
-    fn login(&self, caller: &users::Model, path: String) -> Call {
+    pub(super) fn login(&self, caller: &users::Model, path: String) -> Call {
         let role = user_roles::Model {
             id: Id::new_v4(),
             role: users::Role::User,
@@ -188,7 +188,7 @@ impl Fixture {
     }
 
     /// No login, so no loads.
-    fn anonymous(path: String) -> Call {
+    pub(super) fn anonymous(path: String) -> Call {
         Call {
             caller: None,
             path,
@@ -206,6 +206,11 @@ impl Fixture {
 
     fn series_gate(&self, caller: &users::Model, series: &Series) -> Call {
         let path = format!("/coaching_session_series/{}/resend_invite", series.id);
+        self.gate(caller, series, path)
+    }
+
+    /// The login and the series access check's loads, for a series route at `path`.
+    pub(super) fn gate(&self, caller: &users::Model, series: &Series, path: String) -> Call {
         self.login(caller, path).then(|db| {
             db.append_query_results([vec![series.clone()]])
                 .append_query_results([vec![self.relationship.clone()]])
