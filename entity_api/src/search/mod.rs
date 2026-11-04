@@ -240,6 +240,17 @@ impl Hit {
             Hit::TranscriptSuggestion(h) => &mut h.core,
         }
     }
+
+    /// The session whose title this hit displays, and the slot it fills.
+    pub fn session_title_slot(&mut self) -> Option<(Id, &mut String)> {
+        match self {
+            Hit::CoachingSession(h) => Some((h.core.id, &mut h.core.title)),
+            Hit::Action(h) => Some((h.coaching_session_id, &mut h.session_title)),
+            Hit::Agreement(h) => Some((h.coaching_session_id, &mut h.session_title)),
+            Hit::TranscriptSuggestion(h) => Some((h.coaching_session_id, &mut h.session_title)),
+            Hit::Goal(_) | Hit::Topic(_) => None,
+        }
+    }
 }
 
 /// Actions-by-goal-linkage filter (`goal_filter` param). Mirrors the

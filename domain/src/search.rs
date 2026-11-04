@@ -193,43 +193,20 @@ fn merge_and_paginate(mut merged: Vec<Hit>, limit: u16) -> (Vec<Hit>, Option<Str
 /// and the `session_title` context on action/agreement/suggestion hits. Titles come from
 /// [`resolve_session_titles`], whose date fallback keeps both never empty.
 async fn hydrate_session_titles(db: &DatabaseConnection, hits: &mut [Hit]) -> Result<(), Error> {
+    // `iter_mut` only because the slot accessor borrows mutably; this pass just reads ids.
     let session_ids: Vec<Id> = hits
-        .iter()
-        .filter_map(|h| match h {
-            Hit::CoachingSession(s) => Some(s.core.id),
-            Hit::Action(a) => Some(a.coaching_session_id),
-            Hit::Agreement(a) => Some(a.coaching_session_id),
-            Hit::TranscriptSuggestion(s) => Some(s.coaching_session_id),
-            _ => None,
-        })
+        .iter_mut()
+        .filter_map(|h| h.session_title_slot().map(|(id, _)| id))
         .collect();
     let titles = resolve_session_titles(db, &session_ids).await?;
 
-    for hit in hits.iter_mut() {
-        match hit {
-            Hit::CoachingSession(s) => {
-                if let Some(title) = titles.get(&s.core.id) {
-                    s.core.title = title.clone();
-                }
+    hits.iter_mut()
+        .filter_map(Hit::session_title_slot)
+        .for_each(|(id, slot)| {
+            if let Some(title) = titles.get(&id) {
+                *slot = title.clone();
             }
-            Hit::Action(a) => {
-                if let Some(title) = titles.get(&a.coaching_session_id) {
-                    a.session_title = title.clone();
-                }
-            }
-            Hit::Agreement(a) => {
-                if let Some(title) = titles.get(&a.coaching_session_id) {
-                    a.session_title = title.clone();
-                }
-            }
-            Hit::TranscriptSuggestion(s) => {
-                if let Some(title) = titles.get(&s.coaching_session_id) {
-                    s.session_title = title.clone();
-                }
-            }
-            _ => {}
-        }
-    }
+        });
     Ok(())
 }
 
