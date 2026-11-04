@@ -12,7 +12,9 @@ use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, QueryFilter, QuerySelect,
 };
 
-use super::{action, agreement, coaching_session, compile_query, goal, topic};
+use super::{
+    action, agreement, coaching_session, compile_query, goal, topic, transcript_suggestion,
+};
 use super::{CompiledQuery, Hit, HitType};
 use crate::error::Error;
 use entity::{actions, agreements, coaching_session_topics, coaching_sessions, goals, Id};
@@ -98,6 +100,16 @@ async fn load_snippets(
             select_snippets::<coaching_session_topics::Entity>(
                 coaching_session_topics::Column::Id,
                 topic::TEXT_EXPR,
+                cq,
+                ids,
+            )
+            .all(db)
+            .await?
+        }
+        HitType::TranscriptSuggestion => {
+            select_snippets::<entity::transcript_suggestion::Entity>(
+                entity::transcript_suggestion::Column::Id,
+                transcript_suggestion::TEXT_EXPR,
                 cq,
                 ids,
             )

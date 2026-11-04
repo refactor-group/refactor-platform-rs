@@ -202,6 +202,7 @@ fn hit_type_order_is_alphabetical_by_wire_name() {
     // The derived Ord is the response sort's "type ASC"; both the merge and the
     // per-searcher cursor fold rely on it matching the wire names' order.
     let mut types = [
+        HitType::TranscriptSuggestion,
         HitType::Topic,
         HitType::CoachingSession,
         HitType::Goal,
@@ -217,6 +218,7 @@ fn hit_type_order_is_alphabetical_by_wire_name() {
             HitType::CoachingSession,
             HitType::Goal,
             HitType::Topic,
+            HitType::TranscriptSuggestion,
         ]
     );
 }
@@ -356,6 +358,54 @@ mod mock_tests {
             sql.contains(r#"\"deleted_at\" IS NULL"#),
             "missing soft-delete guard: {sql}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_suggestion_searcher_matches_only_pending_rows_with_a_literal_predicate() {
+        let visibility = visibility();
+        let filters = Filters::default();
+        let sql = sql_of(
+            &transcript_suggestion::Searcher,
+            &request(&visibility, None, &filters, None),
+        )
+        .await;
+        // Literal, not bound: a `$n` status can't prove the partial index
+        // predicate under a generic plan.
+        assert!(
+            sql.contains(
+                r#"\"transcript_suggestions\".\"status\" = 'pending' AND \"transcript_suggestions\".\"created_entity_id\" IS NULL"#
+            ),
+            "missing literal pending predicate: {sql}"
+        );
+        assert!(
+            !sql.contains(r#"String(Some("pending"))"#),
+            "pending status must not be a bind: {sql}"
+        );
+        assert!(
+            sql.contains(r#"->> 'body'"#),
+            "lost the body text expr: {sql}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_user_filter_means_participant_for_suggestions() {
+        let visibility = visibility();
+        let participant_rel = Id::new_v4();
+        let visible_rel = Id::new_v4();
+        let visible = [visible_rel];
+        let filters = Filters {
+            user_id: Some(Id::new_v4()),
+            participant_relationship_ids: Some(vec![participant_rel]),
+            ..Filters::default()
+        };
+        let sql = sql_of(
+            &transcript_suggestion::Searcher,
+            &request(&visibility, Some(&visible), &filters, None),
+        )
+        .await;
+        assert!(sql.contains(&participant_rel.to_string()), "{sql}");
+        assert!(!sql.contains(&visible_rel.to_string()), "{sql}");
+        assert!(!sql.contains(r#"\"user_id\""#), "{sql}");
     }
 
     #[tokio::test]

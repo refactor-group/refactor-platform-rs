@@ -191,6 +191,7 @@ fn parse_type_token(token: &str) -> Result<Option<HitType>, Error> {
         "actions" => Ok(Some(HitType::Action)),
         "agreements" => Ok(Some(HitType::Agreement)),
         "topics" => Ok(Some(HitType::Topic)),
+        "transcript_suggestions" => Ok(Some(HitType::TranscriptSuggestion)),
         t if INACTIVE_TYPE_TOKENS.contains(&t) => Ok(None),
         unknown => Err(invalid(
             "unknown_type",
