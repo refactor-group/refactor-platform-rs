@@ -2620,14 +2620,8 @@ fn a_reused_override_address_is_reissued_above_the_old_override() {
     };
     let before = overridden_before_edit(&previous);
 
-    let (reissued, stale) = retire_previous_overrides(
-        &SeriesRows {
-            series: &previous,
-            rows: std::slice::from_ref(&before),
-        },
-        &current,
-    )
-    .unwrap();
+    let (reissued, stale) =
+        retire_previous_overrides(&previous, std::slice::from_ref(&before), &current).unwrap();
     assert!(
         stale.is_empty(),
         "a cancel would remove the re-sent occurrence"
@@ -2672,14 +2666,7 @@ fn an_override_the_new_invite_no_longer_addresses_is_stale() {
     };
     let before = overridden_before_edit(&previous);
     let retire = |previous: &coaching_session_series::Model, current| {
-        retire_previous_overrides(
-            &SeriesRows {
-                series: previous,
-                rows: std::slice::from_ref(&before),
-            },
-            current,
-        )
-        .unwrap()
+        retire_previous_overrides(previous, std::slice::from_ref(&before), current).unwrap()
     };
 
     // In place, but the new rule runs an hour later, so Sep 29 19:00 is no slot of it.

@@ -277,6 +277,44 @@ async fn move_to_slot_keeps_a_date_of_its_own_while_taking_the_slot() {
     .await;
 }
 
+/// Greptile on #471: the session that takes over an overridden occurrence is published
+/// above the old override, so the row is raised to match, and its next edit outranks both.
+#[tokio::test]
+async fn the_occupant_of_a_reused_occurrence_is_raised_above_the_old_override() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed_series(&db).await;
+        let occupant = seed_series_session(&db, &seeded, monday()).await;
+        let neighbour = seed_series_session(&db, &seeded, monday() + TimeDelta::weeks(1)).await;
+        let old_override = 8;
+
+        entity_api::coaching_session::raise_ical_sequence_at(
+            &db,
+            seeded.series_id,
+            monday(),
+            old_override + 1,
+        )
+        .await
+        .expect("the raise succeeds");
+        let next_edit = entity_api::coaching_session::increment_ical_sequence(&db, occupant.id)
+            .await
+            .expect("the edit bumps");
+
+        assert_eq!(reread(&db, neighbour.id).await, neighbour);
+        assert!(next_edit.ical_sequence > old_override + 1);
+
+        // Never lowered: a floor below the row's own leaves it alone.
+        entity_api::coaching_session::raise_ical_sequence_at(&db, seeded.series_id, monday(), 0)
+            .await
+            .expect("the raise succeeds");
+        assert_eq!(
+            reread(&db, occupant.id).await.ical_sequence,
+            next_edit.ical_sequence
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
     within_time_limit(async {

@@ -1666,10 +1666,10 @@ fn build_series_invite_ics(
 /// An occurrence of a series that already carries an override on calendars, which the next
 /// invite has to replace even if its new member sits on the rule.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct ReissuedOverride {
-    slot: NaiveDateTime,
+pub(crate) struct ReissuedOverride {
+    pub(crate) slot: NaiveDateTime,
     /// The `SEQUENCE` the existing override was sent with; the replacement must exceed it.
-    sequence: i32,
+    pub(crate) sequence: i32,
 }
 
 /// Build the series `.ics` as it stands today: the master (RRULE) with an EXDATE per
@@ -1883,7 +1883,7 @@ async fn send_series_invite_email<N: EmailNotification>(
             previous_overrides,
         } => {
             let (reissued, stale) = previous_overrides
-                .map(|previous| retire_previous_overrides(&previous, series))
+                .map(|previous| retire_previous_overrides(previous.series, previous.rows, series))
                 .transpose()?
                 .unwrap_or_default();
             SeriesIcs {
@@ -2420,18 +2420,19 @@ fn build_orphan_cancels(
         .collect()
 }
 
-/// Sort the overrides `previous` published by what `current`'s invite does with each
-/// address. Kept under the same `UID` at one of `current`'s slots: replaced there, by an
+/// Sort the overrides `previous` published for `rows` by what `current`'s invite does with
+/// each address. Kept under the same `UID` at one of `current`'s slots: replaced there, by an
 /// override outranking the old one's `SEQUENCE` (the larger of the session's and the
 /// series'). Otherwise (a split, or a slot the new rule lacks): stale, to be cancelled.
 /// A cancel at a reused address would remove the occurrence the invite re-sends.
-fn retire_previous_overrides(
-    previous: &SeriesRows<'_>,
+pub(crate) fn retire_previous_overrides(
+    previous: &coaching_session_series::Model,
+    rows: &[coaching_sessions::Model],
     current: &coaching_session_series::Model,
 ) -> Result<(Vec<ReissuedOverride>, Vec<coaching_sessions::Model>), Error> {
     let slots = serde_json::from_value::<SeriesRule>(current.rule.clone())?.slots()?;
     let reused = |session: &&coaching_sessions::Model| {
-        previous.series.id == current.id
+        previous.id == current.id
             && session
                 .ical_recurrence_id
                 .is_some_and(|slot| slots.contains(&slot))
@@ -2439,13 +2440,13 @@ fn retire_previous_overrides(
     let (kept, stale): (
         Vec<&coaching_sessions::Model>,
         Vec<&coaching_sessions::Model>,
-    ) = previous.rows.iter().partition(reused);
+    ) = rows.iter().partition(reused);
     Ok((
         kept.into_iter()
             .filter_map(|session| {
                 session.ical_recurrence_id.map(|slot| ReissuedOverride {
                     slot,
-                    sequence: session.ical_sequence.max(previous.series.ical_sequence),
+                    sequence: session.ical_sequence.max(previous.ical_sequence),
                 })
             })
             .collect(),

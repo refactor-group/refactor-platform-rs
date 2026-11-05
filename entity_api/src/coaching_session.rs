@@ -271,6 +271,7 @@ pub struct Landing {
     pub slot: NaiveDateTime,
     /// Its start: the slot, or a date of its own that overrides that occurrence.
     pub date: NaiveDateTime,
+    /// The session's final length, which may differ from the series rule.
     pub duration: Duration,
 }
 
@@ -820,6 +821,28 @@ pub async fn raise_series_ical_sequence(
         .filter(Column::CoachingSessionSeriesId.eq(series_id))
         .exec_with_returning(db)
         .await?)
+}
+
+/// Raise the session of series `series_id` at occurrence `slot` to at least `floor`.
+///
+/// An invite that replaces another session's override at that occurrence outranks it, and
+/// the occupant's next edit sends its own `ical_sequence` + 1, so the row has to hold it.
+pub async fn raise_ical_sequence_at(
+    db: &impl ConnectionTrait,
+    series_id: Id,
+    slot: NaiveDateTime,
+    floor: i32,
+) -> Result<(), Error> {
+    Entity::update_many()
+        .col_expr(
+            Column::IcalSequence,
+            Func::greatest([Expr::col(Column::IcalSequence), Expr::val(floor)]).into(),
+        )
+        .filter(Column::CoachingSessionSeriesId.eq(series_id))
+        .filter(Column::IcalRecurrenceId.eq(slot))
+        .exec(db)
+        .await?;
+    Ok(())
 }
 
 /// Find the most recent meeting URL for a coaching relationship and provider.

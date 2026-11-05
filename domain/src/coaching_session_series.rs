@@ -532,6 +532,36 @@ fn plan_following(
     })
 }
 
+/// Store the `SEQUENCE` each session's override is about to be published at, since its
+/// next edit sends its own `ical_sequence` + 1 and a calendar ignores anything lower.
+/// Overrides go out at least at their series' (Google drops one trailing its master), and
+/// above an old override whose occurrence they take over.
+async fn store_published_sequences(
+    txn: &impl sea_orm::ConnectionTrait,
+    target: &Model,
+    split_from: Option<&Model>,
+    reissued: &[emails::ReissuedOverride],
+) -> Result<(), Error> {
+    for series in std::iter::once(target).chain(split_from) {
+        entity_api::coaching_session::raise_series_ical_sequence(
+            txn,
+            series.id,
+            series.ical_sequence,
+        )
+        .await?;
+    }
+    for old in reissued {
+        entity_api::coaching_session::raise_ical_sequence_at(
+            txn,
+            target.id,
+            old.slot,
+            old.sequence.saturating_add(1),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Sessions in date order, as the response lists them: a session that kept its own date
 /// can sort out of slot order.
 fn by_date(
@@ -672,6 +702,20 @@ pub async fn reschedule_following(
     .await?;
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &leftover_ids).await?;
 
+    let previous_overrides = plan.previous_overrides(&existing_rule);
+    let (reissued, _) = emails::retire_previous_overrides(&existing, &previous_overrides, &target)?;
+    store_published_sequences(&txn, &target, split_from.as_ref(), &reissued).await?;
+    let published = entity_api::coaching_session::find_by_series_id(&txn, target.id).await?;
+    let as_published = |session: coaching_sessions::Model| {
+        published
+            .iter()
+            .find(|row| row.id == session.id)
+            .cloned()
+            .unwrap_or(session)
+    };
+    let moved: Vec<coaching_sessions::Model> = moved.into_iter().map(as_published).collect();
+    let created: Vec<coaching_sessions::Model> = created.into_iter().map(as_published).collect();
+
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     let doc_names: Vec<String> = plan
@@ -684,7 +728,6 @@ pub async fn reschedule_following(
 
     let listed = by_date(moved.iter().chain(&created).cloned());
     let superseded = plan.superseded();
-    let previous_overrides = plan.previous_overrides(&existing_rule);
     let told = emails::notify_recurring_sessions_rescheduled_following(
         db,
         config,
@@ -1886,6 +1929,10 @@ mod tests {
             // move_to_slot × 2
             .append_query_results(vec![vec![moved_rows[0].clone()]])
             .append_query_results(vec![vec![moved_rows[1].clone()]])
+            // published sequences: the new series, the old one, then the re-read
+            .append_query_results(vec![moved_rows.clone()])
+            .append_query_results(vec![vec![sessions[0].clone()]])
+            .append_query_results(vec![moved_rows.clone()])
             .append_exec_results(vec![exec_ok()])
             .into_connection();
 
@@ -1910,7 +1957,7 @@ mod tests {
         let log = db.into_transaction_log();
         let statements: Vec<_> = log.iter().flat_map(|txn| txn.statements()).collect();
         let written: Vec<_> = statements.iter().filter(|s| is_write(&s.sql)).collect();
-        assert_eq!(written.len(), 4, "{written:?}");
+        assert_eq!(written.len(), 6, "{written:?}");
 
         let until = (anchor.date - chrono::Duration::seconds(1))
             .format("%Y-%m-%dT%H:%M:%S")
@@ -1931,7 +1978,7 @@ mod tests {
         let new_series_values = format!("{:?}", written[1].values);
         assert!(new_series_values.contains(&new_start.format("%Y-%m-%dT%H:%M").to_string()));
         assert!(!new_series_values.contains(&old_start));
-        for move_statement in &written[2..] {
+        for move_statement in &written[2..4] {
             assert!(move_statement
                 .sql
                 .starts_with(r#"UPDATE "refactor_platform"."coaching_sessions""#));
@@ -1939,6 +1986,15 @@ mod tests {
                 format!("{:?}", move_statement.values).contains(&new_series.id.to_string()),
                 "sessions move onto the new series: {:?}",
                 move_statement.values
+            );
+        }
+        // Each series' sessions are raised to the SEQUENCE their invite publishes.
+        for (raise, series_id) in written[4..].iter().zip([new_series.id, series.id]) {
+            assert!(raise.sql.contains("GREATEST"), "{}", raise.sql);
+            assert!(
+                format!("{:?}", raise.values).contains(&series_id.to_string()),
+                "{:?}",
+                raise.values
             );
         }
         assert!(
@@ -2031,6 +2087,9 @@ mod tests {
             .append_query_results(vec![vec![bumped.clone()]])
             .append_query_results(vec![vec![moved[0].clone()]])
             .append_query_results(vec![vec![moved[1].clone()]])
+            // published sequences, then the re-read
+            .append_query_results(vec![moved.clone()])
+            .append_query_results(vec![moved.clone()])
             .append_exec_results(vec![exec_ok()])
             // the email: parties, the series' rows, the first session's goals
             .append_query_results(vec![vec![relationship]])
