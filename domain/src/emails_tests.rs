@@ -2536,8 +2536,16 @@ fn snapshot(
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
     let dtstamp = at(2026, 9, 1, 12);
-    let ics = build_series_snapshot_ics(&coach, &coachee, series, members, "desc".into(), dtstamp)
-        .unwrap();
+    let ics = build_series_snapshot_ics(
+        &coach,
+        &coachee,
+        series,
+        members,
+        &[],
+        "desc".into(),
+        dtstamp,
+    )
+    .unwrap();
     unfold(&ics)
 }
 
@@ -2590,6 +2598,104 @@ fn assert_snapshot(
 }
 
 const FIRST: &str = "20260915T140000";
+
+/// The series' third occurrence (Sep 29), moved alone a day later before the edit.
+fn overridden_before_edit(series: &coaching_session_series::Model) -> coaching_sessions::Model {
+    coaching_sessions::Model {
+        date: at(2026, 9, 30, 19),
+        ical_sequence: 3,
+        ..snapshot_members(series)[2].clone()
+    }
+}
+
+/// Greptile on #471: an in-place edit can hand an overridden occurrence's address to a
+/// session on the rule. Nothing would cancel or replace the old override, so calendars
+/// would keep it. The snapshot re-sends that occurrence, outranking the old override.
+#[test]
+fn a_reused_override_address_is_reissued_above_the_old_override() {
+    let current = snapshot_series(snapshot_start(), 2);
+    let previous = coaching_session_series::Model {
+        ical_sequence: 1,
+        ..current.clone()
+    };
+    let before = overridden_before_edit(&previous);
+
+    let (reissued, stale) = retire_previous_overrides(
+        &SeriesRows {
+            series: &previous,
+            rows: std::slice::from_ref(&before),
+        },
+        &current,
+    )
+    .unwrap();
+    assert!(
+        stale.is_empty(),
+        "a cancel would remove the re-sent occurrence"
+    );
+    assert_eq!(
+        reissued,
+        vec![ReissuedOverride {
+            slot: at(2026, 9, 29, 19),
+            sequence: 3,
+        }]
+    );
+
+    // After the edit every member sits on the rule, Sep 29 included.
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &coach,
+            &coachee,
+            &current,
+            &snapshot_members(&current),
+            &reissued,
+            "desc".into(),
+            at(2026, 9, 1, 12),
+        )
+        .unwrap(),
+    );
+    assert_snapshot(
+        &ics,
+        (FIRST, 2),
+        &[],
+        &[("20260929T140000", "20260929T140000", 4)],
+    );
+}
+
+#[test]
+fn an_override_the_new_invite_no_longer_addresses_is_stale() {
+    let current = snapshot_series(snapshot_start(), 2);
+    let previous = coaching_session_series::Model {
+        ical_sequence: 1,
+        ..current.clone()
+    };
+    let before = overridden_before_edit(&previous);
+    let retire = |previous: &coaching_session_series::Model, current| {
+        retire_previous_overrides(
+            &SeriesRows {
+                series: previous,
+                rows: std::slice::from_ref(&before),
+            },
+            current,
+        )
+        .unwrap()
+    };
+
+    // In place, but the new rule runs an hour later, so Sep 29 19:00 is no slot of it.
+    let shifted = snapshot_series(snapshot_start() + chrono::Duration::hours(1), 2);
+    assert_eq!(retire(&previous, &shifted), (vec![], vec![before.clone()]));
+
+    // A split publishes under a new UID, so every old override is stale.
+    let split_off = coaching_session_series::Model {
+        id: Id::new_v4(),
+        ..current.clone()
+    };
+    assert_eq!(
+        retire(&previous, &split_off),
+        (vec![], vec![before.clone()])
+    );
+}
 
 #[test]
 fn snapshot_untouched_series_is_master_only() {
@@ -3495,7 +3601,7 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
                     series: &shortened,
                     rows: &earlier,
                 }),
-                stale_overrides: None,
+                previous_overrides: None,
             },
         },
     )
@@ -4565,6 +4671,7 @@ fn snapshot_across_dst_uses_the_stored_series_zone() {
             &coachee,
             &series,
             &members,
+            &[],
             "desc".into(),
             at(2026, 10, 20, 12),
         )
@@ -4626,6 +4733,7 @@ fn snapshot_of_a_stored_late_month_series_still_builds() {
             &coachee,
             &series,
             &members,
+            &[],
             "desc".into(),
             at(2026, 12, 1, 12),
         )

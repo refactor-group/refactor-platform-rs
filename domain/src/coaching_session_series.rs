@@ -390,26 +390,13 @@ impl FollowingPlan {
             .collect()
     }
 
-    /// Affected sessions, as they were, whose own override under `previous` the new invite
-    /// no longer addresses: the series split off under a new `UID`, or the old
-    /// `RECURRENCE-ID` is not one of the new rule's slots. An address the new invite still
-    /// carries is left alone, since a cancel there would remove what it re-sends.
-    fn stale_overrides(&self, previous: &SeriesRule) -> Vec<coaching_sessions::Model> {
-        let republished: Vec<NaiveDateTime> = self
-            .moves
-            .iter()
-            .map(|landing| landing.slot)
-            .chain(self.extras.iter().copied())
-            .collect();
+    /// Affected sessions, as they were, that may hold their own override under `previous`.
+    /// The new invite has to retire each one: re-sent where its address is reused, else
+    /// cancelled.
+    fn previous_overrides(&self, previous: &SeriesRule) -> Vec<coaching_sessions::Model> {
         self.superseded()
             .into_iter()
             .filter(|session| had_override(session, previous))
-            .filter(|session| {
-                self.split_from.is_some()
-                    || session
-                        .ical_recurrence_id
-                        .is_some_and(|slot| !republished.contains(&slot))
-            })
             .collect()
     }
 }
@@ -697,7 +684,7 @@ pub async fn reschedule_following(
 
     let listed = by_date(moved.iter().chain(&created).cloned());
     let superseded = plan.superseded();
-    let stale_overrides = plan.stale_overrides(&existing_rule);
+    let previous_overrides = plan.previous_overrides(&existing_rule);
     let told = emails::notify_recurring_sessions_rescheduled_following(
         db,
         config,
@@ -710,7 +697,7 @@ pub async fn reschedule_following(
                 .first()
                 .map_or(request.start_at, |landing| landing.session.date),
             replaced: emails::ReplacedSessions(&superseded),
-            stale_overrides: &stale_overrides,
+            previous_overrides: &previous_overrides,
             split_from: split_from.as_ref(),
         },
     )

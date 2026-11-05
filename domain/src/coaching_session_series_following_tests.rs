@@ -634,45 +634,24 @@ fn rerunning_a_reschedule_that_kept_sessions_changes_nothing() {
     assert!(again.changes_nothing());
 }
 
-/// The first run republishes every kept session's override under a new address, so the
-/// old one is cancelled; an address the new invite still carries is not.
+/// Every affected session that may hold its own override is handed to the email, which
+/// replaces or cancels it; a session on its slot at the rule's length has none.
 #[test]
-fn only_overrides_the_new_invite_no_longer_addresses_are_stale() {
+fn previous_overrides_are_the_sessions_changed_alone() {
     let mut rows = sessions(4);
     rows[2].date = week(2) + TimeDelta::days(1);
     rows[3].duration_minutes = 90;
     let rule = existing_rule(weekly(4));
 
-    // From the first slot, one hour later: in place, and every slot moves.
-    let shifted = plan(
+    let plan = plan(
         &rule,
         &rows,
-        &request(&rows[0], week(0) + TimeDelta::hours(1), None),
+        &request(&rows[1], week(1) + TimeDelta::hours(1), None),
     )
     .unwrap();
-    assert!(shifted.split_from.is_none());
-    assert_eq!(
-        ids(&shifted.stale_overrides(&rule)),
-        vec![rows[2].id, rows[3].id]
-    );
 
-    // From the first slot, same slots, a new length: every address is re-sent.
-    let resized = plan(
-        &rule,
-        &rows,
-        &FollowingReschedule {
-            duration: Some(Duration::from_minutes_unchecked(45)),
-            ..request(&rows[0], week(0), None)
-        },
-    )
-    .unwrap();
-    assert!(resized.stale_overrides(&rule).is_empty());
-
-    // From a later session: a split, so every override sits under the old UID.
-    let split = plan(&rule, &rows, &request(&rows[1], week(1), None)).unwrap();
-    assert!(split.split_from.is_some());
     assert_eq!(
-        ids(&split.stale_overrides(&rule)),
+        ids(&plan.previous_overrides(&rule)),
         vec![rows[2].id, rows[3].id]
     );
 }
