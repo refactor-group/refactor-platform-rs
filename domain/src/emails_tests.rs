@@ -3495,6 +3495,7 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
                     series: &shortened,
                     rows: &earlier,
                 }),
+                stale_overrides: None,
             },
         },
     )
@@ -3791,6 +3792,52 @@ fn an_orphan_cancel_outranks_the_invite_that_placed_the_event() {
     assert!(cancels[0].contains("SEQUENCE:4"), "{}", cancels[0]);
     assert!(cancels[0].contains("METHOD:CANCEL"));
     assert!(cancels[0].contains(&format!("UID:{}@myrefactor.com", session.id)));
+}
+
+/// A stale override is cancelled under the series it was published in, at the occurrence
+/// it overrode, outranking the override's `SEQUENCE` (the larger of session and series).
+#[test]
+fn a_stale_override_cancel_addresses_the_occurrence_it_overrode() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let series = coaching_session_series::Model {
+        ical_sequence: 5,
+        ..create_test_series()
+    };
+    let slot = NaiveDate::from_ymd_opt(2026, 9, 22)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    let moved_alone = coaching_sessions::Model {
+        date: slot + chrono::TimeDelta::days(1),
+        ical_sequence: 2,
+        ..create_test_series_session(series.id, slot)
+    };
+
+    let cancels = build_stale_override_cancels(
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
+        &SeriesRows {
+            series: &series,
+            rows: std::slice::from_ref(&moved_alone),
+        },
+        slot,
+    );
+
+    assert_eq!(cancels.len(), 1);
+    let cancel = unfold(&cancels[0]);
+    assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+    assert!(
+        cancel.contains(&format!("UID:{}@myrefactor.com", series.id)),
+        "{cancel}"
+    );
+    assert!(cancel.contains("SEQUENCE:6"), "{cancel}");
+    assert!(
+        cancel.contains("RECURRENCE-ID;TZID=America/New_York:20260922T150000"),
+        "{cancel}"
+    );
 }
 
 /// A series `CANCEL` names the series `UID`, which no calendar holds for a legacy series.

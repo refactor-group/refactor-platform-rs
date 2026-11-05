@@ -325,12 +325,33 @@ struct FollowingPlan {
     /// The old series' rule cut short before the first moved session, when earlier
     /// occurrences stay behind on it.
     split_from: Option<SeriesRule>,
-    /// Each affected session, paired with the slot it moves to.
-    moves: Vec<(coaching_sessions::Model, NaiveDateTime)>,
+    /// Where each affected session lands, the anchor first, then in slot order.
+    moves: Vec<Move>,
     /// Slots past the last affected session, materialized as new sessions.
     extras: Vec<NaiveDateTime>,
     /// Affected sessions past the last slot, which are deleted.
     leftovers: Vec<coaching_sessions::Model>,
+}
+
+/// Where one affected session lands.
+#[derive(Debug, PartialEq)]
+struct Move {
+    /// The session as it was before the reschedule.
+    session: coaching_sessions::Model,
+    /// The new rule's slot it takes, which becomes its `ical_recurrence_id`.
+    slot: NaiveDateTime,
+    /// Its new start: the slot, or its own date when it was moved on its own.
+    date: NaiveDateTime,
+    /// Its new length: the rule's, or its own when it was resized on its own.
+    duration: Duration,
+}
+
+impl Move {
+    fn changes_nothing(&self) -> bool {
+        self.session.date == self.date
+            && self.session.ical_recurrence_id == Some(self.slot)
+            && self.session.duration_minutes == self.duration.minutes()
+    }
 }
 
 impl FollowingPlan {
@@ -338,24 +359,20 @@ impl FollowingPlan {
         Duration::from_minutes_unchecked(self.rule.duration_minutes)
     }
 
-    /// True when every affected session already sits on its slot at the new duration, and
-    /// nothing is added or removed.
+    /// True when every affected session already sits where it lands, and nothing is added
+    /// or removed.
     fn changes_nothing(&self) -> bool {
         self.extras.is_empty()
             && self.leftovers.is_empty()
-            && self.moves.iter().all(|(session, slot)| {
-                session.date == *slot && session.duration_minutes == self.rule.duration_minutes
-            })
+            && self.moves.iter().all(Move::changes_nothing)
     }
 
-    /// The sessions the reschedule touches, in the order they are locked.
+    /// The sessions the reschedule touches, in the order they are locked: by date, as the
+    /// other series writes lock them.
     fn affected_ids(&self) -> Vec<Id> {
-        self.moves
-            .iter()
-            .map(|(session, _)| session)
-            .chain(&self.leftovers)
-            .map(|session| session.id)
-            .collect()
+        let mut affected = self.superseded();
+        affected.sort_by_key(|session| (session.date, session.id));
+        affected.into_iter().map(|session| session.id).collect()
     }
 
     fn leftover_ids(&self) -> Vec<Id> {
@@ -367,15 +384,61 @@ impl FollowingPlan {
     fn superseded(&self) -> Vec<coaching_sessions::Model> {
         self.moves
             .iter()
-            .map(|(session, _)| session)
+            .map(|landing| &landing.session)
             .chain(&self.leftovers)
             .cloned()
             .collect()
     }
+
+    /// Affected sessions, as they were, whose own override under `previous` the new invite
+    /// no longer addresses: the series split off under a new `UID`, or the old
+    /// `RECURRENCE-ID` is not one of the new rule's slots. An address the new invite still
+    /// carries is left alone, since a cancel there would remove what it re-sends.
+    fn stale_overrides(&self, previous: &SeriesRule) -> Vec<coaching_sessions::Model> {
+        let republished: Vec<NaiveDateTime> = self
+            .moves
+            .iter()
+            .map(|landing| landing.slot)
+            .chain(self.extras.iter().copied())
+            .collect();
+        self.superseded()
+            .into_iter()
+            .filter(|session| had_override(session, previous))
+            .filter(|session| {
+                self.split_from.is_some()
+                    || session
+                        .ical_recurrence_id
+                        .is_some_and(|slot| !republished.contains(&slot))
+            })
+            .collect()
+    }
+}
+
+/// A session moved on its own: off the slot its occurrence was published at.
+fn moved_alone(session: &coaching_sessions::Model) -> bool {
+    session
+        .ical_recurrence_id
+        .is_some_and(|slot| slot != session.date)
+}
+
+/// A session resized on its own: series writes give every session the rule's length.
+fn resized_alone(session: &coaching_sessions::Model, rule: &SeriesRule) -> bool {
+    session.duration_minutes != rule.duration_minutes
+}
+
+/// Whether `session` may hold its own override VEVENT under `rule`'s invite. Errs toward
+/// yes on a meeting link, since cancelling an address nothing overrides is harmless.
+fn had_override(session: &coaching_sessions::Model, rule: &SeriesRule) -> bool {
+    session.ical_recurrence_id.is_some()
+        && (moved_alone(session) || resized_alone(session, rule) || session.meeting_url.is_some())
 }
 
 /// Pair the affected sessions with the new rule's slots. Pure, so every edge of the
 /// pairing is testable without a database.
+///
+/// The anchor takes the first slot and the request's values. The rest take the following
+/// slots in the order of the slots they held, and keep whatever was changed on them alone:
+/// a date moved off its slot (unless it now falls before `start_at`) and a resized length.
 ///
 /// The series splits only when a session left behind still holds one of the old rule's
 /// slots. Otherwise the rule is replaced in place, as a full series reschedule does.
@@ -440,17 +503,56 @@ fn plan_following(
         }
     });
 
+    let mut following = affected[1..].to_vec();
+    following.sort_by_key(|session| session.ical_recurrence_id.unwrap_or(session.date));
+    let in_slot_order: Vec<coaching_sessions::Model> =
+        std::iter::once(anchor.clone()).chain(following).collect();
+
+    let new_duration = Duration::from_minutes_unchecked(rule.duration_minutes);
+    let follow = |session: &coaching_sessions::Model, slot: NaiveDateTime| Move {
+        session: session.clone(),
+        slot,
+        date: slot,
+        duration: new_duration,
+    };
+    let keep_own = |session: &coaching_sessions::Model, slot: NaiveDateTime| Move {
+        date: Some(session.date)
+            .filter(|date| moved_alone(session) && *date >= request.start_at)
+            .unwrap_or(slot),
+        duration: if resized_alone(session, existing) {
+            Duration::from_minutes_unchecked(session.duration_minutes)
+        } else {
+            new_duration
+        },
+        ..follow(session, slot)
+    };
+    let moves = in_slot_order
+        .iter()
+        .zip(slots.iter().copied())
+        .enumerate()
+        .map(|(position, (session, slot))| match position {
+            0 => follow(session, slot),
+            _ => keep_own(session, slot),
+        })
+        .collect();
+
     Ok(FollowingPlan {
-        moves: affected
-            .iter()
-            .cloned()
-            .zip(slots.iter().copied())
-            .collect(),
+        moves,
         extras: slots.iter().skip(affected.len()).copied().collect(),
-        leftovers: affected.iter().skip(slots.len()).cloned().collect(),
+        leftovers: in_slot_order.iter().skip(slots.len()).cloned().collect(),
         rule,
         split_from,
     })
+}
+
+/// Sessions in date order, as the response lists them: a session that kept its own date
+/// can sort out of slot order.
+fn by_date(
+    sessions: impl IntoIterator<Item = coaching_sessions::Model>,
+) -> Vec<coaching_sessions::Model> {
+    let mut sessions: Vec<_> = sessions.into_iter().collect();
+    sessions.sort_by_key(|session| (session.date, session.id));
+    sessions
 }
 
 fn rule_of(series: &Model) -> Result<SeriesRule, Error> {
@@ -459,8 +561,9 @@ fn rule_of(series: &Model) -> Result<SeriesRule, Error> {
 
 /// Reschedule one session of a series and every session after it, in place.
 ///
-/// The k-th affected session moves to the k-th slot of the new rule and keeps its id and
-/// everything hung off it. Extra slots become new sessions. Leftover sessions are deleted,
+/// Each affected session takes a slot of the new rule and keeps its id and everything hung
+/// off it, plus a date or length it was given on its own (see [`plan_following`]). Extra
+/// slots become new sessions. Leftover sessions are deleted,
 /// unless one holds content, which refuses the whole request with a 409 instead. When
 /// earlier occurrences stay behind, the series splits: the old one's rule ends before the
 /// moved session and a new series holds the moved ones, as calendars model "this and
@@ -494,7 +597,7 @@ pub async fn reschedule_following(
         debug!("Following reschedule of series {series_id} matches its sessions; nothing to do");
         return Ok(Rescheduled {
             series: existing,
-            sessions: plan.moves.into_iter().map(|(session, _)| session).collect(),
+            sessions: by_date(plan.moves.into_iter().map(|landing| landing.session)),
             changed: false,
         });
     }
@@ -556,10 +659,18 @@ pub async fn reschedule_following(
         ),
     };
 
-    let duration = plan.duration();
     let moved: Vec<coaching_sessions::Model> = stream::iter(&plan.moves)
-        .then(|(session, slot)| {
-            entity_api::coaching_session::move_to_slot(&txn, session.id, target.id, *slot, duration)
+        .then(|landing| {
+            entity_api::coaching_session::move_to_slot(
+                &txn,
+                landing.session.id,
+                entity_api::coaching_session::Landing {
+                    series_id: target.id,
+                    slot: landing.slot,
+                    date: landing.date,
+                    duration: landing.duration,
+                },
+            )
         })
         .try_collect()
         .await?;
@@ -569,7 +680,7 @@ pub async fn reschedule_following(
         coach_id,
         target.id,
         plan.extras.clone(),
-        Some(duration),
+        Some(plan.duration()),
     )
     .await?;
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &leftover_ids).await?;
@@ -584,8 +695,9 @@ pub async fn reschedule_following(
     cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names).await;
     coaching_session_image::destroy_objects(config, &image_keys).await;
 
-    let listed: Vec<coaching_sessions::Model> = moved.iter().chain(&created).cloned().collect();
+    let listed = by_date(moved.iter().chain(&created).cloned());
     let superseded = plan.superseded();
+    let stale_overrides = plan.stale_overrides(&existing_rule);
     let told = emails::notify_recurring_sessions_rescheduled_following(
         db,
         config,
@@ -596,8 +708,9 @@ pub async fn reschedule_following(
             previous_start: plan
                 .moves
                 .first()
-                .map_or(request.start_at, |(session, _)| session.date),
+                .map_or(request.start_at, |landing| landing.session.date),
             replaced: emails::ReplacedSessions(&superseded),
+            stale_overrides: &stale_overrides,
             split_from: split_from.as_ref(),
         },
     )
@@ -621,7 +734,7 @@ pub async fn reschedule_following(
 
     Ok(Rescheduled {
         series: target,
-        sessions: moved.into_iter().chain(created).collect(),
+        sessions: by_date(moved.into_iter().chain(created)),
         changed: true,
     })
 }

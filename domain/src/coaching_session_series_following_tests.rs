@@ -92,7 +92,10 @@ fn ids(sessions: &[coaching_sessions::Model]) -> Vec<Id> {
 }
 
 fn moved_ids(plan: &FollowingPlan) -> Vec<Id> {
-    plan.moves.iter().map(|(session, _)| session.id).collect()
+    plan.moves
+        .iter()
+        .map(|landing| landing.session.id)
+        .collect()
 }
 
 fn is_validation(err: &Error) -> bool {
@@ -100,7 +103,7 @@ fn is_validation(err: &Error) -> bool {
 }
 
 #[test]
-fn the_kth_affected_session_moves_to_the_kth_slot_and_extra_slots_are_created() {
+fn affected_sessions_take_the_new_slots_in_order_and_extra_slots_are_created() {
     let rows = sessions(4);
     let tuesday = week(1) + TimeDelta::days(1);
     let plan = plan(
@@ -112,7 +115,10 @@ fn the_kth_affected_session_moves_to_the_kth_slot_and_extra_slots_are_created() 
 
     assert_eq!(moved_ids(&plan), ids(&rows[1..]));
     assert_eq!(
-        plan.moves.iter().map(|(_, slot)| *slot).collect::<Vec<_>>(),
+        plan.moves
+            .iter()
+            .map(|landing| landing.slot)
+            .collect::<Vec<_>>(),
         (0..3)
             .map(|i| tuesday + TimeDelta::weeks(i))
             .collect::<Vec<_>>(),
@@ -399,7 +405,7 @@ fn a_session_moved_ahead_of_the_anchor_keeps_its_slot_on_the_old_series() {
     assert!(plan
         .moves
         .iter()
-        .all(|(session, _)| session.ical_recurrence_id != Some(week(2))));
+        .all(|landing| landing.session.ical_recurrence_id != Some(week(2))));
 }
 
 #[test]
@@ -441,5 +447,232 @@ fn a_session_moved_ahead_of_the_first_slot_splits_the_series() {
     assert!(plan
         .moves
         .iter()
-        .all(|(session, _)| session.ical_recurrence_id != Some(week(1))));
+        .all(|landing| landing.session.ical_recurrence_id != Some(week(1))));
+}
+
+fn landing_of(
+    plan: &FollowingPlan,
+    session: &coaching_sessions::Model,
+) -> (NaiveDateTime, NaiveDateTime, i16) {
+    plan.moves
+        .iter()
+        .find(|landing| landing.session.id == session.id)
+        .map(|landing| (landing.slot, landing.date, landing.duration.minutes()))
+        .expect("the session is moved")
+}
+
+fn sessions_by_date(mut rows: Vec<coaching_sessions::Model>) -> Vec<coaching_sessions::Model> {
+    rows.sort_by_key(|session| (session.date, session.id));
+    rows
+}
+
+/// The table agreed for v6: the anchor takes the request, a session moved alone keeps its
+/// time, a session resized alone keeps its length, and each still takes its new slot.
+#[test]
+fn sessions_keep_what_was_changed_on_them_alone_property_by_property() {
+    let mut rows = sessions(4);
+    let wednesday_later = week(2) + TimeDelta::days(1) + TimeDelta::hours(1);
+    rows[2].date = wednesday_later;
+    rows[3].duration_minutes = 90;
+    let new_start = week(1) - TimeDelta::hours(1);
+
+    let plan = plan(
+        &existing_rule(weekly(4)),
+        &rows,
+        &FollowingReschedule {
+            duration: Some(Duration::from_minutes_unchecked(45)),
+            ..request(&rows[1], new_start, None)
+        },
+    )
+    .unwrap();
+
+    let slot = |k: i64| new_start + TimeDelta::weeks(k);
+    assert_eq!(landing_of(&plan, &rows[1]), (slot(0), slot(0), 45));
+    assert_eq!(landing_of(&plan, &rows[2]), (slot(1), wednesday_later, 45));
+    assert_eq!(landing_of(&plan, &rows[3]), (slot(2), slot(2), 90));
+}
+
+#[test]
+fn a_session_moved_and_resized_alone_keeps_both() {
+    let mut rows = sessions(3);
+    let own_date = week(2) + TimeDelta::days(2);
+    rows[2].date = own_date;
+    rows[2].duration_minutes = 30;
+
+    let plan = plan(
+        &existing_rule(weekly(3)),
+        &rows,
+        &request(&rows[1], week(1) + TimeDelta::hours(2), None),
+    )
+    .unwrap();
+
+    assert_eq!(
+        landing_of(&plan, &rows[2]),
+        (week(2) + TimeDelta::hours(2), own_date, 30)
+    );
+}
+
+#[test]
+fn the_anchor_takes_the_request_even_when_it_was_changed_alone() {
+    let mut rows = sessions(3);
+    rows[1].date = week(1) + TimeDelta::days(1);
+    rows[1].duration_minutes = 90;
+    let new_start = week(1) + TimeDelta::hours(3);
+
+    let plan = plan(
+        &existing_rule(weekly(3)),
+        &rows,
+        &request(&rows[1], new_start, None),
+    )
+    .unwrap();
+
+    assert_eq!(landing_of(&plan, &rows[1]), (new_start, new_start, 60));
+}
+
+/// Nothing in the new series may sit before its first occurrence.
+#[test]
+fn a_kept_date_before_the_new_start_follows_the_rule() {
+    let mut rows = sessions(4);
+    rows[2].date = week(2) - TimeDelta::days(1);
+    let rows = sessions_by_date(rows);
+    let new_start = week(2) + TimeDelta::days(1);
+    let anchor = rows
+        .iter()
+        .find(|session| session.ical_recurrence_id == Some(week(1)))
+        .unwrap()
+        .clone();
+    let moved_alone = rows
+        .iter()
+        .find(|session| session.ical_recurrence_id == Some(week(2)))
+        .unwrap()
+        .clone();
+
+    let plan = plan(
+        &existing_rule(weekly(4)),
+        &rows,
+        &request(&anchor, new_start, None),
+    )
+    .unwrap();
+
+    let slot = new_start + TimeDelta::weeks(1);
+    assert_eq!(landing_of(&plan, &moved_alone), (slot, slot, 60));
+}
+
+/// A session moved alone past a later one still takes the slot after its own old slot.
+#[test]
+fn pairing_follows_the_old_slots_not_the_dates() {
+    let mut rows = sessions(4);
+    let past_week_three = week(3) + TimeDelta::days(1);
+    rows[2].date = past_week_three;
+    let rows = sessions_by_date(rows);
+    let week_two = rows
+        .iter()
+        .find(|session| session.ical_recurrence_id == Some(week(2)))
+        .unwrap()
+        .clone();
+    let week_three = rows
+        .iter()
+        .find(|session| session.ical_recurrence_id == Some(week(3)))
+        .unwrap()
+        .clone();
+    let new_start = week(1) + TimeDelta::hours(1);
+
+    let plan = plan(
+        &existing_rule(weekly(4)),
+        &rows,
+        &request(&rows[1], new_start, None),
+    )
+    .unwrap();
+
+    let slot = |k: i64| new_start + TimeDelta::weeks(k);
+    assert_eq!(landing_of(&plan, &week_two), (slot(1), past_week_three, 60));
+    assert_eq!(landing_of(&plan, &week_three), (slot(2), slot(2), 60));
+}
+
+#[test]
+fn a_session_moved_alone_is_not_exempt_from_the_leftovers() {
+    let mut rows = sessions(4);
+    rows[3].date = week(3) + TimeDelta::days(1);
+
+    let plan = plan(
+        &existing_rule(weekly(4)),
+        &rows,
+        &request(&rows[1], week(1), Some(weekly(2))),
+    )
+    .unwrap();
+
+    assert_eq!(ids(&plan.leftovers), vec![rows[3].id]);
+}
+
+#[test]
+fn rerunning_a_reschedule_that_kept_sessions_changes_nothing() {
+    let mut rows = sessions(4);
+    let new_start = week(1) + TimeDelta::hours(1);
+    rows[2].date = week(2) + TimeDelta::days(1);
+    rows[3].duration_minutes = 90;
+    let rule = existing_rule(weekly(4));
+    let first = plan(&rule, &rows, &request(&rows[1], new_start, None)).unwrap();
+
+    // The rows as the first run wrote them, under the rule it published.
+    let rewritten: Vec<coaching_sessions::Model> = rows[..1]
+        .iter()
+        .cloned()
+        .chain(first.moves.iter().map(|landing| coaching_sessions::Model {
+            ical_recurrence_id: Some(landing.slot),
+            date: landing.date,
+            duration_minutes: landing.duration.minutes(),
+            ..landing.session.clone()
+        }))
+        .collect();
+    let again = plan(
+        &first.rule,
+        &sessions_by_date(rewritten.clone()),
+        &request(&rewritten[1], new_start, None),
+    )
+    .unwrap();
+
+    assert!(again.changes_nothing());
+}
+
+/// The first run republishes every kept session's override under a new address, so the
+/// old one is cancelled; an address the new invite still carries is not.
+#[test]
+fn only_overrides_the_new_invite_no_longer_addresses_are_stale() {
+    let mut rows = sessions(4);
+    rows[2].date = week(2) + TimeDelta::days(1);
+    rows[3].duration_minutes = 90;
+    let rule = existing_rule(weekly(4));
+
+    // From the first slot, one hour later: in place, and every slot moves.
+    let shifted = plan(
+        &rule,
+        &rows,
+        &request(&rows[0], week(0) + TimeDelta::hours(1), None),
+    )
+    .unwrap();
+    assert!(shifted.split_from.is_none());
+    assert_eq!(
+        ids(&shifted.stale_overrides(&rule)),
+        vec![rows[2].id, rows[3].id]
+    );
+
+    // From the first slot, same slots, a new length: every address is re-sent.
+    let resized = plan(
+        &rule,
+        &rows,
+        &FollowingReschedule {
+            duration: Some(Duration::from_minutes_unchecked(45)),
+            ..request(&rows[0], week(0), None)
+        },
+    )
+    .unwrap();
+    assert!(resized.stale_overrides(&rule).is_empty());
+
+    // From a later session: a split, so every override sits under the old UID.
+    let split = plan(&rule, &rows, &request(&rows[1], week(1), None)).unwrap();
+    assert!(split.split_from.is_some());
+    assert_eq!(
+        ids(&split.stale_overrides(&rule)),
+        vec![rows[2].id, rows[3].id]
+    );
 }

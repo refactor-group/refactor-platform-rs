@@ -262,22 +262,38 @@ pub async fn bulk_delete_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result
     Ok(result.rows_affected)
 }
 
-/// Moves a series session onto `slot` of series `series_id`, keeping the row and everything
-/// hung off it. `ical_recurrence_id` follows the slot, since the move republishes the
-/// occurrence under the rule that produced it. `ical_sequence` advances as a column
-/// expression, so a concurrent edit cannot land on the same value.
+/// Where [`move_to_slot`] puts a series session.
+#[derive(Debug, Clone, Copy)]
+pub struct Landing {
+    /// The series it now belongs to.
+    pub series_id: Id,
+    /// The occurrence of that series' rule it takes, which becomes its `ical_recurrence_id`.
+    pub slot: NaiveDateTime,
+    /// Its start: the slot, or a date of its own that overrides that occurrence.
+    pub date: NaiveDateTime,
+    pub duration: Duration,
+}
+
+/// Moves a series session onto `landing`, keeping the row and everything hung off it.
+/// `ical_recurrence_id` follows the slot, since the move republishes the occurrence under
+/// the rule that produced it. `ical_sequence` advances as a column expression, so a
+/// concurrent edit cannot land on the same value.
 pub async fn move_to_slot(
     db: &impl ConnectionTrait,
     id: Id,
-    series_id: Id,
-    slot: NaiveDateTime,
-    duration: Duration,
+    landing: Landing,
 ) -> Result<Model, Error> {
     Entity::update_many()
-        .col_expr(Column::CoachingSessionSeriesId, Expr::value(series_id))
-        .col_expr(Column::Date, Expr::value(slot))
-        .col_expr(Column::IcalRecurrenceId, Expr::value(slot))
-        .col_expr(Column::DurationMinutes, Expr::value(duration.minutes()))
+        .col_expr(
+            Column::CoachingSessionSeriesId,
+            Expr::value(landing.series_id),
+        )
+        .col_expr(Column::Date, Expr::value(landing.date))
+        .col_expr(Column::IcalRecurrenceId, Expr::value(landing.slot))
+        .col_expr(
+            Column::DurationMinutes,
+            Expr::value(landing.duration.minutes()),
+        )
         .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
         .col_expr(
             Column::UpdatedAt,
