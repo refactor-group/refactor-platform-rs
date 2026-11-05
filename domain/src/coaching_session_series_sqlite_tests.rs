@@ -10,6 +10,7 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, Enti
 
 use super::*;
 use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
+use entity_api::coaching_session::Landing;
 
 fn monday() -> NaiveDateTime {
     NaiveDate::from_ymd_opt(2026, 11, 9)
@@ -211,9 +212,12 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
         entity_api::coaching_session::move_to_slot(
             &db,
             target.id,
-            new_series,
-            slot,
-            Duration::from_minutes_unchecked(45),
+            Landing {
+                series_id: new_series,
+                slot,
+                date: slot,
+                duration: Duration::from_minutes_unchecked(45),
+            },
         )
         .await
         .expect("the move succeeds");
@@ -238,6 +242,75 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
 
         let untouched = reread(&db, bystander.id).await;
         assert_eq!(untouched, bystander);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn move_to_slot_keeps_a_date_of_its_own_while_taking_the_slot() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed_series(&db).await;
+        let target = seed_series_session(&db, &seeded, monday()).await;
+        let slot = monday() + TimeDelta::weeks(1);
+        let own_date = slot + TimeDelta::days(1) + TimeDelta::hours(1);
+
+        entity_api::coaching_session::move_to_slot(
+            &db,
+            target.id,
+            Landing {
+                series_id: seeded.series_id,
+                slot,
+                date: own_date,
+                duration: Duration::from_minutes_unchecked(90),
+            },
+        )
+        .await
+        .expect("the move succeeds");
+
+        let moved = reread(&db, target.id).await;
+        assert_eq!(moved.date, own_date);
+        assert_eq!(moved.ical_recurrence_id, Some(slot));
+        assert_eq!(moved.duration_minutes, 90);
+        assert_eq!(moved.ical_sequence, target.ical_sequence + 1);
+    })
+    .await;
+}
+
+/// Greptile on #471: the session that takes over an overridden occurrence is published
+/// above the old override, so the row is raised to match, and its next edit outranks both.
+#[tokio::test]
+async fn the_occupant_of_a_reused_occurrence_is_raised_above_the_old_override() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed_series(&db).await;
+        let occupant = seed_series_session(&db, &seeded, monday()).await;
+        let neighbour = seed_series_session(&db, &seeded, monday() + TimeDelta::weeks(1)).await;
+        let old_override = 8;
+
+        entity_api::coaching_session::raise_ical_sequence_at(
+            &db,
+            seeded.series_id,
+            monday(),
+            old_override + 1,
+        )
+        .await
+        .expect("the raise succeeds");
+        let next_edit = entity_api::coaching_session::increment_ical_sequence(&db, occupant.id)
+            .await
+            .expect("the edit bumps");
+
+        assert_eq!(reread(&db, neighbour.id).await, neighbour);
+        assert!(next_edit.ical_sequence > old_override + 1);
+
+        // Never lowered: a floor below the row's own leaves it alone.
+        entity_api::coaching_session::raise_ical_sequence_at(&db, seeded.series_id, monday(), 0)
+            .await
+            .expect("the raise succeeds");
+        assert_eq!(
+            reread(&db, occupant.id).await.ical_sequence,
+            next_edit.ical_sequence
+        );
     })
     .await;
 }

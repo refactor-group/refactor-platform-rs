@@ -1663,15 +1663,25 @@ fn build_series_invite_ics(
     ical::build(&invite)
 }
 
+/// An occurrence of a series that already carries an override on calendars, which the next
+/// invite has to replace even if its new member sits on the rule.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ReissuedOverride {
+    pub(crate) slot: NaiveDateTime,
+    /// The `SEQUENCE` the existing override was sent with; the replacement must exceed it.
+    pub(crate) sequence: i32,
+}
+
 /// Build the series `.ics` as it stands today: the master (RRULE) with an EXDATE per
-/// deleted slot, plus an override VEVENT per moved or resized member. A member is a row
-/// whose `ical_recurrence_id` is one of the rule's slots; every other row is ignored.
-/// Pure: `dtstamp` injected.
+/// deleted slot, plus an override VEVENT per moved or resized member and per `reissued`
+/// slot. A member is a row whose `ical_recurrence_id` is one of the rule's slots; every
+/// other row is ignored. Pure: `dtstamp` injected.
 fn build_series_snapshot_ics(
     coach: &users::Model,
     coachee: &users::Model,
     series: &coaching_session_series::Model,
     members: &[coaching_sessions::Model],
+    reissued: &[ReissuedOverride],
     description: String,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
@@ -1728,6 +1738,13 @@ fn build_series_snapshot_ics(
     };
 
     let master_url = master.location_url.clone();
+    let outranked = |slot: NaiveDateTime| {
+        reissued
+            .iter()
+            .filter(|old| old.slot == slot)
+            .map(|old| old.sequence)
+            .max()
+    };
     let overrides = slotted.iter().filter_map(|(slot, member)| {
         member
             .filter(|m| {
@@ -1737,11 +1754,18 @@ fn build_series_snapshot_ics(
                     .meeting_url
                     .as_deref()
                     .is_some_and(|url| Some(url) != master_url.as_deref());
-                m.date != *slot || m.duration_minutes != rule.duration_minutes || own_url
+                m.date != *slot
+                    || m.duration_minutes != rule.duration_minutes
+                    || own_url
+                    || outranked(*slot).is_some()
             })
             .map(|m| ical::IcsInvite {
-                // Google drops an override whose SEQUENCE trails its master.
-                sequence: m.ical_sequence.max(series.ical_sequence),
+                // Google drops an override whose SEQUENCE trails its master, or the
+                // override it replaces.
+                sequence: m
+                    .ical_sequence
+                    .max(series.ical_sequence)
+                    .max(outranked(*slot).map_or(0, |old| old.saturating_add(1))),
                 start: m.date,
                 duration_minutes: m.duration_minutes,
                 location_url: m.meeting_url.clone(),
@@ -1764,10 +1788,15 @@ enum SeriesInviteShape<'a> {
     Snapshot {
         rows: &'a [coaching_sessions::Model],
         split_from: Option<SeriesRows<'a>>,
+        /// Rows, as they were, that may hold an override under the series they were
+        /// published in. Each is replaced where the snapshot reuses its address, else
+        /// cancelled.
+        previous_overrides: Option<SeriesRows<'a>>,
     },
 }
 
 /// A series and every row linked to it, which its snapshot is built from.
+#[derive(Clone, Copy)]
 struct SeriesRows<'a> {
     series: &'a coaching_session_series::Model,
     rows: &'a [coaching_sessions::Model],
@@ -1848,22 +1877,57 @@ async fn send_series_invite_email<N: EmailNotification>(
             orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
             split_from: None,
         },
-        SeriesInviteShape::Snapshot { rows, split_from } => SeriesIcs {
-            split_from: split_from
-                .map(|from| {
-                    build_series_snapshot_ics(
-                        coach,
-                        coachee,
-                        from.series,
-                        from.rows,
-                        description.clone(),
-                        dtstamp,
+        SeriesInviteShape::Snapshot {
+            rows,
+            split_from,
+            previous_overrides,
+        } => {
+            let (reissued, stale) = previous_overrides
+                .map(|previous| retire_previous_overrides(previous.series, previous.rows, series))
+                .transpose()?
+                .unwrap_or_default();
+            SeriesIcs {
+                split_from: split_from
+                    .map(|from| {
+                        build_series_snapshot_ics(
+                            coach,
+                            coachee,
+                            from.series,
+                            from.rows,
+                            &[],
+                            description.clone(),
+                            dtstamp,
+                        )
+                    })
+                    .transpose()?,
+                body: build_series_snapshot_ics(
+                    coach,
+                    coachee,
+                    series,
+                    rows,
+                    &reissued,
+                    description,
+                    dtstamp,
+                )?,
+                orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp)
+                    .into_iter()
+                    .chain(
+                        previous_overrides
+                            .map(|previous| {
+                                build_stale_override_cancels(
+                                    participants,
+                                    &SeriesRows {
+                                        series: previous.series,
+                                        rows: &stale,
+                                    },
+                                    dtstamp,
+                                )
+                            })
+                            .unwrap_or_default(),
                     )
-                })
-                .transpose()?,
-            body: build_series_snapshot_ics(coach, coachee, series, rows, description, dtstamp)?,
-            orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp),
-        },
+                    .collect(),
+            }
+        }
     };
 
     // Timezone-independent, so it is computed once rather than per recipient.
@@ -1978,6 +2042,7 @@ pub(crate) async fn send_series_invite_resend(
             shape: SeriesInviteShape::Snapshot {
                 rows,
                 split_from: None,
+                previous_overrides: None,
             },
         },
     )
@@ -2183,6 +2248,10 @@ pub struct FollowingRescheduleNotice<'a> {
     pub replaced: ReplacedSessions<'a>,
     /// The shortened series the moved sessions split from, when they did.
     pub split_from: Option<&'a coaching_session_series::Model>,
+    /// Affected sessions, as they were, that may hold their own override under
+    /// `previous_series`. Each is replaced where the new invite reuses its address, else
+    /// cancelled.
+    pub previous_overrides: &'a [coaching_sessions::Model],
 }
 
 /// Orchestrate the email for a "this and following" series reschedule (best-effort).
@@ -2213,6 +2282,10 @@ pub async fn notify_recurring_sessions_rescheduled_following(
             split_from: split_from
                 .as_ref()
                 .map(|(series, rows)| SeriesRows { series, rows }),
+            previous_overrides: Some(SeriesRows {
+                series: change.previous_series.0,
+                rows: change.previous_overrides,
+            }),
         };
 
         send_series_invite_email::<RecurringSessionsRescheduled>(
@@ -2339,6 +2412,91 @@ fn build_orphan_cancels(
                 warn!(
                     "Could not build the standalone cancellation for session {}, so its \
                      calendar event will linger: {e:?}",
+                    session.id
+                )
+            })
+            .ok()
+        })
+        .collect()
+}
+
+/// Sort the overrides `previous` published for `rows` by what `current`'s invite does with
+/// each address. Kept under the same `UID` at one of `current`'s slots: replaced there, by an
+/// override outranking the old one's `SEQUENCE` (the larger of the session's and the
+/// series'). Otherwise (a split, or a slot the new rule lacks): stale, to be cancelled.
+/// A cancel at a reused address would remove the occurrence the invite re-sends.
+pub(crate) fn retire_previous_overrides(
+    previous: &coaching_session_series::Model,
+    rows: &[coaching_sessions::Model],
+    current: &coaching_session_series::Model,
+) -> Result<(Vec<ReissuedOverride>, Vec<coaching_sessions::Model>), Error> {
+    let slots = serde_json::from_value::<SeriesRule>(current.rule.clone())?.slots()?;
+    let reused = |session: &&coaching_sessions::Model| {
+        previous.id == current.id
+            && session
+                .ical_recurrence_id
+                .is_some_and(|slot| slots.contains(&slot))
+    };
+    let (kept, stale): (
+        Vec<&coaching_sessions::Model>,
+        Vec<&coaching_sessions::Model>,
+    ) = rows.iter().partition(reused);
+    Ok((
+        kept.into_iter()
+            .filter_map(|session| {
+                session.ical_recurrence_id.map(|slot| ReissuedOverride {
+                    slot,
+                    sequence: session.ical_sequence.max(previous.ical_sequence),
+                })
+            })
+            .collect(),
+        stale.into_iter().cloned().collect(),
+    ))
+}
+
+/// Build the `CANCEL` for each override in `stale`, addressed by its series' `UID` and the
+/// occurrence it overrode, so a calendar drops an exception the new invite no longer
+/// carries. Its `SEQUENCE` outranks the override's, which was the larger of the session's
+/// and the series'. One unbuildable cancellation is skipped rather than costing the email.
+fn build_stale_override_cancels(
+    participants: &Participants<'_>,
+    stale: &SeriesRows<'_>,
+    dtstamp: chrono::NaiveDateTime,
+) -> Vec<String> {
+    let Ok(rule) =
+        serde_json::from_value::<SeriesRule>(stale.series.rule.clone()).inspect_err(|e| {
+            warn!(
+                "Could not read the rule of series {}, so its stale overrides will linger: {e:?}",
+                stale.series.id
+            )
+        })
+    else {
+        return Vec::new();
+    };
+    stale
+        .rows
+        .iter()
+        .filter_map(|session| {
+            let outranking = coaching_sessions::Model {
+                ical_sequence: session
+                    .ical_sequence
+                    .max(stale.series.ical_sequence)
+                    .saturating_add(1),
+                ..session.clone()
+            };
+            build_occurrence_cancel_ics(
+                participants.coach,
+                participants.coachee,
+                &outranking,
+                stale.series.id,
+                rule.zone(),
+                SESSION_CANCELLED_DESCRIPTION.to_string(),
+                dtstamp,
+            )
+            .inspect_err(|e| {
+                warn!(
+                    "Could not build the override cancellation for session {}, so its \
+                     calendar exception will linger: {e:?}",
                     session.id
                 )
             })

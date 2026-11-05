@@ -188,8 +188,9 @@ pub async fn update(
 /// Reschedule one session of a series and every session after it.
 ///
 /// `POST /coaching_session_series/:id/reschedule`. The sessions move in place and keep their
-/// ids and content. When earlier sessions stay behind, the series splits and `series` in the
-/// response is the new one holding the moved sessions.
+/// ids and content. A session moved or resized on its own keeps that date or length; the
+/// chosen session always takes the request's. When earlier sessions stay behind, the series
+/// splits and `series` in the response is the new one holding the moved sessions.
 #[utoipa::path(
     post,
     path = "/coaching_session_series/{id}/reschedule",
