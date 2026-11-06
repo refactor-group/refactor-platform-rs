@@ -12,9 +12,11 @@ use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::MeetingProperties;
 use crate::Id;
-use chrono::{DurationRound, NaiveDateTime, TimeDelta};
+use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_sessions, mutate, organization, query,
+    coaching_relationship, coaching_session,
+    coaching_session_pending_reschedule::{self, Schedule},
+    coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
@@ -335,7 +337,6 @@ where
 
 pub async fn update(
     db: &DatabaseConnection,
-    config: &Config,
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
@@ -347,19 +348,19 @@ pub async fn update(
     coaching_session::normalize_title_in_update_map(&mut update_map);
     coaching_session::validate_title_length_in_update_map(&update_map)?;
 
-    let existing = coaching_session::find_by_id(db, id).await?;
+    // The edit, its SEQUENCE bump and its pending reschedule commit together: a bump that
+    // failed on its own would leave the row mutated behind a failed request, and the next
+    // invite would reuse a SEQUENCE the client has already seen. The row lock orders
+    // concurrent edits so each records the schedule the previous one left.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let existing = coaching_session::find_by_id_for_update(&txn, id).await?;
     debug!(
         "Domain update coaching_session id={id} relationship_id={} update_map={update_map:?}",
         existing.coaching_relationship_id
     );
     let old = existing.clone();
-    let old_date = old.date;
     let active_model = existing.into_active_model();
 
-    // The edit and its SEQUENCE bump commit together: a bump that failed on its own
-    // would leave the row mutated behind a failed request, and the next invite would
-    // reuse a SEQUENCE the client has already seen.
-    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
         &txn,
         active_model,
@@ -371,25 +372,32 @@ pub async fn update(
         true => coaching_session::increment_ical_sequence(&txn, updated.id).await?,
         false => updated,
     };
-    let schedule_moved = emails::affects_schedule(&old, &updated);
-    txn.commit().await.map_err(entity_api::error::Error::from)?;
-
-    // Best-effort re-send of an updated `.ics` so calendar clients move the event in place.
-    // Gated on the schedule: the copy announces a start and a duration.
-    // Notice is recorded only once the telling succeeded. Stamping alongside the edit
-    // would count a send that never happened, and the sweep would then skip the reminder
-    // too, leaving the coachee with neither. A failed stamp after a delivered email costs
-    // a redundant reminder, which is the direction worth being wrong in.
-    if schedule_moved && emails::notify_session_rescheduled(db, config, &updated, old_date).await {
-        return Ok(record_notice(db, updated.id).await.unwrap_or(updated));
+    if emails::affects_schedule(&old, &updated) {
+        coaching_session_pending_reschedule::record_change(
+            &txn,
+            id,
+            Schedule {
+                date: old.date,
+                duration_minutes: old.duration_minutes,
+            },
+            Schedule {
+                date: updated.date,
+                duration_minutes: updated.duration_minutes,
+            },
+            Utc::now().naive_utc(),
+            coaching_session_pending_reschedule::LEASE,
+        )
+        .await?;
     }
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
     Ok(updated)
 }
 
-/// Record that the participants were told about a session's new start, so the reminder
-/// sweep measures notice from that email. Best-effort: a failure is logged and yields
-/// `None`, costing at worst a redundant reminder.
+/// The single place that records participants know a session's current schedule: stamps
+/// notice and clears any pending reschedule. The sweep calls `mark_notice_given` directly.
+/// Best-effort: a failure is logged, and a failed stamp yields `None`.
 pub(crate) async fn record_notice(db: &DatabaseConnection, id: Id) -> Option<Model> {
+    clear_pending_reschedule(db, id).await;
     coaching_session::mark_notice_given(db, id)
         .await
         .inspect_err(|e| {
@@ -399,6 +407,19 @@ pub(crate) async fn record_notice(db: &DatabaseConnection, id: Id) -> Option<Mod
             )
         })
         .ok()
+}
+
+/// Drops a session's pending reschedule once participants were told its schedule.
+/// Best-effort: a failure is logged.
+pub(crate) async fn clear_pending_reschedule(db: &DatabaseConnection, id: Id) {
+    let _ = coaching_session_pending_reschedule::clear(db, id)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Told the participants session {id}'s schedule but could not clear its pending \
+             reschedule, so they may be told it again: {e:?}"
+            )
+        });
 }
 
 /// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
@@ -431,12 +452,11 @@ async fn publish_coaching_session_title_updated(
 /// [`update`], which intentionally emits no event.
 pub async fn update_title(
     db: &DatabaseConnection,
-    config: &Config,
     event_publisher: &EventPublisher,
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
-    let coaching_session = update(db, config, id, params).await?;
+    let coaching_session = update(db, id, params).await?;
     publish_coaching_session_title_updated(db, event_publisher, coaching_session.id).await;
     Ok(coaching_session)
 }
@@ -507,7 +527,9 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
         &parties.organization,
     )
     .await?;
-    ensure_coachee_reached(&delivered)
+    ensure_coachee_reached(&delivered)?;
+    clear_pending_reschedule(db, id).await;
+    Ok(())
 }
 
 /// A resend that cannot apply, as a 409 carrying a machine-readable `reason`.
@@ -670,10 +692,6 @@ mod tests {
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
 
-    fn test_user() -> entity_api::users::Model {
-        test_user_with_email("person@example.com")
-    }
-
     fn test_user_with_email(email: &str) -> entity_api::users::Model {
         entity_api::users::Model {
             id: Id::new_v4(),
@@ -761,10 +779,9 @@ mod tests {
         map
     }
 
-    /// Runs [`update`] against a mock stocked only through the SEQUENCE bump (find_by_id →
-    /// UPDATE ... RETURNING → increment_ical_sequence) and returns the SQL it issued. A
-    /// notify that runs shows up as its relationship lookup and then gives up on the
-    /// exhausted mock, which is enough to tell the two paths apart.
+    /// Runs [`update`] against a mock stocked through the locked read, the UPDATE ...
+    /// RETURNING, the SEQUENCE bump and a pending reschedule's two writes, and returns the
+    /// SQL it issued.
     async fn statements_for_update(
         session: &coaching_sessions::Model,
         updated: &coaching_sessions::Model,
@@ -777,12 +794,12 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![updated.clone()]])
-            .append_query_results(vec![vec![bumped.clone()]])
-            // A moved schedule also restamps the notice; unused by a title edit.
             .append_query_results(vec![vec![bumped]])
+            // record_change's upsert and undo check; unused by a title edit.
+            .append_exec_results(vec![exec_ok(), exec_ok()])
             .into_connection();
 
-        let result = update(&db, &Config::default(), session.id, TestParams(params)).await;
+        let result = update(&db, session.id, TestParams(params)).await;
         assert!(result.is_ok(), "the edit itself must succeed: {result:?}");
 
         // Statements are only reachable through Debug, and its output escapes the quotes
@@ -793,205 +810,32 @@ mod tests {
             .collect()
     }
 
+    fn exec_ok() -> sea_orm::MockExecResult {
+        sea_orm::MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }
+    }
+
     /// The notify path opens by resolving the session's relationship, so this identifies it.
     /// `coaching_relationship_id` on the session UPDATE does not match: it is singular.
     const RELATIONSHIP_LOOKUP: &str = r#"\"coaching_relationships\""#;
 
-    /// The reschedule email is gated on the schedule, so a moved start must reach the notify
-    /// path and a title edit must not. Both cases drive [`update`] rather than the predicate:
-    /// the predicate is covered next to the invite, and what needs pinning here is which of
-    /// the two the send is wired to.
-    /// Whether a logged statement writes the notice, rather than merely naming the column.
-    /// Every `RETURNING` lists it, so a bare substring match is vacuous.
-    fn restamps_the_notice(sql: &str) -> bool {
-        sql.replace('\\', "").contains(r#"SET "notice_given_at""#)
+    /// Whether a logged statement writes a pending reschedule.
+    fn records_a_pending_reschedule(sql: &str) -> bool {
+        sql.replace('\\', "")
+            .contains(r#"INSERT INTO "refactor_platform"."coaching_session_pending_reschedules""#)
     }
 
-    /// The delivered half: notice is recorded once the participants have actually been
-    /// told. Needs a send that succeeds, so it drives a mock Resend rather than letting
-    /// the notify fail on a missing template.
-    #[tokio::test]
-    async fn update_records_notice_once_the_reschedule_email_is_delivered() {
-        let mut server = mockito::Server::new_async().await;
-        let _mock = server
-            .mock("POST", "/emails")
-            .with_status(200)
-            .with_body(r#"{"id":"sent"}"#)
-            .create_async()
-            .await;
-
-        let config = Config::from_args([
-            "test",
-            "--resend-api-key=test_key",
-            "--session-rescheduled-email-template-id=reschedule_template",
-            "--frontend-base-url=https://app.example.com",
-            &format!("--resend-base-url={}", server.url()),
-        ]);
-
-        let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
-        let mut session = test_session(relationship.id, None);
-        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
-        let moved = coaching_sessions::Model {
-            date: session.date + chrono::Duration::hours(1),
-            ..session.clone()
-        };
-        let bumped = coaching_sessions::Model {
-            ical_sequence: session.ical_sequence + 1,
-            ..moved.clone()
-        };
-
-        let mut db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![session.clone()]])
-            .append_query_results(vec![vec![moved.clone()]])
-            .append_query_results(vec![vec![bumped.clone()]])
-            .append_query_results(vec![vec![relationship.clone()]])
-            .append_query_results(vec![vec![test_user()]])
-            .append_query_results(vec![vec![test_user()]])
-            .append_query_results(vec![vec![test_organization()]]);
-        // The invite body pulls topics, goals and actions; feeding empties keeps the send
-        // on its feet without asserting anything about the copy.
-        for _ in 0..6 {
-            db = db.append_query_results(vec![Vec::<coaching_sessions::Model>::new()]);
-        }
-        let db = db
-            .append_query_results(vec![vec![bumped]])
-            .into_connection();
-
-        let result = update(
-            &db,
-            &config,
-            session.id,
-            TestParams(date_update(moved.date)),
-        )
-        .await;
-        assert!(result.is_ok(), "the edit itself must succeed: {result:?}");
-
-        let statements: Vec<String> = db
-            .into_transaction_log()
-            .iter()
-            .map(|txn| format!("{txn:?}"))
-            .collect();
-        assert!(
-            statements.iter().any(|sql| restamps_the_notice(sql)),
-            "a delivered reschedule must record the notice it gave: {statements:?}"
-        );
+    /// Whether a logged statement drops a pending reschedule.
+    fn clears_a_pending_reschedule(sql: &str) -> bool {
+        sql.replace('\\', "")
+            .contains(r#"DELETE FROM "refactor_platform"."coaching_session_pending_reschedules""#)
     }
 
-    /// The two recipients fail independently, and only the coachee's delivery bears on
-    /// the reminder. Resend rejects the coachee's address and accepts the coach's: the
-    /// send as a whole reports success, and recording notice off that would leave the
-    /// coachee with neither the reschedule email nor the reminder.
+    /// The edit only records a change; the sweep does the telling.
     #[tokio::test]
-    async fn update_records_no_notice_when_only_the_coach_was_reached() {
-        let mut server = mockito::Server::new_async().await;
-        // Matched on the address, so the order of the two sends cannot decide the result.
-        let _coachee = server
-            .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Regex("coachee@example.com".to_string()))
-            .with_status(422)
-            .with_body(r#"{"message":"invalid recipient"}"#)
-            .create_async()
-            .await;
-        let _coach = server
-            .mock("POST", "/emails")
-            .match_body(mockito::Matcher::Regex("coach@example.com".to_string()))
-            .with_status(200)
-            .with_body(r#"{"id":"sent"}"#)
-            .create_async()
-            .await;
-
-        let config = Config::from_args([
-            "test",
-            "--resend-api-key=test_key",
-            "--session-rescheduled-email-template-id=reschedule_template",
-            "--frontend-base-url=https://app.example.com",
-            &format!("--resend-base-url={}", server.url()),
-        ]);
-
-        let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
-        let mut session = test_session(relationship.id, None);
-        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
-        let moved = coaching_sessions::Model {
-            date: session.date + chrono::Duration::hours(1),
-            ..session.clone()
-        };
-        let bumped = coaching_sessions::Model {
-            ical_sequence: session.ical_sequence + 1,
-            ..moved.clone()
-        };
-
-        let mut db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![session.clone()]])
-            .append_query_results(vec![vec![moved.clone()]])
-            .append_query_results(vec![vec![bumped.clone()]])
-            .append_query_results(vec![vec![relationship.clone()]])
-            .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
-            .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
-            .append_query_results(vec![vec![test_organization()]]);
-        for _ in 0..6 {
-            db = db.append_query_results(vec![Vec::<coaching_sessions::Model>::new()]);
-        }
-        let db = db
-            .append_query_results(vec![vec![bumped]])
-            .into_connection();
-
-        let result = update(
-            &db,
-            &config,
-            session.id,
-            TestParams(date_update(moved.date)),
-        )
-        .await;
-        assert!(result.is_ok(), "the edit itself must succeed: {result:?}");
-
-        let statements: Vec<String> = db
-            .into_transaction_log()
-            .iter()
-            .map(|txn| format!("{txn:?}"))
-            .collect();
-        assert!(
-            !statements.iter().any(|sql| restamps_the_notice(sql)),
-            "the coachee was never told, so nothing may be recorded: {statements:?}"
-        );
-    }
-
-    /// The two edits that must record nothing: one that tells nobody a new time, and one
-    /// that tried to and failed. Asserted against the statement itself, since a mock
-    /// running out of rows is a coincidence, not a guard.
-    #[tokio::test]
-    async fn update_records_no_notice_without_a_delivered_telling() {
-        let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
-        let mut session = test_session(relationship.id, None);
-        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
-
-        let renamed = coaching_sessions::Model {
-            title: Some("Renamed".to_string()),
-            ..session.clone()
-        };
-        let title_sql =
-            statements_for_update(&session, &renamed, string_update("title", "Renamed")).await;
-        assert!(
-            !title_sql.iter().any(|sql| restamps_the_notice(sql)),
-            "a title edit tells nobody a new time, so it must not restamp: {title_sql:?}"
-        );
-
-        // `statements_for_update` runs with no template configured, so the reschedule
-        // email cannot be delivered. Nobody was told, so nothing may be recorded: the
-        // sweep would otherwise skip a reminder for a time the coachee never received.
-        let moved = coaching_sessions::Model {
-            date: session.date + chrono::Duration::hours(1),
-            ..session.clone()
-        };
-        let moved_sql = statements_for_update(&session, &moved, date_update(moved.date)).await;
-        assert!(
-            !moved_sql.iter().any(|sql| restamps_the_notice(sql)),
-            "an undelivered reschedule must not record notice, or the coachee gets \
-             neither the email nor the reminder: {moved_sql:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn update_notifies_only_when_the_schedule_moved() {
+    async fn update_never_reaches_the_notify_path() {
         let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
         let mut session = test_session(relationship.id, None);
         session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
@@ -1008,6 +852,12 @@ mod tests {
                 .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
             "a title edit must not reach the notify path: {title_sql:?}"
         );
+        assert!(
+            !title_sql
+                .iter()
+                .any(|sql| records_a_pending_reschedule(sql)),
+            "a title edit must not record a pending reschedule: {title_sql:?}"
+        );
 
         let moved = coaching_sessions::Model {
             date: session.date + chrono::Duration::hours(1),
@@ -1015,10 +865,87 @@ mod tests {
         };
         let moved_sql = statements_for_update(&session, &moved, date_update(moved.date)).await;
         assert!(
-            moved_sql
+            !moved_sql
                 .iter()
                 .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
-            "a moved start must reach the notify path: {moved_sql:?}"
+            "a moved start must not reach the notify path: {moved_sql:?}"
+        );
+        assert!(
+            moved_sql
+                .iter()
+                .any(|sql| records_a_pending_reschedule(sql)),
+            "a moved start must record a pending reschedule: {moved_sql:?}"
+        );
+    }
+
+    /// Runs [`resend_invite`] for an upcoming standalone session with Resend answering
+    /// `status`, and returns the SQL it issued.
+    async fn statements_for_resend(status: usize) -> Vec<String> {
+        let mut server = mockito::Server::new_async().await;
+        let _sends = server
+            .mock("POST", "/emails")
+            .with_status(status)
+            .with_body(r#"{"id":"sent"}"#)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_key",
+            "--session-scheduled-email-template-id=session_template",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", server.url()),
+        ]);
+
+        let organization = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), organization.id);
+        let mut session = test_session(relationship.id, None);
+        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![bumped]])
+            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
+            .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
+            .append_query_results(vec![vec![organization]])
+            // The invite body's topics, goals and actions.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_exec_results(vec![exec_ok()])
+            .into_connection();
+
+        let _ = resend_invite(&db, &config, session.id).await;
+
+        db.into_transaction_log()
+            .iter()
+            .map(|txn| format!("{txn:?}"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn session_resend_clears_the_pending_reschedule_once_delivered() {
+        let statements = statements_for_resend(200).await;
+        assert!(
+            statements
+                .iter()
+                .any(|sql| clears_a_pending_reschedule(sql)),
+            "a delivered resend told participants the schedule: {statements:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_resend_keeps_the_pending_reschedule_when_not_delivered() {
+        let statements = statements_for_resend(500).await;
+        assert!(
+            !statements
+                .iter()
+                .any(|sql| clears_a_pending_reschedule(sql)),
+            "an undelivered resend told nobody: {statements:?}"
         );
     }
 
@@ -1058,7 +985,6 @@ mod tests {
         };
 
         let (publisher, events) = recording_publisher();
-        let config = Config::default();
 
         // A title edit bumps SEQUENCE: find_by_id → UPDATE ... RETURNING →
         // increment_ical_sequence (a single self-referential UPDATE ... RETURNING). Then
@@ -1074,7 +1000,6 @@ mod tests {
 
         let result = update_title(
             &db,
-            &config,
             &publisher,
             session.id,
             TestParams(string_update("title", "Renamed")),
@@ -1941,3 +1866,11 @@ mod tests {
 #[cfg(test)]
 #[path = "coaching_session_sqlite_tests.rs"]
 mod sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_pending_reschedule_sqlite_tests.rs"]
+mod pending_reschedule_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_update_sqlite_tests.rs"]
+mod update_sqlite_tests;

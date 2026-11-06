@@ -7,8 +7,8 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 use domain::jobs::{
-    coaching_session_image_purge, password_reset, session_reminder, transcript_suggestions,
-    Scheduler,
+    coaching_session_image_purge, coaching_session_pending_reschedule, password_reset,
+    session_reminder, transcript_suggestions, Scheduler,
 };
 use domain::user::Backend;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -130,6 +130,9 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         app_state.config.clone(),
     );
     scheduler.spawn(password_reset::Sweep::new());
+    scheduler.spawn(coaching_session_pending_reschedule::Sweep::from_config(
+        &app_state.config,
+    ));
     match session_reminder::Sweep::from_config(&app_state.config) {
         Some(sweep) => {
             scheduler.spawn(sweep);

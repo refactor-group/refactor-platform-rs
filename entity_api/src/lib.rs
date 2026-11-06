@@ -21,6 +21,7 @@ pub mod coaching_session;
 pub mod coaching_session_display_title;
 pub mod coaching_session_goal;
 pub mod coaching_session_image;
+pub mod coaching_session_pending_reschedule;
 pub mod coaching_session_series;
 pub mod coaching_session_topic;
 pub mod coaching_session_view;
