@@ -9,6 +9,7 @@ Transactional emails are sent via [Resend](https://resend.com/) using template-b
 | Welcome | User created | New user |
 | Session Scheduled | Coaching session created | Coach + coachee |
 | Session Reminder | Periodic sweep, 24h before the session starts | Coachee |
+| Session Rescheduled | Periodic sweep, once a single session's edited schedule settles | Coach + coachee |
 | Action Assigned | Action created/updated with assignees | All assignees |
 
 ## Two-Tier Pattern
@@ -116,6 +117,30 @@ rather than blanked, so the template's `fallback_value` fires).
 Leaving `SESSION_REMINDER_EMAIL_TEMPLATE_ID` unset disables the job — nothing is
 scheduled, rather than a job that logs a config error every few minutes.
 
+## Settled Reschedules
+
+Editing a single session's date or duration (`PUT /coaching_sessions/{id}`) does not email
+right away. It records a pending reschedule holding the schedule participants were last
+told, and the `pending-reschedule` sweep (`domain::jobs::pending_reschedule`) sends the
+session-rescheduled email once the schedule has been quiet for
+`SESSION_RESCHEDULE_SETTLE_SECONDS` (default 60), once
+`SESSION_RESCHEDULE_SETTLE_MAX_SECONDS` (default 300) have passed since the first
+unannounced change, or as soon as the session starts within that cap.
+
+- **Net change.** Several quick edits produce one email, moved from the last announced
+  start to the current one. The `.ics` carries the session's current `ical_sequence`.
+- **Undo sends nothing.** Moving the session back to its announced schedule before the
+  email goes out drops the pending row, and nobody is emailed.
+- **Retries.** A failed send is retried up to three times, then given up; the regular
+  reminder is the fallback. Delivery is at least once (see
+  [Background Jobs](background_jobs.md)).
+- **No email configured.** Without `RESEND_API_KEY` or
+  `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` the sweep still runs and drops due rows unsent,
+  since a pending row suppresses the session's reminder.
+
+Every other session email stays immediate: creation, this-and-following edits, series
+edits, cancellations, and resends. A resend clears any pending reschedule.
+
 ## Timezone Handling
 
 Session dates are stored as UTC. The `format_session_date_time()` helper converts to each recipient's timezone (from `users.timezone`, an IANA string) using `chrono-tz`, falling back to UTC if invalid.
@@ -137,6 +162,8 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `SESSION_REMINDER_EMAIL_TEMPLATE_ID` | Upcoming-session reminder template. Unset disables the reminder job |
 | `SESSION_REMINDER_LEAD_HOURS` | How far ahead of a session its reminder is sent (default: `24`) |
 | `SESSION_REMINDER_POLL_MINUTES` | How often the reminder sweep runs (default: `15`) |
+| `SESSION_RESCHEDULE_SETTLE_SECONDS` | How long a single session's schedule must be quiet before its reschedule is emailed (default: `60`, minimum `1`) |
+| `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS` | Longest a reschedule waits for its email after the first unannounced change (default: `300`, never below the settle period) |
 | `FRONTEND_BASE_URL` | Base URL for email links (e.g. `https://app.myrefactor.com`) |
 | `SESSION_SCHEDULED_EMAIL_URL_PATH` | URL path template for session links (default: `/coaching-sessions/{session_id}`) |
 | `ACTION_ASSIGNED_EMAIL_URL_PATH` | URL path template for action links (default: `/coaching-sessions/{session_id}?tab=actions`) |
@@ -149,4 +176,5 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `domain/src/emails.rs` | `notify_*` + `send_*` + `EmailNotification` trait |
 | `domain/src/gateway/resend.rs` | HTTP client, request builder, fire-and-forget delivery |
 | `domain/src/jobs/session_reminder.rs` | The reminder sweep |
+| `domain/src/jobs/pending_reschedule.rs` | The settled-reschedule sweep |
 | `service/src/config.rs` | Template ID and URL config |

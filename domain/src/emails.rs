@@ -1209,6 +1209,26 @@ pub async fn notify_session_rescheduled(
     }
 }
 
+/// Sends the session-rescheduled emails, returning who was told.
+///
+/// A delivered send must clear the session's pending reschedule (via
+/// `coaching_session::record_notice` or `pending_reschedule::clear`).
+pub async fn send_session_rescheduled(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &coaching_sessions::Model,
+    previous_start: NaiveDateTime,
+) -> Result<Delivered, Error> {
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
+    let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
+    let org = organization::find_by_id(db, relationship.organization_id).await?;
+
+    send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
+        .await
+}
+
 /// Send the upcoming-session reminder to the coachee.
 ///
 /// Unlike the other `notify_*` entry points this returns `Result` rather than swallowing

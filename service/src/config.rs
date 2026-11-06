@@ -47,6 +47,12 @@ const DEFAULT_SESSION_REMINDER_LEAD_HOURS: u64 = 24;
 /// finely enough that a reminder lands well inside its hour, without polling hot.
 const DEFAULT_SESSION_REMINDER_POLL_MINUTES: u64 = 15;
 
+/// Default quiet period, in seconds, before a rescheduled session is emailed.
+const DEFAULT_SESSION_RESCHEDULE_SETTLE_SECONDS: u64 = 60;
+
+/// Default longest wait, in seconds, from the first unannounced change to its email.
+const DEFAULT_SESSION_RESCHEDULE_SETTLE_MAX_SECONDS: u64 = 300;
+
 /// Default expiry duration for password reset tokens (30 minutes in seconds).
 /// Shorter than the setup-token default because the user is actively at their
 /// keyboard when requesting reset.
@@ -107,6 +113,8 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "session_reminder_email_template_id",
     "session_reminder_lead_hours",
     "session_reminder_poll_minutes",
+    "session_reschedule_settle_seconds",
+    "session_reschedule_settle_max_seconds",
     "interface",
     "port",
     "log_level_filter",
@@ -387,6 +395,12 @@ pub struct Config {
     /// How often the reminder sweep looks for sessions that have come due, in minutes.
     #[arg(long, env, default_value_t = DEFAULT_SESSION_REMINDER_POLL_MINUTES)]
     session_reminder_poll_minutes: u64,
+    /// How long a session's schedule must be quiet before its reschedule is emailed, in seconds.
+    #[arg(long, env, default_value_t = DEFAULT_SESSION_RESCHEDULE_SETTLE_SECONDS)]
+    session_reschedule_settle_seconds: u64,
+    /// Longest a reschedule waits for its email after the first unannounced change, in seconds.
+    #[arg(long, env, default_value_t = DEFAULT_SESSION_RESCHEDULE_SETTLE_MAX_SECONDS)]
+    session_reschedule_settle_max_seconds: u64,
 
     /// The host interface to listen for incoming connections
     #[arg(short, long, env, default_value = "127.0.0.1")]
@@ -857,6 +871,14 @@ impl Config {
             "session_reminder_poll_minutes",
             &self.session_reminder_poll_minutes,
         );
+        self.debug_field(
+            "session_reschedule_settle_seconds",
+            &self.session_reschedule_settle_seconds,
+        );
+        self.debug_field(
+            "session_reschedule_settle_max_seconds",
+            &self.session_reschedule_settle_max_seconds,
+        );
         self.debug_field("object_store_backend", &self.object_store_backend);
         self.debug_field("object_store_local_path", &self.object_store_local_path);
         self.debug_field("spaces_endpoint", &self.spaces_endpoint);
@@ -1070,6 +1092,21 @@ impl Config {
     /// a tight loop against the database.
     pub fn session_reminder_poll_interval(&self) -> Duration {
         Duration::from_secs(self.session_reminder_poll_minutes.max(1).saturating_mul(60))
+    }
+
+    /// Returns how long a schedule must be quiet before its reschedule is emailed.
+    ///
+    /// Clamped to at least one second so a misconfigured `0` still waits for edits to settle.
+    pub fn session_reschedule_settle(&self) -> Duration {
+        Duration::from_secs(self.session_reschedule_settle_seconds.max(1))
+    }
+
+    /// Returns the longest a reschedule waits for its email after the first unannounced change.
+    ///
+    /// Clamped to at least the settle period, which it would otherwise cut short.
+    pub fn session_reschedule_settle_max(&self) -> Duration {
+        Duration::from_secs(self.session_reschedule_settle_max_seconds)
+            .max(self.session_reschedule_settle())
     }
 
     pub fn runtime_env(&self) -> RustEnv {
@@ -1364,6 +1401,38 @@ mod tests {
 
         assert_eq!(config.port.display_value(), "4000");
         assert_eq!(config.source_suffix("port"), " (default)");
+    }
+
+    #[test]
+    fn session_reschedule_settle_defaults_to_a_minute_capped_at_five() {
+        let config = Config::from_args(["test_binary"]);
+
+        assert_eq!(config.session_reschedule_settle(), Duration::from_secs(60));
+        assert_eq!(
+            config.session_reschedule_settle_max(),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn session_reschedule_settle_of_zero_waits_one_second() {
+        let config = Config::from_args(["test_binary", "--session-reschedule-settle-seconds=0"]);
+
+        assert_eq!(config.session_reschedule_settle(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn session_reschedule_settle_max_below_settle_is_raised_to_settle() {
+        let config = Config::from_args([
+            "test_binary",
+            "--session-reschedule-settle-seconds=120",
+            "--session-reschedule-settle-max-seconds=30",
+        ]);
+
+        assert_eq!(
+            config.session_reschedule_settle_max(),
+            Duration::from_secs(120)
+        );
     }
 
     #[test]

@@ -150,6 +150,11 @@ default flag feature that pulls in no SQLite code.)
   settles only at the claimed revision, otherwise keeps the newer change pending from what
   was sent; a stale claim changes nothing, failures count attempts up to giving up, and
   deleting the session drops its row.
+- **The pending reschedule sweep** (`domain/src/jobs/pending_reschedule_sqlite_tests.rs`):
+  a due change is emailed (moved from the last announced start), settled, and stamps
+  notice; a failed send leaves the row unclaimed with one more attempt until it is given
+  up; a change already reverted settles without an email; drain mode drops due rows unsent
+  without stamping notice; and a change that is not yet due is left untouched.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge

@@ -54,14 +54,18 @@ flowchart LR
     subgraph jobs["domain::jobs"]
         PR["password_reset::Sweep\n(daily, AfterInterval)"]
         SR["session_reminder::Sweep\n(15 min, Immediately)"]
+        PRS["pending_reschedule::Sweep\n(15 s, Immediately)"]
     end
     DB[("Postgres")]
 
     S -->|spawn| PR
     S -->|spawn| SR
+    S -->|spawn| PRS
     PR -->|"DELETE older than 30d"| DB
     SR -->|"claim due pairs\n(upsert ON CONFLICT)"| DB
     SR -->|"send via Resend"| R["Resend"]
+    PRS -->|"claim due rows\n(lease, SKIP LOCKED)"| DB
+    PRS -->|"send via Resend"| R
 ```
 
 ## Idempotency and multiple replicas
@@ -125,6 +129,22 @@ the pair stays due. A successful send therefore writes the announced start back
 (`confirm_reminder_claim`), so the next tick does not resend a time the recipient was
 already given.
 
+### Lease-based claims
+
+The pending reschedule sweep claims differently. Each tick stamps a fresh `claim_id` and
+`claimed_at` onto the due rows of `coaching_session_pending_reschedules`
+(`pending_reschedule::claim_due`), selecting them `FOR UPDATE SKIP LOCKED` so concurrent
+replicas split the batch. A claim is a lease, not a permanent marker: a row whose
+`claimed_at` is older than `pending_reschedule::LEASE` is claimable again, so a crashed
+replica's rows come back on their own. After the send, `complete` settles the row (or
+keeps a newer change pending) and `release` hands it back, giving up after
+`MAX_ATTEMPTS`. Both act only while the caller still holds the claim.
+
+Delivery is therefore at least once: a send that outlives the lease, or a crash between
+the send and `complete`, can repeat the email. The reminder's upsert-plus-unique-index
+claim does not fit here because the row is the work item itself and must be reclaimable,
+not a record of what was sent.
+
 `LIMIT` bounds one tick's batch, so a backlog — the first run after an outage, say —
 drains over several ticks instead of bursting against the Resend API.
 
@@ -134,6 +154,7 @@ drains over several ticks instead of bursting against the Resend API.
 |---|---|---|---|
 | `password-reset-sweep` | 24h | After interval | Deletes `password_reset_attempts` rows older than 30 days. Retention outlives the 24-hour daily-cap window; the rest is forensics. |
 | `session-reminder` | `SESSION_REMINDER_POLL_MINUTES` (default 15) | Immediately | Emails each coachee ahead of an upcoming session. Not scheduled at all when `SESSION_REMINDER_EMAIL_TEMPLATE_ID` is unset. |
+| `pending-reschedule` | 15s | Immediately | Emails a single session's net reschedule once it settles (`SESSION_RESCHEDULE_SETTLE_SECONDS`, default 60, capped by `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS`, default 300). Always scheduled: without Resend or `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` it drops due rows unsent, since a pending row suppresses the session's reminder. |
 
 The session-store expiry task in `web::init_server` stays hand-rolled: it is
 `tower_sessions`' own `continuously_delete_expired` helper, not one of our jobs.
@@ -153,5 +174,7 @@ The session-store expiry task in `web::init_server` stays hand-rolled: it is
 | `domain/src/jobs/mod.rs` | `Job` trait, `Context`, `Outcome`, `Scheduler` |
 | `domain/src/jobs/session_reminder.rs` | Upcoming-session reminder sweep |
 | `domain/src/jobs/password_reset.rs` | Password-reset attempt retention sweep |
+| `domain/src/jobs/pending_reschedule.rs` | Settled-reschedule email sweep |
+| `entity_api/src/pending_reschedule.rs` | `claim_due` / `complete` / `release` (lease-based claim) |
 | `entity_api/src/coaching_session.rs` | `claim_due_reminders` / `release_reminder_claim` |
 | `web/src/lib.rs` | Registers the jobs at server start |
