@@ -112,6 +112,7 @@ pub async fn read(
     responses(
         (status = 204, description = "Successfully updated a User", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 422, description = "Invalid working hours. JSON `{status_code, error: \"validation_error\", message}`"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -125,6 +126,23 @@ pub async fn update(
     Path(user_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    UserApi::update(app_state.db_conn_ref(), user_id, params).await?;
+    let working_hours = UserApi::parse_working_hours(
+        params.working_hours_start.as_deref(),
+        params.working_hours_end.as_deref(),
+    )?;
+    UserApi::update(
+        app_state.db_conn_ref(),
+        user_id,
+        UpdateUser {
+            params,
+            working_hours,
+        },
+    )
+    .await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "user_update_tests.rs"]
+mod update_tests;

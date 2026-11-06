@@ -1,6 +1,8 @@
 use super::*;
+use crate::working_hours::{Field, Invalid};
 use crate::Actor;
-use crate::{coaching_relationships, organizations, user_roles};
+use crate::{coaching_relationships, organizations, user_roles, IntoUpdateMap, UpdateMap};
+use chrono::NaiveTime;
 use sea_orm::{DatabaseBackend, DbErr, MockDatabase};
 
 fn organization(id: Id) -> organizations::Model {
@@ -320,4 +322,101 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
     );
 
     Ok(())
+}
+
+fn time(hour: u32, minute: u32) -> NaiveTime {
+    NaiveTime::from_hms_opt(hour, minute, 0).expect("valid test time")
+}
+
+/// An update map handed straight to `update`.
+struct Changes(UpdateMap);
+
+impl IntoUpdateMap for Changes {
+    fn into_update_map(self) -> UpdateMap {
+        self.0
+    }
+}
+
+fn working_hours_start(start: NaiveTime) -> Changes {
+    let mut map = UpdateMap::new();
+    map.insert(
+        "working_hours_start".to_string(),
+        Some(Value::ChronoTime(Some(start))),
+    );
+    Changes(map)
+}
+
+/// A mock that answers `find_by_id` with `stored`, which works 08:00 to 17:30.
+fn mock_stored_user(stored: &users::Model) -> MockDatabase {
+    MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            stored.clone(),
+            None,
+        )]])
+}
+
+#[tokio::test]
+async fn update_rejects_a_start_after_the_stored_end_without_writing() {
+    let stored = user(Id::new_v4());
+    let db = mock_stored_user(&stored).into_connection();
+
+    let err = update(&db, stored.id, working_hours_start(time(18, 0)))
+        .await
+        .expect_err("18:00 is after the stored 17:30 end");
+
+    assert_eq!(
+        err.error_kind,
+        DomainErrorKind::Validation(
+            "working_hours_start must be before working_hours_end".to_string()
+        )
+    );
+    let sql = statements(db);
+    assert!(!sql.iter().any(|s| s.starts_with("UPDATE")), "{sql:?}");
+}
+
+#[tokio::test]
+async fn update_writes_a_start_before_the_stored_end() -> Result<(), Error> {
+    let stored = user(Id::new_v4());
+    let updated = users::Model {
+        working_hours_start: time(9, 30),
+        ..stored.clone()
+    };
+    let db = mock_stored_user(&stored)
+        .append_query_results([[updated]])
+        .into_connection();
+
+    let result = update(&db, stored.id, working_hours_start(time(9, 30))).await?;
+    assert_eq!(result.working_hours_start, time(9, 30));
+
+    let sql = statements(db);
+    let update_sql = sql
+        .iter()
+        .find(|s| s.starts_with("UPDATE"))
+        .expect("an UPDATE is issued");
+    let set_clause = update_sql
+        .split_once(" SET ")
+        .and_then(|(_, rest)| rest.split_once(" WHERE "))
+        .map(|(set, _)| set)
+        .expect("the UPDATE has a SET clause");
+    assert!(
+        set_clause.contains("\"working_hours_start\""),
+        "{update_sql}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn working_hours_entity_error_converts_to_a_validation_error() {
+    let err = Error::from(EntityApiError {
+        source: None,
+        error_kind: EntityApiErrorKind::WorkingHours(Invalid::NotOnStep(Field::End)),
+    });
+
+    assert_eq!(
+        err.error_kind,
+        DomainErrorKind::Validation(
+            "working_hours_end must be HH:MM on a 30-minute step".to_string()
+        )
+    );
 }
