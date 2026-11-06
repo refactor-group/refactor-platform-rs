@@ -218,6 +218,18 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     })
 }
 
+/// Reads a session and locks its row until the transaction ends.
+pub async fn find_by_id_for_update(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .lock_exclusive()
+        .one(db)
+        .await?
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
 /// Returns every coaching session linked to the given series, ordered by date ascending,
 /// ties by id so the order is the same on every read.
 pub async fn find_by_series_id(
@@ -416,6 +428,8 @@ struct ClaimedPair {
 /// the recipient still holds a role in its organization, and no claim row already holds
 /// the session's current `date`.
 ///
+/// A session with a pending reschedule is skipped until participants are told its time.
+///
 /// Notice is `date - notice_given_at`: how long before the session the participants were
 /// last told its time, at booking and again on every reschedule. A session starting less
 /// than a lead after that is skipped, because the email that told them just said what a
@@ -463,6 +477,11 @@ pub async fn claim_due_reminders(
                  AND cs.date > (cs.notice_given_at AT TIME ZONE 'UTC')
                                + ($2::timestamp - $1::timestamp)
                  AND csr.sent_for_start IS DISTINCT FROM cs.date
+                 -- A reminder must not announce a time participants haven't been told.
+                 AND NOT EXISTS (
+                     SELECT 1 FROM refactor_platform.coaching_session_pending_reschedules p
+                     WHERE p.coaching_session_id = cs.id
+                 )
                  AND EXISTS (
                      SELECT 1
                      FROM refactor_platform.user_roles ur
@@ -1806,6 +1825,34 @@ mod tests {
             sql.contains("ur.organization_id IS NULL AND ur.role = 'super_admin'"),
             "a global SuperAdmin holds no organization row and must still count, \
              matching user_role::retain_organization_members, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// A reminder for a session with an unannounced change would state a time participants
+    /// were never told.
+    #[tokio::test]
+    async fn claim_due_reminders_skips_sessions_with_a_pending_reschedule() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+        let not_exists = sql
+            .find("NOT EXISTS")
+            .expect("the claim must exclude sessions with a pending reschedule");
+
+        assert!(
+            sql[not_exists..].contains("coaching_session_pending_reschedules"),
+            "the exclusion must test the pending reschedules table, got: {sql}"
         );
 
         Ok(())

@@ -1174,6 +1174,9 @@ fn build_session_ics(
 /// Best-effort in that a failure does not fail the edit, but the caller needs the answer:
 /// the reminder rule treats an announced time as notice given, and recording notice for
 /// an email that never arrived would leave the coachee with neither.
+///
+/// A delivered send must clear the session's pending reschedule (via
+/// `coaching_session::record_notice` or `pending_reschedule::clear`).
 pub async fn notify_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
@@ -2018,6 +2021,9 @@ async fn send_recurring_sessions_scheduled_email(
 /// Resend a series' invite as it stands today. `series` must already carry the bumped
 /// `ical_sequence`. `upcoming` is what the email lists; `rows` is every session linked
 /// to the series, which the snapshot is built from.
+///
+/// A delivered send must clear each session's pending reschedule (via
+/// `coaching_session::record_notice` or `pending_reschedule::clear`).
 pub(crate) async fn send_series_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2051,6 +2057,9 @@ pub(crate) async fn send_series_invite_resend(
 
 /// Resend a session's invite as it stands today. `session` must already carry the bumped
 /// `ical_sequence`.
+///
+/// A delivered send must clear the session's pending reschedule (via
+/// `coaching_session::record_notice` or `pending_reschedule::clear`).
 pub(crate) async fn send_session_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2260,6 +2269,9 @@ pub struct FollowingRescheduleNotice<'a> {
 /// own meeting links. On a split it also carries the shortened series' snapshot, so
 /// calendars drop the occurrences the new series took over. Returns whether the coachee was
 /// told, which decides whether the moved sessions count as noticed.
+///
+/// A delivered send must clear each session's pending reschedule (via
+/// `coaching_session::record_notice` or `pending_reschedule::clear`).
 pub async fn notify_recurring_sessions_rescheduled_following(
     db: &DatabaseConnection,
     config: &Config,

@@ -21,6 +21,9 @@ pub use entity::coaching_session_pending_reschedules::Model;
 /// Retries allowed before a failing send is given up.
 pub const MAX_ATTEMPTS: i16 = 3;
 
+/// How long a sweep's claim holds a row.
+pub const LEASE: TimeDelta = TimeDelta::minutes(2);
+
 /// A session's start and duration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Schedule {
