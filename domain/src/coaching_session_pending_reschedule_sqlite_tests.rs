@@ -3,7 +3,7 @@
 
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
 use entity::{coaching_sessions, Id};
-use entity_api::pending_reschedule::{
+use entity_api::coaching_session_pending_reschedule::{
     self, Claimed, Completed, Recorded, Released, Schedule, Timing, MAX_ATTEMPTS,
 };
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set};
@@ -27,7 +27,7 @@ fn secs(n: i64) -> TimeDelta {
 fn timing() -> Timing {
     Timing {
         settle: secs(60),
-        cap: secs(300),
+        settle_max: secs(300),
         lease: secs(120),
     }
 }
@@ -77,13 +77,20 @@ async fn record(
     after: Schedule,
     when: NaiveDateTime,
 ) -> Recorded {
-    pending_reschedule::record_change(db, session_id, before, after, when, timing().lease)
-        .await
-        .expect("the change records")
+    coaching_session_pending_reschedule::record_change(
+        db,
+        session_id,
+        before,
+        after,
+        when,
+        timing().lease,
+    )
+    .await
+    .expect("the change records")
 }
 
 async fn claim(db: &DatabaseConnection, when: NaiveDateTime, claim_id: Id) -> Vec<Claimed> {
-    pending_reschedule::claim_due(db, when, timing(), claim_id, 10)
+    coaching_session_pending_reschedule::claim_due(db, when, timing(), claim_id, 10)
         .await
         .expect("the claim runs")
 }
@@ -92,7 +99,7 @@ async fn find(
     db: &DatabaseConnection,
     session_id: Id,
 ) -> Option<entity::coaching_session_pending_reschedules::Model> {
-    pending_reschedule::find(db, session_id)
+    coaching_session_pending_reschedule::find(db, session_id)
         .await
         .expect("the row reads")
 }
@@ -350,9 +357,10 @@ async fn a_claim_takes_at_most_the_limit_oldest_first() {
         record(&db, third, a(), b(), now() + secs(2)).await;
 
         let when = now() + secs(120);
-        let taken = pending_reschedule::claim_due(&db, when, timing(), Id::new_v4(), 2)
-            .await
-            .expect("the claim runs");
+        let taken =
+            coaching_session_pending_reschedule::claim_due(&db, when, timing(), Id::new_v4(), 2)
+                .await
+                .expect("the claim runs");
         let ids: Vec<Id> = taken.iter().map(|c| c.coaching_session_id).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&first) && ids.contains(&second));
@@ -377,7 +385,7 @@ async fn completing_at_the_claimed_revision_settles() {
         record(&db, session_id, a(), b(), now()).await;
         let claimed = claim(&db, now() + secs(60), Id::new_v4()).await;
 
-        let completed = pending_reschedule::complete(&db, &claimed[0], b())
+        let completed = coaching_session_pending_reschedule::complete(&db, &claimed[0], b())
             .await
             .expect("completion runs");
         assert_eq!(completed, Completed::Settled);
@@ -396,7 +404,7 @@ async fn a_change_during_the_send_stays_pending_from_what_was_sent() {
         let claimed = claim(&db, now() + secs(60), Id::new_v4()).await;
         record(&db, session_id, b(), c(), now() + secs(65)).await;
 
-        let completed = pending_reschedule::complete(&db, &claimed[0], b())
+        let completed = coaching_session_pending_reschedule::complete(&db, &claimed[0], b())
             .await
             .expect("completion runs");
         assert_eq!(completed, Completed::StillPending);
@@ -430,7 +438,7 @@ async fn an_undo_during_the_send_leaves_a_correction_pending() {
             Recorded::Pending
         );
 
-        let completed = pending_reschedule::complete(&db, &claimed[0], b())
+        let completed = coaching_session_pending_reschedule::complete(&db, &claimed[0], b())
             .await
             .expect("completion runs");
         assert_eq!(completed, Completed::StillPending);
@@ -458,7 +466,7 @@ async fn a_completion_whose_claim_was_taken_over_changes_nothing() {
             1
         );
 
-        let completed = pending_reschedule::complete(&db, &stale[0], b())
+        let completed = coaching_session_pending_reschedule::complete(&db, &stale[0], b())
             .await
             .expect("completion runs");
         assert_eq!(completed, Completed::Superseded);
@@ -469,7 +477,7 @@ async fn a_completion_whose_claim_was_taken_over_changes_nothing() {
         assert_eq!(row.claim_id, Some(second));
         assert_eq!(row.announced_date, a().date);
 
-        let released = pending_reschedule::release(&db, &stale[0])
+        let released = coaching_session_pending_reschedule::release(&db, &stale[0])
             .await
             .expect("release runs");
         assert_eq!(released, Released::Superseded);
@@ -491,7 +499,7 @@ async fn a_failed_send_releases_the_claim_and_counts_the_attempt() {
         record(&db, session_id, a(), b(), now()).await;
         let claimed = claim(&db, now() + secs(60), Id::new_v4()).await;
 
-        let released = pending_reschedule::release(&db, &claimed[0])
+        let released = coaching_session_pending_reschedule::release(&db, &claimed[0])
             .await
             .expect("release runs");
         assert_eq!(released, Released::Retrying);
@@ -521,7 +529,7 @@ async fn the_last_allowed_failure_gives_up() {
             let claimed = claim(&db, now() + secs(60), Id::new_v4()).await;
             assert_eq!(claimed.len(), 1);
             outcomes.push(
-                pending_reschedule::release(&db, &claimed[0])
+                coaching_session_pending_reschedule::release(&db, &claimed[0])
                     .await
                     .expect("release runs"),
             );
@@ -543,11 +551,11 @@ async fn clear_removes_a_pending_change_and_is_idempotent() {
         let session_id = later_session(&db).await;
 
         record(&db, session_id, a(), b(), now()).await;
-        pending_reschedule::clear(&db, session_id)
+        coaching_session_pending_reschedule::clear(&db, session_id)
             .await
             .expect("clear runs");
         assert_eq!(find(&db, session_id).await, None);
-        pending_reschedule::clear(&db, session_id)
+        coaching_session_pending_reschedule::clear(&db, session_id)
             .await
             .expect("a second clear runs");
     })

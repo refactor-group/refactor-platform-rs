@@ -1176,7 +1176,7 @@ fn build_session_ics(
 /// an email that never arrived would leave the coachee with neither.
 ///
 /// A delivered send must clear the session's pending reschedule (via
-/// `coaching_session::record_notice` or `pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
 pub async fn notify_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
@@ -1212,7 +1212,7 @@ pub async fn notify_session_rescheduled(
 /// Sends the session-rescheduled emails, returning who was told.
 ///
 /// A delivered send must clear the session's pending reschedule (via
-/// `coaching_session::record_notice` or `pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
 pub async fn send_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
@@ -2043,7 +2043,7 @@ async fn send_recurring_sessions_scheduled_email(
 /// to the series, which the snapshot is built from.
 ///
 /// A delivered send must clear each session's pending reschedule (via
-/// `coaching_session::record_notice` or `pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
 pub(crate) async fn send_series_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2079,7 +2079,7 @@ pub(crate) async fn send_series_invite_resend(
 /// `ical_sequence`.
 ///
 /// A delivered send must clear the session's pending reschedule (via
-/// `coaching_session::record_notice` or `pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
 pub(crate) async fn send_session_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2291,7 +2291,7 @@ pub struct FollowingRescheduleNotice<'a> {
 /// told, which decides whether the moved sessions count as noticed.
 ///
 /// A delivered send must clear each session's pending reschedule (via
-/// `coaching_session::record_notice` or `pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
 pub async fn notify_recurring_sessions_rescheduled_following(
     db: &DatabaseConnection,
     config: &Config,

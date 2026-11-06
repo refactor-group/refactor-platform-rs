@@ -52,7 +52,7 @@ async fn pending(
     db: &DatabaseConnection,
     id: Id,
 ) -> Option<coaching_session_pending_reschedules::Model> {
-    pending_reschedule::find(db, id)
+    coaching_session_pending_reschedule::find(db, id)
         .await
         .expect("the pending row reads")
 }
@@ -80,13 +80,13 @@ async fn moved_session(db: &DatabaseConnection, at: NaiveDateTime) -> (Id, Naive
     let (id, start) = upcoming_session(db).await;
     let moved = start + TimeDelta::hours(1);
     reschedule(db, id, moved).await;
-    pending_reschedule::record_change(
+    coaching_session_pending_reschedule::record_change(
         db,
         id,
         schedule(start),
         schedule(moved),
         at,
-        pending_reschedule::LEASE,
+        coaching_session_pending_reschedule::LEASE,
     )
     .await
     .expect("the change records");
@@ -186,7 +186,7 @@ async fn a_failed_send_is_retried_then_given_up() {
         assert_eq!(row.claim_id, None);
         assert_eq!(notice_given_at(&ctx.db, id).await, before);
 
-        for _ in 1..pending_reschedule::MAX_ATTEMPTS {
+        for _ in 1..coaching_session_pending_reschedule::MAX_ATTEMPTS {
             sweep.run(&ctx).await.expect("the tick runs");
         }
 

@@ -121,7 +121,7 @@ scheduled, rather than a job that logs a config error every few minutes.
 
 Editing a single session's date or duration (`PUT /coaching_sessions/{id}`) does not email
 right away. It records a pending reschedule holding the schedule participants were last
-told, and the `pending-reschedule` sweep (`domain::jobs::pending_reschedule`) sends the
+told, and the `coaching-session-pending-reschedule` sweep (`domain::jobs::coaching_session_pending_reschedule`) sends the
 session-rescheduled email once the schedule has been quiet for
 `SESSION_RESCHEDULE_SETTLE_SECONDS` (default 60), once
 `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS` (default 300) have passed since the first
@@ -176,5 +176,5 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `domain/src/emails.rs` | `notify_*` + `send_*` + `EmailNotification` trait |
 | `domain/src/gateway/resend.rs` | HTTP client, request builder, fire-and-forget delivery |
 | `domain/src/jobs/session_reminder.rs` | The reminder sweep |
-| `domain/src/jobs/pending_reschedule.rs` | The settled-reschedule sweep |
+| `domain/src/jobs/coaching_session_pending_reschedule.rs` | The settled-reschedule sweep |
 | `service/src/config.rs` | Template ID and URL config |

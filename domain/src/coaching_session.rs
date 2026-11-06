@@ -14,9 +14,9 @@ use crate::meeting_provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_sessions, mutate, organization,
-    pending_reschedule::{self, Schedule},
-    query,
+    coaching_relationship, coaching_session,
+    coaching_session_pending_reschedule::{self, Schedule},
+    coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
@@ -373,7 +373,7 @@ pub async fn update(
         false => updated,
     };
     if emails::affects_schedule(&old, &updated) {
-        pending_reschedule::record_change(
+        coaching_session_pending_reschedule::record_change(
             &txn,
             id,
             Schedule {
@@ -385,7 +385,7 @@ pub async fn update(
                 duration_minutes: updated.duration_minutes,
             },
             Utc::now().naive_utc(),
-            pending_reschedule::LEASE,
+            coaching_session_pending_reschedule::LEASE,
         )
         .await?;
     }
@@ -412,12 +412,14 @@ pub(crate) async fn record_notice(db: &DatabaseConnection, id: Id) -> Option<Mod
 /// Drops a session's pending reschedule once participants were told its schedule.
 /// Best-effort: a failure is logged.
 pub(crate) async fn clear_pending_reschedule(db: &DatabaseConnection, id: Id) {
-    let _ = pending_reschedule::clear(db, id).await.inspect_err(|e| {
-        warn!(
-            "Told the participants session {id}'s schedule but could not clear its pending \
+    let _ = coaching_session_pending_reschedule::clear(db, id)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Told the participants session {id}'s schedule but could not clear its pending \
              reschedule, so they may be told it again: {e:?}"
-        )
-    });
+            )
+        });
 }
 
 /// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
@@ -1866,9 +1868,9 @@ mod tests {
 mod sqlite_tests;
 
 #[cfg(test)]
-#[path = "pending_reschedule_sqlite_tests.rs"]
+#[path = "coaching_session_pending_reschedule_sqlite_tests.rs"]
 mod pending_reschedule_sqlite_tests;
 
 #[cfg(test)]
-#[path = "coaching_session_pending_sqlite_tests.rs"]
-mod pending_sqlite_tests;
+#[path = "coaching_session_update_sqlite_tests.rs"]
+mod update_sqlite_tests;

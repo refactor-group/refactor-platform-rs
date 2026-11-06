@@ -142,19 +142,21 @@ default flag feature that pulls in no SQLite code.)
   leaves its neighbours alone. The content check flags a session with a note, action,
   agreement or live topic, and nothing else. The series' sessions are walked by date with
   ties broken by id.
-- **Pending reschedules** (`domain/src/pending_reschedule_sqlite_tests.rs`): the first
-  change records the pre-edit schedule as announced, later ones bump the revision, and an
-  undo back to it drops an unclaimed or lease-expired row but keeps a claimed one. A row
-  comes due after the quiet period, at the cap, or when its session starts within the cap;
-  claims take the oldest first up to the limit and skip rows under a live lease. Completion
-  settles only at the claimed revision, otherwise keeps the newer change pending from what
-  was sent; a stale claim changes nothing, failures count attempts up to giving up, and
-  deleting the session drops its row.
-- **The pending reschedule sweep** (`domain/src/jobs/pending_reschedule_sqlite_tests.rs`):
-  a due change is emailed (moved from the last announced start), settled, and stamps
-  notice; a failed send leaves the row unclaimed with one more attempt until it is given
-  up; a change already reverted settles without an email; drain mode drops due rows unsent
-  without stamping notice; and a change that is not yet due is left untouched.
+- **Pending reschedules**
+  (`domain/src/coaching_session_pending_reschedule_sqlite_tests.rs`): the first change
+  records the pre-edit schedule as announced, later ones bump the revision, and an undo
+  back to it drops an unclaimed or lease-expired row but keeps a claimed one. A row comes
+  due after the quiet period, at the cap, or when its session starts within the cap;
+  claims take the oldest first up to the limit and skip rows under a live lease.
+  Completion settles only at the claimed revision, otherwise keeps the newer change
+  pending from what was sent; a stale claim changes nothing, failures count attempts up to
+  giving up, and deleting the session drops its row.
+- **The pending reschedule sweep**
+  (`domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs`): a due change is
+  emailed (moved from the last announced start), settled, and stamps notice; a failed send
+  leaves the row unclaimed with one more attempt until it is given up; a change already
+  reverted settles without an email; drain mode drops due rows unsent without stamping
+  notice; and a change that is not yet due is left untouched.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge

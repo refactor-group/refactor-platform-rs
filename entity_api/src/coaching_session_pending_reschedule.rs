@@ -35,7 +35,7 @@ pub struct Schedule {
 #[derive(Clone, Copy, Debug)]
 pub struct Timing {
     pub settle: TimeDelta,
-    pub cap: TimeDelta,
+    pub settle_max: TimeDelta,
     pub lease: TimeDelta,
 }
 
@@ -272,11 +272,11 @@ fn due(now: NaiveDateTime, timing: Timing) -> Condition {
     let starting_soon = Query::select()
         .column(coaching_sessions::Column::Id)
         .from(coaching_sessions::Entity.table_ref())
-        .and_where(coaching_sessions::Column::Date.lte(now + timing.cap))
+        .and_where(coaching_sessions::Column::Date.lte(now + timing.settle_max))
         .to_owned();
     Condition::any()
         .add(Column::ChangedAt.lte(now - timing.settle))
-        .add(Column::UnannouncedSince.lte(now - timing.cap))
+        .add(Column::UnannouncedSince.lte(now - timing.settle_max))
         .add(Column::CoachingSessionId.in_subquery(starting_soon))
 }
 
@@ -288,5 +288,5 @@ fn held(claimed: &Claimed) -> Condition {
 }
 
 #[cfg(all(test, feature = "mock"))]
-#[path = "pending_reschedule_tests.rs"]
+#[path = "coaching_session_pending_reschedule_tests.rs"]
 mod tests;

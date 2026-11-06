@@ -7,15 +7,15 @@
 //! starts within the cap.
 //!
 //! Rows are claimed under a lease, so delivery is at least once: a send that outlives
-//! [`pending_reschedule::LEASE`], or a crash between a send and its completion, can repeat.
-//! A failed send is retried up to [`pending_reschedule::MAX_ATTEMPTS`] times, then given up;
+//! [`coaching_session_pending_reschedule::LEASE`], or a crash between a send and its completion, can repeat.
+//! A failed send is retried up to [`coaching_session_pending_reschedule::MAX_ATTEMPTS`] times, then given up;
 //! the regular reminder is the fallback.
 //!
 //! Without Resend or the rescheduled template the sweep still runs, dropping due rows
 //! unsent, since a pending row suppresses the session's reminder.
 //!
 //! A delivered send stamps notice with `coaching_session::mark_notice_given` alone, leaving
-//! the row to `pending_reschedule::complete`, which keeps it when a newer change landed
+//! the row to `coaching_session_pending_reschedule::complete`, which keeps it when a newer change landed
 //! mid-send.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
@@ -25,8 +25,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{TimeDelta, Utc};
 use entity_api::coaching_session;
+use entity_api::coaching_session_pending_reschedule::{
+    self, Claimed, Completed, Released, Schedule, Timing,
+};
 use entity_api::error::EntityApiErrorKind;
-use entity_api::pending_reschedule::{self, Claimed, Completed, Released, Schedule, Timing};
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
@@ -46,7 +48,7 @@ const BATCH: u64 = 50;
 const DEFAULT_SETTLE: TimeDelta = TimeDelta::seconds(60);
 
 /// Cap used when the configured one does not fit a `TimeDelta`.
-const DEFAULT_CAP: TimeDelta = TimeDelta::seconds(300);
+const DEFAULT_SETTLE_MAX: TimeDelta = TimeDelta::seconds(300);
 
 pub struct Sweep {
     timing: Timing,
@@ -69,12 +71,12 @@ impl Sweep {
                 DEFAULT_SETTLE,
                 "SESSION_RESCHEDULE_SETTLE_SECONDS",
             ),
-            cap: delta_or(
+            settle_max: delta_or(
                 config.session_reschedule_settle_max(),
-                DEFAULT_CAP,
+                DEFAULT_SETTLE_MAX,
                 "SESSION_RESCHEDULE_SETTLE_MAX_SECONDS",
             ),
-            lease: pending_reschedule::LEASE,
+            lease: coaching_session_pending_reschedule::LEASE,
         };
 
         let sendable = config.resend_api_key().is_some()
@@ -83,7 +85,7 @@ impl Sweep {
             Mode::Send
         } else {
             info!(
-                "[pending-reschedule] reschedule emails are off; pending changes will be \
+                "[coaching-session-pending-reschedule] reschedule emails are off; pending changes will be \
                  dropped unsent"
             );
             Mode::Drain
@@ -101,7 +103,7 @@ impl Sweep {
             // The session's deletion cascaded to the row.
             Err(e) if e.error_kind == EntityApiErrorKind::RecordNotFound => return true,
             Err(e) => {
-                warn!("[pending-reschedule] could not load session {id}: {e:?}");
+                warn!("[coaching-session-pending-reschedule] could not load session {id}: {e:?}");
                 return false;
             }
         };
@@ -120,16 +122,16 @@ impl Sweep {
             Ok(delivered) if delivered.coachee => {
                 let handled = settle(db, claimed, current).await;
                 if let Err(e) = coaching_session::mark_notice_given(db, id).await {
-                    warn!("[pending-reschedule] could not record notice for session {id}: {e:?}");
+                    warn!("[coaching-session-pending-reschedule] could not record notice for session {id}: {e:?}");
                 }
                 handled
             }
             Ok(delivered) => {
-                warn!("[pending-reschedule] session {id} coachee was not told: {delivered:?}");
+                warn!("[coaching-session-pending-reschedule] session {id} coachee was not told: {delivered:?}");
                 retry(db, claimed).await
             }
             Err(e) => {
-                warn!("[pending-reschedule] send failed for session {id}: {e:?}");
+                warn!("[coaching-session-pending-reschedule] send failed for session {id}: {e:?}");
                 retry(db, claimed).await
             }
         }
@@ -139,7 +141,9 @@ impl Sweep {
 /// Converts a configured duration, falling back to `default` when it overflows.
 fn delta_or(duration: Duration, default: TimeDelta, name: &str) -> TimeDelta {
     TimeDelta::from_std(duration).unwrap_or_else(|e| {
-        warn!("[pending-reschedule] {name} is out of range, using {default}: {e:?}");
+        warn!(
+            "[coaching-session-pending-reschedule] {name} is out of range, using {default}: {e:?}"
+        );
         default
     })
 }
@@ -147,14 +151,14 @@ fn delta_or(duration: Duration, default: TimeDelta, name: &str) -> TimeDelta {
 /// Completes a claimed row after `sent` was told or nothing needed telling.
 async fn settle(db: &DatabaseConnection, claimed: &Claimed, sent: Schedule) -> bool {
     let id = claimed.coaching_session_id;
-    match pending_reschedule::complete(db, claimed, sent).await {
+    match coaching_session_pending_reschedule::complete(db, claimed, sent).await {
         Ok(Completed::Settled | Completed::StillPending) => true,
         Ok(Completed::Superseded) => {
-            info!("[pending-reschedule] another claim took over session {id}");
+            info!("[coaching-session-pending-reschedule] another claim took over session {id}");
             true
         }
         Err(e) => {
-            warn!("[pending-reschedule] could not complete session {id}: {e:?}");
+            warn!("[coaching-session-pending-reschedule] could not complete session {id}: {e:?}");
             false
         }
     }
@@ -163,21 +167,21 @@ async fn settle(db: &DatabaseConnection, claimed: &Claimed, sent: Schedule) -> b
 /// Releases a claimed row after a failed send; returns whether it was handled.
 async fn retry(db: &DatabaseConnection, claimed: &Claimed) -> bool {
     let id = claimed.coaching_session_id;
-    match pending_reschedule::release(db, claimed).await {
+    match coaching_session_pending_reschedule::release(db, claimed).await {
         Ok(Released::Retrying) => false,
         Ok(Released::GaveUp) => {
             warn!(
-                "[pending-reschedule] giving up on session {id}; the change will not be \
+                "[coaching-session-pending-reschedule] giving up on session {id}; the change will not be \
                  emailed and the reminder is the fallback"
             );
             false
         }
         Ok(Released::Superseded) => {
-            info!("[pending-reschedule] another claim took over session {id}");
+            info!("[coaching-session-pending-reschedule] another claim took over session {id}");
             true
         }
         Err(e) => {
-            warn!("[pending-reschedule] could not release session {id}: {e:?}");
+            warn!("[coaching-session-pending-reschedule] could not release session {id}: {e:?}");
             false
         }
     }
@@ -186,7 +190,7 @@ async fn retry(db: &DatabaseConnection, claimed: &Claimed) -> bool {
 #[async_trait]
 impl Job for Sweep {
     fn name(&self) -> &'static str {
-        "pending-reschedule"
+        "coaching-session-pending-reschedule"
     }
 
     fn interval(&self) -> Duration {
@@ -198,7 +202,7 @@ impl Job for Sweep {
     }
 
     async fn run(&self, ctx: &Context) -> Result<Outcome, Error> {
-        let claimed = pending_reschedule::claim_due(
+        let claimed = coaching_session_pending_reschedule::claim_due(
             &*ctx.db,
             Utc::now().naive_utc(),
             self.timing,
@@ -223,7 +227,7 @@ impl Job for Sweep {
 }
 
 #[cfg(test)]
-#[path = "pending_reschedule_sqlite_tests.rs"]
+#[path = "coaching_session_pending_reschedule_sqlite_tests.rs"]
 mod sqlite_tests;
 
 #[cfg(test)]
@@ -270,7 +274,10 @@ mod tests {
         ]));
 
         assert_eq!(sweep.timing.settle, TimeDelta::seconds(90));
-        assert_eq!(sweep.timing.cap, TimeDelta::seconds(600));
-        assert_eq!(sweep.timing.lease, pending_reschedule::LEASE);
+        assert_eq!(sweep.timing.settle_max, TimeDelta::seconds(600));
+        assert_eq!(
+            sweep.timing.lease,
+            coaching_session_pending_reschedule::LEASE
+        );
     }
 }

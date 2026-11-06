@@ -14,7 +14,7 @@ async fn claim_due_locks_rows_with_skip_locked() {
         .expect("valid test time");
     let timing = Timing {
         settle: TimeDelta::seconds(60),
-        cap: TimeDelta::seconds(300),
+        settle_max: TimeDelta::seconds(300),
         lease: TimeDelta::seconds(120),
     };
 
