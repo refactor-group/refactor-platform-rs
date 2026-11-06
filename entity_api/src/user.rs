@@ -390,7 +390,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
                 [user_email.into()]
             )]
         );
@@ -409,7 +409,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
                 [user_id.into()]
             )]
         );
@@ -428,7 +428,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
                 []
             )]
         );
@@ -455,6 +455,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],
@@ -518,6 +520,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],
@@ -585,6 +589,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],
@@ -761,6 +767,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],

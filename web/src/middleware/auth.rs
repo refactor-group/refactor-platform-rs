@@ -159,6 +159,8 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
+            working_hours_start: domain::working_hours::default_start(),
+            working_hours_end: domain::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![], // Will be populated by find_with_related

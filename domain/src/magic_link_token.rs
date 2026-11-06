@@ -273,6 +273,8 @@ mod tests {
                 timezone: "UTC".into(),
                 default_coaching_session_duration_minutes:
                     crate::duration::Duration::default_minutes(),
+                working_hours_start: crate::working_hours::default_start(),
+                working_hours_end: crate::working_hours::default_end(),
                 roles: vec![],
                 invite_status: None,
                 created_at: Utc::now().into(),
