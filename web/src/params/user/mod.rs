@@ -4,6 +4,7 @@ pub(crate) mod coaching_session;
 pub(crate) mod goal;
 
 // Re-export user profile update params for backward compatibility
+use domain::user::WorkingHoursPatch;
 use domain::{users, users::Role, Id, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
@@ -63,6 +64,10 @@ pub struct UpdateParams {
     /// Validated in entity_api via the `Duration` newtype. `i16` matches
     /// both the storage type and the newtype's inner representation.
     pub default_coaching_session_duration_minutes: Option<i16>,
+    /// Start of the working day, local `"HH:MM"` on a 30-minute step.
+    pub working_hours_start: Option<String>,
+    /// End of the working day, local `"HH:MM"` on a 30-minute step.
+    pub working_hours_end: Option<String>,
 }
 
 impl IntoUpdateMap for UpdateParams {
@@ -104,6 +109,29 @@ impl IntoUpdateMap for UpdateParams {
                 Some(Value::SmallInt(Some(default_duration))),
             );
         }
+        update_map
+    }
+}
+
+/// A user update with its working hours already parsed into times.
+#[derive(Debug)]
+pub struct UpdateUser {
+    pub params: UpdateParams,
+    pub working_hours: WorkingHoursPatch,
+}
+
+impl IntoUpdateMap for UpdateUser {
+    fn into_update_map(self) -> UpdateMap {
+        let mut update_map = self.params.into_update_map();
+        [
+            ("working_hours_start", self.working_hours.start),
+            ("working_hours_end", self.working_hours.end),
+        ]
+        .into_iter()
+        .filter_map(|(key, time)| time.map(|time| (key, time)))
+        .for_each(|(key, time)| {
+            update_map.insert(key.to_string(), Some(Value::ChronoTime(Some(time))));
+        });
         update_map
     }
 }

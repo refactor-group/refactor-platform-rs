@@ -1,6 +1,14 @@
-use super::{AttachRoleParams, CreateMemberParams, UpdateRoleParams};
+use super::{AttachRoleParams, CreateMemberParams, UpdateParams, UpdateRoleParams, UpdateUser};
+use crate::Error;
+use axum::body::to_bytes;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use chrono::NaiveTime;
+use domain::error::{DomainErrorKind, Error as DomainError};
+use domain::user::WorkingHoursPatch;
 use domain::users::Role;
-use domain::Id;
+use domain::{Id, IntoUpdateMap};
+use sea_orm::Value;
 
 /// A misspelled key must not be silently dropped, leaving the caller to think
 /// they set something they did not. Pins `deny_unknown_fields` on the body.
@@ -72,4 +80,72 @@ fn create_member_params_reads_coach_id_beside_the_flattened_user_fields() {
             .expect("coach_id must be read at the same level as the user fields");
     assert_eq!(with_coach.coach_id, Some(coach_id));
     assert_eq!(with_coach.user.email, "ada@example.com");
+}
+
+fn update_params(start: Option<&str>, end: Option<&str>) -> UpdateParams {
+    UpdateParams {
+        email: None,
+        first_name: Some("Ada".to_string()),
+        last_name: None,
+        display_name: None,
+        github_profile_url: None,
+        timezone: None,
+        default_coaching_session_duration_minutes: None,
+        working_hours_start: start.map(str::to_string),
+        working_hours_end: end.map(str::to_string),
+    }
+}
+
+/// Raw strings must never reach a TIME column; only parsed times may.
+#[test]
+fn update_params_leave_working_hours_out_of_the_update_map() {
+    let map = update_params(Some("09:00"), Some("17:00")).into_update_map();
+
+    assert!(map.get_value("working_hours_start").is_none());
+    assert!(map.get_value("working_hours_end").is_none());
+    assert!(map.get_value("first_name").is_some());
+}
+
+#[test]
+fn update_user_carries_only_the_parsed_working_hours_sent() {
+    let start = NaiveTime::from_hms_opt(9, 30, 0).expect("valid time");
+    let map = UpdateUser {
+        params: update_params(None, None),
+        working_hours: WorkingHoursPatch {
+            start: Some(start),
+            end: None,
+        },
+    }
+    .into_update_map();
+
+    assert_eq!(
+        map.get_value("working_hours_start"),
+        Some(&Value::ChronoTime(Some(start)))
+    );
+    assert!(map.get_value("working_hours_end").is_none());
+}
+
+#[tokio::test]
+async fn a_working_hours_validation_error_renders_a_422_body() {
+    let response = Error::from(DomainError {
+        source: None,
+        error_kind: DomainErrorKind::Validation(
+            "working_hours_end must be HH:MM on a 30-minute step".to_string(),
+        ),
+    })
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body collects");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("body is JSON");
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "status_code": 422,
+            "error": "validation_error",
+            "message": "working_hours_end must be HH:MM on a 30-minute step",
+        })
+    );
 }

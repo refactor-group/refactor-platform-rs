@@ -142,6 +142,9 @@ default flag feature that pulls in no SQLite code.)
   leaves its neighbours alone. The content check flags a session with a note, action,
   agreement or live topic, and nothing else. The series' sessions are walked by date with
   ties broken by id.
+- **Working hours on user update** (`domain/src/user_sqlite_tests.rs`): updating only one
+  working-hours field keeps the stored other one, and an update whose start would fall
+  after the stored end writes nothing, not even the other fields sent with it.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge

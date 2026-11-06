@@ -93,6 +93,8 @@ async fn seed_person(db: &DatabaseConnection, name: &str) -> users::Model {
         github_profile_url: Set(None),
         timezone: Set("UTC".to_string()),
         default_coaching_session_duration_minutes: Set(60),
+        working_hours_start: Set(crate::working_hours::default_start()),
+        working_hours_end: Set(crate::working_hours::default_end()),
         created_at: Set(at.into()),
         updated_at: Set(at.into()),
     }
