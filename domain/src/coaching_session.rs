@@ -1941,3 +1941,7 @@ mod tests {
 #[cfg(test)]
 #[path = "coaching_session_sqlite_tests.rs"]
 mod sqlite_tests;
+
+#[cfg(test)]
+#[path = "pending_reschedule_sqlite_tests.rs"]
+mod pending_reschedule_sqlite_tests;

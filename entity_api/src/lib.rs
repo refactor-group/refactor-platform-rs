@@ -35,6 +35,7 @@ pub mod note;
 pub mod oauth_connection;
 pub mod organization;
 pub mod password_reset_attempt;
+pub mod pending_reschedule;
 pub mod platform_cost_metrics;
 pub mod query;
 pub mod search;

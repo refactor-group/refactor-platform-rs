@@ -11,12 +11,12 @@ use entity::meeting_recording::MeetingRecordingStatus;
 use entity::transcription::TranscriptionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
-    coaching_session_reminders, coaching_session_series, coaching_session_topics,
-    coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_pricing_config, goals,
-    magic_link_tokens, meeting_recording, notes, oauth_connections, organizations,
-    password_reset_attempts, platform_cost_metrics, transcript_analysis, transcript_participant,
-    transcript_segment, transcript_suggestion, transcription, user_lookup_attempts,
-    user_role_changes, user_roles, users, Id,
+    coaching_session_pending_reschedules, coaching_session_reminders, coaching_session_series,
+    coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
+    cost_pricing_config, goals, magic_link_tokens, meeting_recording, notes, oauth_connections,
+    organizations, password_reset_attempts, platform_cost_metrics, transcript_analysis,
+    transcript_participant, transcript_segment, transcript_suggestion, transcription,
+    user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
 use sea_orm::{
     ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, Set,
@@ -69,6 +69,7 @@ pub(crate) async fn database() -> DatabaseConnection {
         .register(agreements::Entity)
         .register(coaching_relationships::Entity)
         .register(coaching_session_images::Entity)
+        .register(coaching_session_pending_reschedules::Entity)
         .register(coaching_session_reminders::Entity)
         .register(coaching_session_series::Entity)
         .register(coaching_session_topics::Entity)

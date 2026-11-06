@@ -142,6 +142,14 @@ default flag feature that pulls in no SQLite code.)
   leaves its neighbours alone. The content check flags a session with a note, action,
   agreement or live topic, and nothing else. The series' sessions are walked by date with
   ties broken by id.
+- **Pending reschedules** (`domain/src/pending_reschedule_sqlite_tests.rs`): the first
+  change records the pre-edit schedule as announced, later ones bump the revision, and an
+  undo back to it drops an unclaimed or lease-expired row but keeps a claimed one. A row
+  comes due after the quiet period, at the cap, or when its session starts within the cap;
+  claims take the oldest first up to the limit and skip rows under a live lease. Completion
+  settles only at the claimed revision, otherwise keeps the newer change pending from what
+  was sent; a stale claim changes nothing, failures count attempts up to giving up, and
+  deleting the session drops its row.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge
