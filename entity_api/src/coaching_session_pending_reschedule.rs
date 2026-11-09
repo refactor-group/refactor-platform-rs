@@ -2,8 +2,8 @@
 //!
 //! A row means a session's schedule changed since participants were last told; no row
 //! means they know the current one. A sweep claims due rows under a lease, sends, then
-//! completes or releases them, so delivery is at least once. Every time comes from the
-//! caller.
+//! completes or releases them, so delivery is at least once. Every schedule and due-time
+//! comes from the caller; only `created_at` and `updated_at` read the clock.
 
 use chrono::{NaiveDateTime, TimeDelta, Utc};
 use entity::coaching_session_pending_reschedules::{ActiveModel, Column, Entity};
@@ -103,6 +103,8 @@ pub async fn record_change(
                     Column::Revision,
                     Expr::col((Entity, Column::Revision)).add(1),
                 )
+                // A new change earns a full retry budget.
+                .value(Column::Attempts, 0)
                 .value(Column::UpdatedAt, stamp)
                 .to_owned(),
         )

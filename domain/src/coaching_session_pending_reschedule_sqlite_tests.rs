@@ -545,6 +545,29 @@ async fn the_last_allowed_failure_gives_up() {
 }
 
 #[tokio::test]
+async fn a_new_change_restores_the_full_retry_budget() {
+    within_time_limit(async {
+        let db = database().await;
+        let session_id = later_session(&db).await;
+
+        record(&db, session_id, a(), b(), now()).await;
+        for _ in 0..MAX_ATTEMPTS - 1 {
+            let claimed = claim(&db, now() + secs(60), Id::new_v4()).await;
+            coaching_session_pending_reschedule::release(&db, &claimed[0])
+                .await
+                .expect("release runs");
+        }
+        record(&db, session_id, b(), c(), now() + secs(90)).await;
+
+        let row = find(&db, session_id)
+            .await
+            .expect("the change stays pending");
+        assert_eq!(row.attempts, 0);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn clear_removes_a_pending_change_and_is_idempotent() {
     within_time_limit(async {
         let db = database().await;

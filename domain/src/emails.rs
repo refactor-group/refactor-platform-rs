@@ -1162,53 +1162,6 @@ fn build_session_ics(
     }
 }
 
-/// Orchestrate sending session-rescheduled emails (best-effort).
-///
-/// `session` must already carry the bumped `ical_sequence`. Looks up the coaching
-/// relationship, both users, and the organization, then re-sends the invite to both
-/// coach and coachee so their calendar event updates in place. `previous_start` is the
-/// pre-update start, shown alongside the new one. Errors are logged internally and never
-/// block or fail the calling operation.
-/// Returns whether the coachee was actually told.
-///
-/// Best-effort in that a failure does not fail the edit, but the caller needs the answer:
-/// the reminder rule treats an announced time as notice given, and recording notice for
-/// an email that never arrived would leave the coachee with neither.
-///
-/// A delivered send must clear the session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
-pub async fn notify_session_rescheduled(
-    db: &DatabaseConnection,
-    config: &Config,
-    session: &coaching_sessions::Model,
-    previous_start: NaiveDateTime,
-) -> bool {
-    let result: Result<Delivered, Error> = async {
-        let relationship =
-            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
-        let org = organization::find_by_id(db, relationship.organization_id).await?;
-
-        send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
-            .await
-    }
-    .await;
-
-    match result {
-        // The coachee's, not the coach's: they are who the reminder would go to, and the
-        // two sends fail independently.
-        Ok(delivered) => delivered.coachee,
-        Err(e) => {
-            warn!(
-                "Failed to send session rescheduled emails for session {}: {e:?}",
-                session.id
-            );
-            false
-        }
-    }
-}
-
 /// Sends the session-rescheduled emails, returning who was told.
 ///
 /// A delivered send must clear the session's pending reschedule (via

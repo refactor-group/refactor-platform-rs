@@ -1880,7 +1880,7 @@ async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_
     );
 
     let rescheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-    notify_session_rescheduled(&rescheduled_db, &config, &session, session.date).await;
+    let _ = send_session_rescheduled(&rescheduled_db, &config, &session, session.date).await;
     assert!(
         !rescheduled_db.into_transaction_log().is_empty(),
         "rescheduled must not skip a legacy series member"
