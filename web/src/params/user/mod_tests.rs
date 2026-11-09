@@ -98,12 +98,23 @@ fn update_params(start: Option<&str>, end: Option<&str>) -> UpdateParams {
 
 /// Raw strings must never reach a TIME column; only parsed times may.
 #[test]
-fn update_params_leave_working_hours_out_of_the_update_map() {
-    let map = update_params(Some("09:00"), Some("17:00")).into_update_map();
+fn update_user_writes_parsed_working_hours_with_the_profile_fields() {
+    let map = UpdateUser::try_from(update_params(Some("09:00"), Some("17:00")))
+        .expect("valid working hours")
+        .into_update_map();
 
-    assert!(map.get_value("working_hours_start").is_none());
-    assert!(map.get_value("working_hours_end").is_none());
+    let time = |h| Some(Value::ChronoTime(NaiveTime::from_hms_opt(h, 0, 0)));
+    assert_eq!(map.get_value("working_hours_start").cloned(), time(9));
+    assert_eq!(map.get_value("working_hours_end").cloned(), time(17));
     assert!(map.get_value("first_name").is_some());
+}
+
+#[test]
+fn update_user_rejects_working_hours_off_the_step() {
+    let error = UpdateUser::try_from(update_params(Some("09:15"), None))
+        .expect_err("09:15 is not on a 30-minute step");
+
+    assert!(matches!(error.error_kind, DomainErrorKind::Validation(_)));
 }
 
 #[test]

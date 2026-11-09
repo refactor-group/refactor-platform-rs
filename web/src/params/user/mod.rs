@@ -3,8 +3,8 @@ pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
 pub(crate) mod goal;
 
-// Re-export user profile update params for backward compatibility
-use domain::user::WorkingHoursPatch;
+use domain::error::Error;
+use domain::user::{self as UserApi, WorkingHoursPatch};
 use domain::{users, users::Role, Id, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
@@ -65,13 +65,16 @@ pub struct UpdateParams {
     /// both the storage type and the newtype's inner representation.
     pub default_coaching_session_duration_minutes: Option<i16>,
     /// Start of the working day, local `"HH:MM"` on a 30-minute step.
+    #[schema(example = "08:00")]
     pub working_hours_start: Option<String>,
     /// End of the working day, local `"HH:MM"` on a 30-minute step.
+    #[schema(example = "17:30")]
     pub working_hours_end: Option<String>,
 }
 
-impl IntoUpdateMap for UpdateParams {
-    fn into_update_map(self) -> UpdateMap {
+impl UpdateParams {
+    /// The profile fields; working hours are written only through [`UpdateUser`].
+    fn profile_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
         if let Some(email) = self.email {
             update_map.insert("email".to_string(), Some(Value::String(Some(email))));
@@ -116,13 +119,28 @@ impl IntoUpdateMap for UpdateParams {
 /// A user update with its working hours already parsed into times.
 #[derive(Debug)]
 pub struct UpdateUser {
-    pub params: UpdateParams,
-    pub working_hours: WorkingHoursPatch,
+    params: UpdateParams,
+    working_hours: WorkingHoursPatch,
+}
+
+impl TryFrom<UpdateParams> for UpdateUser {
+    type Error = Error;
+
+    fn try_from(params: UpdateParams) -> Result<Self, Self::Error> {
+        let working_hours = UserApi::parse_working_hours(
+            params.working_hours_start.as_deref(),
+            params.working_hours_end.as_deref(),
+        )?;
+        Ok(Self {
+            params,
+            working_hours,
+        })
+    }
 }
 
 impl IntoUpdateMap for UpdateUser {
     fn into_update_map(self) -> UpdateMap {
-        let mut update_map = self.params.into_update_map();
+        let mut update_map = self.params.profile_update_map();
         [
             ("working_hours_start", self.working_hours.start),
             ("working_hours_end", self.working_hours.end),

@@ -16,6 +16,11 @@ use sea_orm::{
     Condition, ConnectionTrait, DatabaseConnection, DatabaseTransaction, ExprTrait,
     IntoActiveModel, QuerySelect, RuntimeErr, Set, SqlErr, TransactionTrait,
 };
+use serde::Deserialize;
+use std::sync::Arc;
+use utoipa::{IntoParams, ToSchema};
+
+pub use entity::users::Role;
 
 /// Postgres index backing the global uniqueness of `users.email`.
 const EMAIL_UNIQUE_INDEX: &str = "users_email_key";
@@ -24,11 +29,6 @@ const EMAIL_UNIQUE_INDEX: &str = "users_email_key";
 const WORKING_HOURS_ORDER_CHECK: &str = "users_working_hours_order";
 const WORKING_HOURS_START_STEP_CHECK: &str = "users_working_hours_start_step";
 const WORKING_HOURS_END_STEP_CHECK: &str = "users_working_hours_end_step";
-use serde::Deserialize;
-use std::sync::Arc;
-use utoipa::{IntoParams, ToSchema};
-
-pub use entity::users::Role;
 
 pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Model, Error> {
     debug!("New User Relationship Model to be inserted: {user_model:?}");

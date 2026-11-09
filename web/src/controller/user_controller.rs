@@ -126,17 +126,10 @@ pub async fn update(
     Path(user_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    let working_hours = UserApi::parse_working_hours(
-        params.working_hours_start.as_deref(),
-        params.working_hours_end.as_deref(),
-    )?;
     UserApi::update(
         app_state.db_conn_ref(),
         user_id,
-        UpdateUser {
-            params,
-            working_hours,
-        },
+        UpdateUser::try_from(params)?,
     )
     .await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
