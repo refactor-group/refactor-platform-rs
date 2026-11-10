@@ -180,7 +180,7 @@ pub async fn index(
     )
     .await?;
 
-    // Wire name predates relationship keys; renaming it breaks existing clients.
+    // Keys are relationship ids despite the field name.
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
         serde_json::json!({ "coachee_actions": relationship_actions }),
