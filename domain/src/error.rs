@@ -176,6 +176,13 @@ impl From<EntityApiError> for Error {
                     error_kind: DomainErrorKind::Validation(message),
                 };
             }
+            EntityApiErrorKind::WorkingHours(invalid) => {
+                let message = invalid.to_string();
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
             EntityApiErrorKind::TopicReorderMismatch => {
                 return Error {
                     source: Some(Box::new(err)),

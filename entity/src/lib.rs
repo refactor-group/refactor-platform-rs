@@ -49,6 +49,7 @@ pub mod user_lookup_attempts;
 pub mod user_role_changes;
 pub mod user_roles;
 pub mod users;
+pub mod working_hours;
 
 /// A type alias that represents any Entity's internal id field data type.
 /// Aliased so that it's easy to change the underlying type if necessary.

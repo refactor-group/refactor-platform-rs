@@ -1,27 +1,34 @@
 use super::actor::Actor;
 use super::error::{EntityApiErrorKind, Error};
+use super::mutate::{self, UpdateMap};
 use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
-use chrono::Utc;
+use chrono::{NaiveTime, Utc};
 
 use entity::users::{ActiveModel, Column, Entity, Model};
+use entity::working_hours::{self, Field, Invalid};
 use entity::{roles, user_roles, Id};
 use log::*;
 use password_auth;
 use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func},
-    Condition, ConnectionTrait, DatabaseConnection, DatabaseTransaction, ExprTrait, QuerySelect,
-    Set, SqlErr, TransactionTrait,
+    Condition, ConnectionTrait, DatabaseConnection, DatabaseTransaction, ExprTrait,
+    IntoActiveModel, QuerySelect, RuntimeErr, Set, SqlErr, TransactionTrait,
 };
-
-/// Postgres index backing the global uniqueness of `users.email`.
-const EMAIL_UNIQUE_INDEX: &str = "users_email_key";
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
 
 pub use entity::users::Role;
+
+/// Postgres index backing the global uniqueness of `users.email`.
+const EMAIL_UNIQUE_INDEX: &str = "users_email_key";
+
+/// Postgres CHECK constraints on `users` working hours.
+const WORKING_HOURS_ORDER_CHECK: &str = "users_working_hours_order";
+const WORKING_HOURS_START_STEP_CHECK: &str = "users_working_hours_start_step";
+const WORKING_HOURS_END_STEP_CHECK: &str = "users_working_hours_end_step";
 
 pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Model, Error> {
     debug!("New User Relationship Model to be inserted: {user_model:?}");
@@ -271,6 +278,97 @@ pub async fn find_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<Vec<Mo
         .collect())
 }
 
+/// Working hours parsed from a request, `None` where the field was not sent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkingHoursPatch {
+    pub start: Option<NaiveTime>,
+    pub end: Option<NaiveTime>,
+}
+
+/// Parses optional `"HH:MM"` working hours; the start is checked first.
+pub fn parse_working_hours(
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<WorkingHoursPatch, Error> {
+    Ok(WorkingHoursPatch {
+        start: start
+            .map(|value| working_hours::parse(Field::Start, value))
+            .transpose()?,
+        end: end
+            .map(|value| working_hours::parse(Field::End, value))
+            .transpose()?,
+    })
+}
+
+/// Checks the update map's working hours, filling a missing one from `existing`.
+///
+/// A map that sets neither passes, since the stored pair is already in order.
+pub fn validate_working_hours_in_update_map(
+    update_map: &UpdateMap,
+    existing: &Model,
+) -> Result<(), Error> {
+    let start = working_hours_in_update_map(update_map, Field::Start)?;
+    let end = working_hours_in_update_map(update_map, Field::End)?;
+    if start.is_none() && end.is_none() {
+        return Ok(());
+    }
+    working_hours::check_order(
+        start.unwrap_or(existing.working_hours_start),
+        end.unwrap_or(existing.working_hours_end),
+    )
+    .map_err(Error::from)
+}
+
+/// The update map's time for `field`; any non-time value is rejected.
+fn working_hours_in_update_map(
+    update_map: &UpdateMap,
+    field: Field,
+) -> Result<Option<NaiveTime>, Error> {
+    match update_map.get_value(&field.to_string()) {
+        None => Ok(None),
+        Some(Value::ChronoTime(Some(time))) => Ok(Some(*time)),
+        Some(_) => Err(Error::from(Invalid::NotOnStep(field))),
+    }
+}
+
+/// Writes `update_map` onto `existing`, surfacing a working-hours CHECK violation as invalid input.
+///
+/// Two concurrent single-field updates can each pass the pair check and still
+/// break the order together; the database constraint is the last word.
+pub async fn update_fields(
+    db: &impl ConnectionTrait,
+    existing: Model,
+    update_map: UpdateMap,
+) -> Result<Model, Error> {
+    let active_model = existing.into_active_model();
+    mutate::update::<ActiveModel, Column>(db, active_model, update_map)
+        .await
+        .map_err(
+            |err| match err.source.as_ref().and_then(violated_working_hours_check) {
+                Some(invalid) => Error {
+                    error_kind: EntityApiErrorKind::WorkingHours(invalid),
+                    ..err
+                },
+                None => err,
+            },
+        )
+}
+
+/// The working-hours rule a failed write broke, matched on the constraint name.
+fn violated_working_hours_check(err: &DbErr) -> Option<Invalid> {
+    let (DbErr::Exec(RuntimeErr::SqlxError(sqlx_err))
+    | DbErr::Query(RuntimeErr::SqlxError(sqlx_err))) = err
+    else {
+        return None;
+    };
+    match sqlx_err.as_database_error()?.constraint()? {
+        WORKING_HOURS_ORDER_CHECK => Some(Invalid::StartNotBeforeEnd),
+        WORKING_HOURS_START_STEP_CHECK => Some(Invalid::NotOnStep(Field::Start)),
+        WORKING_HOURS_END_STEP_CHECK => Some(Invalid::NotOnStep(Field::End)),
+        _ => None,
+    }
+}
+
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(user_id).exec(db).await?;
     Ok(())
@@ -390,7 +488,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
                 [user_email.into()]
             )]
         );
@@ -409,7 +507,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
                 [user_id.into()]
             )]
         );
@@ -428,7 +526,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
                 []
             )]
         );
@@ -455,6 +553,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],
@@ -518,6 +618,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],
@@ -585,6 +687,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],
@@ -761,6 +865,8 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
             roles: vec![],
@@ -827,3 +933,7 @@ mod test {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "user_working_hours_tests.rs"]
+mod working_hours_tests;

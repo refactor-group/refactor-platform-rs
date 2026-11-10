@@ -32,6 +32,8 @@ fn user(id: Id, first_name: &str) -> users::Model {
         github_profile_url: None,
         timezone: "UTC".to_owned(),
         default_coaching_session_duration_minutes: entity::duration::Duration::default_minutes(),
+        working_hours_start: crate::working_hours::default_start(),
+        working_hours_end: crate::working_hours::default_end(),
         roles: vec![],
         invite_status: None,
         created_at: now.into(),

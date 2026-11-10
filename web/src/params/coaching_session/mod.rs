@@ -3,9 +3,10 @@ pub(crate) mod goal;
 use chrono::{NaiveDate, NaiveDateTime};
 use domain::meeting_provider::Provider;
 use sea_orm::{ActiveEnum, Order, Value};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
+use super::deserialize_clearable;
 use super::sort::SortOrder;
 use super::WithSortDefaults;
 use domain::{
@@ -68,15 +69,6 @@ pub(crate) struct UpdateParams {
     #[serde(default, deserialize_with = "deserialize_clearable")]
     #[schema(value_type = Option<String>)]
     pub(crate) title: Option<Option<String>>,
-}
-
-/// Distinguish an omitted field (`None`) from an explicit JSON null
-/// (`Some(None)`) so updates can clear the column to NULL.
-fn deserialize_clearable<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 /// Insert the clearable `title` entry when present: a value sets it, an explicit
