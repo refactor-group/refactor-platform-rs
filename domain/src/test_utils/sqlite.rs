@@ -115,6 +115,8 @@ pub(crate) async fn seed_user(db: &DatabaseConnection) -> Id {
         github_profile_url: Set(None),
         timezone: Set("UTC".to_string()),
         default_coaching_session_duration_minutes: Set(60),
+        working_hours_start: Set(crate::working_hours::default_start()),
+        working_hours_end: Set(crate::working_hours::default_end()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     }

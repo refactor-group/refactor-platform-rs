@@ -56,6 +56,8 @@ fn user(first: &str, last: &str, display: Option<&str>) -> users::Model {
         github_profile_url: None,
         timezone: "UTC".to_string(),
         default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+        working_hours_start: crate::working_hours::default_start(),
+        working_hours_end: crate::working_hours::default_end(),
         created_at: now.into(),
         updated_at: now.into(),
         roles: vec![],

@@ -9,7 +9,7 @@ pub use entity::{
     meeting_provider, notes, oauth_connections, organizations, password_reset_attempts,
     pipeline_provider, status, token_purpose, topic_priority, topic_status,
     transcript_suggestion_target, user_invite_status, user_lookup_attempts, user_role_changes,
-    user_roles, users, users::Role, Id,
+    user_roles, users, users::Role, working_hours, Id,
 };
 
 pub mod action;

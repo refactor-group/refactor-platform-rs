@@ -690,6 +690,8 @@ mod tests {
             created_at: chrono::Utc::now().into(),
             updated_at: chrono::Utc::now().into(),
             default_coaching_session_duration_minutes: 60,
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
         }
     }
 

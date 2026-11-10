@@ -4,6 +4,7 @@ pub use crate::roles::Role;
 use crate::user_invite_status::InviteStatus;
 use crate::Id;
 use axum_login::AuthUser;
+use chrono::NaiveTime;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -40,6 +41,20 @@ pub struct Model {
     /// `NOT NULL DEFAULT 60` so it's optional on the wire (not an invalid `0`).
     #[serde(default = "crate::duration::Duration::default_minutes")]
     pub default_coaching_session_duration_minutes: i16,
+    /// Start of the working day, local wall-clock time in the user's `timezone`.
+    #[serde(
+        with = "crate::working_hours::hh_mm",
+        default = "crate::working_hours::default_start"
+    )]
+    #[schema(value_type = String, example = "08:00")]
+    pub working_hours_start: NaiveTime,
+    /// End of the working day, local wall-clock time in the user's `timezone`.
+    #[serde(
+        with = "crate::working_hours::hh_mm",
+        default = "crate::working_hours::default_end"
+    )]
+    #[schema(value_type = String, example = "17:30")]
+    pub working_hours_end: NaiveTime,
     /// Associated user roles (populated via find_with_related)
     /// This field is ignored by SeaORM for database operations.
     #[sea_orm(ignore)]
@@ -151,6 +166,8 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".into(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             roles: vec![],
             invite_status: None,
             created_at: Utc::now().into(),

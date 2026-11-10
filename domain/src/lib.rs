@@ -17,7 +17,7 @@ pub use entity_api::{
     cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens, meeting_provider, notes,
     oauth_connections, organizations, password_reset_attempts, pipeline_provider, query::QuerySort,
     status, token_purpose, topic_priority, topic_status, transcript_suggestion_target,
-    user_lookup_attempts, user_role_changes, user_roles, users, Id,
+    user_lookup_attempts, user_role_changes, user_roles, users, working_hours, Id,
 };
 
 pub mod action;

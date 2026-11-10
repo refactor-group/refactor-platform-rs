@@ -17,8 +17,8 @@ use crate::{
 pub use entity_api::{
     user::{
         create, find_by_email, find_by_id, find_by_id_without_roles, find_by_ids,
-        find_by_organization, generate_hash, verify_password, AuthSession, Backend, Credentials,
-        Role,
+        find_by_organization, generate_hash, parse_working_hours, verify_password, AuthSession,
+        Backend, Credentials, Role, WorkingHoursPatch,
     },
     user_roles,
 };
@@ -88,9 +88,9 @@ pub async fn update(
     )?;
 
     let existing_user = find_by_id(db, user_id).await?;
+    user::validate_working_hours_in_update_map(&update_map, &existing_user)?;
 
-    let active_model = existing_user.into_active_model();
-    Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, update_map).await?)
+    Ok(user::update_fields(db, existing_user, update_map).await?)
 }
 
 pub async fn update_password(
@@ -252,3 +252,7 @@ pub async fn delete(
 #[cfg(feature = "mock")]
 #[path = "user_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "user_sqlite_tests.rs"]
+mod sqlite_tests;

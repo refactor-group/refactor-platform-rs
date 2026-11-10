@@ -2,11 +2,12 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use sea_orm::error::DbErr;
 
 use entity::duration::OutOfRange;
+use entity::working_hours::Invalid as InvalidWorkingHours;
 use entity::Id;
 
 /// Errors while executing operations related to entities.
@@ -62,6 +63,9 @@ pub enum EntityApiErrorKind {
     // 1..=480). Maps to 422 in domain (distinct from `ValidationError`,
     // which is for 409 state conflicts like cap violations).
     OutOfRange(OutOfRange),
+    // Working hours off the 30-minute step or out of order. Maps to 422 like `OutOfRange`.
+    #[serde(serialize_with = "serialize_display")]
+    WorkingHours(InvalidWorkingHours),
     // Reorder request whose id set is not a permutation of the session's current topics.
     TopicReorderMismatch,
     // User already holds a role in the target organization.
@@ -92,6 +96,23 @@ impl From<OutOfRange> for Error {
         Error {
             source: None,
             error_kind: EntityApiErrorKind::OutOfRange(err),
+        }
+    }
+}
+
+/// Serializes a value through its `Display`, for payloads without a `Serialize` impl.
+fn serialize_display<T: fmt::Display, S: Serializer>(
+    value: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+
+impl From<InvalidWorkingHours> for Error {
+    fn from(err: InvalidWorkingHours) -> Self {
+        Error {
+            source: None,
+            error_kind: EntityApiErrorKind::WorkingHours(err),
         }
     }
 }

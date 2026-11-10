@@ -14,6 +14,8 @@ fn user_with_roles(roles: Vec<user_roles::Model>) -> users::Model {
         github_profile_url: None,
         timezone: "UTC".to_string(),
         default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+        working_hours_start: crate::working_hours::default_start(),
+        working_hours_end: crate::working_hours::default_end(),
         roles,
         invite_status: None,
         created_at: Utc::now().into(),
