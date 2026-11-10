@@ -1,10 +1,11 @@
 //! `SeaORM` Entity for the coaching_session_pending_reschedules table.
 //! One row per session whose schedule changed since participants were last told.
 
-use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+use crate::Id;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]

@@ -2,13 +2,13 @@
 //! failure leave behind, against a real SQL engine.
 
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
-use entity::{coaching_sessions, Id};
 use entity_api::coaching_session_pending_reschedule::{
     self, Claimed, Completed, Recorded, Released, Schedule, Timing, MAX_ATTEMPTS,
 };
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set};
 
 use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
+use crate::{coaching_session_pending_reschedules, coaching_sessions, Id};
 
 fn at(hour: u32, minute: u32) -> NaiveDateTime {
     NaiveDate::from_ymd_opt(2026, 12, 1)
@@ -98,7 +98,7 @@ async fn claim(db: &DatabaseConnection, when: NaiveDateTime, claim_id: Id) -> Ve
 async fn find(
     db: &DatabaseConnection,
     session_id: Id,
-) -> Option<entity::coaching_session_pending_reschedules::Model> {
+) -> Option<coaching_session_pending_reschedules::Model> {
     coaching_session_pending_reschedule::find(db, session_id)
         .await
         .expect("the row reads")

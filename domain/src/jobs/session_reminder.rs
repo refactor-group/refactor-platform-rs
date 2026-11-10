@@ -128,6 +128,18 @@ impl Job for Sweep {
         let mut skipped = 0;
         for (index, reminder) in due.iter().enumerate() {
             let session = &reminder.session;
+            // The claim was stamped before this session was reloaded. A start that moved in
+            // between may not have been announced yet, so a later tick decides afresh.
+            if session.date != reminder.claimed_for_start {
+                skipped += 1;
+                info!(
+                    "[session-reminder] session {} moved after its claim; leaving it to a \
+                     later tick",
+                    session.id
+                );
+                release(ctx, reminder, "its session moved").await;
+                continue;
+            }
             match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
                 Ok(emails::ReminderOutcome::RecipientNoLongerAMember) => {
                     skipped += 1;
@@ -140,30 +152,7 @@ impl Job for Sweep {
                     // session restores the reminder instead of leaving it marked sent.
                     release(ctx, reminder, "skipping them").await;
                 }
-                Ok(emails::ReminderOutcome::Sent) => {
-                    sent += 1;
-                    // The claim was stamped before this session was reloaded. When those
-                    // disagree a reschedule landed in between, so record the start the
-                    // email actually announced or the pair stays due and the same time
-                    // goes out again next tick.
-                    if session.date != reminder.claimed_for_start {
-                        if let Err(e) = coaching_session::confirm_reminder_claim(
-                            &*ctx.db,
-                            session.id,
-                            reminder.recipient_id,
-                            reminder.claim_id,
-                            session.date,
-                        )
-                        .await
-                        {
-                            warn!(
-                                "[session-reminder] could not realign the claim on session \
-                                 {} for user {}; it may be reminded again next tick: {e:?}",
-                                session.id, reminder.recipient_id
-                            );
-                        }
-                    }
-                }
+                Ok(emails::ReminderOutcome::Sent) => sent += 1,
                 Err(e) => {
                     // Whether the upstream itself is the problem. A limiter, an outage,
                     // or a transport failure meets every remaining send in this batch,

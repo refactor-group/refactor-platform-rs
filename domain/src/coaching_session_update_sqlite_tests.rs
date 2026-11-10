@@ -2,11 +2,11 @@
 //! real SQL engine.
 
 use chrono::{NaiveDateTime, TimeDelta, Timelike, Utc};
-use entity::{coaching_sessions, Id};
 use entity_api::{coaching_session_pending_reschedule, mutate};
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set, Value};
 
 use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
+use crate::{coaching_session_pending_reschedules, coaching_sessions, Id};
 
 #[derive(Debug)]
 struct Params(mutate::UpdateMap);
@@ -62,7 +62,7 @@ async fn edit(db: &DatabaseConnection, session_id: Id, params: Params) -> coachi
 async fn pending(
     db: &DatabaseConnection,
     session_id: Id,
-) -> Option<entity::coaching_session_pending_reschedules::Model> {
+) -> Option<coaching_session_pending_reschedules::Model> {
     coaching_session_pending_reschedule::find(db, session_id)
         .await
         .expect("the pending row reads")

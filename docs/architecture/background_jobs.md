@@ -124,10 +124,9 @@ one tick instead of the whole reminder.
 
 The claim stores what was *claimed*, taken from the CTE snapshot, while the email is built
 from the session as reloaded a moment later. A reschedule landing between the two makes
-them disagree: the email announces the new start, the claim still holds the old one, and
-the pair stays due. A successful send therefore writes the announced start back
-(`confirm_reminder_claim`), so the next tick does not resend a time the recipient was
-already given.
+them disagree, and the new start may not have been announced yet (its pending reschedule
+committed after the snapshot). The sweep therefore sends nothing for that pair and
+releases the claim, so the next tick decides afresh against the current schedule.
 
 ### Lease-based claims
 

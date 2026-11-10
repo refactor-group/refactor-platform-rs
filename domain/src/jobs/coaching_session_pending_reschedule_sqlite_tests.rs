@@ -3,16 +3,16 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeDelta, Timelike, Utc};
-use entity::{
-    coaching_relationships, coaching_session_pending_reschedules, coaching_sessions, user_roles,
-    users::Role, Id,
-};
 use mockito::{Matcher, Server, ServerGuard};
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set};
 use serde_json::json;
 
 use super::*;
 use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
+use crate::{
+    coaching_relationships, coaching_session_pending_reschedules, coaching_sessions, user_roles,
+    users::Role, Id,
+};
 
 const TEMPLATE: &str = "session_rescheduled_tpl";
 

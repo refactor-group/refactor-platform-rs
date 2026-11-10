@@ -1,8 +1,8 @@
 use chrono::{NaiveDate, TimeDelta};
-use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase};
 
 use super::{claim_due, Model, Timing};
+use crate::Id;
 
 #[tokio::test]
 async fn claim_due_locks_rows_with_skip_locked() {
