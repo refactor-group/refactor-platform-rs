@@ -25,8 +25,19 @@ pub(crate) mod user;
 pub(crate) mod validation;
 
 use domain::Id;
+use serde::{Deserialize, Deserializer};
 
 use self::sort::SortOrder;
+
+/// Distinguish an omitted field (`None`) from an explicit JSON null (`Some(None)`).
+pub(crate) fn deserialize_clearable<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
+}
 
 /// Parses a comma-separated list of UUIDs, the form list query params take (`?ids=a,b`).
 /// Blank entries are skipped; `None` when any entry is not a UUID.

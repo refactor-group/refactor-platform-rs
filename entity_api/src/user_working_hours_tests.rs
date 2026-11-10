@@ -4,18 +4,18 @@ use std::fmt;
 use std::sync::Arc;
 
 use chrono::{NaiveTime, Utc};
-use sea_orm::sqlx::error::{DatabaseError, ErrorKind};
-use sea_orm::{DbErr, RuntimeErr, Value};
-
-use super::WorkingHoursPatch;
-use super::{
-    parse_working_hours, validate_working_hours_in_update_map, violated_working_hours_check,
-};
-use crate::error::EntityApiErrorKind;
-use crate::mutate::UpdateMap;
 use entity::users::Model;
 use entity::working_hours::{Field, Invalid};
 use entity::Id;
+use sea_orm::sqlx::error::{DatabaseError, ErrorKind};
+use sea_orm::{DbErr, RuntimeErr, Value};
+
+use super::{
+    parse_working_hours, validate_working_hours_in_update_map, violated_working_hours_check,
+    WorkingHoursPatch,
+};
+use crate::error::EntityApiErrorKind;
+use crate::mutate::UpdateMap;
 
 fn time(hour: u32, minute: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(hour, minute, 0).expect("valid test time")

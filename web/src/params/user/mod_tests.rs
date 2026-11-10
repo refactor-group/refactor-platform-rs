@@ -91,8 +91,8 @@ fn update_params(start: Option<&str>, end: Option<&str>) -> UpdateParams {
         github_profile_url: None,
         timezone: None,
         default_coaching_session_duration_minutes: None,
-        working_hours_start: start.map(str::to_string),
-        working_hours_end: end.map(str::to_string),
+        working_hours_start: start.map(|time| Some(time.to_string())),
+        working_hours_end: end.map(|time| Some(time.to_string())),
     }
 }
 
@@ -115,6 +115,21 @@ fn update_user_rejects_working_hours_off_the_step() {
         .expect_err("09:15 is not on a 30-minute step");
 
     assert!(matches!(error.error_kind, DomainErrorKind::Validation(_)));
+}
+
+/// A null cannot clear a NOT NULL column, so it must fail rather than read as omitted.
+#[test]
+fn update_user_rejects_a_null_working_hours_value() {
+    let params: UpdateParams =
+        serde_json::from_str(r#"{"working_hours_end":null,"first_name":"Changed"}"#)
+            .expect("the body deserializes");
+
+    let error = UpdateUser::try_from(params).expect_err("null is not HH:MM");
+
+    assert!(matches!(
+        error.error_kind,
+        DomainErrorKind::Validation(ref message) if message.starts_with("working_hours_end")
+    ));
 }
 
 #[test]

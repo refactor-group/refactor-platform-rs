@@ -1,21 +1,24 @@
-use crate::router::user_routes;
-use crate::AppState;
+use std::sync::Arc;
+
 use axum::http::StatusCode;
+use axum::response::Response;
 use axum::{body::Body, extract::Request, routing::post, Router};
 use axum_login::{
     tower_sessions::{MemoryStore, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
-use chrono::Utc;
+use chrono::{NaiveTime, Utc};
 use domain::user::Backend;
 use domain::{user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, MockDatabase};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
 use service::config::Config;
-use std::sync::Arc;
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
+
+use crate::router::user_routes;
+use crate::AppState;
 
 fn requester() -> users::Model {
     let now = Utc::now();
@@ -127,4 +130,126 @@ async fn put_own_user_with_an_off_step_start_returns_422() {
             "message": "working_hours_start must be HH:MM on a 30-minute step",
         })
     );
+}
+
+fn role_for(user: &users::Model) -> user_roles::Model {
+    user_roles::Model {
+        id: Id::new_v4(),
+        role: users::Role::User,
+        organization_id: Some(Id::new_v4()),
+        user_id: user.id,
+        created_at: Utc::now().into(),
+        updated_at: Utc::now().into(),
+    }
+}
+
+/// Login and the PUT's session lookup, then whatever `then` stocks.
+fn signed_in(
+    user: &users::Model,
+    then: impl FnOnce(MockDatabase) -> MockDatabase,
+) -> Arc<DatabaseConnection> {
+    let role = role_for(user);
+    Arc::new(
+        then(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results([vec![(user.clone(), role.clone())]])
+                .append_query_results([vec![(user.clone(), role)]]),
+        )
+        .into_connection(),
+    )
+}
+
+async fn put_user(app: Router, cookie: Option<String>, user_id: Id, body: &str) -> Response {
+    let request = cookie
+        .into_iter()
+        .fold(Request::builder(), |request, cookie| {
+            request.header("cookie", cookie)
+        })
+        .uri(format!("/users/{user_id}"))
+        .method("PUT")
+        .header("x-version", "1.0.0")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    app.oneshot(request).await.unwrap()
+}
+
+/// Every UPDATE the database ran, with its values inlined.
+fn updates(db: &DatabaseConnection) -> Vec<String> {
+    DatabaseConnection::clone(db)
+        .into_transaction_log()
+        .iter()
+        .flat_map(|t| t.statements().iter().map(|s| s.to_string()))
+        .filter(|sql| sql.trim_start().to_uppercase().starts_with("UPDATE"))
+        .collect()
+}
+
+#[tokio::test]
+async fn put_own_user_saves_valid_working_hours() {
+    let user = requester();
+    let saved = users::Model {
+        working_hours_start: NaiveTime::from_hms_opt(9, 30, 0).expect("valid time"),
+        working_hours_end: NaiveTime::from_hms_opt(18, 0, 0).expect("valid time"),
+        ..user.clone()
+    };
+    let db = signed_in(&user, |db| {
+        db.append_query_results([vec![(user.clone(), role_for(&user))]])
+            .append_query_results([vec![saved]])
+    });
+    let app = build_app(db.clone());
+    let cookie = login_cookie(&app).await;
+
+    let response = put_user(
+        app,
+        Some(cookie),
+        user.id,
+        r#"{"working_hours_start":"09:30","working_hours_end":"18:00"}"#,
+    )
+    .await;
+
+    // The `ApiResponse` envelope carries 204 in its body over an HTTP 200.
+    assert_eq!(response.status(), StatusCode::OK);
+    let updates = updates(&db);
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    assert!(
+        updates[0].contains("\"working_hours_start\" = '09:30:00"),
+        "{}",
+        updates[0]
+    );
+    assert!(
+        updates[0].contains("\"working_hours_end\" = '18:00:00"),
+        "{}",
+        updates[0]
+    );
+}
+
+#[tokio::test]
+async fn put_another_users_working_hours_is_forbidden_and_writes_nothing() {
+    let user = requester();
+    let db = signed_in(&user, |db| db);
+    let app = build_app(db.clone());
+    let cookie = login_cookie(&app).await;
+
+    let response = put_user(
+        app,
+        Some(cookie),
+        Id::new_v4(),
+        r#"{"working_hours_start":"09:30"}"#,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(updates(&db).is_empty());
+}
+
+#[tokio::test]
+async fn put_user_without_a_session_is_unauthorized_and_writes_nothing() {
+    let user = requester();
+    let db = signed_in(&user, |db| db);
+    let app = build_app(db.clone());
+
+    let response = put_user(app, None, user.id, r#"{"working_hours_start":"09:30"}"#).await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(updates(&db).is_empty());
 }

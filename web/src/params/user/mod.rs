@@ -10,6 +10,8 @@ use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
+use super::deserialize_clearable;
+
 /// Query parameters for an exact-match user lookup by email.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct LookupParams {
@@ -64,12 +66,14 @@ pub struct UpdateParams {
     /// Validated in entity_api via the `Duration` newtype. `i16` matches
     /// both the storage type and the newtype's inner representation.
     pub default_coaching_session_duration_minutes: Option<i16>,
-    /// Start of the working day, local `"HH:MM"` on a 30-minute step.
-    #[schema(example = "08:00")]
-    pub working_hours_start: Option<String>,
-    /// End of the working day, local `"HH:MM"` on a 30-minute step.
-    #[schema(example = "17:30")]
-    pub working_hours_end: Option<String>,
+    /// Start of the working day, local `"HH:MM"` on a 30-minute step; null is refused.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>, example = "08:00")]
+    pub working_hours_start: Option<Option<String>>,
+    /// End of the working day, local `"HH:MM"` on a 30-minute step; null is refused.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>, example = "17:30")]
+    pub working_hours_end: Option<Option<String>>,
 }
 
 impl UpdateParams {
@@ -123,13 +127,20 @@ pub struct UpdateUser {
     working_hours: WorkingHoursPatch,
 }
 
+/// A sent working-hours value; an explicit null is not `"HH:MM"`, so it is refused like one.
+fn sent(value: &Option<Option<String>>) -> Option<&str> {
+    value
+        .as_ref()
+        .map(|time| time.as_deref().unwrap_or_default())
+}
+
 impl TryFrom<UpdateParams> for UpdateUser {
     type Error = Error;
 
     fn try_from(params: UpdateParams) -> Result<Self, Self::Error> {
         let working_hours = UserApi::parse_working_hours(
-            params.working_hours_start.as_deref(),
-            params.working_hours_end.as_deref(),
+            sent(&params.working_hours_start),
+            sent(&params.working_hours_end),
         )?;
         Ok(Self {
             params,
