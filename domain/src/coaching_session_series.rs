@@ -752,7 +752,7 @@ pub async fn reschedule_following(
         true => {
             stream::iter(moved)
                 .then(|session| async move {
-                    coaching_session::record_notice(db, session.id)
+                    coaching_session::record_notice(db, &session)
                         .await
                         .unwrap_or(session)
                 })
@@ -893,7 +893,7 @@ pub async fn resend_invite(
     .await?;
     coaching_session::ensure_coachee_reached(&delivered)?;
     stream::iter(&upcoming)
-        .for_each(|session| coaching_session::clear_pending_reschedule(db, session.id))
+        .for_each(|session| coaching_session::record_announced(db, session))
         .await;
     Ok(())
 }
@@ -2106,9 +2106,11 @@ mod tests {
             .append_query_results(vec![vec![organization]])
             .append_query_results(vec![moved.clone()])
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            // record_notice × 2: clear the pending reschedule, then mark_notice_given
+            // record_notice × 2: the locked re-read and its clear, then mark_notice_given
             .append_exec_results(vec![exec_ok(), exec_ok()])
+            .append_query_results(vec![vec![moved[0].clone()]])
             .append_query_results(vec![vec![stamped[0].clone()]])
+            .append_query_results(vec![vec![moved[1].clone()]])
             .append_query_results(vec![vec![stamped[1].clone()]])
             .into_connection();
 
@@ -2193,6 +2195,9 @@ mod tests {
             .append_query_results(vec![vec![coachee]])
             .append_query_results(vec![vec![organization]])
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            // each upcoming session's locked re-read, then its clear
+            .append_query_results(vec![vec![sessions[0].clone()]])
+            .append_query_results(vec![vec![sessions[1].clone()]])
             .append_exec_results(vec![exec_ok(), exec_ok()])
             .into_connection();
 

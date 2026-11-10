@@ -804,11 +804,14 @@ async fn test_send_session_rescheduled_email() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &org,
         previous_start,
+        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -952,11 +955,14 @@ async fn test_send_session_rescheduled_email_carries_both_when_variables_per_rec
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &org,
         previous_start,
+        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1003,11 +1009,14 @@ async fn test_send_session_rescheduled_email_unmoved_start_renders_unchanged() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &org,
         session.date,
+        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1055,11 +1064,14 @@ async fn test_send_session_rescheduled_email_moved_start_is_not_unchanged() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &org,
         previous_start,
+        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1175,11 +1187,14 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &org,
         previous_start,
+        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1223,11 +1238,14 @@ async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &org,
         original_start,
+        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1734,11 +1752,14 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
     let rescheduled = send_session_rescheduled_email(
         &mock_description_loaders(),
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &org,
         session.date - chrono::Duration::days(1),
+        &[coach.id, coachee.id],
     )
     .await;
     assert!(rescheduled.is_ok());
@@ -4542,11 +4563,14 @@ async fn occurrence_reschedule_uses_the_stored_series_zone() {
     send_session_rescheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
         &session,
         &create_test_organization(),
         slot,
+        &[coach.id, coachee.id],
     )
     .await
     .unwrap();

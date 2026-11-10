@@ -138,8 +138,9 @@ LOCKED` so concurrent replicas split the batch. A claim is a lease, not a perman
 marker: a row whose `claimed_at` is older than
 `coaching_session_pending_reschedule::LEASE` is claimable again, so a crashed replica's
 rows come back on their own. After the send, `complete` settles the row (or keeps a newer
-change pending) and `release` hands it back, giving up after `MAX_ATTEMPTS`. Both act only
-while the caller still holds the claim.
+change pending, its cap restarted from the claim) and `release` hands it back, giving up
+after `MAX_ATTEMPTS`; a failure counts only against the revision that was claimed. Both
+act only while the caller still holds the claim.
 
 Delivery is therefore at least once: a send that outlives the lease, or a crash between
 the send and `complete`, can repeat the email. The reminder's upsert-plus-unique-index

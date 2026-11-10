@@ -376,14 +376,8 @@ pub async fn update(
         coaching_session_pending_reschedule::record_change(
             &txn,
             id,
-            Schedule {
-                date: old.date,
-                duration_minutes: old.duration_minutes,
-            },
-            Schedule {
-                date: updated.date,
-                duration_minutes: updated.duration_minutes,
-            },
+            Schedule::from(&old),
+            Schedule::from(&updated),
             Utc::now().naive_utc(),
             coaching_session_pending_reschedule::LEASE,
         )
@@ -393,11 +387,13 @@ pub async fn update(
     Ok(updated)
 }
 
-/// The single place that records participants know a session's current schedule: stamps
-/// notice and clears any pending reschedule. The sweep calls `mark_notice_given` directly.
-/// Best-effort: a failure is logged, and a failed stamp yields `None`.
-pub(crate) async fn record_notice(db: &DatabaseConnection, id: Id) -> Option<Model> {
-    clear_pending_reschedule(db, id).await;
+/// The single place that records participants were told a session's schedule: stamps
+/// notice and settles its pending reschedule against `sent`. The sweep calls
+/// `mark_notice_given` directly. Best-effort: a failure is logged, and a failed stamp
+/// yields `None`.
+pub(crate) async fn record_notice(db: &DatabaseConnection, sent: &Model) -> Option<Model> {
+    record_announced(db, sent).await;
+    let id = sent.id;
     coaching_session::mark_notice_given(db, id)
         .await
         .inspect_err(|e| {
@@ -409,17 +405,32 @@ pub(crate) async fn record_notice(db: &DatabaseConnection, id: Id) -> Option<Mod
         .ok()
 }
 
-/// Drops a session's pending reschedule once participants were told its schedule.
-/// Best-effort: a failure is logged.
-pub(crate) async fn clear_pending_reschedule(db: &DatabaseConnection, id: Id) {
-    let _ = coaching_session_pending_reschedule::clear(db, id)
-        .await
-        .inspect_err(|e| {
-            warn!(
-                "Told the participants session {id}'s schedule but could not clear its pending \
-             reschedule, so they may be told it again: {e:?}"
-            )
-        });
+/// Settles a session's pending reschedule once participants were told `sent`, keeping any
+/// change that landed during the send pending. Best-effort: a failure is logged.
+pub(crate) async fn record_announced(db: &DatabaseConnection, sent: &Model) {
+    let id = sent.id;
+    let _ = announce(db, sent).await.inspect_err(|e| {
+        warn!(
+            "Told the participants session {id}'s schedule but could not record it, so they \
+             may be told it again: {e:?}"
+        )
+    });
+}
+
+/// Locks the session as an edit does, so no edit lands between the read and the record.
+async fn announce(db: &DatabaseConnection, sent: &Model) -> Result<(), Error> {
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let current = coaching_session::find_by_id_for_update(&txn, sent.id).await?;
+    coaching_session_pending_reschedule::announce(
+        &txn,
+        sent.id,
+        Schedule::from(sent),
+        Schedule::from(&current),
+        Utc::now().naive_utc(),
+    )
+    .await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+    Ok(())
 }
 
 /// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
@@ -528,7 +539,7 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
     )
     .await?;
     ensure_coachee_reached(&delivered)?;
-    clear_pending_reschedule(db, id).await;
+    record_announced(db, &bumped).await;
     Ok(())
 }
 
@@ -909,7 +920,7 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
-            .append_query_results(vec![vec![bumped]])
+            .append_query_results(vec![vec![bumped.clone()]])
             .append_query_results(vec![vec![relationship]])
             .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
             .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
@@ -918,6 +929,8 @@ mod tests {
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            // the locked re-read before the clear
+            .append_query_results(vec![vec![bumped]])
             .append_exec_results(vec![exec_ok()])
             .into_connection();
 

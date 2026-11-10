@@ -3,7 +3,10 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeDelta, Timelike, Utc};
-use entity::{coaching_session_pending_reschedules, coaching_sessions, Id};
+use entity::{
+    coaching_relationships, coaching_session_pending_reschedules, coaching_sessions, user_roles,
+    users::Role, Id,
+};
 use mockito::{Matcher, Server, ServerGuard};
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set};
 use serde_json::json;
@@ -64,20 +67,57 @@ fn schedule(date: NaiveDateTime) -> Schedule {
     }
 }
 
-/// A session a week out; returns its id and start.
-async fn upcoming_session(db: &DatabaseConnection) -> (Id, NaiveDateTime) {
-    let (id, _) = seed_coaching_session(db).await;
+/// Makes the session's one participant a member of its organization.
+async fn seed_membership(db: &DatabaseConnection, session_id: Id, user_id: Id) {
+    let relationship_id = session(db, session_id).await.coaching_relationship_id;
+    let organization_id = coaching_relationships::Entity::find_by_id(relationship_id)
+        .one(db)
+        .await
+        .expect("the relationship reads")
+        .expect("the relationship exists")
+        .organization_id;
+    let now = Utc::now();
+    user_roles::ActiveModel {
+        id: Set(Id::new_v4()),
+        role: Set(Role::User),
+        organization_id: Set(Some(organization_id)),
+        user_id: Set(user_id),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the membership is seeded");
+}
+
+/// A session a week out whose participant is not in its organization; returns its id
+/// and start.
+async fn upcoming_session_without_members(db: &DatabaseConnection) -> (Id, NaiveDateTime, Id) {
+    let (id, user_id) = seed_coaching_session(db).await;
     let start = (Utc::now() + TimeDelta::days(7))
         .naive_utc()
         .with_nanosecond(0)
         .expect("whole seconds");
     reschedule(db, id, start).await;
+    (id, start, user_id)
+}
+
+/// A session a week out; returns its id and start.
+async fn upcoming_session(db: &DatabaseConnection) -> (Id, NaiveDateTime) {
+    let (id, start, user_id) = upcoming_session_without_members(db).await;
+    seed_membership(db, id, user_id).await;
     (id, start)
 }
 
 /// Moves a session an hour on, recorded as of `at`; returns its id and announced start.
 async fn moved_session(db: &DatabaseConnection, at: NaiveDateTime) -> (Id, NaiveDateTime) {
     let (id, start) = upcoming_session(db).await;
+    move_and_record(db, id, start, at).await;
+    (id, start)
+}
+
+/// Moves a session an hour on from `start`, recorded as of `at`.
+async fn move_and_record(db: &DatabaseConnection, id: Id, start: NaiveDateTime, at: NaiveDateTime) {
     let moved = start + TimeDelta::hours(1);
     reschedule(db, id, moved).await;
     coaching_session_pending_reschedule::record_change(
@@ -90,7 +130,6 @@ async fn moved_session(db: &DatabaseConnection, at: NaiveDateTime) -> (Id, Naive
     )
     .await
     .expect("the change records");
-    (id, start)
 }
 
 /// Long enough ago that the default settle period has passed.
@@ -123,6 +162,36 @@ async fn a_due_change_is_emailed_and_settled() {
         assert_eq!((outcome.processed, outcome.attempted), (1, 1));
         assert_eq!(pending(&ctx.db, id).await, None);
         assert!(notice_given_at(&ctx.db, id).await > before);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_coachee_no_longer_in_the_organization_is_not_emailed() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let resend = server
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_1"}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        let db = database().await;
+        let (id, start, _) = upcoming_session_without_members(&db).await;
+        move_and_record(&db, id, start, settled()).await;
+        let before = notice_given_at(&db, id).await;
+        let ctx = context(db, sending(&server));
+
+        let outcome = Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        resend.assert_async().await;
+        assert_eq!((outcome.processed, outcome.attempted), (1, 1));
+        assert_eq!(pending(&ctx.db, id).await, None);
+        assert_eq!(notice_given_at(&ctx.db, id).await, before);
     })
     .await;
 }

@@ -132,14 +132,21 @@ unannounced change, or as soon as the session starts within that cap.
 - **Undo sends nothing.** Moving the session back to its announced schedule before the
   email goes out drops the pending row, and nobody is emailed.
 - **Retries.** A failed send is retried up to three times, then given up; the regular
-  reminder is the fallback. Delivery is at least once (see
+  reminder is the fallback. A new change restores the full count, and a failure is not
+  charged to a change made during the send. Delivery is at least once (see
   [Background Jobs](background_jobs.md)).
+- **Members only.** Membership is checked at send time, as the reminder does: a
+  participant removed from the organization during the wait is not emailed, and a change
+  whose coachee was removed settles unsent.
 - **No email configured.** Without `RESEND_API_KEY` or
   `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` the sweep still runs and drops due rows unsent,
   since a pending row suppresses the session's reminder.
 
 Every other session email stays immediate: creation, this-and-following edits, series
-edits, cancellations, and resends. A resend clears any pending reschedule.
+edits, cancellations, and resends. Once one of those reaches the coachee, the pending
+reschedule is settled against the schedule that was sent, under the session's row lock:
+it is dropped if the session still matches, otherwise the newer change stays pending,
+now from what was sent.
 
 ## Timezone Handling
 

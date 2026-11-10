@@ -11,6 +11,9 @@
 //! A failed send is retried up to [`coaching_session_pending_reschedule::MAX_ATTEMPTS`] times, then given up;
 //! the regular reminder is the fallback.
 //!
+//! Only participants still in the session's organization are emailed; a coachee who left
+//! is owed nothing, so the change settles unsent.
+//!
 //! Without Resend or the rescheduled template the sweep still runs, dropping due rows
 //! unsent, since a pending row suppresses the session's reminder.
 //!
@@ -33,7 +36,7 @@ use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
 
-use crate::emails;
+use crate::emails::{self, RescheduleOutcome};
 use crate::error::Error;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::Id;
@@ -119,14 +122,18 @@ impl Sweep {
         match emails::send_session_rescheduled(db, &ctx.config, &session, claimed.announced.date)
             .await
         {
-            Ok(delivered) if delivered.coachee => {
+            Ok(RescheduleOutcome::Sent(delivered)) if delivered.coachee => {
                 let handled = settle(db, claimed, current).await;
                 if let Err(e) = coaching_session::mark_notice_given(db, id).await {
                     warn!("[coaching-session-pending-reschedule] could not record notice for session {id}: {e:?}");
                 }
                 handled
             }
-            Ok(delivered) => {
+            Ok(RescheduleOutcome::CoacheeNoLongerAMember) => {
+                info!("[coaching-session-pending-reschedule] session {id} coachee is no longer a member; nothing to tell");
+                settle(db, claimed, current).await
+            }
+            Ok(RescheduleOutcome::Sent(delivered)) => {
                 warn!("[coaching-session-pending-reschedule] session {id} coachee was not told: {delivered:?}");
                 retry(db, claimed).await
             }

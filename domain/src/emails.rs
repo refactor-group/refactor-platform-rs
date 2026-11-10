@@ -857,12 +857,13 @@ pub struct Delivered {
 async fn send_single_session_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
-    coach: &users::Model,
-    coachee: &users::Model,
+    participants: &Participants<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     reschedule: Option<&RescheduleVars>,
+    notify: &[Id],
 ) -> Result<Delivered, Error> {
+    let (coach, coachee) = (participants.coach, participants.coachee);
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
         N::notification_name(),
@@ -933,7 +934,9 @@ async fn send_single_session_invite_email<N: EmailNotification>(
 
     // Email to coachee: "Your coach, ... has a session with you"
     let mut delivered = Delivered::default();
-    if let Err(e) = send_session_email_to_recipient(
+    if !notify.contains(&coachee.id) {
+        info!("Skipping coachee {}: no longer notified", coachee.id);
+    } else if let Err(e) = send_session_email_to_recipient(
         &email_config,
         &Recipient {
             user: coachee,
@@ -957,7 +960,9 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     }
 
     // Email to coach: "Your coachee, ... has a session with you"
-    if let Err(e) = send_session_email_to_recipient(
+    if !notify.contains(&coach.id) {
+        info!("Skipping coach {}: no longer notified", coach.id);
+    } else if let Err(e) = send_session_email_to_recipient(
         &email_config,
         &Recipient {
             user: coach,
@@ -995,11 +1000,11 @@ async fn send_session_scheduled_email(
     send_single_session_invite_email::<SessionScheduled>(
         db,
         config,
-        coach,
-        coachee,
+        &Participants { coach, coachee },
         session,
         organization,
         None,
+        &[coach.id, coachee.id],
     )
     .await
     .map(|_| ())
@@ -1012,17 +1017,16 @@ async fn send_session_scheduled_email(
 async fn send_session_rescheduled_email(
     db: &DatabaseConnection,
     config: &Config,
-    coach: &users::Model,
-    coachee: &users::Model,
+    participants: &Participants<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     previous_start: NaiveDateTime,
+    notify: &[Id],
 ) -> Result<Delivered, Error> {
     send_single_session_invite_email::<SessionRescheduled>(
         db,
         config,
-        coach,
-        coachee,
+        participants,
         session,
         organization,
         Some(&RescheduleVars {
@@ -1030,6 +1034,7 @@ async fn send_session_rescheduled_email(
             previous_start,
             previous_recurrence_summary: None,
         }),
+        notify,
     )
     .await
 }
@@ -1162,24 +1167,56 @@ fn build_session_ics(
     }
 }
 
-/// Sends the session-rescheduled emails, returning who was told.
+/// What a deferred session-rescheduled send did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RescheduleOutcome {
+    /// Sent to each participant still in the organization.
+    Sent(Delivered),
+    /// The coachee left the organization, so no one is owed the change; a coach still in
+    /// it was sent their copy.
+    CoacheeNoLongerAMember,
+}
+
+/// Sends the session-rescheduled emails to the participants still in the organization.
 ///
-/// A delivered send must clear the session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
+/// Membership is checked here, not trusted from the edit: the send runs after a settle
+/// period, by which time someone may have lost access to the session's details.
+///
+/// A delivered send must settle the session's pending reschedule (via
+/// `coaching_session_pending_reschedule::complete`).
 pub async fn send_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
-) -> Result<Delivered, Error> {
+) -> Result<RescheduleOutcome, Error> {
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
     let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
     let org = organization::find_by_id(db, relationship.organization_id).await?;
+    let notify = entity_api::coaching_relationship::notify_member_ids(db, &relationship).await?;
+    if notify.is_empty() {
+        return Ok(RescheduleOutcome::CoacheeNoLongerAMember);
+    }
 
-    send_session_rescheduled_email(db, config, &coach, &coachee, session, &org, previous_start)
-        .await
+    let delivered = send_session_rescheduled_email(
+        db,
+        config,
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
+        session,
+        &org,
+        previous_start,
+        &notify,
+    )
+    .await?;
+    Ok(match notify.contains(&coachee.id) {
+        true => RescheduleOutcome::Sent(delivered),
+        false => RescheduleOutcome::CoacheeNoLongerAMember,
+    })
 }
 
 /// Send the upcoming-session reminder to the coachee.
@@ -1996,7 +2033,7 @@ async fn send_recurring_sessions_scheduled_email(
 /// to the series, which the snapshot is built from.
 ///
 /// A delivered send must clear each session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session::record_announced`).
 pub(crate) async fn send_series_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2032,7 +2069,7 @@ pub(crate) async fn send_series_invite_resend(
 /// `ical_sequence`.
 ///
 /// A delivered send must clear the session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session::record_announced`).
 pub(crate) async fn send_session_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2043,11 +2080,11 @@ pub(crate) async fn send_session_invite_resend(
     send_single_session_invite_email::<SessionScheduled>(
         db,
         config,
-        participants.coach,
-        participants.coachee,
+        participants,
         session,
         organization,
         None,
+        &[participants.coach.id, participants.coachee.id],
     )
     .await
 }
@@ -2244,7 +2281,7 @@ pub struct FollowingRescheduleNotice<'a> {
 /// told, which decides whether the moved sessions count as noticed.
 ///
 /// A delivered send must clear each session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session_pending_reschedule::clear`).
+/// `coaching_session::record_notice` or `coaching_session::record_announced`).
 pub async fn notify_recurring_sessions_rescheduled_following(
     db: &DatabaseConnection,
     config: &Config,

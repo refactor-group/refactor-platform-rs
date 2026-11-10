@@ -4,12 +4,12 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, Qu
 
 pub use entity::{
     actions, actions_users, agreements, coachees, coaches, coaching_relationships,
-    coaching_session_images, coaching_session_topics, coaching_session_views, coaching_sessions,
-    coaching_sessions_goals, cost_metric, cost_unit, duration, goals, jwts, magic_link_tokens,
-    meeting_provider, notes, oauth_connections, organizations, password_reset_attempts,
-    pipeline_provider, status, token_purpose, topic_priority, topic_status,
-    transcript_suggestion_target, user_invite_status, user_lookup_attempts, user_role_changes,
-    user_roles, users, users::Role, working_hours, Id,
+    coaching_session_images, coaching_session_pending_reschedules, coaching_session_topics,
+    coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit,
+    duration, goals, jwts, magic_link_tokens, meeting_provider, notes, oauth_connections,
+    organizations, password_reset_attempts, pipeline_provider, status, token_purpose,
+    topic_priority, topic_status, transcript_suggestion_target, user_invite_status,
+    user_lookup_attempts, user_role_changes, user_roles, users, users::Role, working_hours, Id,
 };
 
 pub mod action;

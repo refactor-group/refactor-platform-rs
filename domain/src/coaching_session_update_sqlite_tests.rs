@@ -173,13 +173,31 @@ async fn recording_notice_clears_the_pending_change() {
             .expect("the session exists")
             .notice_given_at;
 
-        edit(&db, session_id, date(start + TimeDelta::hours(1))).await;
-        let stamped = crate::coaching_session::record_notice(&db, session_id)
+        let sent = edit(&db, session_id, date(start + TimeDelta::hours(1))).await;
+        let stamped = crate::coaching_session::record_notice(&db, &sent)
             .await
             .expect("notice records");
 
         assert!(stamped.notice_given_at > before);
         assert_eq!(pending(&db, session_id).await, None);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_edit_after_the_email_was_read_stays_pending_from_what_was_sent() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, start) = upcoming_session(&db).await;
+
+        let sent = edit(&db, session_id, date(start + TimeDelta::hours(1))).await;
+        edit(&db, session_id, date(start + TimeDelta::hours(2))).await;
+        crate::coaching_session::record_announced(&db, &sent).await;
+
+        let row = pending(&db, session_id)
+            .await
+            .expect("the newer edit stays pending");
+        assert_eq!(row.announced_date, sent.date);
     })
     .await;
 }

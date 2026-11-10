@@ -426,6 +426,28 @@ async fn a_change_during_the_send_stays_pending_from_what_was_sent() {
 }
 
 #[tokio::test]
+async fn a_change_during_a_send_at_the_cap_restarts_the_cap_from_the_claim() {
+    within_time_limit(async {
+        let db = database().await;
+        let session_id = later_session(&db).await;
+
+        record(&db, session_id, a(), b(), now()).await;
+        let claimed = claim(&db, now() + secs(300), Id::new_v4()).await;
+        record(&db, session_id, b(), c(), now() + secs(301)).await;
+        coaching_session_pending_reschedule::complete(&db, &claimed[0], b())
+            .await
+            .expect("completion runs");
+
+        let row = find(&db, session_id)
+            .await
+            .expect("the change stays pending");
+        assert_eq!(row.unannounced_since, now() + secs(300));
+        assert!(claim(&db, now() + secs(302), Id::new_v4()).await.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn an_undo_during_the_send_leaves_a_correction_pending() {
     within_time_limit(async {
         let db = database().await;
@@ -517,6 +539,28 @@ async fn a_failed_send_releases_the_claim_and_counts_the_attempt() {
 }
 
 #[tokio::test]
+async fn a_failed_send_does_not_charge_a_change_made_during_it() {
+    within_time_limit(async {
+        let db = database().await;
+        let session_id = later_session(&db).await;
+
+        record(&db, session_id, a(), b(), now()).await;
+        let claimed = claim(&db, now() + secs(60), Id::new_v4()).await;
+        record(&db, session_id, b(), c(), now() + secs(65)).await;
+        coaching_session_pending_reschedule::release(&db, &claimed[0])
+            .await
+            .expect("release runs");
+
+        let row = find(&db, session_id)
+            .await
+            .expect("the change stays pending");
+        assert_eq!(row.claim_id, None);
+        assert_eq!(row.attempts, 0);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_last_allowed_failure_gives_up() {
     within_time_limit(async {
         let db = database().await;
@@ -563,6 +607,67 @@ async fn a_new_change_restores_the_full_retry_budget() {
             .await
             .expect("the change stays pending");
         assert_eq!(row.attempts, 0);
+    })
+    .await;
+}
+
+async fn announce(db: &DatabaseConnection, session_id: Id, sent: Schedule, current: Schedule) {
+    coaching_session_pending_reschedule::announce(db, session_id, sent, current, now() + secs(90))
+        .await
+        .expect("the announcement records");
+}
+
+#[tokio::test]
+async fn announcing_the_current_schedule_drops_the_pending_change() {
+    within_time_limit(async {
+        let db = database().await;
+        let session_id = later_session(&db).await;
+
+        record(&db, session_id, a(), b(), now()).await;
+        announce(&db, session_id, b(), b()).await;
+
+        assert_eq!(find(&db, session_id).await, None);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn announcing_a_superseded_schedule_keeps_the_newer_change_pending_from_it() {
+    within_time_limit(async {
+        let db = database().await;
+        let session_id = later_session(&db).await;
+
+        record(&db, session_id, a(), b(), now()).await;
+        record(&db, session_id, b(), c(), now() + secs(30)).await;
+        announce(&db, session_id, b(), c()).await;
+
+        let row = find(&db, session_id)
+            .await
+            .expect("the newer change stays pending");
+        assert_eq!(row.announced_date, b().date);
+        assert_eq!(row.announced_duration_minutes, b().duration_minutes);
+        assert_eq!(row.unannounced_since, now() + secs(90));
+        assert_eq!(row.changed_at, now() + secs(30));
+        assert_eq!(row.attempts, 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn announcing_after_an_undo_left_nothing_pending_records_the_way_back() {
+    within_time_limit(async {
+        let db = database().await;
+        let session_id = later_session(&db).await;
+
+        announce(&db, session_id, b(), a()).await;
+
+        let row = find(&db, session_id)
+            .await
+            .expect("the way back is pending");
+        assert_eq!(row.announced_date, b().date);
+        let due = claim(&db, now() + secs(90) + secs(60), Id::new_v4()).await;
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].announced, b());
     })
     .await;
 }

@@ -6,17 +6,17 @@
 //! comes from the caller; only `created_at` and `updated_at` read the clock.
 
 use chrono::{NaiveDateTime, TimeDelta, Utc};
-use entity::coaching_session_pending_reschedules::{ActiveModel, Column, Entity};
-use entity::{coaching_sessions, Id};
 use sea_orm::sea_query::{Expr, ExprTrait, LockBehavior, LockType, OnConflict, Query};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, Condition, ConnectionTrait, EntityName, EntityTrait, Order,
     QueryFilter, QueryTrait,
 };
 
-use super::error::Error;
+use crate::coaching_session_pending_reschedules::{ActiveModel, Column, Entity};
+use crate::error::Error;
+use crate::{coaching_sessions, Id};
 
-pub use entity::coaching_session_pending_reschedules::Model;
+pub use crate::coaching_session_pending_reschedules::Model;
 
 /// Retries allowed before a failing send is given up.
 pub const MAX_ATTEMPTS: i16 = 3;
@@ -29,6 +29,15 @@ pub const LEASE: TimeDelta = TimeDelta::minutes(2);
 pub struct Schedule {
     pub date: NaiveDateTime,
     pub duration_minutes: i16,
+}
+
+impl From<&coaching_sessions::Model> for Schedule {
+    fn from(session: &coaching_sessions::Model) -> Self {
+        Self {
+            date: session.date,
+            duration_minutes: session.duration_minutes,
+        }
+    }
 }
 
 /// How long a change must be quiet, the longest it may wait, and how long a claim lasts.
@@ -201,6 +210,8 @@ pub async fn complete(
             Column::ClaimedAt,
             Expr::value(Option::<NaiveDateTime>::None),
         )
+        // Changes after the claim were not in the send, so the cap restarts from it.
+        .col_expr(Column::UnannouncedSince, Expr::col(Column::ClaimedAt))
         .col_expr(Column::Attempts, Expr::value(0i16))
         .col_expr(Column::UpdatedAt, Expr::value(Utc::now()))
         .filter(held(claimed))
@@ -222,7 +233,16 @@ pub async fn release(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<Rel
             Column::ClaimedAt,
             Expr::value(Option::<NaiveDateTime>::None),
         )
-        .col_expr(Column::Attempts, Expr::col(Column::Attempts).add(1))
+        // A change made during the send is not charged for the send's failure.
+        .col_expr(
+            Column::Attempts,
+            Expr::case(
+                Column::Revision.eq(claimed.revision),
+                Expr::col(Column::Attempts).add(1),
+            )
+            .finally(Expr::col(Column::Attempts))
+            .into(),
+        )
         .col_expr(Column::UpdatedAt, Expr::value(Utc::now()))
         .filter(held(claimed))
         .exec(db)
@@ -243,6 +263,52 @@ pub async fn release(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<Rel
     } else {
         Released::Retrying
     })
+}
+
+/// Records that participants were told `sent` while the session is at `current`.
+///
+/// Drops the pending change when they match; otherwise keeps the difference pending from
+/// `sent`, recording one when an undo during the send had left nothing pending. Callers
+/// must hold the session row's lock so no edit lands between reading `current` and this.
+pub async fn announce(
+    db: &impl ConnectionTrait,
+    coaching_session_id: Id,
+    sent: Schedule,
+    current: Schedule,
+    now: NaiveDateTime,
+) -> Result<(), Error> {
+    if sent == current {
+        return clear(db, coaching_session_id).await;
+    }
+    let stamp = Utc::now();
+    let row = ActiveModel {
+        coaching_session_id: Set(coaching_session_id),
+        announced_date: Set(sent.date),
+        announced_duration_minutes: Set(sent.duration_minutes),
+        unannounced_since: Set(now),
+        changed_at: Set(now),
+        revision: Set(0),
+        attempts: Set(0),
+        claim_id: Set(None),
+        claimed_at: Set(None),
+        created_at: Set(stamp.into()),
+        updated_at: Set(stamp.into()),
+    };
+    Entity::insert(row)
+        .on_conflict(
+            OnConflict::column(Column::CoachingSessionId)
+                .update_columns([
+                    Column::AnnouncedDate,
+                    Column::AnnouncedDurationMinutes,
+                    Column::UnannouncedSince,
+                    Column::Attempts,
+                    Column::UpdatedAt,
+                ])
+                .to_owned(),
+        )
+        .exec_without_returning(db)
+        .await?;
+    Ok(())
 }
 
 /// Drops the session's pending change, if any.
