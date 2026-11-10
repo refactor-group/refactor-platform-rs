@@ -10,6 +10,7 @@ pub mod coachees;
 pub mod coaches;
 pub mod coaching_relationships;
 pub mod coaching_session_images;
+pub mod coaching_session_pending_reschedules;
 pub mod coaching_session_reminders;
 pub mod coaching_session_series;
 pub mod coaching_session_topics;

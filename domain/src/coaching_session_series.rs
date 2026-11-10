@@ -752,7 +752,7 @@ pub async fn reschedule_following(
         true => {
             stream::iter(moved)
                 .then(|session| async move {
-                    coaching_session::record_notice(db, session.id)
+                    coaching_session::record_notice(db, &session)
                         .await
                         .unwrap_or(session)
                 })
@@ -891,7 +891,11 @@ pub async fn resend_invite(
         &parties.organization,
     )
     .await?;
-    coaching_session::ensure_coachee_reached(&delivered)
+    coaching_session::ensure_coachee_reached(&delivered)?;
+    stream::iter(&upcoming)
+        .for_each(|session| coaching_session::record_announced(db, session))
+        .await;
+    Ok(())
 }
 
 async fn cleanup_orphaned_docs(
@@ -2102,8 +2106,11 @@ mod tests {
             .append_query_results(vec![vec![organization]])
             .append_query_results(vec![moved.clone()])
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            // mark_notice_given × 2
+            // record_notice × 2: the locked re-read and its clear, then mark_notice_given
+            .append_exec_results(vec![exec_ok(), exec_ok()])
+            .append_query_results(vec![vec![moved[0].clone()]])
             .append_query_results(vec![vec![stamped[0].clone()]])
+            .append_query_results(vec![vec![moved[1].clone()]])
             .append_query_results(vec![vec![stamped[1].clone()]])
             .into_connection();
 
@@ -2127,6 +2134,83 @@ mod tests {
             "the first session replaces in place"
         );
         assert_eq!(rescheduled.sessions, stamped);
+        Ok(())
+    }
+
+    /// A delivered series resend told participants every upcoming session's schedule.
+    #[tokio::test]
+    async fn series_resend_clears_each_upcoming_sessions_pending_reschedule() -> Result<(), Error> {
+        let mut resend = mockito::Server::new_async().await;
+        let sends = resend
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_api_key",
+            "--recurring-sessions-scheduled-email-template-id=series_template",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", resend.url()),
+        ]);
+
+        let (series, _, sessions) = following_fixture(2);
+        let now = chrono::Utc::now();
+        let (coach, coachee) = (coach_row("UTC"), coach_row("UTC"));
+        let organization = entity::organizations::Model {
+            id: Id::new_v4(),
+            name: "Acme".into(),
+            logo: None,
+            slug: "acme".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
+        };
+        let relationship = entity::coaching_relationships::Model {
+            id: series.coaching_relationship_id,
+            organization_id: organization.id,
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let bumped = Model {
+            ical_sequence: series.ical_sequence + 1,
+            ..series.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            // the series bump, then its members raised
+            .append_query_results(vec![vec![bumped]])
+            .append_query_results(vec![sessions.clone()])
+            // the email: parties, then the first session's goals
+            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee]])
+            .append_query_results(vec![vec![organization]])
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            // each upcoming session's locked re-read, then its clear
+            .append_query_results(vec![vec![sessions[0].clone()]])
+            .append_query_results(vec![vec![sessions[1].clone()]])
+            .append_exec_results(vec![exec_ok(), exec_ok()])
+            .into_connection();
+
+        resend_invite(&db, &config, series.id).await?;
+
+        sends.assert_async().await;
+        let clears = written_sql(db)
+            .into_iter()
+            .filter(|sql| {
+                sql.starts_with("DELETE") && sql.contains("coaching_session_pending_reschedules")
+            })
+            .count();
+        assert_eq!(clears, sessions.len(), "one clear per upcoming session");
         Ok(())
     }
 }

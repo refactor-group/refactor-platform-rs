@@ -218,6 +218,18 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     })
 }
 
+/// Reads a session and locks its row until the transaction ends.
+pub async fn find_by_id_for_update(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .lock_exclusive()
+        .one(db)
+        .await?
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
 /// Returns every coaching session linked to the given series, ordered by date ascending,
 /// ties by id so the order is the same on every read.
 pub async fn find_by_series_id(
@@ -395,9 +407,9 @@ pub struct DueReminder {
     /// The start this caller stamped, used to tell whether the session moved between the
     /// claim and the send.
     pub claimed_for_start: NaiveDateTime,
-    /// Proves ownership of the claim to [`confirm_reminder_claim`] and
-    /// [`release_reminder_claim`], so a replica that has since reclaimed the pair is not
-    /// overwritten. Regenerated per claim, so unlike the start it never repeats.
+    /// Proves ownership of the claim to [`release_reminder_claim`], so a replica that has
+    /// since reclaimed the pair is not overwritten. Regenerated per claim, so unlike the
+    /// start it never repeats.
     pub claim_id: Id,
 }
 
@@ -415,6 +427,8 @@ struct ClaimedPair {
 /// Due means: the session starts in `(now, now + lead]`, it gave more than `lead` notice,
 /// the recipient still holds a role in its organization, and no claim row already holds
 /// the session's current `date`.
+///
+/// A session with a pending reschedule is skipped until participants are told its time.
 ///
 /// Notice is `date - notice_given_at`: how long before the session the participants were
 /// last told its time, at booking and again on every reschedule. A session starting less
@@ -463,6 +477,11 @@ pub async fn claim_due_reminders(
                  AND cs.date > (cs.notice_given_at AT TIME ZONE 'UTC')
                                + ($2::timestamp - $1::timestamp)
                  AND csr.sent_for_start IS DISTINCT FROM cs.date
+                 -- A reminder must not announce a time participants haven't been told.
+                 AND NOT EXISTS (
+                     SELECT 1 FROM refactor_platform.coaching_session_pending_reschedules p
+                     WHERE p.coaching_session_id = cs.id
+                 )
                  AND EXISTS (
                      SELECT 1
                      FROM refactor_platform.user_roles ur
@@ -517,43 +536,6 @@ pub async fn claim_due_reminders(
                 })
         })
         .collect())
-}
-
-/// Realigns a claim with the start the delivered email actually announced.
-///
-/// The claim is stamped from a snapshot taken before the session is reloaded, so a
-/// reschedule landing in between leaves the claim holding the old start while the email
-/// announced the new one. Left alone the pair stays due, and the next tick resends a
-/// start the recipient was already told. Writing back what was sent closes that window.
-///
-/// Matching on `claim_id` is what keeps this safe across replicas: delivery can outlast
-/// a reschedule, and another replica may have reclaimed the pair in the meantime. Without
-/// the guard this write would clobber that newer claim and the reminder it already
-/// delivered would go out again. The token rather than the start, because a session moved
-/// away and back repeats a start and would let a stale caller match again.
-pub async fn confirm_reminder_claim(
-    db: &impl ConnectionTrait,
-    coaching_session_id: Id,
-    recipient_id: Id,
-    claim_id: Id,
-    sent_for_start: NaiveDateTime,
-) -> Result<(), Error> {
-    coaching_session_reminders::Entity::update_many()
-        .col_expr(
-            coaching_session_reminders::Column::SentForStart,
-            Expr::value(sent_for_start),
-        )
-        .col_expr(
-            coaching_session_reminders::Column::UpdatedAt,
-            Expr::current_timestamp(),
-        )
-        .filter(coaching_session_reminders::Column::CoachingSessionId.eq(coaching_session_id))
-        .filter(coaching_session_reminders::Column::UserId.eq(recipient_id))
-        .filter(coaching_session_reminders::Column::ClaimId.eq(claim_id))
-        .exec(db)
-        .await?;
-
-    Ok(())
 }
 
 /// Hands a claimed reminder back so a later tick retries it.
@@ -1811,6 +1793,34 @@ mod tests {
         Ok(())
     }
 
+    /// A reminder for a session with an unannounced change would state a time participants
+    /// were never told.
+    #[tokio::test]
+    async fn claim_due_reminders_skips_sessions_with_a_pending_reschedule() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let sql = format!("{:?}", db.into_transaction_log()[0]);
+        let not_exists = sql
+            .find("NOT EXISTS")
+            .expect("the claim must exclude sessions with a pending reschedule");
+
+        assert!(
+            sql[not_exists..].contains("coaching_session_pending_reschedules"),
+            "the exclusion must test the pending reschedules table, got: {sql}"
+        );
+
+        Ok(())
+    }
+
     /// The claim is per recipient, not per session, so the pair a later phase adds
     /// cannot be starved by a session-level lock or dropped by a session-level key.
     #[tokio::test]
@@ -1835,50 +1845,6 @@ mod tests {
         assert!(
             !sql.contains("FOR UPDATE"),
             "locking the session row would make two recipients contend, got: {sql}"
-        );
-
-        Ok(())
-    }
-
-    /// The claim records what was claimed, not what was sent, and those differ when a
-    /// reschedule lands between the two. Realigning it is what stops the next tick from
-    /// resending a start the recipient was already told about.
-    #[tokio::test]
-    async fn confirm_reminder_claim_writes_back_the_start_that_was_sent() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }])
-            .into_connection();
-
-        let sent_for = chrono::NaiveDate::from_ymd_opt(2026, 6, 2)
-            .unwrap()
-            .and_hms_opt(9, 0, 0)
-            .unwrap();
-
-        confirm_reminder_claim(&db, Id::new_v4(), Id::new_v4(), Id::new_v4(), sent_for).await?;
-
-        let sql = format!("{:?}", db.into_transaction_log()[0]).replace('\\', "");
-        let (set_clause, where_clause) = sql.split_once("WHERE").expect("update needs a WHERE");
-
-        assert!(
-            set_clause.contains("UPDATE \"refactor_platform\".\"coaching_session_reminders\"")
-                && set_clause.contains("\"sent_for_start\" ="),
-            "the sent start must be written back, got: {sql}"
-        );
-        assert!(
-            where_clause.contains("\"coaching_session_id\" =")
-                && where_clause.contains("\"user_id\" ="),
-            "the write must be scoped to the pair, got: {sql}"
-        );
-        assert!(
-            where_clause.contains("\"claim_id\" ="),
-            "the write must only land on the claim this caller still owns, got: {sql}"
-        );
-        assert!(
-            sql.contains("2026-06-02T09:00:00"),
-            "the value written must be the start the email announced, got: {sql}"
         );
 
         Ok(())

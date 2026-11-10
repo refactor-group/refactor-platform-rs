@@ -1259,6 +1259,9 @@ jobs:
                   # falls back to the in-code defaults (24h / 15min).
                   SESSION_REMINDER_LEAD_HOURS='${{ vars.SESSION_REMINDER_LEAD_HOURS }}'
                   SESSION_REMINDER_POLL_MINUTES='${{ vars.SESSION_REMINDER_POLL_MINUTES }}'
+                  # Blank falls back to the in-code defaults (60s / 300s).
+                  SESSION_RESCHEDULE_SETTLE_SECONDS='${{ vars.SESSION_RESCHEDULE_SETTLE_SECONDS }}'
+                  SESSION_RESCHEDULE_SETTLE_MAX_SECONDS='${{ vars.SESSION_RESCHEDULE_SETTLE_MAX_SECONDS }}'
                   FRONTEND_BASE_URL=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}
                   ENCRYPTION_KEY='${{ secrets.ENCRYPTION_KEY || 'UNUSED' }}'
                   GOOGLE_CLIENT_ID='${{ vars.GOOGLE_CLIENT_ID || 'UNUSED' }}'

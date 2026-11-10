@@ -226,13 +226,7 @@ pub async fn update(
     Path(coaching_session_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::update(
-        app_state.db_conn_ref(),
-        &app_state.config,
-        coaching_session_id,
-        params,
-    )
-    .await?;
+    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session_id, params).await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
 
@@ -267,7 +261,6 @@ pub async fn update_title(
 ) -> Result<impl IntoResponse, Error> {
     let updated = CoachingSessionApi::update_title(
         app_state.db_conn_ref(),
-        &app_state.config,
         app_state.event_publisher.as_ref(),
         coaching_session.id,
         params,

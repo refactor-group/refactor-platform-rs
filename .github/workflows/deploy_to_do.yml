@@ -185,6 +185,9 @@ jobs:
           # Reminder lead time and sweep cadence; blank falls back to the in-code defaults (24h / 15min)
           SESSION_REMINDER_LEAD_HOURS=${{ vars.SESSION_REMINDER_LEAD_HOURS }}
           SESSION_REMINDER_POLL_MINUTES=${{ vars.SESSION_REMINDER_POLL_MINUTES }}
+          # Reschedule email settle period and cap; blank falls back to the in-code defaults (60s / 300s)
+          SESSION_RESCHEDULE_SETTLE_SECONDS=${{ vars.SESSION_RESCHEDULE_SETTLE_SECONDS }}
+          SESSION_RESCHEDULE_SETTLE_MAX_SECONDS=${{ vars.SESSION_RESCHEDULE_SETTLE_MAX_SECONDS }}
           RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
           # Base URL of the frontend app, used to construct links in emails
           FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL }}

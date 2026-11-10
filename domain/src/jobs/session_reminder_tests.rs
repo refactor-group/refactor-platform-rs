@@ -493,3 +493,58 @@ async fn a_recipient_with_a_bad_address_does_not_abandon_the_tick() {
          abandoned over one unusable address"
     );
 }
+
+/// A session moved after the claim may hold a change participants were not told yet, so
+/// the reminder waits rather than announce it; releasing lets a later tick decide afresh.
+#[tokio::test]
+async fn a_session_moved_after_its_claim_is_released_unsent() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/emails")
+        .with_status(200)
+        .with_body(r#"{"id":"sent"}"#)
+        .expect(0)
+        .create_async()
+        .await;
+
+    let session_id = Id::new_v4();
+    let coachee = Id::new_v4();
+    let claimed = chrono::Utc::now().naive_utc() + chrono::Duration::hours(2);
+    let db = Arc::new(
+        MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![claim_row(session_id, coachee, claimed)]])
+            .append_query_results([vec![session(
+                session_id,
+                Id::new_v4(),
+                claimed + chrono::Duration::hours(1),
+            )]])
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection(),
+    );
+    let ctx = Context {
+        db: db.clone(),
+        config: config_for(&server.url()),
+    };
+
+    let outcome = Sweep::from_config(&ctx.config)
+        .expect("sweep is configured")
+        .run(&ctx)
+        .await
+        .expect("a moved session is not a tick error");
+
+    mock.assert_async().await;
+    assert_eq!((outcome.processed, outcome.attempted), (1, 1));
+    drop(ctx);
+    let log = Arc::try_unwrap(db)
+        .expect("the context has been dropped")
+        .into_transaction_log();
+    assert!(
+        log.iter()
+            .map(|txn| format!("{txn:?}"))
+            .any(|sql| sql.contains("DELETE") && sql.contains("coaching_session_reminders")),
+        "the claim must be released: {log:?}"
+    );
+}
