@@ -2,7 +2,10 @@
 //! resolution, bounded searcher fan-out, merge/rank/paginate, and post-merge
 //! hydration (display titles and snippets for exactly the returned page).
 
+use std::time::Instant;
+
 use futures::stream::{self, StreamExt};
+use log::debug;
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -91,6 +94,7 @@ pub async fn search(
     visibility: &Visibility,
     spec: Spec,
 ) -> Result<Results, Error> {
+    let started = Instant::now();
     let visible = resolve_visible_relationship_ids(
         db,
         visibility,
@@ -114,6 +118,8 @@ pub async fn search(
         filters.participant_relationship_ids =
             Some(resolve_participant_relationship_ids(db, user_id, visible.as_deref()).await?);
     }
+
+    let visibility_resolved = Instant::now();
 
     let request = Request {
         q: &spec.q_raw,
@@ -150,9 +156,20 @@ pub async fn search(
         .flatten()
         .collect();
     let (mut merged, next_cursor) = merge_and_paginate(merged, spec.limit);
+    let fanned_out = Instant::now();
 
     hydrate_session_titles(db, &mut merged).await?;
     hydrate_snippets(db, &spec.q_raw, &mut merged).await?;
+
+    // Per-phase wall-clock so latency work has before/after numbers from one place.
+    debug!(
+        "search timing: visibility={}ms fan_out={}ms hydrate={}ms total={}ms hits={}",
+        (visibility_resolved - started).as_millis(),
+        (fanned_out - visibility_resolved).as_millis(),
+        fanned_out.elapsed().as_millis(),
+        started.elapsed().as_millis(),
+        merged.len(),
+    );
 
     Ok(Results {
         query: spec.query,
