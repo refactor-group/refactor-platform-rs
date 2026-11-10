@@ -577,10 +577,11 @@ pub async fn find_by_coaching_relationship(
     Ok(filtered_actions)
 }
 
-/// Actions across the supplied relationships, grouped by coachee user id.
+/// Actions across the supplied relationships, grouped by relationship id.
 /// `caller_user_id` determines per-relationship [`CallerVisibility`], so
 /// mixed-role callers (coach in one rel, coachee in another) get correct
-/// narrowing per relationship.
+/// narrowing per relationship. Keyed by relationship because a coachee can
+/// have several coaches in one organization.
 pub async fn find_by_user_relationships(
     db: &DatabaseConnection,
     relationships: &[entity::coaching_relationships::Model],
@@ -617,7 +618,7 @@ pub async fn find_by_user_relationships(
 
         let actions =
             find_by_coaching_relationship(db, relationship.id, relationship_params).await?;
-        result.insert(relationship.coachee_id, actions);
+        result.insert(relationship.id, actions);
     }
 
     Ok(result)
@@ -1312,7 +1313,7 @@ mod tests {
         assert!(!action.has_assignees());
     }
 
-    // ─── Batch Coachee Actions Tests ──────────────────────────────────
+    // ─── Batch Relationship Actions Tests ──────────────────────────────────
 
     /// Helper to construct a coaching_relationships::Model for tests.
     fn create_test_relationship(
@@ -1490,9 +1491,9 @@ mod tests {
         Ok(())
     }
 
-    /// Tests that find_by_user_relationships groups actions by coachee user ID.
+    /// Tests that find_by_user_relationships groups actions by relationship id.
     #[tokio::test]
-    async fn find_by_user_relationships_groups_by_coachee() -> Result<(), Error> {
+    async fn find_by_user_relationships_groups_by_relationship() -> Result<(), Error> {
         let coach_id = Id::new_v4();
         let org_id = Id::new_v4();
 
@@ -1549,19 +1550,19 @@ mod tests {
         let result =
             find_by_user_relationships(&db, &relationships, params, None, coach_id).await?;
 
-        // All 3 coachees should have keys
-        assert_eq!(result.len(), 3, "All coachees should have entries");
-        assert_eq!(result.get(&coachee_1).unwrap().len(), 1);
-        assert_eq!(result.get(&coachee_2).unwrap().len(), 2);
-        assert_eq!(result.get(&coachee_3).unwrap().len(), 0);
+        assert_eq!(result.len(), 3, "All relationships should have entries");
+        assert_eq!(result[&rel_1].len(), 1);
+        assert_eq!(result[&rel_2].len(), 2);
+        assert_eq!(result[&rel_3].len(), 0);
 
         Ok(())
     }
 
-    /// Tests that find_by_user_relationships includes coachees with no actions
+    /// Tests that find_by_user_relationships includes relationships with no actions
     /// as empty arrays in the result.
     #[tokio::test]
-    async fn find_by_user_relationships_includes_coachees_with_no_actions() -> Result<(), Error> {
+    async fn find_by_user_relationships_includes_relationships_with_no_actions() -> Result<(), Error>
+    {
         let coach_id = Id::new_v4();
         let org_id = Id::new_v4();
         let coachee_1 = Id::new_v4();
@@ -1592,9 +1593,89 @@ mod tests {
         let result =
             find_by_user_relationships(&db, &relationships, params, None, coach_id).await?;
 
-        assert_eq!(result.len(), 2, "Both coachees should have entries");
-        assert!(result.get(&coachee_1).unwrap().is_empty());
-        assert!(result.get(&coachee_2).unwrap().is_empty());
+        assert_eq!(result.len(), 2, "Both relationships should have entries");
+        assert!(result[&rel_1].is_empty());
+        assert!(result[&rel_2].is_empty());
+
+        Ok(())
+    }
+
+    /// A coachee with two coaches in one org gets both relationships' actions.
+    #[tokio::test]
+    async fn find_by_user_relationships_keeps_each_relationship_of_a_coachee_with_two_coaches(
+    ) -> Result<(), Error> {
+        let coachee_id = Id::new_v4();
+        let org_id = Id::new_v4();
+        let rel_with_actions = Id::new_v4();
+        let rel_without_actions = Id::new_v4();
+        let action_id = Id::new_v4();
+
+        let relationships = vec![
+            create_test_relationship(rel_with_actions, Id::new_v4(), coachee_id, org_id),
+            create_test_relationship(rel_without_actions, Id::new_v4(), coachee_id, org_id),
+        ];
+
+        // Empty relationship last, as in production, so an overwrite would lose the action.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![create_test_action(action_id, Id::new_v4())]])
+            .append_query_results(vec![Vec::<entity::actions_users::Model>::new()])
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+
+        let result = find_by_user_relationships(
+            &db,
+            &relationships,
+            FindByRelationshipParams::default(),
+            None,
+            coachee_id,
+        )
+        .await?;
+
+        assert_eq!(result.len(), 2, "Each relationship should have an entry");
+        assert_eq!(result[&rel_with_actions].len(), 1);
+        assert_eq!(result[&rel_with_actions][0].action.id, action_id);
+        assert!(result[&rel_without_actions].is_empty());
+
+        Ok(())
+    }
+
+    /// A caller who coaches one relationship and is coachee in two others gets all three.
+    #[tokio::test]
+    async fn find_by_user_relationships_keeps_every_relationship_of_a_mixed_role_caller(
+    ) -> Result<(), Error> {
+        let caller_id = Id::new_v4();
+        let org_id = Id::new_v4();
+        let rel_as_coach = Id::new_v4();
+        let rel_as_coachee_1 = Id::new_v4();
+        let rel_as_coachee_2 = Id::new_v4();
+
+        let relationships = vec![
+            create_test_relationship(rel_as_coach, caller_id, Id::new_v4(), org_id),
+            create_test_relationship(rel_as_coachee_1, Id::new_v4(), caller_id, org_id),
+            create_test_relationship(rel_as_coachee_2, Id::new_v4(), caller_id, org_id),
+        ];
+
+        // One action per relationship: actions query then assignees query, three times.
+        let db = (0..relationships.len())
+            .fold(MockDatabase::new(DatabaseBackend::Postgres), |db, _| {
+                db.append_query_results(vec![vec![create_test_action(Id::new_v4(), Id::new_v4())]])
+                    .append_query_results(vec![Vec::<entity::actions_users::Model>::new()])
+            })
+            .into_connection();
+
+        let result = find_by_user_relationships(
+            &db,
+            &relationships,
+            FindByRelationshipParams::default(),
+            None,
+            caller_id,
+        )
+        .await?;
+
+        assert_eq!(result.len(), 3, "Each relationship should have an entry");
+        assert_eq!(result[&rel_as_coach].len(), 1);
+        assert_eq!(result[&rel_as_coachee_1].len(), 1);
+        assert_eq!(result[&rel_as_coachee_2].len(), 1);
 
         Ok(())
     }
@@ -1979,14 +2060,14 @@ mod tests {
 
         let result = find_by_user_relationships(&db, &relationships, params, None, user_id).await?;
 
-        let coach_side = result.get(&other_coachee).expect("coach-side entry");
+        let coach_side = result.get(&rel_as_coach).expect("coach-side entry");
         assert_eq!(
             coach_side.len(),
             1,
             "Coach side returns all actions unrestricted"
         );
 
-        let coachee_side = result.get(&user_id).expect("coachee-side entry");
+        let coachee_side = result.get(&rel_as_coachee).expect("coachee-side entry");
         assert_eq!(coachee_side.len(), 1);
         assert_eq!(coachee_side[0].action.id, action_in_b_user_assigned);
 
