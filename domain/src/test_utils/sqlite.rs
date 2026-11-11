@@ -7,7 +7,10 @@ use std::future::Future;
 use std::time::Duration;
 
 use chrono::Utc;
+use entity::coaching_relationships::Visibility;
 use entity::meeting_recording::MeetingRecordingStatus;
+use entity::roles::Role;
+use entity::status::Status;
 use entity::transcription::TranscriptionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
@@ -273,5 +276,173 @@ pub(crate) async fn seed_transcription(
         user_id,
         transcription_id,
         segment_ids,
+    }
+}
+
+/// A user who left one of their two organizations: U holds a role in O1 only, coaches R1
+/// in O1 and is coached in R2 in O2. Each relationship has one session, one action assigned
+/// to U and one goal U wrote; index 0 is R1's, index 1 is R2's.
+pub(crate) struct LapsedMembership {
+    pub user: Id,
+    pub o1: Id,
+    pub o2: Id,
+    pub relationships: [Id; 2],
+    pub sessions: [Id; 2],
+    pub actions: [Id; 2],
+    pub goals: [Id; 2],
+}
+
+impl LapsedMembership {
+    /// U as their roles stand: a member of O1 only.
+    pub fn in_o1(&self) -> Visibility {
+        self.member_of(&[self.o1])
+    }
+
+    /// U holding a role in both organizations.
+    pub fn in_both(&self) -> Visibility {
+        self.member_of(&[self.o1, self.o2])
+    }
+
+    /// U as a SuperAdmin with no organization role.
+    pub fn super_admin(&self) -> Visibility {
+        Visibility {
+            is_super_admin: true,
+            ..self.member_of(&[])
+        }
+    }
+
+    fn member_of(&self, organization_ids: &[Id]) -> Visibility {
+        Visibility {
+            user_id: self.user,
+            is_super_admin: false,
+            admin_org_ids: vec![],
+            member_org_ids: organization_ids.to_vec(),
+        }
+    }
+}
+
+/// Seeds a [`LapsedMembership`], with every session dated `date`.
+pub(crate) async fn seed_lapsed_membership(
+    db: &DatabaseConnection,
+    date: chrono::NaiveDateTime,
+) -> LapsedMembership {
+    let now = Utc::now();
+    let (user, coachee, coach) = (
+        seed_user(db).await,
+        seed_user(db).await,
+        seed_user(db).await,
+    );
+    let (o1, o2) = (seed_organization(db).await, seed_organization(db).await);
+
+    user_roles::ActiveModel {
+        id: Set(Id::new_v4()),
+        role: Set(Role::User),
+        organization_id: Set(Some(o1)),
+        user_id: Set(user),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the role is seeded");
+
+    let mut seeded = Vec::new();
+    for (organization_id, coach_id, coachee_id) in [(o1, user, coachee), (o2, coach, user)] {
+        let relationship_id = Id::new_v4();
+        coaching_relationships::ActiveModel {
+            id: Set(relationship_id),
+            organization_id: Set(organization_id),
+            coach_id: Set(coach_id),
+            coachee_id: Set(coachee_id),
+            slug: Set(format!("relationship-{relationship_id}")),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the relationship is seeded");
+
+        let session_id = Id::new_v4();
+        coaching_sessions::ActiveModel {
+            id: Set(session_id),
+            coaching_relationship_id: Set(relationship_id),
+            coaching_session_series_id: Set(None),
+            ical_sequence: Set(0),
+            ical_recurrence_id: Set(None),
+            collab_document_name: Set(None),
+            date: Set(date),
+            duration_minutes: Set(60),
+            title: Set(None),
+            meeting_url: Set(None),
+            provider: Set(None),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+            hydrated_at: Set(None),
+            notice_given_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the session is seeded");
+
+        let action_id = Id::new_v4();
+        actions::ActiveModel {
+            id: Set(action_id),
+            coaching_session_id: Set(session_id),
+            goal_id: Set(None),
+            user_id: Set(coach_id),
+            body: Set(Some(format!("Action {action_id}"))),
+            due_by: Set(None),
+            status: Set(Status::InProgress),
+            status_changed_at: Set(now.into()),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the action is seeded");
+        actions_users::ActiveModel {
+            id: Set(Id::new_v4()),
+            action_id: Set(action_id),
+            user_id: Set(user),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the assignment is seeded");
+
+        let goal_id = Id::new_v4();
+        goals::ActiveModel {
+            id: Set(goal_id),
+            coaching_relationship_id: Set(relationship_id),
+            created_in_session_id: Set(None),
+            user_id: Set(user),
+            title: Set(Some(format!("Goal {goal_id}"))),
+            body: Set(None),
+            status: Set(Status::InProgress),
+            status_changed_at: Set(None),
+            completed_at: Set(None),
+            target_date: Set(None),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the goal is seeded");
+
+        seeded.push((relationship_id, session_id, action_id, goal_id));
+    }
+    let [(r1, s1, a1, g1), (r2, s2, a2, g2)] = seeded[..] else {
+        unreachable!("two relationships are seeded")
+    };
+
+    LapsedMembership {
+        user,
+        o1,
+        o2,
+        relationships: [r1, r2],
+        sessions: [s1, s2],
+        actions: [a1, a2],
+        goals: [g1, g2],
     }
 }

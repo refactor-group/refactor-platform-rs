@@ -1,10 +1,12 @@
 use super::error::{EntityApiErrorKind, Error};
+use crate::coaching_relationship::accessible_to;
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
 use entity::{
-    actions, agreements, coaching_relationships, coaching_session_reminders,
-    coaching_session_topics, coaching_session_views,
+    actions, agreements, coaching_relationships,
+    coaching_relationships::Visibility,
+    coaching_session_reminders, coaching_session_topics, coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
@@ -15,9 +17,8 @@ use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType},
     ActiveValue::Unchanged,
-    Condition, ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult,
-    JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel,
-    Value,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
+    Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -847,10 +848,14 @@ pub async fn find_meeting_url_by_relationship_and_provider(
         .and_then(|session| session.meeting_url))
 }
 
-/// All of a user's coaching sessions (coach or coachee), unfiltered and unsorted.
+/// All of `viewer`'s coaching sessions in relationships they may access (see
+/// [`accessible_to`]), unfiltered and unsorted.
 /// Thin convenience over [`find_by_user_filtered`] with default options.
-pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
-    find_by_user_filtered(db, user_id, SessionQueryOptions::default()).await
+pub async fn find_by_user(
+    db: &impl ConnectionTrait,
+    viewer: &Visibility,
+) -> Result<Vec<Model>, Error> {
+    find_by_user_filtered(db, viewer, SessionQueryOptions::default()).await
 }
 
 /// One row of the monthly count aggregation for the user's coaching sessions.
@@ -864,8 +869,8 @@ pub struct CountByMonth {
     pub count: i64,
 }
 
-/// Counts coaching sessions per calendar month for relationships the user
-/// participates in (coach or coachee), grouped by `date_trunc('month', date AT
+/// Counts coaching sessions per calendar month for relationships `viewer` may
+/// access (see [`accessible_to`]), grouped by `date_trunc('month', date AT
 /// TIME ZONE tz_name)`. Months with zero sessions are absent from the result.
 ///
 /// `tz_name` must be a canonical IANA identifier; Postgres `AT TIME ZONE`
@@ -876,7 +881,7 @@ pub struct CountByMonth {
 /// Mirrors the pattern in [`find_by_user_with_includes`].
 pub async fn find_counts_by_month_for_user(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     from_date: chrono::NaiveDate,
     to_date: chrono::NaiveDate,
     tz_name: &str,
@@ -910,7 +915,7 @@ pub async fn find_counts_by_month_for_user(
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
         .filter(Column::Date.gte(from_date))
         .filter(Column::Date.lt(to_exclusive))
-        .filter(participant(user_id))
+        .filter(accessible_to(viewer))
         .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
             q.filter(Column::CoachingRelationshipId.eq(rel_id))
         })
@@ -1105,12 +1110,12 @@ pub struct SessionQueryOptions {
 }
 
 /// Base query for a user's coaching sessions: the optional tz-aware date window,
-/// relationship, and sort filters applied to the sessions where the user is coach
-/// or coachee. Returns plain models (no enrichment). The shared base for
+/// relationship, and sort filters applied to the sessions of relationships `viewer`
+/// may access. Returns plain models (no enrichment). The shared base for
 /// [`find_by_user`] (no filters) and the enriching [`find_by_user_with_includes`].
 async fn find_by_user_filtered(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     options: SessionQueryOptions,
 ) -> Result<Vec<Model>, Error> {
     // Build the optional date-bound filters up-front so the query chain can
@@ -1149,7 +1154,7 @@ async fn find_by_user_filtered(
     // function body.
     let query = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(participant(user_id))
+        .filter(accessible_to(viewer))
         .apply_if(
             options.coaching_relationship_id,
             |q: Select<Entity>, rel_id| {
@@ -1175,14 +1180,14 @@ async fn find_by_user_filtered(
 /// enrichment on top.
 pub async fn find_by_user_with_includes(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     options: SessionQueryOptions,
     includes: IncludeOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
     includes.validate()?;
 
-    let sessions = find_by_user_filtered(db, user_id, options).await?;
-    enrich(db, sessions, user_id, includes).await
+    let sessions = find_by_user_filtered(db, viewer, options).await?;
+    enrich(db, sessions, viewer.user_id, includes).await
 }
 
 /// Sessions nearest a point in time, for each of several relationships: per relationship,
@@ -1200,12 +1205,12 @@ pub struct NearestWindow {
 /// The window's sessions across its relationships, latest first (ties by id), enriched
 /// like [`find_by_user_with_includes`].
 ///
-/// A relationship `user_id` is neither coach nor coachee of contributes nothing, matching
-/// how the list read's relationship filter behaves. One statement, however many
+/// A relationship `viewer` may not access (see [`accessible_to`]) contributes nothing,
+/// matching how the list read's relationship filter behaves. One statement, however many
 /// relationships.
 pub async fn find_nearest_by_user_with_includes(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     window: NearestWindow,
     includes: IncludeOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
@@ -1216,13 +1221,13 @@ pub async fn find_nearest_by_user_with_includes(
     };
     let sessions = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(participant(user_id))
+        .filter(accessible_to(viewer))
         .filter(Column::Id.in_subquery(ids))
         .order_by_desc(Column::Date)
         .order_by_desc(Column::Id)
         .all(db)
         .await?;
-    enrich(db, sessions, user_id, includes).await
+    enrich(db, sessions, viewer.user_id, includes).await
 }
 
 /// The ids of the window's sessions: for each relationship, the [`latest`] `before` sessions
@@ -1264,14 +1269,6 @@ fn ids_of(side: Select<Entity>) -> SelectStatement {
 }
 
 const SIDE: &str = "side";
-
-/// Sessions of relationships `user_id` coaches or is coached in. Needs the
-/// `coaching_relationships` join.
-fn participant(user_id: Id) -> Condition {
-    Condition::any()
-        .add(coaching_relationships::Column::CoachId.eq(user_id))
-        .add(coaching_relationships::Column::CoacheeId.eq(user_id))
-}
 
 /// Adds view markers, display titles and the requested related data to `sessions`,
 /// keeping their order. `viewer_id` is whose view markers to load.
@@ -1669,6 +1666,24 @@ mod tests {
     use entity::meeting_provider::Provider;
     use entity::Id;
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Statement, Transaction, Value};
+
+    /// `user_id` as a SuperAdmin, whose reads carry no organization predicate.
+    fn viewer(user_id: Id) -> Visibility {
+        Visibility {
+            is_super_admin: true,
+            ..member(user_id, Id::new_v4())
+        }
+    }
+
+    /// A non-SuperAdmin `user_id` holding a role in `organization_id` only.
+    fn member(user_id: Id, organization_id: Id) -> Visibility {
+        Visibility {
+            user_id,
+            is_super_admin: false,
+            admin_org_ids: vec![],
+            member_org_ids: vec![organization_id],
+        }
+    }
 
     /// The claim has to select and write in one statement, and the conflict clause has
     /// to skip rows already current. If a refactor split it into a SELECT followed by an
@@ -2356,14 +2371,15 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
         let user_id = Id::new_v4();
-        let _ = find_by_user(&db, user_id).await;
+        let organization_id = Id::new_v4();
+        let _ = find_by_user(&db, &member(user_id, organization_id)).await;
 
         assert_eq!(
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
-                [user_id.into(), user_id.into()]
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND "coaching_relationships"."organization_id" IN ($3)"#,
+                [user_id.into(), user_id.into(), organization_id.into()]
             )]
         );
 
@@ -2396,7 +2412,7 @@ mod tests {
 
         let _ = find_counts_by_month_for_user(
             &db,
-            user_id,
+            &viewer(user_id),
             from_date,
             to_date,
             "America/Los_Angeles",
@@ -2438,7 +2454,7 @@ mod tests {
 
         let _ = find_counts_by_month_for_user(
             &db,
-            user_id,
+            &viewer(user_id),
             from_date,
             to_date,
             "Europe/Berlin",
@@ -2500,7 +2516,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2564,7 +2580,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2583,7 +2599,7 @@ mod tests {
 
         let results_empty = find_by_user_with_includes(
             &db_empty,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2630,7 +2646,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2680,7 +2696,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: Some(to_date),
@@ -2715,7 +2731,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: Some(to_date),
@@ -2764,7 +2780,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: Some(to_date),
@@ -2806,7 +2822,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: None,
@@ -2852,7 +2868,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: None,
                 to_date: Some(to_date),
@@ -3239,9 +3255,13 @@ mod tests {
             series: true,
             ..IncludeOptions::none()
         };
-        let results =
-            find_by_user_with_includes(&db, Id::new_v4(), SessionQueryOptions::default(), includes)
-                .await?;
+        let results = find_by_user_with_includes(
+            &db,
+            &viewer(Id::new_v4()),
+            SessionQueryOptions::default(),
+            includes,
+        )
+        .await?;
 
         assert_eq!(results.len(), 3);
         for enriched in &results[..2] {
@@ -3274,7 +3294,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            Id::new_v4(),
+            &viewer(Id::new_v4()),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )

@@ -8,6 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::search::visibility_for;
 use domain::{coaching_relationship as CoachingRelationshipApi, Id};
 use service::config::ApiVersion;
 
@@ -36,7 +37,7 @@ use log::*;
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
@@ -48,7 +49,7 @@ pub async fn index(
     // Web layer's RoleFilter implements RoleFilterable trait, so pass directly
     let relationships = CoachingRelationshipApi::find_by_user_id_with_user_names(
         app_state.db_conn_ref(),
-        user_id,
+        &visibility_for(&user),
         params.role,
     )
     .await?;

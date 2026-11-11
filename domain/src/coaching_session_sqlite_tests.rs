@@ -1,14 +1,18 @@
-//! Which sessions the nearest window and the prior/next lookups select, against a
-//! real SQL engine.
+//! Which sessions the nearest window, the prior/next lookups and a user's own session
+//! lists select, against a real SQL engine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{NaiveDate, Utc};
 use entity::{coaching_relationships, coaching_sessions};
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use super::*;
-use crate::test_utils::sqlite::{database, seed_organization, seed_user, within_time_limit};
+use crate::coaching_relationships::Visibility;
+use crate::test_utils::sqlite::{
+    database, seed_lapsed_membership, seed_organization, seed_user, within_time_limit,
+    LapsedMembership,
+};
 
 /// 2026-10-30 14:00 UTC, the window's center in every test.
 fn around() -> NaiveDateTime {
@@ -107,18 +111,31 @@ fn window_over(coaching_relationship_ids: &[Id], before: u64, after: u64) -> Nea
     }
 }
 
+/// `user_id` as a SuperAdmin, so only participation decides; membership has its own tests.
+fn participant(user_id: Id) -> Visibility {
+    Visibility {
+        user_id,
+        is_super_admin: true,
+        admin_org_ids: vec![],
+        member_org_ids: vec![],
+    }
+}
+
 async fn nearest_ids(
     db: &DatabaseConnection,
     user_id: Id,
     window: NearestWindow,
 ) -> Result<Vec<Id>, Error> {
-    Ok(
-        find_nearest_by_user_with_includes(db, user_id, window, IncludeOptions::default())
-            .await?
-            .into_iter()
-            .map(|s| s.session.id)
-            .collect(),
+    Ok(find_nearest_by_user_with_includes(
+        db,
+        &participant(user_id),
+        window,
+        IncludeOptions::default(),
     )
+    .await?
+    .into_iter()
+    .map(|s| s.session.id)
+    .collect())
 }
 
 /// The `before` latest earlier sessions and the `after` earliest later ones, latest first.
@@ -350,9 +367,13 @@ async fn include_relationship_loads_coach_and_coachee() -> Result<(), Error> {
             ..Default::default()
         };
 
-        let sessions =
-            find_nearest_by_user_with_includes(&db, rel.coachee_id, window(rel.id, 2, 2), includes)
-                .await?;
+        let sessions = find_nearest_by_user_with_includes(
+            &db,
+            &participant(rel.coachee_id),
+            window(rel.id, 2, 2),
+            includes,
+        )
+        .await?;
 
         let [session] = sessions.as_slice() else {
             panic!("expected one session, got {sessions:?}");
@@ -409,6 +430,95 @@ async fn prior_and_next_are_none_past_the_relationships_ends() -> Result<(), Err
                 .map(|s| s.id),
             Some(only)
         );
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// The ids of U's sessions `viewer` lists.
+async fn own_session_ids(
+    db: &DatabaseConnection,
+    viewer: &Visibility,
+) -> Result<BTreeSet<Id>, Error> {
+    Ok(find_by_user_with_includes(
+        db,
+        viewer,
+        SessionQueryOptions::default(),
+        IncludeOptions::default(),
+    )
+    .await?
+    .into_iter()
+    .map(|s| s.session.id)
+    .collect())
+}
+
+/// The ids of U's sessions `viewer` reads in a window over both relationships.
+async fn own_nearest_ids(
+    db: &DatabaseConnection,
+    m: &LapsedMembership,
+    viewer: &Visibility,
+) -> Result<BTreeSet<Id>, Error> {
+    Ok(find_nearest_by_user_with_includes(
+        db,
+        viewer,
+        window_over(&m.relationships, 5, 5),
+        IncludeOptions::default(),
+    )
+    .await?
+    .into_iter()
+    .map(|s| s.session.id)
+    .collect())
+}
+
+/// M1-02
+#[tokio::test]
+async fn a_users_own_sessions_skip_an_org_they_left() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let m = seed_lapsed_membership(&db, around()).await;
+        assert_eq!(
+            own_session_ids(&db, &m.in_o1()).await?,
+            BTreeSet::from([m.sessions[0]])
+        );
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// M1-03: both relationships requested, only R1's session comes back.
+#[tokio::test]
+async fn a_users_own_nearest_sessions_skip_an_org_they_left() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let m = seed_lapsed_membership(&db, around()).await;
+        assert_eq!(
+            own_nearest_ids(&db, &m, &m.in_o1()).await?,
+            BTreeSet::from([m.sessions[0]])
+        );
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// M1-07, M1-08: a SuperAdmin with no roles, or a member of both orgs, sees both.
+#[tokio::test]
+async fn a_super_admin_or_a_member_of_both_orgs_sees_every_own_session() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let m = seed_lapsed_membership(&db, around()).await;
+        let both = BTreeSet::from(m.sessions);
+        for viewer in [m.super_admin(), m.in_both()] {
+            assert_eq!(
+                own_session_ids(&db, &viewer).await?,
+                both,
+                "list {viewer:?}"
+            );
+            assert_eq!(
+                own_nearest_ids(&db, &m, &viewer).await?,
+                both,
+                "nearest {viewer:?}"
+            );
+        }
         Ok::<(), Error>(())
     })
     .await

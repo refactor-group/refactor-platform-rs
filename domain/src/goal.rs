@@ -8,7 +8,7 @@ use entity_api::{goal as GoalApi, goals, query};
 use log::*;
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
-pub use entity_api::goal::find_by_id;
+pub use entity_api::goal::{find_accessible_by, find_by_id};
 
 // Re-export coaching-session ↔ goal join operations so the web layer
 // interacts with goals as a single domain concept rather than knowing
@@ -378,3 +378,7 @@ mod integration_tests {
         assert!(result.is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "goal_sqlite_tests.rs"]
+mod sqlite_tests;

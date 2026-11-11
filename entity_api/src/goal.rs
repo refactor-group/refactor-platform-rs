@@ -1,12 +1,16 @@
+use super::coaching_relationship::accessible_to;
 use super::error::{EntityApiErrorKind, Error};
-use entity::goals::{ActiveModel, Column, Entity, Model};
+use super::query::{self, IntoQueryFilterMap, QuerySort};
+use entity::coaching_relationships::Visibility;
+use entity::goals::{ActiveModel, Column, Entity, Model, Relation};
 use entity::{status::Status, Id};
 use sea_orm::ActiveValue;
 use sea_orm::{
     entity::prelude::*,
     ActiveModelTrait,
     ActiveValue::{Set, Unchanged},
-    ConnectionTrait, DatabaseConnection, QueryFilter, TransactionTrait, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, JoinType, QueryFilter, QuerySelect, TransactionTrait,
+    TryIntoModel,
 };
 
 use log::*;
@@ -17,6 +21,22 @@ const MAX_IN_PROGRESS_GOALS: usize = 3;
 /// Returns the maximum number of `InProgress` goals allowed per coaching relationship.
 pub fn max_in_progress_goals() -> usize {
     MAX_IN_PROGRESS_GOALS
+}
+
+/// The goals matching `params` in relationships `viewer` may access (see
+/// [`accessible_to`]).
+pub async fn find_accessible_by<P>(
+    db: &DatabaseConnection,
+    viewer: &Visibility,
+    params: P,
+) -> Result<Vec<Model>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<Column>,
+{
+    let select = Entity::find()
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(accessible_to(viewer));
+    query::find_by_within::<Entity, Column, P>(db, select, params).await
 }
 
 pub async fn create(

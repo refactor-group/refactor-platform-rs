@@ -344,16 +344,32 @@ pub async fn find_by_user_and_organization(
     Ok(relationships)
 }
 
+/// The query form of [`Model::grants_access_to`]: relationships `viewer` is coach or
+/// coachee of, in an organization they are still a member of unless a SuperAdmin.
+pub fn accessible_to(viewer: &Visibility) -> Condition {
+    Condition::all()
+        .add(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(viewer.user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(viewer.user_id)),
+        )
+        .add_option(in_member_organization(viewer))
+}
+
 /// Relationships where `coach` coaches `coachee_id` and is still a member of the
 /// relationship's organization, unless `coach` is a SuperAdmin.
 pub fn coached_by(coach: &Visibility, coachee_id: Id) -> Condition {
     Condition::all()
         .add(coaching_relationships::Column::CoachId.eq(coach.user_id))
         .add(coaching_relationships::Column::CoacheeId.eq(coachee_id))
-        .add_option((!coach.is_super_admin).then(|| {
-            coaching_relationships::Column::OrganizationId
-                .is_in(coach.member_org_ids.iter().copied())
-        }))
+        .add_option(in_member_organization(coach))
+}
+
+/// The org half of [`accessible_to`]; `None` for a SuperAdmin, who skips it.
+fn in_member_organization(viewer: &Visibility) -> Option<Expr> {
+    (!viewer.is_super_admin).then(|| {
+        coaching_relationships::Column::OrganizationId.is_in(viewer.member_org_ids.iter().copied())
+    })
 }
 
 /// Checks if a user is a coach of another user.
@@ -547,28 +563,28 @@ pub trait RoleFilterable {
 
 /// Finds coaching relationships for a user with optional role filtering.
 ///
-/// Returns relationships with user names for display purposes.
+/// Returns relationships with user names for display purposes: those `viewer` may access
+/// (see [`accessible_to`]), narrowed to those they coach or are coached in when
+/// `role_filter` asks.
 pub async fn find_by_user_id_with_user_names(
     db: &DatabaseConnection,
-    user_id: Id,
+    viewer: &Visibility,
     role_filter: impl RoleFilterable,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     let coaches = Alias::new("coaches");
     let coachees = Alias::new("coachees");
 
-    let filter = if role_filter.filter_coach_only() {
-        Condition::all().add(coaching_relationships::Column::CoachId.eq(user_id))
+    let role = if role_filter.filter_coach_only() {
+        Some(coaching_relationships::Column::CoachId.eq(viewer.user_id))
     } else if role_filter.filter_coachee_only() {
-        Condition::all().add(coaching_relationships::Column::CoacheeId.eq(user_id))
+        Some(coaching_relationships::Column::CoacheeId.eq(viewer.user_id))
     } else {
-        // Default: return all relationships where user is coach or coachee
-        Condition::any()
-            .add(coaching_relationships::Column::CoachId.eq(user_id))
-            .add(coaching_relationships::Column::CoacheeId.eq(user_id))
+        None
     };
 
     let query = coaching_relationships::Entity::find()
-        .filter(filter)
+        .filter(accessible_to(viewer))
+        .apply_if(role, |q, role| q.filter(role))
         .join_as(
             JoinType::Join,
             coaches::Relation::CoachingRelationships.def().rev(),
