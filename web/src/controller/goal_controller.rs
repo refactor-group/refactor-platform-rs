@@ -10,6 +10,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use domain::coaching_session as CoachingSessionApi;
+use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::goal as GoalApi;
 use domain::goal_progress as GoalProgressApi;
 use domain::status::Status;
@@ -18,6 +20,14 @@ use serde_json::json;
 use service::config::ApiVersion;
 
 use log::*;
+
+/// A 422 refusal carrying `message`.
+fn validation(message: &str) -> Error {
+    Error::Domain(DomainError {
+        source: None,
+        error_kind: DomainErrorKind::Validation(message.to_string()),
+    })
+}
 
 /// GET sessions linked to a specific goal
 #[utoipa::path(
@@ -60,7 +70,7 @@ pub async fn coaching_sessions_by_goal(
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
-        (status = 404, description = "Coaching relationship not found"),
+        (status = 404, description = "Coaching relationship or created-in session not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -80,6 +90,15 @@ pub async fn create(
         authorize_relationship(&app_state, &user, goal_model.coaching_relationship_id).await
     {
         return Ok(rejection.into_response());
+    }
+
+    if let Some(session_id) = goal_model.created_in_session_id {
+        let session = CoachingSessionApi::find_by_id(app_state.db_conn_ref(), session_id).await?;
+        if session.coaching_relationship_id != goal_model.coaching_relationship_id {
+            return Err(validation(
+                "created_in_session_id must name a session of the goal's relationship.",
+            ));
+        }
     }
 
     let goal = GoalApi::create(
