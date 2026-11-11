@@ -47,7 +47,12 @@ jobs:
           fetch-depth: 1
 
       - name: Install bats
-        run: sudo apt-get update && sudo apt-get install -y bats
+        uses: bats-core/bats-action@4.1.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
 
       - name: Run dispatch-workflow regex tests (bats)
         run: bats .github/workflows/tests/dispatch-pr-preview.bats

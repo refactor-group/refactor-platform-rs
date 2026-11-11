@@ -11,9 +11,10 @@ use utoipa::ToSchema;
 
 use log::*;
 
-use super::actions_user;
 use super::error::{EntityApiErrorKind, Error};
+use super::{actions_user, coaching_relationship};
 use entity::actions::{ActiveModel, Entity, Model};
+use entity::coaching_relationships::Visibility;
 use entity::{actions, coaching_relationships, coaching_sessions, status::Status, Id};
 
 /// An action with its associated assignee user IDs.
@@ -311,6 +312,9 @@ pub struct FindByUserParams {
     pub scope: Scope,
     pub coaching_session_id: Option<Id>,
     pub coaching_relationship_id: Option<Id>,
+    /// Limits results to relationships this user coaches with the target user as coachee,
+    /// who is still a member of the relationship's organization.
+    pub coached_by: Option<Visibility>,
     pub goal_id: Option<Id>,
     pub status: Option<entity::status::Status>,
     pub assignee_filter: AssigneeFilter,
@@ -329,6 +333,8 @@ pub struct FindByUserParams {
 /// `coaching_sessions.coaching_relationship_id` FK column, so it requires a join to
 /// `coaching_sessions` (not `coaching_relationships`). For `Scope::Sessions` this join
 /// already exists in the base query; for `Scope::Assigned` it is added dynamically.
+/// `coached_by` filters on `coaching_relationships`, which `Scope::Assigned` likewise joins
+/// only when it is set.
 pub async fn find_by_user(
     db: &DatabaseConnection,
     user_id: Id,
@@ -338,9 +344,6 @@ pub async fn find_by_user(
         "Finding actions for user_id={user_id} with scope={:?}, session={:?}, relationship={:?}, status={:?}, assignee={:?}",
         params.scope, params.coaching_session_id, params.coaching_relationship_id, params.status, params.assignee_filter
     );
-
-    // Track whether the base query already joins coaching_sessions (Sessions does, Assigned does not)
-    let needs_sessions_join = matches!(params.scope, Scope::Assigned);
 
     // Build base query based on scope
     let base_select = match params.scope {
@@ -372,17 +375,31 @@ pub async fn find_by_user(
     // Apply filters
     let mut select = base_select;
 
-    if let Some(session_id) = params.coaching_session_id {
-        select = select.filter(actions::Column::CoachingSessionId.eq(session_id));
-    }
-
-    if let Some(relationship_id) = params.coaching_relationship_id {
-        if needs_sessions_join {
+    // Sessions already joins both tables; Assigned joins only what its filters need
+    if matches!(params.scope, Scope::Assigned) {
+        if params.coaching_relationship_id.is_some() || params.coached_by.is_some() {
             select = select.join(
                 JoinType::InnerJoin,
                 actions::Relation::CoachingSessions.def(),
             );
         }
+        if params.coached_by.is_some() {
+            select = select.join(
+                JoinType::InnerJoin,
+                coaching_sessions::Relation::CoachingRelationships.def(),
+            );
+        }
+    }
+
+    if let Some(coach) = &params.coached_by {
+        select = select.filter(coaching_relationship::coached_by(coach, user_id));
+    }
+
+    if let Some(session_id) = params.coaching_session_id {
+        select = select.filter(actions::Column::CoachingSessionId.eq(session_id));
+    }
+
+    if let Some(relationship_id) = params.coaching_relationship_id {
         select =
             select.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
     }

@@ -11,7 +11,7 @@ use crate::{
     extractors::{authenticated_user::AuthenticatedUser, RejectionType},
     AppState,
 };
-use domain::{coaching_relationships, coaching_sessions};
+use domain::{coaching_relationships, coaching_sessions, users};
 use log::*;
 
 /// Extractor that verifies the authenticated user is a participant (coach or coachee)
@@ -92,6 +92,16 @@ async fn authorize(
             )
         })?;
 
+    authorize_session(state, &authenticated_user, coaching_session_id).await
+}
+
+/// Loads the session and its relationship, and admits `user` only if the relationship
+/// grants them access.
+pub(crate) async fn authorize_session(
+    state: &AppState,
+    user: &users::Model,
+    coaching_session_id: Id,
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
     debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
 
     let (coaching_session, coaching_relationship) =
@@ -105,7 +115,7 @@ async fn authorize(
             (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
         })?;
 
-    if !coaching_relationship.grants_access_to(&authenticated_user) {
+    if !coaching_relationship.grants_access_to(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
     }
 

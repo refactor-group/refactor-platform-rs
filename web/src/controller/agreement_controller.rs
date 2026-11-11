@@ -1,15 +1,16 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    agreement_access::AgreementAccess, authenticated_user::AuthenticatedUser,
+    coaching_session_access::authorize_session, compare_api_version::CompareApiVersion,
 };
 use crate::params::agreement::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
-use domain::{agreement as AgreementApi, agreements::Model, Id};
+use domain::{agreement as AgreementApi, agreements::Model};
 
 use serde_json::json;
 use service::config::ApiVersion;
@@ -26,6 +27,8 @@ use log::*;
         (status = 201, description = "Successfully Created a New Agreement", body = domain::agreements::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Coaching session not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -37,12 +40,16 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Json(agreement_model): Json<Model>,
-) -> Result<impl IntoResponse, Error> {
+) -> Result<Response, Error> {
     debug!("POST Create a New Agreement from: {agreement_model:?}");
+
+    if let Err(rejection) =
+        authorize_session(&app_state, &user, agreement_model.coaching_session_id).await
+    {
+        return Ok(rejection.into_response());
+    }
 
     let agreement = AgreementApi::create(
         app_state.db_conn_ref(),
@@ -54,10 +61,7 @@ pub async fn create(
 
     debug!("New Agreement: {agreement:?}");
 
-    Ok(Json(ApiResponse::new(
-        StatusCode::CREATED.into(),
-        agreement,
-    )))
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), agreement)).into_response())
 }
 
 /// GET a particular Agreement specified by its id.
@@ -71,6 +75,7 @@ pub async fn create(
     responses(
         (status = 200, description = "Successfully retrieved a specific Agreement by its id", body = domain::agreements::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Agreement not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -81,12 +86,9 @@ pub async fn create(
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
-    State(app_state): State<AppState>,
-    Path(id): Path<Id>,
+    AgreementAccess { agreement }: AgreementAccess,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Agreement by id: {id}");
-
-    let agreement = AgreementApi::find_by_id(app_state.db_conn_ref(), id).await?;
+    debug!("GET Agreement by id: {}", agreement.id);
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), agreement)))
 }
@@ -102,6 +104,8 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully Updated Agreement", body = domain::agreements::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Agreement not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -112,12 +116,11 @@ pub async fn read(
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
+    AgreementAccess { agreement }: AgreementAccess,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
     Json(agreement_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = agreement.id;
     debug!("PUT Update Agreement with id: {id}");
 
     let agreement = AgreementApi::update(
@@ -185,6 +188,7 @@ pub async fn index(
     responses(
         (status = 200, description = "Successfully deleted a certain Agreement by its id", body = serde_json::Value),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Agreement not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -195,9 +199,10 @@ pub async fn index(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
+    AgreementAccess { agreement }: AgreementAccess,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = agreement.id;
     debug!("DELETE Agreement by id: {id}");
 
     AgreementApi::delete_by_id(

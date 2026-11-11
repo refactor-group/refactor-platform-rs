@@ -1135,6 +1135,45 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn create_with_sessions_refuses_a_caller_who_is_not_the_coach() {
+        let relationship_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let relationship = entity::coaching_relationships::Model {
+            id: relationship_id,
+            organization_id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .into_connection();
+
+        let err = create_with_sessions(
+            &db,
+            &test_config(),
+            relationship_id,
+            relationship.coachee_id,
+            start(),
+            weekly_rule_count(3),
+            None,
+        )
+        .await
+        .expect_err("a non-coach must be refused");
+
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Forbidden))
+            ),
+            "expected Forbidden, got {err:?}"
+        );
+        assert!(writes(&written_sql(db)).is_empty());
+    }
+
     /// Happy-path reschedule over unhydrated future sessions, with the duration
     /// omitted: validates inputs, reuses the duration persisted on the existing
     /// series rule (no coach lookup), deletes the old future rows, rewrites the
