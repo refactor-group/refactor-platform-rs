@@ -1,4 +1,5 @@
 pub(crate) mod action_access;
+pub(crate) mod agreement_access;
 pub(crate) mod authenticated_user;
 pub(crate) mod coaching_relationship_access;
 pub(crate) mod coaching_session_access;
@@ -6,6 +7,7 @@ pub(crate) mod coaching_session_image_access;
 pub(crate) mod coaching_session_series_access;
 pub(crate) mod coaching_session_topic_access;
 pub(crate) mod compare_api_version;
+pub(crate) mod note_access;
 pub(crate) mod organization_admin_access;
 pub(crate) mod organization_member_access;
 pub(crate) mod organization_user_access;
