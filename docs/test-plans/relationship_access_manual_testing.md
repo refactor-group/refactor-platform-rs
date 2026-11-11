@@ -19,6 +19,10 @@ before the baseline. Their expected results already show the phase M rule:
   belongs to, unless they are a SuperAdmin, matching the 403 they get opening one.
 - Session and series emails, and action assignment emails, go only to participants who are
   still members of the relationship's org.
+- Creating, rescheduling or resending a session or series is refused (409,
+  `details.reason` `coachee_not_a_member`) when the coachee is no longer a member; assigning an
+  action to someone who is no longer a member is refused (`assignee_not_a_member`). Cancelling
+  and deleting stay allowed. Rows for these land with phase M.
 
 Two behaviors are confirmed as intended and recorded as they are: a coachee's Actions page
 (batch and per-relationship lists) shows only their own and unassigned actions, while every

@@ -68,6 +68,10 @@ existing checks, since a route with no check is invisible to grep.
 `/actions`) leave out relationships in orgs they no longer belong to, unless they are a
 SuperAdmin, matching the 403 they get opening one. Session, series and action assignment
 emails go only to participants still in the org, as reschedule and reminder emails already do.
+No active-member operation involves someone who isn't a current member: creating, rescheduling
+or resending a session or series is refused (409, `details.reason` `coachee_not_a_member`) when
+the coachee has left, and so is assigning an action to anyone who has left
+(`assignee_not_a_member`); cancelling and deleting stay allowed.
 The access matrix marks these rows `[membership]`. The frontend confirms the rule and updates
 its test plan before the PR merges.
 
