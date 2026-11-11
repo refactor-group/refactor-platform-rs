@@ -19,7 +19,8 @@ Rules the security PR adds:
 - Action assignees must be the relationship's coach or coachee. Anyone else: 422, nothing
   written, no email.
 - Goals created for a relationship, and goal links on a session: same participant rule. A
-  goal can only be linked to a session in its own relationship.
+  goal can only be linked to a session in its own relationship, including the session a new
+  goal is created in.
 - The batch session-goals read authorizes every session id, not only the first.
 - `POST /coaching_sessions`: only the relationship's coach, still a member of its
   organization. Series creation also requires that membership.
@@ -324,6 +325,7 @@ How to read the tables:
 | GOAL-25 | POST /goals `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | security PR, pending | [tightened] Unknown relationship: 404. REMOVED on R3: 403 |
 | GOAL-26 | POST /coaching_sessions/S1/goals, DELETE /coaching_sessions/S1/goals/G1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, links unchanged | security PR, pending | [tightened] REMOVED on S3: 403 |
 | GOAL-27 | POST /coaching_sessions/S1/goals `{goal_id: G2}` | COACH | 422, nothing linked | security PR, pending | [tightened] G2 belongs to R2; a goal links only to sessions in its own relationship |
+| GOAL-28 | POST /goals `{coaching_relationship_id: R1, created_in_session_id: S2}` | COACH | 422, nothing written | security PR, pending | [tightened] S2 is in R2; a new goal's created-in session must be in its relationship. Unknown session: 404 |
 
 ### 4.8 Topics (`TOP`)
 
