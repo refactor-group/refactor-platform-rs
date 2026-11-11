@@ -111,3 +111,18 @@ pub(crate) async fn authorize_relationship(
 
     Ok(relationship)
 }
+
+/// `authorize_relationship`, then admits only the relationship's coach.
+pub(crate) async fn authorize_relationship_coach(
+    state: &AppState,
+    user: &users::Model,
+    coaching_relationship_id: Id,
+) -> Result<coaching_relationships::Model, RejectionType> {
+    let relationship = authorize_relationship(state, user, coaching_relationship_id).await?;
+
+    if relationship.coach_id != user.id {
+        return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+    }
+
+    Ok(relationship)
+}

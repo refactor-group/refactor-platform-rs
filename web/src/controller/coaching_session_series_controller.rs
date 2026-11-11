@@ -3,7 +3,9 @@ use crate::extractors::coaching_session_series_access::{
     CoachingRelationshipQueryAccess, CoachingSessionSeriesAccess, CoachingSessionSeriesCoachAccess,
 };
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    authenticated_user::AuthenticatedUser,
+    coaching_relationship_access::authorize_relationship_coach,
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session_series::{
     CreateParams, RescheduleFollowingParams, RescheduleParams,
@@ -11,7 +13,7 @@ use crate::params::coaching_session_series::{
 use crate::{AppState, Error};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::{
     coaching_session as CoachingSessionApi, coaching_session_series as CoachingSessionSeriesApi,
@@ -40,6 +42,7 @@ pub struct SeriesWithSessions {
         (status = 201, description = "Series created", body = SeriesWithSessions),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — not the coach on the target relationship"),
+        (status = 404, description = "Coaching relationship not found"),
         (status = 422, description = "Invalid recurrence rule"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -50,8 +53,14 @@ pub async fn create(
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Json(params): Json<CreateParams>,
-) -> Result<impl IntoResponse, Error> {
+) -> Result<Response, Error> {
     debug!("POST create coaching_session_series: {params:?}");
+
+    if let Err(rejection) =
+        authorize_relationship_coach(&app_state, &user, params.coaching_relationship_id).await
+    {
+        return Ok(rejection.into_response());
+    }
 
     let db = app_state.db_conn_ref();
 
@@ -71,7 +80,8 @@ pub async fn create(
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
         SeriesWithSessions { series, sessions },
-    )))
+    ))
+    .into_response())
 }
 
 /// `GET /coaching_session_series/:id` — read one series with its sessions.
@@ -400,23 +410,12 @@ mod tests {
         )
         .await;
 
-        let err = result
-            .err()
-            .expect("expected the handler to reject a non-coach caller");
-        assert!(
-            matches!(
-                err,
-                Error::Domain(ref e)
-                    if matches!(
-                        e.error_kind,
-                        domain::error::DomainErrorKind::Internal(
-                            domain::error::InternalErrorKind::Entity(
-                                domain::error::EntityErrorKind::Forbidden
-                            )
-                        )
-                    )
-            ),
-            "expected Err(Domain(Forbidden)), got {err:?}"
-        );
+        let response = result.expect("the refusal is a response, not an error");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_series_create_tests.rs"]
+mod coaching_session_series_create_tests;

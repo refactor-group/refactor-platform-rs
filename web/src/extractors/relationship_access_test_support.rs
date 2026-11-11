@@ -45,11 +45,15 @@ fn user(email: &str) -> users::Model {
 }
 
 fn role(user_id: Id, organization_id: Id) -> user_roles::Model {
+    role_as(users::Role::User, user_id, Some(organization_id))
+}
+
+fn role_as(role: users::Role, user_id: Id, organization_id: Option<Id>) -> user_roles::Model {
     let now = Utc::now();
     user_roles::Model {
         id: Id::new_v4(),
-        role: users::Role::User,
-        organization_id: Some(organization_id),
+        role,
+        organization_id,
         user_id,
         created_at: now.into(),
         updated_at: now.into(),
@@ -63,6 +67,8 @@ pub(crate) struct World {
     pub(crate) coachee: users::Model,
     pub(crate) member: users::Model,
     pub(crate) outsider: users::Model,
+    pub(crate) admin: users::Model,
+    pub(crate) super_admin: users::Model,
     pub(crate) relationship: coaching_relationships::Model,
     pub(crate) session: coaching_sessions::Model,
 }
@@ -104,6 +110,8 @@ pub(crate) fn world() -> World {
         coachee,
         member: user("member@example.com"),
         outsider: user("outsider@example.com"),
+        admin: user("admin@example.com"),
+        super_admin: user("super@example.com"),
         relationship,
         session,
     }
@@ -119,15 +127,23 @@ pub(crate) enum Caller {
     Outsider,
     /// The coach, with no role in the relationship's organization.
     Removed,
+    /// The coachee, with no role in the relationship's organization.
+    RemovedCoachee,
+    /// An Admin of the relationship's organization, not in the relationship.
+    Admin,
+    /// A SuperAdmin, not in the relationship.
+    SuperAdmin,
 }
 
 impl World {
     fn caller(&self, caller: Caller) -> &users::Model {
         match caller {
             Caller::Coach | Caller::Removed => &self.coach,
-            Caller::Coachee => &self.coachee,
+            Caller::Coachee | Caller::RemovedCoachee => &self.coachee,
             Caller::Member => &self.member,
             Caller::Outsider => &self.outsider,
+            Caller::Admin => &self.admin,
+            Caller::SuperAdmin => &self.super_admin,
         }
     }
 
@@ -135,21 +151,19 @@ impl World {
     pub(crate) fn signed_in(&self, caller: Caller) -> MockDatabase {
         let user = self.caller(caller).clone();
         let db = MockDatabase::new(DatabaseBackend::Postgres);
-        match caller {
-            Caller::Removed => db
-                .append_query_results([vec![(user.clone(), None::<user_roles::Model>)]])
-                .append_query_results([vec![(user, None::<user_roles::Model>)]]),
-            Caller::Outsider => {
-                let role = role(user.id, Id::new_v4());
-                db.append_query_results([vec![(user.clone(), role.clone())]])
-                    .append_query_results([vec![(user, role)]])
+        let role = match caller {
+            Caller::Removed | Caller::RemovedCoachee => {
+                return db
+                    .append_query_results([vec![(user.clone(), None::<user_roles::Model>)]])
+                    .append_query_results([vec![(user, None::<user_roles::Model>)]])
             }
-            _ => {
-                let role = role(user.id, self.organization_id);
-                db.append_query_results([vec![(user.clone(), role.clone())]])
-                    .append_query_results([vec![(user, role)]])
-            }
-        }
+            Caller::Outsider => role(user.id, Id::new_v4()),
+            Caller::Admin => role_as(users::Role::Admin, user.id, Some(self.organization_id)),
+            Caller::SuperAdmin => role_as(users::Role::SuperAdmin, user.id, None),
+            Caller::Coach | Caller::Coachee | Caller::Member => role(user.id, self.organization_id),
+        };
+        db.append_query_results([vec![(user.clone(), role.clone())]])
+            .append_query_results([vec![(user, role)]])
     }
 
     /// `caller` signed in, with the session queued for the create's session check.
@@ -161,8 +175,12 @@ impl World {
 
 /// The app state over `db`, for routes layered with `from_fn_with_state`.
 pub(crate) fn app_state(db: &Arc<DatabaseConnection>) -> AppState {
+    app_state_with(Config::default(), db)
+}
+
+fn app_state_with(config: Config, db: &Arc<DatabaseConnection>) -> AppState {
     AppState::new(
-        service::AppState::new(Config::default(), db),
+        service::AppState::new(config, db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
@@ -172,8 +190,8 @@ pub(crate) fn app_state(db: &Arc<DatabaseConnection>) -> AppState {
 }
 
 /// The login route plus `routes` behind sign-in.
-fn build_app(db: Arc<DatabaseConnection>, routes: Router<AppState>) -> Router {
-    let app_state = app_state(&db);
+fn build_app(config: Config, db: Arc<DatabaseConnection>, routes: Router<AppState>) -> Router {
+    let app_state = app_state_with(config, &db);
 
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
         .with_secure(false)
@@ -200,7 +218,20 @@ pub(crate) async fn send(
     uri: &str,
     body: Option<serde_json::Value>,
 ) -> Response {
-    let app = build_app(db.clone(), routes);
+    send_with(Config::default(), routes, db, email, method, uri, body).await
+}
+
+/// `send`, with the app running on `config`.
+pub(crate) async fn send_with(
+    config: Config,
+    routes: Router<AppState>,
+    db: &Arc<DatabaseConnection>,
+    email: &str,
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+) -> Response {
+    let app = build_app(config, db.clone(), routes);
     let login = Request::builder()
         .uri("/login")
         .method("POST")
